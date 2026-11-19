@@ -3,7 +3,9 @@ use std::io;
 
 impl Message {
     fn has_spawn_resources(&self) -> bool {
-        self.opcode == 0x03f3 && matches!(self.body.len(), 746 | 750) && self.body[326] == 0
+        self.opcode == 0x03f3
+            && matches!(self.body.len(), 746 | 750)
+            && self.body[326..330] == [0; 4]
     }
 
     /// Resources 6 and 7 in a full actor declaration: spendable gold and cumulative gold.
@@ -40,6 +42,8 @@ mod tests {
             assert!(m.spawn_gold().is_none());
             assert!(m.set_spawn_gold(250., 2000.).is_err());
             m.body[326] = 0;
+            assert!(m.spawn_gold().is_none());
+            m.body[326..330].fill(0);
             let before = m.clone();
             m.set_spawn_gold(250., 2000.).unwrap();
             assert_eq!(m.spawn_gold(), Some((250., 2000.)));

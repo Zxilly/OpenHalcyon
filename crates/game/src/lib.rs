@@ -6,6 +6,7 @@ mod aral;
 mod aral_spawn;
 mod commands;
 mod compact;
+mod hero_progress;
 mod messages;
 mod native_abilities;
 mod observer;
@@ -1320,7 +1321,7 @@ impl Room {
                     if !previous.contains(&e.id) {
                         let message = if native_solo {
                             self.solo_slots.declaration(
-                                self.world.tick,
+                                &self.world,
                                 e,
                                 &self.picks,
                                 self.data.as_deref(),
@@ -1346,6 +1347,11 @@ impl Room {
             }
             for ev in events {
                 result_frames::append_postgame(&mut out, ev, postgame);
+                if hero_progress::append(&self.world, &mut out, ev, |id| {
+                    previous.contains(&id) && (current.contains(&id) || fallen.contains(&id))
+                }) {
+                    continue;
+                }
                 if let Event::Purchase(receipt) = ev {
                     if legacy_aral
                         && current.contains(&receipt.actor)

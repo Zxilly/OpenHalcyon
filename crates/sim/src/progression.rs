@@ -1,34 +1,60 @@
 use super::*;
+impl Entity {
+    pub(super) fn apply_growth(&mut self, levels: u8) {
+        let g = self.stats.growth;
+        let levels = f32::from(levels);
+        self.max_hp += g.hp * levels;
+        self.hp = (self.hp + g.hp * levels).min(self.max_hp);
+        self.max_energy += g.energy * levels;
+        self.energy += g.energy * levels;
+        self.stats.weapon += g.weapon * levels;
+        self.stats.armor += g.armor * levels;
+        self.stats.shield += g.shield * levels;
+    }
+}
+
 impl World {
+    /// The measured XP threshold attribute in modeled native scene layouts.
+    pub fn native_xp_required(&self, level: u8) -> Option<f32> {
+        self.layout.native_xp_required(level)
+    }
+
     pub(super) fn award_xp(&mut self, i: usize, xp: f32, events: &mut Vec<Event>) {
+        let layout = &self.layout;
         let e = &mut self.entities[i];
-        if e.kind != Kind::Hero || e.level >= 12 {
+        let native = layout.native_xp_required(e.level).is_some();
+        if e.kind != Kind::Hero || (!native && e.level >= 12) || !xp.is_finite() || xp <= 0.0 {
             return;
         }
         e.xp += xp;
+        if native {
+            events.push(Event::XpGain {
+                id: e.id,
+                amount: xp,
+            });
+        }
         while e.level < 12 {
-            let need = 90. + 8. * f32::from(e.level - 1);
+            let need = layout
+                .native_xp_required(e.level)
+                .unwrap_or_else(|| 90. + 8. * f32::from(e.level - 1));
             if e.xp < need {
                 break;
             }
             e.xp -= need;
             e.level += 1;
             e.skill_points += 1;
-            let g = e.stats.growth;
-            e.max_hp += g.hp;
-            e.hp = (e.hp + g.hp).min(e.max_hp);
-            e.max_energy += g.energy;
-            e.energy += g.energy;
-            e.stats.weapon += g.weapon;
-            e.stats.armor += g.armor;
-            e.stats.shield += g.shield;
+            let was_dead = e.hp <= 0.0;
+            e.apply_growth(1);
+            if native && was_dead {
+                e.hp = 0.0;
+            }
             events.push(Event::Level {
                 id: e.id,
                 level: e.level,
             });
         }
-        if e.level == 12 {
-            e.xp = 0.
+        if !native && e.level == 12 {
+            e.xp = 0.;
         }
     }
     pub(super) fn heal(&mut self, src: u32, i: usize, n: f32, events: &mut Vec<Event>) {
@@ -218,6 +244,119 @@ impl World {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn native_modes_use_independent_thresholds_and_single_gain_events() {
+        let mut aral = World::new(9, 6);
+        aral.use_six_human_roster().unwrap();
+        aral.assign_teams(&[]).unwrap();
+        aral.use_aral_lane().unwrap();
+        let original = &aral.entities[0];
+        assert_eq!(
+            (original.level, original.skill_points, original.xp),
+            (4, 4, 0.)
+        );
+        assert!((original.max_hp - (703. + 3. * 127.64)).abs() < 0.001);
+        assert_eq!(original.max_energy, 163. + 3. * 23.);
+        assert_eq!(aral.native_xp_required(4), Some(90.));
+        let mut events = vec![];
+        aral.award_xp(0, 89., &mut events);
+        assert_eq!(events, [Event::XpGain { id: 1, amount: 89. }]);
+        assert_eq!(aral.entities[0].level, 4);
+        events.clear();
+        aral.award_xp(0, 131., &mut events);
+        assert_eq!(
+            events,
+            [
+                Event::XpGain {
+                    id: 1,
+                    amount: 131.
+                },
+                Event::Level { id: 1, level: 5 },
+                Event::Level { id: 1, level: 6 },
+            ]
+        );
+        assert_eq!(aral.entities[0].xp, 0.);
+        assert_eq!(aral.native_xp_required(6), Some(140.));
+
+        let mut solo = World::new(9, 1);
+        solo.use_solo_mid_lane().unwrap();
+        let mut events = vec![];
+        solo.award_xp(0, 153., &mut events);
+        assert_eq!(
+            events,
+            [
+                Event::XpGain {
+                    id: 1,
+                    amount: 153.
+                },
+                Event::Level { id: 1, level: 2 },
+                Event::Level { id: 1, level: 3 },
+            ]
+        );
+        assert_eq!(solo.entities[0].xp, 1.);
+        assert_eq!(solo.native_xp_required(3), Some(100.));
+        solo.entities[0].hp = 0.;
+        events.clear();
+        solo.award_xp(0, 100., &mut events);
+        assert_eq!(solo.entities[0].hp, 0.);
+        assert_eq!(solo.entities[0].level, 4);
+        assert_eq!(solo.entities[0].xp, 1.);
+        solo.entities[0].level = 12;
+        solo.entities[0].hp = 0.;
+        events.clear();
+        solo.award_xp(0, 0.6, &mut events);
+        assert_eq!(events, [Event::XpGain { id: 1, amount: 0.6 }]);
+        assert_eq!(solo.entities[0].xp, 1.6);
+    }
+
+    #[test]
+    fn draft_reselection_restores_base_stats_then_applies_growth_once() {
+        use halcyon_data::ManifestEntry;
+        use serde_json::{Value, json};
+
+        let unit = serde_json::from_value(json!({
+            "name":"Lorelai", "hp": 700.0, "energy": 300.0, "weapon": 40.0,
+            "armor": 10.0, "shield": 15.0, "range": 5.0, "attack_speed": 1.0,
+            "move_speed": 3.5, "hp_per_level": 120.0, "energy_per_level": 50.0,
+            "weapon_per_level": 8.0, "armor_per_level": 3.0, "shield_per_level": 2.0
+        }))
+        .unwrap();
+        let data = GameData {
+            units: vec![unit],
+            items: vec![],
+            manifest: vec![ManifestEntry {
+                name: "*Lorelai*".into(),
+                entity_type_id: 409,
+                pair_index: 0,
+                path: "build://Characters/Hero009/Lorelai.def".into(),
+            }],
+            rules: vec![],
+            official_rules: Value::Null,
+            abilities: vec![],
+            combat_constants: Value::Null,
+            content_digest: String::new(),
+            hero_names: vec!["Lorelai".into()],
+            skin_names: vec![],
+        };
+        let mut aral = World::new(1, 6);
+        aral.use_six_human_roster().unwrap();
+        aral.assign_teams(&[]).unwrap();
+        aral.use_aral_lane().unwrap();
+        for _ in 0..2 {
+            aral.select_hero(0, "Lorelai", &data).unwrap();
+            let hero = &aral.entities[0];
+            assert_eq!((hero.level, hero.skill_points, hero.xp), (4, 4, 0.));
+            assert_eq!(
+                (hero.hp, hero.max_hp, hero.energy, hero.max_energy),
+                (1060., 1060., 450., 450.)
+            );
+            assert_eq!(
+                (hero.weapon_power(), hero.armor(), hero.shield()),
+                (64., 19., 21.)
+            );
+        }
+    }
+
     #[test]
     fn rank_growth_and_base_shop_are_authoritative() {
         let mut w = World::new(1, 1);

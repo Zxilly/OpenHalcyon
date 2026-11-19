@@ -1,5 +1,5 @@
 use halcyon_protocol::Message;
-use halcyon_sim::{Entity, Kind};
+use halcyon_sim::{Entity, Kind, World};
 
 use super::{Pick, compact, messages};
 
@@ -51,7 +51,7 @@ impl ActorSlots {
 
     pub fn declaration(
         &mut self,
-        tick: u64,
+        world: &World,
         entity: &Entity,
         picks: &[Pick],
         data: Option<&halcyon_data::GameData>,
@@ -73,10 +73,11 @@ impl ActorSlots {
             return None;
         }
         let slot = self.fixed(entity)?;
-        Some(compact::structure(tick, entity).unwrap_or_else(|| {
+        Some(compact::structure(world.tick, entity).unwrap_or_else(|| {
             let mut message = messages::spawn(entity, picks, data);
             if entity.kind == Kind::Hero {
-                messages::solo_hero_profile(&mut message, entity, tick);
+                messages::solo_hero_profile(&mut message, entity, world.tick);
+                super::hero_progress::set_spawn(world, &mut message, entity);
             }
             set_full(&mut message, slot);
             message
@@ -118,7 +119,7 @@ mod tests {
         let mut world = halcyon_sim::World::new(7, 1);
         let mut slots = ActorSlots::from_roster(&world.entities);
         for entity in &world.entities[..10] {
-            let hero = slots.declaration(0, entity, &[], None).unwrap();
+            let hero = slots.declaration(&world, entity, &[], None).unwrap();
             assert_eq!(hero.opcode, 0x03f3);
             let expected = [14, 19, 15, 20, 16, 21, 17, 22, 18, 23];
             assert_eq!(hero.body[745], expected[(entity.id - 1) as usize]);
@@ -131,7 +132,7 @@ mod tests {
             .iter()
             .filter(|entity| entity.kind == Kind::Minion)
             .map(|entity| {
-                let spawn = slots.declaration(world.tick, entity, &[], None).unwrap();
+                let spawn = slots.declaration(&world, entity, &[], None).unwrap();
                 assert_eq!((spawn.opcode, spawn.body.len()), (0x03f2, 122));
                 assert_eq!(spawn.body[117], 0);
                 assert_eq!(spawn.body[120], [1, 4][entity.team as usize]);
@@ -155,7 +156,7 @@ mod tests {
         living.hp -= 25.0;
         let living = living.clone();
         slots.retain_living(&world.entities);
-        let snapshot = slots.declaration(world.tick, &living, &[], None).unwrap();
+        let snapshot = slots.declaration(&world, &living, &[], None).unwrap();
         assert_eq!(snapshot.body[116], *stable);
         assert_eq!(snapshot.body[36..40], living.hp.to_be_bytes());
         assert_eq!(snapshot.body[40..44], living.max_hp.to_be_bytes());
@@ -167,8 +168,10 @@ mod tests {
         let world = halcyon_sim::World::new(7, 1);
         let mut slots = ActorSlots::from_roster(&world.entities);
         for actor in world.entities.iter().filter(|e| e.kind == Kind::Hero) {
-            let first = slots.declaration(0, actor, &[], None).unwrap();
-            let late = slots.declaration(90, actor, &[], None).unwrap();
+            let first = slots.declaration(&world, actor, &[], None).unwrap();
+            let mut later = World::new(0, 1);
+            later.tick = 90;
+            let late = slots.declaration(&later, actor, &[], None).unwrap();
             for m in [&first, &late] {
                 let selector = u32::from_be_bytes(m.body[709..713].try_into().unwrap());
                 assert_eq!(

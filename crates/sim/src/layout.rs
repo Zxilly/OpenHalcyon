@@ -23,6 +23,15 @@ pub(super) fn point(team: u8, x: f32, z: f32) -> Position {
 const STARTS: [(f32, f32); 5] = [(90., 0.), (94., -6.), (101., -3.), (101., 3.), (94., 6.)];
 
 impl Layout {
+    pub(super) fn native_xp_required(&self, level: u8) -> Option<f32> {
+        match (self, level) {
+            (Self::Aral { .. }, 4) => Some(90.),
+            (Self::Aral { .. }, 5..=12) => Some(130. + 10. * f32::from(level - 5)),
+            (Self::SoloMid { .. }, 1..=12) => Some(68. + 16. * f32::from(level - 1)),
+            _ => None,
+        }
+    }
+
     pub fn home(&self, actor: &Entity) -> Position {
         match self {
             Self::SoloMid { hero_starts } if actor.kind == Kind::Hero => {
@@ -117,7 +126,13 @@ impl World {
         };
         for e in &mut self.entities {
             e.position = match e.kind {
-                Kind::Hero => self.layout.home(e),
+                Kind::Hero => {
+                    e.gold = 600;
+                    self.scores[(e.id - 1) as usize]
+                        .gold_income
+                        .starting_balance = e.gold;
+                    self.layout.home(e)
+                }
                 Kind::Tower => point(e.team, 17.5, 0.),
                 Kind::Crystal => self.layout.objective(e.team),
                 Kind::Minion => self.layout.wave(e.team, 0),

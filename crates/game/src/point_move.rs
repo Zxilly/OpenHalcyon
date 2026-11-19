@@ -38,16 +38,6 @@ pub(super) fn full_spawn(
 ) -> Message {
     let mut declaration = messages::spawn(actor, picks, data);
     if legacy_aral && let Some(slot) = aral_slot(actor) {
-        if let Some(score) = world.player_score(actor.id) {
-            let income = score.gold_income;
-            let worth = u64::from(income.starting_balance)
-                + income.passive_awards
-                + income.last_hit_bounties
-                + income.lane_proximity_awards;
-            declaration
-                .set_spawn_gold(actor.gold as f32, worth as f32)
-                .expect("full ARAL hero declaration");
-        }
         declaration.body[745] = slot;
         let (height, heading) = if actor.team == 0 {
             (1.297_397_4_f32, 1.0_f32)
@@ -57,5 +47,6 @@ pub(super) fn full_spawn(
         declaration.body[22..26].copy_from_slice(&height.to_be_bytes());
         declaration.body[30..34].copy_from_slice(&heading.to_be_bytes());
     }
+    super::hero_progress::set_spawn(world, &mut declaration, actor);
     declaration
 }

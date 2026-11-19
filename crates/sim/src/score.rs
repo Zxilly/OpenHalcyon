@@ -99,6 +99,36 @@ impl PlayerScore {
 }
 
 impl World {
+    pub(super) fn native_passive_income(&mut self, events: &mut Vec<Event>) {
+        let (first_second, gold, xp) = match self.layout {
+            Layout::SoloMid { .. } => (40, 3, 0.6),
+            Layout::Aral { .. } => (30, 15, 1.8),
+            Layout::Validation => return,
+        };
+        if self.tick < first_second * TICK_HZ {
+            return;
+        }
+        // Heroes occupy the first seats. Their income continues while they await respawn.
+        let count = self
+            .entities
+            .iter()
+            .take_while(|e| e.kind == Kind::Hero)
+            .count();
+        for i in 0..count {
+            let hero = &mut self.entities[i];
+            let amount = gold.min(u32::MAX - hero.gold);
+            hero.gold += amount;
+            self.scores[i].gold_income.passive_awards += u64::from(amount);
+            if amount > 0 {
+                events.push(Event::GoldAward {
+                    id: hero.id,
+                    amount,
+                });
+            }
+            self.award_xp(i, xp, events);
+        }
+    }
+
     pub fn player_score(&self, actor: u32) -> Option<&PlayerScore> {
         self.index(actor)
             .filter(|i| self.entities[*i].kind == Kind::Hero)
@@ -377,5 +407,49 @@ mod tests {
                 .lane_last_hits_at_five
                 .is_none()
         );
+    }
+}
+
+#[cfg(test)]
+mod native_income_tests {
+    use super::*;
+    #[test]
+    fn native_modes_pay_each_hero_at_the_measured_simulation_second() {
+        for (aral, starting_gold, first, amount, xp) in
+            [(true, 2000, 30, 15, 1.8), (false, 600, 40, 3, 0.6)]
+        {
+            let mut world = World::new(11, if aral { 6 } else { 1 });
+            if aral {
+                world.use_six_human_roster().unwrap();
+                world.assign_teams(&[]).unwrap();
+                world.use_aral_lane().unwrap();
+            } else {
+                world.use_solo_mid_lane().unwrap();
+            }
+            let count = if aral { 6 } else { 10 };
+            world.entities[0].hp = 0.;
+            world.entities[0].respawn = u64::MAX;
+            let mut events = Vec::new();
+            world.tick = (first - 1) * TICK_HZ;
+            world.native_passive_income(&mut events);
+            assert!(events.is_empty());
+            world.tick += TICK_HZ;
+            world.native_passive_income(&mut events);
+            for hero in &world.entities[..count] {
+                assert_eq!(hero.gold, starting_gold + amount);
+                assert_eq!(hero.xp, xp);
+                assert!(events.iter().any(
+                    |e| matches!(e, Event::GoldAward {id,amount:n} if *id==hero.id && *n==amount)
+                ));
+                assert!(
+                    events.iter().any(
+                        |e| matches!(e, Event::XpGain {id,amount:n} if *id==hero.id && *n==xp)
+                    )
+                );
+            }
+            let income = world.player_score(1).unwrap().gold_income;
+            assert_eq!(income.starting_balance, starting_gold);
+            assert_eq!(income.passive_awards, u64::from(amount));
+        }
     }
 }

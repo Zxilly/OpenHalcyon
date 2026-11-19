@@ -91,7 +91,7 @@ pub(super) fn solo_opening(room: &mut Room, seat: usize) -> std::io::Result<Batc
         if (initial && e.kind == halcyon_sim::Kind::Hero) || (!initial && visible) {
             let Some(message) =
                 room.solo_slots
-                    .declaration(room.world.tick, e, &room.picks, room.data.as_deref())
+                    .declaration(&room.world, e, &room.picks, room.data.as_deref())
             else {
                 continue;
             };

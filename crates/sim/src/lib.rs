@@ -102,6 +102,10 @@ pub enum Event {
         id: u32,
         amount: u32,
     },
+    XpGain {
+        id: u32,
+        amount: f32,
+    },
     Spawn {
         id: u32,
     },
@@ -512,6 +516,7 @@ impl World {
         hero.type_id = id;
         hero.max_hp = unit.hp;
         hero.hp = unit.hp;
+        hero.apply_growth(hero.level - 1);
         Ok(())
     }
     fn build(
@@ -786,9 +791,7 @@ impl World {
             }
         }
         if self.tick.is_multiple_of(TICK_HZ) {
-            if matches!(self.layout, Layout::Aral { .. }) {
-                self.aral_passive_gold(events);
-            }
+            self.native_passive_income(events);
             self.update_rally();
         }
         let n = self.entities.len();
@@ -824,7 +827,10 @@ impl World {
                         0.10
                     })
                 .min(e.max_energy);
-                if self.tick >= 35 * TICK_HZ && self.tick.is_multiple_of(TICK_HZ) {
+                if self.tick >= 35 * TICK_HZ
+                    && self.tick.is_multiple_of(TICK_HZ)
+                    && matches!(self.layout, Layout::Validation)
+                {
                     self.award_xp(i, 0.45, events);
                 }
             }

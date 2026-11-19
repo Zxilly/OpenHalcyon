@@ -88,6 +88,9 @@ impl World {
         self.entities.retain(|actor| actor.kind == Kind::Hero);
         for hero in &mut self.entities {
             hero.position = self.layout.home(hero);
+            hero.level = 4;
+            hero.skill_points = 4;
+            hero.apply_growth(3);
             hero.gold = 2000;
             self.scores[(hero.id - 1) as usize]
                 .gold_income
@@ -145,25 +148,6 @@ impl World {
                 self.layout.wave(team, 0),
                 events,
             );
-        }
-    }
-
-    pub(super) fn aral_passive_gold(&mut self, events: &mut Vec<Event>) {
-        if self.tick < 30 * TICK_HZ {
-            return;
-        }
-        for hero in self.entities.iter_mut().filter(|e| e.kind == Kind::Hero) {
-            let amount = 15.min(u32::MAX - hero.gold);
-            hero.gold += amount;
-            self.scores[(hero.id - 1) as usize]
-                .gold_income
-                .passive_awards += u64::from(amount);
-            if amount > 0 {
-                events.push(Event::GoldAward {
-                    id: hero.id,
-                    amount,
-                });
-            }
         }
     }
 

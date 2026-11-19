@@ -226,6 +226,9 @@ impl Room {
         };
         for ev in events {
             crate::result_frames::append_postgame(&mut out, ev, postgame);
+            if super::hero_progress::append(&self.world, &mut out, ev, |id| !spawned(id)) {
+                continue;
+            }
             match *ev {
                 Event::Move { id, position } => {
                     out.push(Message::position(wire_id(id), position.x, position.y))
