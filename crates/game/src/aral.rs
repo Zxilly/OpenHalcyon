@@ -287,5 +287,47 @@ mod tests {
             .unwrap();
         until(&mut clients[0], &cipher, 0x042e).await;
         assert_eq!(rooms.detail(room_id).unwrap()["phase"], "running");
+
+        {
+            let mut room = room.lock().unwrap();
+            let crystal = room
+                .world
+                .entities
+                .iter_mut()
+                .find(|e| e.kind == Kind::Crystal && e.team == 1)
+                .unwrap();
+            let (target, position) = (crystal.id, crystal.position);
+            crystal.hp = 0.1;
+            room.world.entities[0].position = position;
+            room.world.tick = 15;
+            room.world
+                .command(1, halcyon_sim::Command::Attack(target))
+                .unwrap();
+            for _ in 0..5 {
+                room.tick();
+            }
+            assert_eq!(room.phase, "ending");
+            assert!(!*room.stop.borrow());
+            room.phase_start = Instant::now() - Duration::from_secs(6);
+            room.tick();
+            assert!(*room.stop.borrow());
+        }
+        for socket in &mut clients {
+            let message = until(socket, &cipher, 0x048d).await;
+            let Fields::MatchStatistics(report) = message.fields().unwrap() else {
+                panic!("expected a native statistics report");
+            };
+            for seat in 0..SEATS {
+                let stats = report.slot(seat).unwrap();
+                assert_eq!(stats.player, 1500 + seat as u32);
+                assert_eq!(stats.team, 1 + (seat % 2) as u8);
+            }
+            assert_eq!(report.slot(SEATS).unwrap().player, u32::MAX);
+            let victory = next(socket, &cipher).await;
+            assert_eq!(
+                (victory.opcode, victory.body.as_slice()),
+                (0x03f1, &[0, 0, 0, 1, 0, 0][..])
+            );
+        }
     }
 }
