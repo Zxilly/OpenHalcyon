@@ -1,6 +1,7 @@
 //! Deterministic straight-lane validation map. Coordinates are project world units.
 //! Vision, spawn offsets, windup, attack cadence, retreat and respawn are project rules.
 mod ai;
+mod chakram;
 mod combat;
 mod layout;
 mod nav;
@@ -23,6 +24,7 @@ pub fn rules_digest(data: Option<&GameData>) -> String {
     for source in [
         include_str!("lib.rs"),
         include_str!("combat.rs"),
+        include_str!("chakram.rs"),
         include_str!("progression.rs"),
         include_str!("ai.rs"),
         include_str!("nav.rs"),
@@ -279,6 +281,7 @@ pub struct World {
     abilities: AbilityBook,
     shop: shop::Shop,
     effects: Vec<SpellEffect>,
+    chakrams: Vec<chakram::Chakram>,
     nav_budget: u8,
     first_blood: bool,
     scores: [PlayerScore; 10],
@@ -325,7 +328,7 @@ impl World {
                 (&self.scores, &self.team_scores),
                 self.rally,
                 self.nav_budget,
-                &self.effects,
+                (&self.effects, &self.chakrams),
             ),
         )
         .expect("finite simulation state");
@@ -518,6 +521,7 @@ impl World {
             abilities: AbilityBook::default(),
             shop: Default::default(),
             effects: Vec::new(),
+            chakrams: Vec::new(),
             nav_budget: 0,
             first_blood: false,
             scores: Default::default(),
@@ -696,6 +700,7 @@ impl World {
     fn step_tick(&mut self, events: &mut Vec<Event>) {
         self.nav_budget = 6;
         self.advance_effects(events);
+        self.advance_chakrams(events);
         if self.winner.is_some() {
             return;
         }

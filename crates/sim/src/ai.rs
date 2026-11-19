@@ -80,6 +80,14 @@ impl World {
                 return Command::MoveTo(p);
             }
             if e.kind == Kind::Hero && t.kind == Kind::Hero {
+                if e.type_id == 273
+                    && self.can_cast(i, AbilitySlot::B, CastTarget::Point(t.position))
+                {
+                    return Command::Cast {
+                        slot: AbilitySlot::B,
+                        target: CastTarget::Point(t.position),
+                    };
+                }
                 let target = CastTarget::Entity(t.id);
                 let finisher =
                     t.hp < t.max_hp * 0.35 && e.position.dist(t.position) > e.stats.range;

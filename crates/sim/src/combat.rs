@@ -29,11 +29,13 @@ enum Skill {
     Suppress,
     Wind,
     Strike,
+    Chakram,
 }
 fn skill(hero: u16, slot: AbilitySlot) -> Option<Skill> {
     use AbilitySlot::*;
     use Skill::*;
     Some(match (hero, slot) {
+        (273, B) => Chakram,
         (243, A) => Achilles,
         (243, B) => Twirl,
         (243, C) => Hellfire,
@@ -54,6 +56,8 @@ pub(super) struct Cast {
 }
 #[derive(Clone, Copy, Default, Debug, Serialize)]
 pub(super) struct Status {
+    pub(super) stamina_spent: f32,
+    pub(super) stamina_spent_at: u64,
     pub slow_until: u64,
     pub slow_factor: f32,
     pub haste_until: u64,
@@ -75,6 +79,7 @@ pub(super) struct AbilityBook {
     wind_dmg: [f32; 5],
     strike_dmg: f32,
     strike_hits: u8,
+    chakram_weapon_ratio: f32,
 }
 impl Default for AbilityBook {
     fn default() -> Self {
@@ -90,6 +95,7 @@ impl Default for AbilityBook {
             wind_dmg: [100., 120., 140., 160., 200.],
             strike_dmg: 200.,
             strike_hits: 3,
+            chakram_weapon_ratio: 0.8,
         }
     }
 }
@@ -116,6 +122,7 @@ impl AbilityBook {
                 .ok_or_else(|| format!("invalid {hero}.{key}"))
         };
         Ok(Self {
+            chakram_weapon_ratio: num("Idris", "B_weapon_ratio")?,
             gift_cd: five("Adagio", "cooldown_s")?,
             gift_hp: num("Adagio", "burst_heal_health_ratio")?,
             empower: five("Adagio", "empowered_attacks")?,
@@ -143,6 +150,7 @@ struct Rules {
 impl World {
     fn rules(&self, s: Skill, rank: usize) -> Rules {
         let (range, cost, windup, seconds) = match s {
+            Skill::Chakram => (8.5, 10., 4, 8.),
             Skill::Achilles => (7., 20., 4, 6.),
             Skill::Twirl => (0., 18., 1, 9.),
             Skill::Hellfire => (12., 45., 22, 28.),
@@ -196,7 +204,12 @@ impl World {
             .checked_sub(1)
             .ok_or("ability not learned")? as usize;
         let r = self.rules(s, rank);
-        if e.cooldown[slot.idx()] > self.tick || e.energy < r.cost {
+        let resource = if s == Skill::Chakram {
+            chakram::stamina(e, self.tick)
+        } else {
+            e.energy
+        };
+        if e.cooldown[slot.idx()] > self.tick || resource < r.cost {
             return Err("ability not ready");
         }
         let point = match (s, target) {
@@ -217,12 +230,15 @@ impl World {
                 t.position
             }
             (
-                Skill::Sigil | Skill::Suppress | Skill::Wind | Skill::Strike,
+                Skill::Sigil | Skill::Suppress | Skill::Wind | Skill::Strike | Skill::Chakram,
                 CastTarget::Point(p),
             ) if self.layout.walkable(p) => p,
             _ => return Err("invalid cast target"),
         };
-        if point.dist(e.position) > r.range || !self.layout.clear(e.position, point) {
+        if (s == Skill::Chakram && e.position.dist(point) < 0.001)
+            || point.dist(e.position) > r.range
+            || !self.layout.clear(e.position, point)
+        {
             return Err("cast out of range");
         }
         Ok((s, rank, r))
@@ -260,12 +276,18 @@ impl World {
             return;
         };
         let e = &mut self.entities[i];
-        e.energy -= rule.cost;
+        if s == Skill::Chakram {
+            e.status.stamina_spent = 100. - chakram::stamina(e, self.tick) + rule.cost;
+            e.status.stamina_spent_at = self.tick;
+        } else {
+            e.energy -= rule.cost;
+        }
         e.cooldown[c.slot.idx()] = self.tick + rule.cooldown;
         let src = e.id;
         let team = e.team;
         let origin = e.position;
         let bonus_hp = e.bonus_hp;
+        let weapon = e.stats.weapon;
         events.push(Event::Cast {
             source: src,
             slot: c.slot,
@@ -282,6 +304,15 @@ impl World {
             _ => origin,
         };
         match s {
+            Skill::Chakram => {
+                self.chakrams.push(chakram::Chakram::new(
+                    src,
+                    team,
+                    origin,
+                    point,
+                    weapon * self.abilities.chakram_weapon_ratio,
+                ));
+            }
             Skill::Achilles => {
                 let j = aimed.unwrap();
                 self.entities[j].status.slow_until = self.tick + 30;
@@ -418,7 +449,7 @@ impl SpellEffect {
         }
     }
 }
-fn line_distance(p: Position, a: Position, b: Position) -> f32 {
+pub(super) fn line_distance(p: Position, a: Position, b: Position) -> f32 {
     let dx = b.x - a.x;
     let dy = b.y - a.y;
     let denom = dx * dx + dy * dy;
