@@ -136,11 +136,24 @@ async fn android_guest_lobby_notifications_and_recovery() {
         .unwrap()
         .strip_prefix("http://localhost:2112")
         .unwrap();
+    assert_ne!(
+        rpc(
+            &r,
+            "joinLobby",
+            json!([token, {"lobby":"5v5_bots_solo","difficulty":"operator_invalid"}, "147219"])
+        )
+        .await["code"],
+        0
+    );
     assert_eq!(
         rpc(
             &r,
             "joinLobby",
-            json!([token, "{\"lobby\":\"5v5_bots_solo\"}", "147219"])
+            json!([
+                token,
+                "{\"lobby\":\"5v5_bots_solo\",\"difficulty\":\"very_easy\"}",
+                "147219"
+            ])
         )
         .await["code"],
         0

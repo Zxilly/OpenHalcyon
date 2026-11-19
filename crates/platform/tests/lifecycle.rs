@@ -561,6 +561,8 @@ async fn legacy_single_player_federation_ticket_migrates_without_reissuing() {
             "DROP TABLE federated_queue_members;
              DROP TABLE federated_queue;
              ALTER TABLE tickets DROP COLUMN seat_limit;
+             ALTER TABLE tickets DROP COLUMN difficulty;
+             ALTER TABLE matches DROP COLUMN difficulty;
              ALTER TABLE tickets DROP COLUMN batch;
              CREATE TABLE federated_intents(
                 ticket TEXT PRIMARY KEY, player TEXT NOT NULL UNIQUE, pool TEXT NOT NULL,
@@ -613,4 +615,96 @@ async fn legacy_single_player_federation_ticket_migrates_without_reissuing() {
             .unwrap()
             .is_none()
     );
+}
+
+#[tokio::test]
+async fn rest_difficulty_keeps_queue_variants_separate_and_survives_reopen() {
+    use halcyon_platform::BotDifficulty;
+    #[derive(Default)]
+    struct DifficultyHost(std::sync::Mutex<Vec<Reservation>>);
+    impl MatchHost for DifficultyHost {
+        fn reserve(&self, reservation: Reservation) -> Result<HostedMatch, PlatformError> {
+            self.0.lock().unwrap().push(reservation);
+            Ok(HostedMatch {
+                address: "localhost:8001".into(),
+            })
+        }
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let config = PlatformConfig {
+        database_path: temp.path().join("difficulty.sqlite"),
+        public_address: "localhost:8000".into(),
+        seats_per_match: 2,
+    };
+    let host = Arc::new(DifficultyHost::default());
+    let state = AppState::open(config.clone(), host.clone()).unwrap();
+    let a = state.create_guest("A".into()).await.unwrap();
+    let b = state.create_guest("B".into()).await.unwrap();
+    let c = state.create_guest("C".into()).await.unwrap();
+    let app = router(state.clone());
+    for (guest, difficulty) in [(&a, "easy"), (&b, "very_hard")] {
+        assert_eq!(
+            request(
+                &app,
+                "POST",
+                "/api/v1/queue",
+                Some(&guest.session_token),
+                json!({"mode":"5v5_bots_coop","difficulty":difficulty})
+            )
+            .await
+            .0,
+            StatusCode::NO_CONTENT
+        );
+        assert!(
+            state
+                .profile(&guest.session_token)
+                .await
+                .unwrap()
+                .lobby
+                .unwrap()
+                .match_id
+                .is_none()
+        );
+    }
+    drop(app);
+    drop(state);
+    let state = AppState::open(config, host.clone()).unwrap();
+    let app = router(state.clone());
+    assert_eq!(
+        request(
+            &app,
+            "POST",
+            "/api/v1/queue",
+            Some(&c.session_token),
+            json!({"mode":"5v5_bots_coop","difficulty":"easy"})
+        )
+        .await
+        .0,
+        StatusCode::NO_CONTENT
+    );
+    let room = state
+        .profile(&a.session_token)
+        .await
+        .unwrap()
+        .lobby
+        .unwrap()
+        .match_id
+        .unwrap();
+    assert!(
+        state
+            .profile(&b.session_token)
+            .await
+            .unwrap()
+            .lobby
+            .unwrap()
+            .match_id
+            .is_none()
+    );
+    for guest in [&a, &c] {
+        state.accept(&guest.session_token, room).await.unwrap();
+    }
+    let reservations = host.0.lock().unwrap();
+    assert_eq!(reservations.len(), 1);
+    assert_eq!(reservations[0].difficulty, Some(BotDifficulty::Easy));
+    assert_eq!(reservations[0].mode, "5v5_bots_coop");
 }

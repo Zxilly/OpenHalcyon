@@ -1,3 +1,4 @@
+pub use halcyon_data::BotDifficulty;
 mod accounts;
 mod chat;
 mod federation;
@@ -49,6 +50,7 @@ pub struct Reservation {
     /// Parallel human team indices (0 or 1). Empty retains the default room layout.
     pub teams: Vec<u8>,
     pub mode: String,
+    pub difficulty: Option<BotDifficulty>,
 }
 
 #[derive(Debug, Clone)]
@@ -188,13 +190,13 @@ impl AppState {
              );
              CREATE TABLE IF NOT EXISTS matches (
                 id TEXT PRIMARY KEY, mode TEXT NOT NULL, phase TEXT NOT NULL,
-                address TEXT, result TEXT, offered_at INTEGER NOT NULL DEFAULT (unixepoch())
+                address TEXT, result TEXT, offered_at INTEGER NOT NULL DEFAULT (unixepoch()), difficulty TEXT
              );
              CREATE TABLE IF NOT EXISTS tickets (
                 serial INTEGER PRIMARY KEY AUTOINCREMENT,
                 player TEXT NOT NULL UNIQUE REFERENCES players(id), mode TEXT NOT NULL,
                 match_id TEXT REFERENCES matches(id), accepted INTEGER NOT NULL DEFAULT 0,
-                batch TEXT, seat_limit INTEGER
+                batch TEXT, seat_limit INTEGER, difficulty TEXT
              );
              CREATE TABLE IF NOT EXISTS events (
                 cursor INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -217,6 +219,10 @@ impl AppState {
             if !columns.iter().any(|column| column == "seat_limit") {
                 tx.execute_batch("ALTER TABLE tickets ADD COLUMN seat_limit INTEGER")?;
             }
+            if !columns.iter().any(|column| column == "difficulty") {
+                tx.execute_batch("ALTER TABLE tickets ADD COLUMN difficulty TEXT")?;
+            }
+            queue::add_difficulty_column(&tx, "matches")?;
             halcyon_community::queue::initialize(&tx).map_err(queue::community_error)?;
             federation::initialize(&tx)?;
             notification::initialize(&tx)?;
@@ -265,20 +271,26 @@ impl AppState {
 
     fn resume_reservations(&self) -> Result<()> {
         let reservations = self.transaction(|tx| {
-            let mut matches = tx.prepare("SELECT id, mode FROM matches WHERE phase='reserving'")?;
+            let mut matches =
+                tx.prepare("SELECT id, mode, difficulty FROM matches WHERE phase='reserving'")?;
             let rows = matches
                 .query_map([], |row| {
-                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        queue::read_difficulty(row, 2)?,
+                    ))
                 })?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
             rows.into_iter()
-                .map(|(match_id, mode)| {
+                .map(|(match_id, mode, difficulty)| {
                     let (players, teams, _) = queue::match_players(tx, &match_id)?;
                     Ok(Reservation {
                         match_id: parse_id(&match_id)?,
                         players,
                         teams,
                         mode,
+                        difficulty,
                     })
                 })
                 .collect::<Result<Vec<_>>>()
@@ -762,6 +774,7 @@ fn announce(tx: &Transaction<'_>, match_id: &str, body: Value) -> Result<()> {
 #[derive(Deserialize)]
 struct Queue {
     mode: String,
+    difficulty: Option<BotDifficulty>,
 }
 
 async fn queue(
@@ -769,7 +782,19 @@ async fn queue(
     headers: HeaderMap,
     Json(input): Json<Queue>,
 ) -> Result<StatusCode> {
-    state.join(bearer(&headers)?, input.mode).await?;
+    let session = bearer(&headers)?;
+    if input.difficulty.is_some() {
+        let seats = if matches!(input.mode.as_str(), "5v5_bots_solo" | "solo") {
+            1
+        } else {
+            state.seats_per_match()
+        };
+        state
+            .join_with_difficulty(session, input.mode, seats, input.difficulty)
+            .await?;
+    } else {
+        state.join(session, input.mode).await?;
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 impl AppState {
@@ -861,9 +886,9 @@ impl AppState {
         self.run(move |state| {
         let reservation = state.transaction(|tx| {
             let id = player(tx, &key)?;
-            let (mode, phase): (String, String) = tx.query_row(
-                "SELECT m.mode, m.phase FROM tickets t JOIN matches m ON m.id=t.match_id WHERE t.player=? AND m.id=? AND (m.phase<>'offered' OR m.offered_at > unixepoch() - 30)",
-                params![id, match_id], |row| Ok((row.get(0)?, row.get(1)?)),
+            let (mode, phase, difficulty): (String, String, _) = tx.query_row(
+                "SELECT m.mode, m.phase, m.difficulty FROM tickets t JOIN matches m ON m.id=t.match_id WHERE t.player=? AND m.id=? AND (m.phase<>'offered' OR m.offered_at > unixepoch() - 30)",
+                params![id, match_id], |row| Ok((row.get(0)?, row.get(1)?, queue::read_difficulty(row, 2)?)),
             ).optional()?.ok_or(PlatformError::Conflict("no offer for this match"))?;
             match phase.as_str() {
                 "playing" | "reserving" => return Ok(None),
@@ -876,7 +901,7 @@ impl AppState {
                 return Ok(None);
             }
             tx.execute("UPDATE matches SET phase='reserving' WHERE id=?", [&match_id])?;
-            Ok(Some(Reservation { match_id: match_uuid, players, teams, mode }))
+            Ok(Some(Reservation { match_id: match_uuid, players, teams, mode, difficulty }))
         })?;
         if let Some(reservation) = reservation {
             state.reserve_match(reservation)?;

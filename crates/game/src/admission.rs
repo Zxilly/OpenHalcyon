@@ -304,6 +304,7 @@ mod tests {
             players: vec![Uuid::new_v4()],
             teams: vec![],
             mode: "practice".into(),
+            difficulty: None,
         };
         let first = rooms.prepare(req.clone()).unwrap();
         {

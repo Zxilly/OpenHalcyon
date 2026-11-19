@@ -1,9 +1,40 @@
 use halcyon_community::{CommunityError, queue as community_queue};
+use halcyon_data::BotDifficulty;
 use rusqlite::{Transaction, params};
 use serde_json::json;
 use uuid::Uuid;
 
 use super::{AppState, PlatformError, Result, announce, digest, event, player};
+
+pub(super) fn add_difficulty_column(tx: &Transaction<'_>, table: &str) -> Result<()> {
+    let exists: bool = tx.query_row(
+        "SELECT EXISTS (SELECT 1 FROM pragma_table_info(?) WHERE name='difficulty')",
+        [table],
+        |row| row.get(0),
+    )?;
+    if !exists {
+        tx.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN difficulty TEXT"))?;
+    }
+    Ok(())
+}
+
+pub(super) fn read_difficulty(
+    row: &rusqlite::Row<'_>,
+    column: usize,
+) -> rusqlite::Result<Option<BotDifficulty>> {
+    row.get::<_, Option<String>>(column)?
+        .map(|value| BotDifficulty::from_wire(&value).ok_or(rusqlite::Error::InvalidQuery))
+        .transpose()
+}
+
+pub(super) fn validate_difficulty(mode: &str, difficulty: Option<BotDifficulty>) -> Result<()> {
+    if difficulty.is_some() && !BotDifficulty::supports_queue(mode) {
+        return Err(PlatformError::Invalid(
+            "difficulty requires a supported bot queue",
+        ));
+    }
+    Ok(())
+}
 
 pub(super) fn validate_mode(mode: &str, seats: usize) -> Result<()> {
     if !(1..=64).contains(&seats) {
@@ -117,7 +148,19 @@ impl AppState {
         mode: String,
         seats: usize,
     ) -> Result<()> {
-        self.join_local(session_token, mode, seats, false).await
+        self.join_local(session_token, mode, seats, None, false)
+            .await
+    }
+
+    pub async fn join_with_difficulty(
+        &self,
+        session_token: &str,
+        mode: String,
+        seats: usize,
+        difficulty: Option<BotDifficulty>,
+    ) -> Result<()> {
+        self.join_local(session_token, mode, seats, difficulty, false)
+            .await
     }
 
     /// Enqueue the authenticated leader's entire party or that player alone.
@@ -128,7 +171,19 @@ impl AppState {
         mode: String,
         seats: usize,
     ) -> Result<()> {
-        self.join_local(session_token, mode, seats, true).await
+        self.join_local(session_token, mode, seats, None, true)
+            .await
+    }
+
+    pub async fn join_party_with_difficulty(
+        &self,
+        session_token: &str,
+        mode: String,
+        seats: usize,
+        difficulty: Option<BotDifficulty>,
+    ) -> Result<()> {
+        self.join_local(session_token, mode, seats, difficulty, true)
+            .await
     }
 
     async fn join_local(
@@ -136,9 +191,12 @@ impl AppState {
         session_token: &str,
         mode: String,
         seats: usize,
+        difficulty: Option<BotDifficulty>,
         with_party: bool,
     ) -> Result<()> {
         validate_mode(&mode, seats)?;
+        validate_difficulty(&mode, difficulty)?;
+        let difficulty = difficulty.map(BotDifficulty::as_str);
         let key = digest(session_token);
         self.expire_offers().await?;
         self.run(move |state| {
@@ -152,16 +210,16 @@ impl AppState {
                 }
                 for participant in roster.players {
                     tx.execute(
-                        "INSERT INTO tickets(player, mode, batch, seat_limit) VALUES(?, ?, ?, ?)",
-                        params![participant, mode, batch, seats],
+                        "INSERT INTO tickets(player, mode, batch, seat_limit, difficulty) VALUES(?, ?, ?, ?, ?)",
+                        params![participant, mode, batch, seats, difficulty],
                     )?;
                     event(tx, &participant, json!({"type":"queued", "mode":mode}))?;
                 }
-                if let Some(participants) = find_group(tx, &mode, seats, state.seats_per_match())? {
+                if let Some(participants) = find_group(tx, &mode, seats, state.seats_per_match(), difficulty)? {
                     let match_id = Uuid::new_v4().to_string();
                     tx.execute(
-                        "INSERT INTO matches(id, mode, phase) VALUES(?, ?, 'offered')",
-                        params![match_id, mode],
+                        "INSERT INTO matches(id, mode, phase, difficulty) VALUES(?, ?, 'offered', ?)",
+                        params![match_id, mode, difficulty],
                     )?;
                     for participant in participants {
                         tx.execute(
@@ -187,12 +245,13 @@ fn find_group(
     mode: &str,
     seats: usize,
     legacy_seats: usize,
+    difficulty: Option<&str>,
 ) -> Result<Option<Vec<String>>> {
     let mut query = tx.prepare(
         "SELECT player, batch FROM tickets WHERE mode=?1 AND match_id IS NULL
-         AND coalesce(seat_limit, ?2)=?3 ORDER BY serial",
+         AND coalesce(seat_limit, ?2)=?3 AND difficulty IS ?4 ORDER BY serial",
     )?;
-    let rows = query.query_map(params![mode, legacy_seats, seats], |row| {
+    let rows = query.query_map(params![mode, legacy_seats, seats, difficulty], |row| {
         Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
     })?;
     let mut batches: Vec<(Option<String>, Vec<String>)> = Vec::new();

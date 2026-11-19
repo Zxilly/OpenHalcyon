@@ -276,6 +276,7 @@ mod tests {
                 players: vec![Uuid::new_v4()],
                 teams: vec![0],
                 mode: "5v5".into(),
+                difficulty: None,
             })
             .unwrap();
         let shared = rooms.room(id).unwrap();

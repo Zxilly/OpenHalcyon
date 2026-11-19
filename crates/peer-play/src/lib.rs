@@ -5,7 +5,9 @@ use halcyon_matchmaking::{
     Allocation, Command, Endpoint, Phase, Queue, Ticket, TicketPhase, TicketRef, WorkingSet,
     result_digest,
 };
-use halcyon_platform::{AppState, FederatedIntent, PlatformError, Reservation, plan_teams};
+use halcyon_platform::{
+    AppState, BotDifficulty, FederatedIntent, PlatformError, Reservation, plan_teams,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
@@ -38,6 +40,7 @@ struct Inner {
     cfg: Config,
     journal: Journal,
     rtt: latency::HomeRtt,
+    difficulty_rules: BTreeMap<BotDifficulty, String>,
 }
 #[derive(Clone)]
 pub struct PeerPlay {
@@ -67,6 +70,10 @@ impl PeerPlay {
             .copied()
             .filter(|id| !rooms.contains(*id))
             .collect();
+        let difficulty_rules = BotDifficulty::ALL
+            .into_iter()
+            .map(|level| (level, level.rules_digest(&config.rules_digest)))
+            .collect();
         let inner = Arc::new(Inner {
             fed: federation,
             platform,
@@ -74,6 +81,7 @@ impl PeerPlay {
             cfg: config,
             journal,
             rtt: Default::default(),
+            difficulty_rules,
         });
         let (stop, mut stopped) = watch::channel(false);
         let (done_tx, done) = watch::channel(false);
@@ -106,7 +114,7 @@ impl PeerPlay {
         let _ = done.wait_for(|v| *v).await;
     }
     pub async fn join(&self, token: &str, mode: String, seats: u8) -> halcyon_platform::Result<()> {
-        self.join_roster(token, mode, seats, false).await
+        self.join_roster(token, mode, seats, None, false).await
     }
     pub async fn join_party_or_solo(
         &self,
@@ -114,13 +122,24 @@ impl PeerPlay {
         mode: String,
         seats: u8,
     ) -> halcyon_platform::Result<()> {
-        self.join_roster(token, mode, seats, true).await
+        self.join_roster(token, mode, seats, None, true).await
     }
+    pub async fn join_party_with_difficulty(
+        &self,
+        token: &str,
+        mode: String,
+        seats: u8,
+        difficulty: Option<BotDifficulty>,
+    ) -> halcyon_platform::Result<()> {
+        self.join_roster(token, mode, seats, difficulty, true).await
+    }
+
     async fn join_roster(
         &self,
         token: &str,
         mode: String,
         seats: u8,
+        difficulty: Option<BotDifficulty>,
         with_party: bool,
     ) -> halcyon_platform::Result<()> {
         let s = &self.inner;
@@ -129,7 +148,7 @@ impl PeerPlay {
         }
         let intent = if with_party {
             s.platform
-                .federated_join_party_or_solo(token, s.cfg.pool_id, mode, seats)
+                .federated_join_party_with_difficulty(token, s.cfg.pool_id, mode, seats, difficulty)
                 .await?
         } else {
             s.platform
@@ -199,6 +218,23 @@ impl PeerPlay {
     }
 }
 impl Inner {
+    fn difficulty_for_queue(&self, queue: &Queue) -> anyhow::Result<Option<BotDifficulty>> {
+        if queue.build == 147219 {
+            if queue.rules_digest == self.cfg.rules_digest {
+                return Ok(None);
+            }
+            if BotDifficulty::supports_queue(&queue.name)
+                && let Some((&difficulty, _)) = self
+                    .difficulty_rules
+                    .iter()
+                    .find(|(_, digest)| **digest == queue.rules_digest)
+            {
+                return Ok(Some(difficulty));
+            }
+        }
+        anyhow::bail!("incompatible queue rules")
+    }
+
     async fn ticket(
         &self,
         i: &FederatedIntent,
@@ -226,7 +262,10 @@ impl Inner {
                         && ticket.generation == 1
                         && ticket.players == i.players
                         && ticket.queue.name == i.mode
-                        && ticket.queue.seats == i.seats,
+                        && ticket.queue.seats == i.seats
+                        && i.difficulty
+                            .is_none_or(|level| self.difficulty_for_queue(&ticket.queue).ok()
+                                == Some(Some(level))),
                     "legacy committed ticket does not match the durable home intent",
                 );
                 if frozen.as_ref() != Some(&ticket) {
@@ -251,7 +290,12 @@ impl Inner {
             queue: Queue {
                 name: i.mode.clone(),
                 build: 147219,
-                rules_digest: self.cfg.rules_digest.clone(),
+                rules_digest: i
+                    .difficulty
+                    .map_or(&self.cfg.rules_digest, |level| {
+                        &self.difficulty_rules[&level]
+                    })
+                    .clone(),
                 seats: i.seats,
             },
             latency_ms,
@@ -460,18 +504,25 @@ impl Worker {
             Phase::Preparing => {
                 let mut players = Vec::new();
                 let mut sizes = Vec::new();
-                let mut mode = None;
+                let mut queue = None;
                 for key in &a.tickets {
                     let t = &p.tickets[&key.id].ticket;
                     players.extend_from_slice(&t.players);
                     sizes.push(t.players.len());
-                    mode = Some(t.queue.name.clone());
+                    queue = Some(&t.queue);
                 }
+                let queue = queue.context("empty roster")?;
+                let Ok(difficulty) = s.difficulty_for_queue(queue) else {
+                    return s
+                        .commit(a.id, "incompatible-rules", Command::Abort { id: a.id })
+                        .await;
+                };
                 let prepared = s.rooms.prepare(Reservation {
                     match_id: a.id,
                     players,
                     teams: plan_teams(&sizes),
-                    mode: mode.context("empty roster")?,
+                    mode: queue.name.clone(),
+                    difficulty,
                 });
                 let Ok(hosted) = prepared else {
                     return s
@@ -550,7 +601,7 @@ impl Worker {
         });
         let voters: Vec<_> = s.fed.metrics().membership_config.voter_ids().collect();
         for (queue, (_, anchor)) in anchors {
-            if queue.rules_digest != s.cfg.rules_digest || queue.build != 147219 {
+            if s.difficulty_for_queue(&queue).is_err() {
                 continue;
             }
             if self

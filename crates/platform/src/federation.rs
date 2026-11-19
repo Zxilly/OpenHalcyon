@@ -4,8 +4,11 @@ use serde_json::{Value, json};
 use uuid::Uuid;
 
 use super::{
-    AppState, PlatformError, Result, digest, event, player,
-    queue::{Roster, community_error, validate_mode},
+    AppState, BotDifficulty, PlatformError, Result, digest, event, player,
+    queue::{
+        Roster, add_difficulty_column, community_error, read_difficulty, validate_difficulty,
+        validate_mode,
+    },
 };
 
 #[derive(Clone, Debug)]
@@ -15,6 +18,7 @@ pub struct FederatedIntent {
     pub players: Vec<Uuid>,
     pub pool: Uuid,
     pub mode: String,
+    pub difficulty: Option<BotDifficulty>,
     pub seats: u8,
     pub accepted_match: Option<Uuid>,
     pub cancel: bool,
@@ -28,7 +32,7 @@ pub struct FederatedIntent {
 const FIELDS: &str =
     "f.ticket, f.player, f.pool, f.mode, f.seats, f.accepted_match, f.cancel, f.phase,
      f.match_id, f.address, f.result,
-     (SELECT json_group_array(player ORDER BY pos) FROM federated_queue_members WHERE ticket=f.ticket), f.enqueue_schema";
+     (SELECT json_group_array(player ORDER BY pos) FROM federated_queue_members WHERE ticket=f.ticket), f.enqueue_schema, f.difficulty";
 
 pub(super) fn initialize(tx: &Transaction<'_>) -> Result<()> {
     tx.execute_batch(
@@ -36,7 +40,7 @@ pub(super) fn initialize(tx: &Transaction<'_>) -> Result<()> {
             ticket TEXT PRIMARY KEY, player TEXT NOT NULL REFERENCES players(id),
             pool TEXT NOT NULL, mode TEXT NOT NULL, seats INTEGER NOT NULL,
             accepted_match TEXT, cancel INTEGER NOT NULL DEFAULT 0, phase TEXT NOT NULL DEFAULT 'pending',
-            match_id TEXT, address TEXT, result TEXT, enqueue_schema INTEGER NOT NULL DEFAULT 0
+            match_id TEXT, address TEXT, result TEXT, enqueue_schema INTEGER NOT NULL DEFAULT 0, difficulty TEXT
          );
          CREATE INDEX IF NOT EXISTS federated_queue_by_pool ON federated_queue(pool);
          CREATE INDEX IF NOT EXISTS federated_queue_pending ON federated_queue(pool,ticket)
@@ -59,6 +63,7 @@ pub(super) fn initialize(tx: &Transaction<'_>) -> Result<()> {
             "ALTER TABLE federated_queue ADD COLUMN enqueue_schema INTEGER NOT NULL DEFAULT 0",
         )?;
     }
+    add_difficulty_column(tx, "federated_queue")?;
     let legacy: bool = tx.query_row(
         "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='federated_intents')",
         [], |row| row.get(0),
@@ -131,6 +136,7 @@ fn row_intent(row: &Row<'_>) -> rusqlite::Result<FederatedIntent> {
         players: parse(row, 11, |s| serde_json::from_str(s).map_err(Into::into))?
             .unwrap_or_default(),
         pre_freeze: row.get::<_, u32>(12)? == 0,
+        difficulty: read_difficulty(row, 13)?,
     })
 }
 
@@ -142,7 +148,7 @@ impl AppState {
         mode: String,
         seats: u8,
     ) -> Result<FederatedIntent> {
-        self.federated_join_roster(token, pool, mode, seats, false)
+        self.federated_join_roster(token, pool, mode, seats, None, false)
             .await
     }
 
@@ -153,7 +159,19 @@ impl AppState {
         mode: String,
         seats: u8,
     ) -> Result<FederatedIntent> {
-        self.federated_join_roster(token, pool, mode, seats, true)
+        self.federated_join_roster(token, pool, mode, seats, None, true)
+            .await
+    }
+
+    pub async fn federated_join_party_with_difficulty(
+        &self,
+        token: &str,
+        pool: Uuid,
+        mode: String,
+        seats: u8,
+        difficulty: Option<BotDifficulty>,
+    ) -> Result<FederatedIntent> {
+        self.federated_join_roster(token, pool, mode, seats, difficulty, true)
             .await
     }
 
@@ -163,9 +181,11 @@ impl AppState {
         pool: Uuid,
         mode: String,
         seats: u8,
+        difficulty: Option<BotDifficulty>,
         with_party: bool,
     ) -> Result<FederatedIntent> {
         validate_mode(&mode, usize::from(seats))?;
+        validate_difficulty(&mode, difficulty)?;
         let key = digest(token);
         self.run(move |state| state.transaction(|tx| {
             let id = player(tx, &key)?;
@@ -176,7 +196,7 @@ impl AppState {
                     [existing.ticket.to_string()], |row| row.get(0),
                 ).optional()?;
                 if existing.player.to_string() == id && existing.pool == pool
-                    && existing.mode == mode && existing.seats == seats
+                    && existing.mode == mode && existing.seats == seats && existing.difficulty == difficulty
                     && matches!(existing.phase.as_str(), "pending" | "queued") && !existing.cancel
                     && claimed_party == roster.party
                     && existing.players.iter().map(Uuid::to_string).eq(roster.players.iter().cloned())
@@ -189,8 +209,8 @@ impl AppState {
             let ticket = Uuid::new_v4().to_string();
             roster.claim(tx, &ticket)?;
             tx.execute(
-                "INSERT INTO federated_queue(ticket, player, pool, mode, seats, enqueue_schema) VALUES(?, ?, ?, ?, ?, 1)",
-                params![ticket, id, pool.to_string(), mode, seats],
+                "INSERT INTO federated_queue(ticket, player, pool, mode, seats, enqueue_schema, difficulty) VALUES(?, ?, ?, ?, ?, 1, ?)",
+                params![ticket, id, pool.to_string(), mode, seats, difficulty.map(BotDifficulty::as_str)],
             )?;
             for (index, member) in roster.players.iter().enumerate() {
                 tx.execute(

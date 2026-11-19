@@ -93,3 +93,11 @@ The room uses the same mode label in 0x03E9 on both sockets, 0x0454 on the contr
 | `aral_casual`, alias `aral` | `*GameMode_Aral_Casual*` | Android binary string, game manifest and mode name in three archived ARAL game streams. |
 
 An unrecognized queue ID uses the 5v5 Casual label. This mapping only changes the label. The existing queue roster and seat policy determine which seats contain humans. Separate 3v3 gameplay and the trailing 0x045A roster bytes remain unverified.
+
+## Bot difficulty
+
+The Android 147219 Solo Bots menu sent all five difficulty values to a loopback server. The native labels Very Easy, Easy, Medium, Hard and Very Hard sent `very_easy`, `easy`, `medium`, `hard` and `very_hard` respectively in the `joinLobby` payload. The server accepts either a JSON object or a JSON-encoded string. The original queue name remains unchanged.
+
+OpenHalcyon's hero-bot decision intervals are 16, 10, 5, 3 and 2 ticks respectively at 20 Hz. These intervals are server policy. Omitting difficulty preserves the five-tick default. The setting leaves human stats, economy, ability learning and non-hero decision frequency unchanged.
+
+The equivalent optional field is available on `POST /api/v1/queue` for supported 5v5 bot queues. Admin room responses expose the selected difficulty. Local queues match only identical difficulty selections. In a pool, the selected difficulty and cadence are included in the existing rules digest while the Raft queue schema and default digest are preserved. Only new workers advertise the variant digests. Drain active variant rooms and let capacity offers expire before downgrading a host.

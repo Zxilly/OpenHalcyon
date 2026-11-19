@@ -351,6 +351,7 @@ mod tests {
                 players: vec![player],
                 teams: vec![0],
                 mode: "5v5".into(),
+                difficulty: None,
             })
             .unwrap();
         let room = rooms.room(id).unwrap();
@@ -420,6 +421,7 @@ mod tests {
                 players: players.to_vec(),
                 teams: vec![0, 1],
                 mode: "5v5".into(),
+                difficulty: None,
             })
             .unwrap();
         let shared = rooms.room(id).unwrap();
@@ -508,6 +510,7 @@ mod tests {
                 players: players.to_vec(),
                 teams: vec![0, 0, 1],
                 mode: "5v5".into(),
+                difficulty: None,
             })
             .unwrap();
         let shared = rooms.room(id).unwrap();

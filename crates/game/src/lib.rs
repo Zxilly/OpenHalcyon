@@ -122,6 +122,7 @@ struct Room {
     id: Uuid,
     address: String,
     queue: String,
+    difficulty: Option<halcyon_data::BotDifficulty>,
     players: Vec<Uuid>,
     requested_teams: Vec<u8>,
     combat: [Combat; 10],
@@ -384,6 +385,7 @@ impl Rooms {
             let r = r.lock().unwrap();
             if r.requested_teams != req.teams
                 || r.queue != req.mode
+                || r.difficulty != req.difficulty
                 || r.players != req.players
                 || r.ended.is_some()
                 || (admitted && !r.admitted)
@@ -440,6 +442,7 @@ impl Rooms {
         world
             .assign_teams(&req.teams)
             .map_err(|_| PlatformError::Invalid("invalid human teams"))?;
+        world.set_bot_difficulty(req.difficulty);
         let mut picks = Vec::with_capacity(10);
         for i in 0..10 {
             let bot = i >= usize::from(n);
@@ -487,6 +490,7 @@ impl Rooms {
             id: req.match_id,
             address: address.clone(),
             queue: req.mode,
+            difficulty: req.difficulty,
             players: req.players,
             requested_teams: req.teams,
             combat: [Combat::default(); 10],
@@ -538,6 +542,9 @@ impl Room {
         let mut v = json!({"id":self.id,"queue":self.queue,"phase":self.phase,"createdAt":self.created.to_rfc3339(),"phaseSince":self.since.to_rfc3339(),
         "endedAt":self.ended.map(|x|x.to_rfc3339()),"endReason":self.reason,"humanPlayers":self.players.len(),"botPlayers":10-self.players.len(),"poolId":null});
         v["tickLatency"] = self.latency.report();
+        if let Some(difficulty) = self.difficulty {
+            v["difficulty"] = json!(difficulty);
+        }
         if detail {
             v["participants"]=Value::Array((0..10).map(|i|{let s=self.seats.get(i);
             json!({"slot":i,"team":self.world.entities[i].team,"playerId":self.players.get(i),"homeInstanceId":null,"botProfile":if s.is_none(){Some("lane-v1")}else{None},"displayName":if s.is_some(){"Guest".into()}else{format!("{} Bot",self.picks[i].name)},"hero":self.picks[i].name,"locked":s.is_none_or(|s|s.locked),"controlConnected":s.is_some_and(|s|s.peers[0].is_some()),"gameConnected":s.is_some_and(|s|s.peers[1].is_some()),"lastEventAt":s.and_then(|s|s.last).map(|x|x.to_rfc3339())})
@@ -935,6 +942,7 @@ mod tests {
                 players: vec![Uuid::new_v4()],
                 teams: vec![0],
                 mode: "solo".into(),
+                difficulty: None,
             })
             .unwrap();
         let shared = rooms.room(id).unwrap();

@@ -890,7 +890,12 @@ async fn enqueue_freezes_before_quorum_and_resumes_with_the_same_payload() {
     let token = &guest.session_token;
     let enqueue = timeout(
         Duration::from_secs(7),
-        home.peer_play.join(token, "probe-test".into(), 3),
+        home.peer_play.join_party_with_difficulty(
+            token,
+            "5v5_bots_coop".into(),
+            3,
+            Some(halcyon_platform::BotDifficulty::VeryHard),
+        ),
     )
     .await
     .expect("enqueue has a bounded deadline");
@@ -902,7 +907,19 @@ async fn enqueue_freezes_before_quorum_and_resumes_with_the_same_payload() {
     assert_eq!(expected.latency_ms, explicit);
     assert_eq!(expected.max_latency_ms, 75);
     assert_eq!(expected.players, [guest.player_id]);
-    assert_eq!(expected.queue.name, "probe-test");
+    assert_eq!(expected.queue.name, "5v5_bots_coop");
+    assert_eq!(
+        expected.queue.rules_digest,
+        halcyon_platform::BotDifficulty::VeryHard.rules_digest(&home.peer_config.rules_digest)
+    );
+    assert_eq!(
+        serde_json::to_value(&expected.queue).unwrap(),
+        json!({
+            "name": "5v5_bots_coop", "build": 147219, "seats": 3,
+            "rules_digest": expected.queue.rules_digest
+        }),
+        "replicated queue keeps the existing field layout"
+    );
     home.stop().await;
 
     // Restore a majority from disk with auto RTT and different local policy.
@@ -920,7 +937,12 @@ async fn enqueue_freezes_before_quorum_and_resumes_with_the_same_payload() {
     let home = node(&cluster, 0);
     wait_pool(home, |pool| pool.tickets().contains_key(&id)).await;
     home.peer_play
-        .join(token, "probe-test".into(), 3)
+        .join_party_with_difficulty(
+            token,
+            "5v5_bots_coop".into(),
+            3,
+            Some(halcyon_platform::BotDifficulty::VeryHard),
+        )
         .await
         .unwrap();
     assert_eq!(frozen_ticket(&home.peer_config.database, id), expected);
@@ -966,6 +988,45 @@ async fn enqueue_freezes_before_quorum_and_resumes_with_the_same_payload() {
     .await;
     assert_eq!(pool.tickets().len(), 1);
     assert_eq!(pool.tickets()[&id].ticket, expected);
+    let home = node(&cluster, 0);
+    let guest = rpc(
+        &home.rpc,
+        "createGuestPlayer",
+        json!([
+            "kindred",
+            "en",
+            "US",
+            "production",
+            "en",
+            "BAKLAVA",
+            "android",
+            "",
+            "147219",
+            1,
+            "device",
+            "model",
+            "0"
+        ]),
+    )
+    .await;
+    let session = rpc(
+        &home.rpc,
+        "startSessionForPlayer",
+        json!([guest["returnValue"]["playerUUID"]]),
+    )
+    .await;
+    let ce_token = &session["sessionToken"];
+    rpc(
+        &home.rpc,
+        "joinLobby",
+        json!([ce_token,{"lobby":"5v5_bots_solo","difficulty":"very_easy"},"147219"]),
+    )
+    .await;
+    let playing = state(&home.rpc, ce_token, "playing").await;
+    let room_id: Uuid = serde_json::from_value(playing["matchId"].clone()).unwrap();
+    let room = node(&cluster, 2).rooms.detail(room_id).unwrap();
+    assert_eq!(room["queue"], "5v5_bots_solo");
+    assert_eq!(room["difficulty"], "very_easy");
     for member in cluster.into_iter().flatten() {
         member.stop().await;
     }
@@ -1042,12 +1103,15 @@ async fn local_friend_spectates_read_only_and_revokes_on_exit() {
     rpc(
         &rpc_router,
         "joinLobby",
-        json!([player,{"lobby":"5v5_casual"}]),
+        json!([player,{"lobby":"5v5_bots_solo","difficulty":"hard"}]),
     )
     .await;
     rpc(&rpc_router, "acceptMatch", json!([player])).await;
     let playing = state(&rpc_router, player, "playing").await;
     let id: Uuid = serde_json::from_value(playing["matchId"].clone()).unwrap();
+    let room = rooms.detail(id).unwrap();
+    assert_eq!(room["queue"], "5v5_bots_solo");
+    assert_eq!(room["difficulty"], "hard");
     let addr = format!("{}:{}", playing["host"].as_str().unwrap(), playing["port"]);
     let cipher = MatchCipher::new(&id.to_string());
     let mut control = login(&addr, player_id, &cipher).await;

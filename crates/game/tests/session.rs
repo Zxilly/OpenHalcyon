@@ -53,6 +53,7 @@ async fn reservation_and_two_authenticated_sockets() {
         players: vec![player],
         teams: vec![],
         mode: "5v5_bots_solo".into(),
+        difficulty: None,
     };
     let addr = rooms.reserve(req.clone()).unwrap().address;
     assert_eq!(rooms.reserve(req).unwrap().address, addr);
@@ -208,6 +209,7 @@ async fn admission_precedes_authentication() {
         players: vec![player],
         teams: vec![],
         mode: "solo".into(),
+        difficulty: None,
     };
     let addr = rooms.prepare(req.clone()).unwrap().address;
     let mut early = TcpStream::connect(&addr).await.unwrap();

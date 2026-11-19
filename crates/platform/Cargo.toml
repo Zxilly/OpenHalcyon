@@ -6,6 +6,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+halcyon-data = { path = "../data" }
 argon2 = "0.5"
 axum = { version = "0.8", features = ["ws"] }
 halcyon-community = { path = "../community" }

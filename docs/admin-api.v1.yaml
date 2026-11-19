@@ -400,6 +400,10 @@ components:
       properties:
         id: {$ref: '#/components/schemas/Id'}
         queue: {type: string, example: 5v5_bots_solo}
+        difficulty:
+          type: string
+          enum: [very_easy, easy, medium, hard, very_hard]
+          description: Explicit hero bot difficulty. Omitted for the legacy default.
         phase: {$ref: '#/components/schemas/MatchPhase'}
         createdAt: {$ref: '#/components/schemas/Timestamp'}
         phaseSince: {$ref: '#/components/schemas/Timestamp'}

@@ -1,4 +1,7 @@
 //! Read the separately supplied 4.13.4 delivery. Unknown fields retain their original names and values.
+mod difficulty;
+pub use difficulty::BotDifficulty;
+
 use serde::{Deserialize, de::DeserializeOwned};
 use serde_json::Value;
 use sha2::{Digest, Sha256};

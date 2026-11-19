@@ -260,6 +260,7 @@ pub struct World {
     next_id: u32,
     next_item: u32,
     seed: u64,
+    bot_difficulty: Option<halcyon_data::BotDifficulty>,
     first_wave: u64,
     wave_interval: u64,
     abilities: AbilityBook,
@@ -312,6 +313,9 @@ impl World {
             ),
         )
         .expect("finite simulation state");
+        if let Some(difficulty) = self.bot_difficulty {
+            hash.update(difficulty.as_str().as_bytes());
+        }
         for e in &self.entities {
             serde_json::to_writer(
                 &mut hash,
@@ -334,6 +338,19 @@ impl World {
         }
         format!("{:x}", hash.finalize())
     }
+    pub fn set_bot_difficulty(&mut self, difficulty: Option<halcyon_data::BotDifficulty>) {
+        self.bot_difficulty = difficulty;
+    }
+
+    fn decision_interval(&self, entity: &Entity) -> u64 {
+        if entity.bot && entity.kind == Kind::Hero {
+            self.bot_difficulty
+                .map_or(5, halcyon_data::BotDifficulty::decision_ticks)
+        } else {
+            5
+        }
+    }
+
     pub fn new(seed: u64, human_seats: u8) -> Self {
         // Confirmed delivery base numbers, usable without distributing extracted assets.
         let stats = [
@@ -453,6 +470,7 @@ impl World {
             next_item: 40000,
             stats,
             seed,
+            bot_difficulty: None,
             first_wave,
             wave_interval,
             abilities: AbilityBook::default(),
@@ -691,29 +709,28 @@ impl World {
                 continue;
             }
             let e = &self.entities[i];
-            if e.winding.is_none()
-                && (e.bot || e.kind != Kind::Hero)
-                && (self.tick + e.id as u64).is_multiple_of(5)
-            {
-                if e.bot {
-                    if e.gold >= 300 && e.inventory.len() < 6 && e.position.dist(base(e.team)) <= 3.
-                    {
-                        let item = if e.inventory.len() == 2 {
-                            BasicItem::LightArmor
-                        } else {
-                            BasicItem::WeaponBlade
-                        };
-                        if let Ok(receipt) = self.buy(i, item) {
-                            events.push(Event::Purchase(receipt));
-                        }
-                    }
-                    for slot in [AbilitySlot::C, AbilitySlot::A, AbilitySlot::B] {
-                        if self.can_learn(i, slot) {
-                            let _ = self.learn(i, slot);
-                            break;
-                        }
+            let automated = e.winding.is_none() && (e.bot || e.kind != Kind::Hero);
+            let offset = self.tick + u64::from(e.id);
+            let decide = automated && offset.is_multiple_of(self.decision_interval(e));
+            if automated && e.bot && offset.is_multiple_of(5) {
+                if e.gold >= 300 && e.inventory.len() < 6 && e.position.dist(base(e.team)) <= 3. {
+                    let item = if e.inventory.len() == 2 {
+                        BasicItem::LightArmor
+                    } else {
+                        BasicItem::WeaponBlade
+                    };
+                    if let Ok(receipt) = self.buy(i, item) {
+                        events.push(Event::Purchase(receipt));
                     }
                 }
+                for slot in [AbilitySlot::C, AbilitySlot::A, AbilitySlot::B] {
+                    if self.can_learn(i, slot) {
+                        let _ = self.learn(i, slot);
+                        break;
+                    }
+                }
+            }
+            if decide {
                 let order = self.decide(i);
                 if let Command::Attack(id)
                 | Command::Cast {
@@ -812,6 +829,35 @@ impl World {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn difficulty_changes_only_hero_bot_decision_interval() {
+        use halcyon_data::BotDifficulty::*;
+        for (difficulty, first_decision) in [
+            (None, 3),
+            (Some(VeryEasy), 14),
+            (Some(Easy), 8),
+            (Some(Medium), 3),
+            (Some(Hard), 1),
+            (Some(VeryHard), 2),
+        ] {
+            let mut world = World::new(0, 1);
+            let mut replay = World::new(0, 1);
+            world.set_bot_difficulty(difficulty);
+            replay.set_bot_difficulty(difficulty);
+            // The first bot has entity id 2 and decides on its fixed, phased tick.
+            let initial = world.entities[1].position;
+            for tick in 1..=first_decision {
+                assert_eq!(world.step(), replay.step());
+                assert_eq!(world.state_digest(), replay.state_digest());
+                let moved = world.entities[1].position.dist(initial) > 0.;
+                assert_eq!(moved, tick == first_decision);
+                assert_eq!(world.entities[0].order, Command::Stop);
+                let structure = &world.entities[10];
+                assert_eq!(world.decision_interval(structure), 5);
+            }
+        }
+    }
 
     #[test]
     fn human_commands_validate_authority_and_fog() {

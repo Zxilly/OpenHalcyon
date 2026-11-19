@@ -20,7 +20,7 @@ use axum::{
     extract::{DefaultBodyLimit, Path, State},
     routing::{get, post},
 };
-use halcyon_platform::{AppState, Guest, PlatformError, PlayerProfile};
+use halcyon_platform::{AppState, BotDifficulty, Guest, PlatformError, PlayerProfile};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
@@ -387,6 +387,15 @@ async fn dispatch(s: &Platform, m: &str, params: &[Value]) -> Result<(String, Va
                 .get("lobby")
                 .and_then(Value::as_str)
                 .ok_or(Error::Invalid)?;
+            let difficulty = match obj.get("difficulty") {
+                Some(value) if !value.is_null() && BotDifficulty::supports_queue(mode) => Some(
+                    value
+                        .as_str()
+                        .and_then(BotDifficulty::from_wire)
+                        .ok_or(Error::Invalid)?,
+                ),
+                _ => None,
+            };
             let seats = if mode == "5v5_bots_solo" {
                 1
             } else {
@@ -394,15 +403,16 @@ async fn dispatch(s: &Platform, m: &str, params: &[Value]) -> Result<(String, Va
             };
             if let Some(peers) = &s.peers {
                 peers
-                    .join_party_or_solo(
+                    .join_party_with_difficulty(
                         &session,
                         mode.to_owned(),
                         u8::try_from(seats).map_err(|_| Error::Invalid)?,
+                        difficulty,
                     )
                     .await?;
             } else {
                 s.app
-                    .join_party_or_solo(&session, mode.to_owned(), seats)
+                    .join_party_with_difficulty(&session, mode.to_owned(), seats, difficulty)
                     .await?;
             }
             let mut joined = json!({"success":true,"ttl":100});
