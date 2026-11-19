@@ -24,20 +24,27 @@ async fn login(addr: &str, player: Uuid, cipher: &MatchCipher) -> TcpStream {
         .unwrap();
     s
 }
-async fn until(s: &mut TcpStream, c: &MatchCipher, op: u16) -> Message {
+async fn next_matching(
+    s: &mut TcpStream,
+    c: &MatchCipher,
+    accept: impl Fn(u16) -> bool,
+) -> Message {
     timeout(Duration::from_secs(2), async {
         loop {
             let len = s.read_u16().await.unwrap();
             let mut b = vec![0; len as usize];
             s.read_exact(&mut b).await.unwrap();
             let m = c.decode(&b).unwrap();
-            if m.opcode == op {
+            if accept(m.opcode) {
                 return m;
             }
         }
     })
     .await
     .unwrap()
+}
+async fn until(s: &mut TcpStream, c: &MatchCipher, op: u16) -> Message {
+    next_matching(s, c, |actual| actual == op).await
 }
 
 #[tokio::test]
@@ -71,11 +78,18 @@ async fn reservation_and_two_authenticated_sockets() {
     until(&mut control, &c, 0x453).await;
     let roster = until(&mut control, &c, 0x459).await;
     assert_eq!(&roster.body[105..141], player.to_string().as_bytes());
+    for opcode in [0x458, 0x46b] {
+        control
+            .write_all(&c.encode(&Message::new(opcode, [0; 6])).unwrap())
+            .await
+            .unwrap();
+        until(&mut control, &c, opcode).await;
+    }
     let mut pick = vec![0; 14];
     pick[..4].copy_from_slice(&243u32.to_be_bytes());
     pick[4..8].copy_from_slice(&0xf240ebfeu32.to_be_bytes());
     control
-        .write_all(&c.encode(&Message::new(0x45e, pick)).unwrap())
+        .write_all(&c.encode(&Message::new(0x45e, pick.clone())).unwrap())
         .await
         .unwrap();
     let updated = until(&mut control, &c, 0x459).await;
@@ -90,6 +104,15 @@ async fn reservation_and_two_authenticated_sockets() {
     assert!(typed.slot(16).is_none());
     assert_eq!(&updated.body[17..19], &243u16.to_be_bytes());
     assert_eq!(&updated.body[21..25], &0xf240ebfeu32.to_be_bytes());
+    until(&mut control, &c, 0x45e).await;
+    let sync = until(&mut control, &c, 0x3f1).await;
+    assert_eq!(sync.body, [0, 0, 0, 0, 8, 0]);
+    let mut repeat = c.encode(&Message::new(0x45e, pick)).unwrap();
+    repeat.extend(c.encode(&Message::new(0x46b, [0; 6])).unwrap());
+    control.write_all(&repeat).await.unwrap();
+    until(&mut control, &c, 0x45e).await;
+    let next = next_matching(&mut control, &c, |opcode| opcode != 0x459).await;
+    assert_eq!(next.opcode, 0x46b);
     control
         .write_all(&c.encode(&Message::new(0x463, [0; 6])).unwrap())
         .await

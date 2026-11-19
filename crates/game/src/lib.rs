@@ -64,6 +64,7 @@ impl Peer {
 #[derive(Default)]
 struct Seat {
     locked: bool,
+    draft_sync_sent: bool,
     peers: [Option<Peer>; 2],
     last: Option<DateTime<Utc>>,
     seen: [HashSet<u16>; 2],
@@ -584,6 +585,8 @@ impl Room {
                     .filter(|e| e.hp > 0. && self.world.visible(team, e))
                     .map(|e| e.id),
             );
+        } else {
+            self.seats[idx].draft_sync_sent = false;
         }
         self.seats[idx].peers[ch] = Some(Peer {
             generation: self.generation,
@@ -712,6 +715,7 @@ impl Room {
     }
     fn receive(&mut self, i: usize, ch: usize, m: Message) -> std::io::Result<Batch> {
         self.last_active = Instant::now();
+        let sync_after_pick = ch == 0 && m.opcode == 0x45e && !self.seats[i].draft_sync_sent;
         let seen = &mut self.seats[i].seen[ch];
         if m.opcode != 0x455 && seen.len() < 32 && seen.insert(m.opcode) {
             self.event("protocol","First client message of this type",json!({"playerId":self.players[i],"channel":if ch==0{"control"}else{"game"},"opcode":format!("0x{:04X}",m.opcode)}));
@@ -791,6 +795,11 @@ impl Room {
                 out.push(m)
             }
             _ => {}
+        }
+        if sync_after_pick {
+            // Android's first 0x045E response precedes this one-time draft message.
+            out.push(Message::new(0x3f1, [0, 0, 0, 0, 8, 0]));
+            self.seats[i].draft_sync_sent = true;
         }
         Ok(out)
     }

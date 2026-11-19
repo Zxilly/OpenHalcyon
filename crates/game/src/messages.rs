@@ -57,7 +57,6 @@ pub fn setup(
         out.push(Message::new(0x453, b));
     }
     out.push(snapshot(world, players, picks));
-    out.push(Message::new(0x3f1, [0, 0, 0, 0, 8, 0]));
     out
 }
 pub fn snapshot(world: &World, players: &[Uuid], picks: &[Pick]) -> Message {
