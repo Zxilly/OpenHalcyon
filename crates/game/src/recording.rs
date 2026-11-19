@@ -77,7 +77,7 @@ impl Recorder {
         if size > BATCH_LIMIT
             || self
                 .budget
-                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |used| {
+                .try_update(Ordering::Relaxed, Ordering::Relaxed, |used| {
                     used.checked_add(size as u64).filter(|n| *n <= MATCH_LIMIT)
                 })
                 .is_err()
@@ -107,7 +107,7 @@ fn sanitize(m: &mut Message) -> bool {
             }
         }
         0x459 if m.body.len() == 2590 => {
-            for row in m.body[..16 * 161].chunks_exact_mut(161) {
+            for row in m.body[..16 * 161].as_chunks_mut::<161>().0 {
                 if !row[105..141].starts_with(b"__Kindred_Player_Bot__") {
                     row[25..57].fill(0);
                     row[105..141].fill(0);
