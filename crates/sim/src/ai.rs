@@ -84,6 +84,11 @@ impl World {
                 return Command::MoveTo(p);
             }
             if e.kind == Kind::Hero && t.kind == Kind::Hero {
+                if e.type_id == lorelai::HERO
+                    && let Some(cmd) = self.lorelai_action(i, t.position)
+                {
+                    return cmd;
+                }
                 if e.type_id == 273
                     && self.can_cast(i, AbilitySlot::B, CastTarget::Point(t.position))
                 {

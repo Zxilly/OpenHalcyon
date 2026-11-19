@@ -5,6 +5,7 @@ mod aral;
 mod chakram;
 mod combat;
 mod layout;
+mod lorelai;
 mod nav;
 use layout::Layout;
 mod progression;
@@ -26,6 +27,7 @@ pub fn rules_digest(data: Option<&GameData>) -> String {
         include_str!("lib.rs"),
         include_str!("combat.rs"),
         include_str!("chakram.rs"),
+        include_str!("lorelai.rs"),
         include_str!("progression.rs"),
         include_str!("ai.rs"),
         include_str!("aral.rs"),
@@ -88,6 +90,7 @@ pub enum Command {
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Event {
+    Learned { source: u32, slot: AbilitySlot },
     Purchase(Purchase),
     GoldAward {
         id: u32,
@@ -285,6 +288,7 @@ pub struct World {
     shop: shop::Shop,
     effects: Vec<SpellEffect>,
     chakrams: Vec<chakram::Chakram>,
+    water: Vec<lorelai::Water>,
     nav_budget: u8,
     first_blood: bool,
     scores: [PlayerScore; 10],
@@ -331,7 +335,7 @@ impl World {
                 (&self.scores, &self.team_scores),
                 self.rally,
                 self.nav_budget,
-                (&self.effects, &self.chakrams),
+                (&self.effects, &self.chakrams, &self.water),
             ),
         )
         .expect("finite simulation state");
@@ -527,6 +531,7 @@ impl World {
             shop: Default::default(),
             effects: Vec::new(),
             chakrams: Vec::new(),
+            water: Vec::new(),
             nav_budget: 0,
             first_blood: false,
             scores: Default::default(),
@@ -634,6 +639,14 @@ impl World {
         if e.hp <= 0. {
             return Err("dead");
         }
+        if e.status.stun_until > self.tick
+            && matches!(
+                cmd,
+                Command::MoveTo(_) | Command::Attack(_) | Command::Cast { .. }
+            )
+        {
+            return Err("stunned");
+        }
         match cmd {
             Command::MoveTo(p) if !self.layout.walkable(p) => {
                 return Err("outside lane");
@@ -679,7 +692,12 @@ impl World {
             e.status.slow_factor
         } else {
             1.
-        } * if e.status.haste_until > self.tick {
+        }
+        .min(if e.status.water_slow_until > self.tick {
+            e.status.water_slow_factor
+        } else {
+            1.
+        }) * if e.status.haste_until.max(e.status.water_speed_until) > self.tick {
             1.25
         } else {
             1.
@@ -735,6 +753,7 @@ impl World {
         self.nav_budget = 6;
         self.advance_effects(events);
         self.advance_chakrams(events);
+        self.advance_water(events);
         if self.winner.is_some() {
             return;
         }
@@ -798,6 +817,9 @@ impl World {
                 }
             }
             let hero = &self.entities[i];
+            if hero.status.stun_until > self.tick {
+                continue;
+            }
             if hero.bot
                 && hero.hp < hero.max_hp * 0.14
                 && (hero.cast.is_some()
@@ -829,8 +851,8 @@ impl World {
                     }
                 }
                 for slot in [AbilitySlot::C, AbilitySlot::A, AbilitySlot::B] {
-                    if self.can_learn(i, slot) {
-                        let _ = self.learn(i, slot);
+                    if self.learn(i, slot).is_ok() {
+                        events.push(Event::Learned { source: self.entities[i].id, slot });
                         break;
                     }
                 }
@@ -890,7 +912,16 @@ impl World {
                     } else {
                         0.
                     };
-                    let damage = if e.kind == Kind::Crystal {
+                    let school = if e.type_id == lorelai::HERO {
+                        DamageSchool::Crystal
+                    } else if e.kind == Kind::Crystal {
+                        DamageSchool::True
+                    } else {
+                        DamageSchool::Weapon
+                    };
+                    let damage = if e.type_id == lorelai::HERO {
+                        (10. + e.stats.weapon + bonus) * 100. / (100. + t.stats.shield)
+                    } else if e.kind == Kind::Crystal {
                         t.max_hp * 0.04
                     } else {
                         (e.stats.weapon + bonus) * 100. / (100. + t.stats.armor)
@@ -915,21 +946,10 @@ impl World {
                             team,
                             id,
                             damage,
-                            DamageSchool::Weapon,
+                            school,
                         ));
                     } else {
-                        self.hurt(
-                            source,
-                            team,
-                            j,
-                            damage,
-                            if crystal {
-                                DamageSchool::True
-                            } else {
-                                DamageSchool::Weapon
-                            },
-                            events,
-                        );
+                        self.hurt(source, team, j, damage, school, events);
                     }
                     if self.winner.is_some() {
                         break;

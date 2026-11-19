@@ -30,12 +30,18 @@ enum Skill {
     Wind,
     Strike,
     Chakram,
+    FishFood,
+    Splashdown,
+    Waterwall,
 }
 fn skill(hero: u16, slot: AbilitySlot) -> Option<Skill> {
     use AbilitySlot::*;
     use Skill::*;
     Some(match (hero, slot) {
         (273, B) => Chakram,
+        (lorelai::HERO, A) => FishFood,
+        (lorelai::HERO, B) => Splashdown,
+        (lorelai::HERO, C) => Waterwall,
         (243, A) => Achilles,
         (243, B) => Twirl,
         (243, C) => Hellfire,
@@ -58,6 +64,12 @@ pub(super) struct Cast {
 pub(super) struct Status {
     pub(super) stamina_spent: f32,
     pub(super) stamina_spent_at: u64,
+    pub(super) stun_until: u64,
+    pub(super) water_speed_until: u64,
+    pub(super) water_slow_until: u64,
+    pub(super) water_slow_factor: f32,
+    pub(super) barrier: f32,
+    pub(super) barrier_until: u64,
     pub slow_until: u64,
     pub slow_factor: f32,
     pub haste_until: u64,
@@ -151,6 +163,19 @@ impl World {
     fn rules(&self, s: Skill, rank: usize) -> Rules {
         let (range, cost, windup, seconds) = match s {
             Skill::Chakram => (8.5, 10., 4, 8.),
+            Skill::FishFood => (
+                if rank == 4 { 9.5 } else { 8. },
+                60. + 10. * rank as f32,
+                1,
+                12. - 0.5 * rank as f32,
+            ),
+            Skill::Splashdown => (
+                10.5,
+                [50., 60., 70., 80., 40.][rank],
+                1,
+                8. - 0.5 * rank as f32,
+            ),
+            Skill::Waterwall => (10., 100. + 25. * rank as f32, 1, 90. - 15. * rank as f32),
             Skill::Achilles => (7., 20., 4, 6.),
             Skill::Twirl => (0., 18., 1, 9.),
             Skill::Hellfire => (12., 45., 22, 28.),
@@ -215,12 +240,13 @@ impl World {
         let point = match (s, target) {
             (Skill::Twirl | Skill::Gift | Skill::Agent, CastTarget::SelfCast) => e.position,
             (
-                Skill::Achilles | Skill::Hellfire | Skill::Gift | Skill::Agent,
+                Skill::Achilles | Skill::Hellfire | Skill::Gift | Skill::Agent | Skill::Waterwall,
                 CastTarget::Entity(id),
             ) => {
                 let t = &self.entities[self.index(id).ok_or("unknown target")?];
-                let ally = matches!(s, Skill::Gift | Skill::Agent);
+                let ally = matches!(s, Skill::Gift | Skill::Agent | Skill::Waterwall);
                 if t.hp <= 0.
+                    || (s == Skill::Waterwall && t.kind != Kind::Hero)
                     || (t.team == e.team) != ally
                     || !matches!(t.kind, Kind::Hero | Kind::Minion)
                     || !self.visible(e.team, t)
@@ -230,7 +256,13 @@ impl World {
                 t.position
             }
             (
-                Skill::Sigil | Skill::Suppress | Skill::Wind | Skill::Strike | Skill::Chakram,
+                Skill::Sigil
+                | Skill::Suppress
+                | Skill::Wind
+                | Skill::Strike
+                | Skill::Chakram
+                | Skill::FishFood
+                | Skill::Splashdown,
                 CastTarget::Point(p),
             ) if self.layout.walkable(p) => p,
             _ => return Err("invalid cast target"),
@@ -304,6 +336,9 @@ impl World {
             _ => origin,
         };
         match s {
+            Skill::FishFood | Skill::Splashdown | Skill::Waterwall => {
+                self.cast_water(i, c.slot, c.target, r);
+            }
             Skill::Chakram => {
                 self.chakrams.push(chakram::Chakram::new(
                     src,

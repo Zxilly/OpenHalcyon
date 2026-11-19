@@ -61,7 +61,18 @@ impl World {
             return;
         }
         let is_outer_tower = self.is_outer_tower(t);
-        let amount = n.min(t.hp);
+        let t = &mut self.entities[i];
+        let absorbed = if t.status.barrier_until > self.tick {
+            n.min(t.status.barrier)
+        } else {
+            0.
+        };
+        t.status.barrier -= absorbed;
+        let amount = (n - absorbed).min(t.hp);
+        if amount <= 0. {
+            return;
+        }
+        let t = &self.entities[i];
         if team != t.team && matches!(t.kind, Kind::Tower | Kind::Crystal) {
             // Only hero basic attacks and spells can outlive their origin actor's turn.
             // Hero and structure entities persist through death; minions attack immediately.
