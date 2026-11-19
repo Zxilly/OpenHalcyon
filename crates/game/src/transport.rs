@@ -1,6 +1,6 @@
 use super::*;
 use halcyon_protocol::{ACK_FRAME, MAX_PAYLOAD, MatchCipher, parse_hello};
-use std::{io, time::Duration};
+use std::{io, sync::OnceLock, time::Duration};
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     net::{TcpListener, TcpStream},
@@ -10,6 +10,65 @@ use tokio::{
 
 fn bad(msg: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, msg)
+}
+
+pub(super) enum Delivery {
+    Private(Batch),
+    Team(Arc<TeamBatch>),
+}
+
+/// CE encrypts each frame independently with the room key. Teammates admitted
+/// to the same room can share the ciphertext for their common visibility set.
+pub(super) struct TeamBatch {
+    messages: Batch,
+    bytes: OnceLock<Result<Vec<u8>, io::ErrorKind>>,
+}
+
+impl TeamBatch {
+    pub(super) fn new(messages: Batch) -> Arc<Self> {
+        Arc::new(Self {
+            messages,
+            bytes: OnceLock::new(),
+        })
+    }
+}
+
+impl Delivery {
+    fn bytes<'a>(&'a self, cipher: &MatchCipher, scratch: &'a mut Vec<u8>) -> io::Result<&'a [u8]> {
+        match self {
+            Self::Private(messages) => {
+                scratch.clear();
+                encode(cipher, messages, scratch)?;
+                Ok(scratch)
+            }
+            Self::Team(team) => team
+                .bytes
+                .get_or_init(|| {
+                    let mut bytes = Vec::new();
+                    encode(cipher, &team.messages, &mut bytes).map_err(|error| error.kind())?;
+                    Ok(bytes)
+                })
+                .as_deref()
+                .map_err(|kind| io::Error::from(*kind)),
+        }
+    }
+
+    fn into_records(self) -> Batch {
+        match self {
+            Self::Private(messages) => messages,
+            Self::Team(team) => Arc::try_unwrap(team).map_or_else(
+                |shared| shared.messages.clone(),
+                |exclusive| exclusive.messages,
+            ),
+        }
+    }
+}
+
+fn encode(cipher: &MatchCipher, messages: &[Message], buffer: &mut Vec<u8>) -> io::Result<()> {
+    for message in messages {
+        cipher.encode_into(message, buffer)?;
+    }
+    Ok(())
 }
 pub(super) async fn frame<R: AsyncRead + Unpin>(reader: &mut R) -> io::Result<Vec<u8>> {
     let size = reader.read_u16().await? as usize;
@@ -79,21 +138,17 @@ async fn connection(mut sock: TcpStream, room: Shared, manager: Rooms) -> io::Re
     let _connected = Connected(room.clone(), seat, ch, generation);
     let (mut rd, mut wr) = sock.into_split();
     let write_loop = async {
-        let mut next = Some(initial);
+        let mut next = Some(Delivery::Private(initial));
         let mut bytes = Vec::new();
         while let Some(batch) = next {
-            bytes.clear();
-            for m in &batch {
-                cipher.encode_into(m, &mut bytes)?;
-            }
-            write(&mut wr, &manager.0, &bytes).await?;
+            write(&mut wr, &manager.0, batch.bytes(&cipher, &mut bytes)?).await?;
             // Large initial catalogs are sent once. Keep steady-state buffers small.
             if bytes.capacity() > 32 * 1024 {
                 bytes = Vec::new();
             }
             if let Some(recorder) = recording.as_mut() {
                 let tick = room.lock().unwrap().world.tick;
-                if !recorder.record(tick, batch) {
+                if !recorder.record(tick, batch.into_records()) {
                     recording = None;
                 }
             }
@@ -121,7 +176,8 @@ async fn connection(mut sock: TcpStream, room: Shared, manager: Rooms) -> io::Re
             let m = cipher.decode_owned(raw)?;
             let out = room.lock().unwrap().receive(seat, ch, m)?;
             if !out.is_empty() {
-                tx.try_send(out).map_err(|_| bad("output queue full"))?;
+                tx.try_send(Delivery::Private(out))
+                    .map_err(|_| bad("output queue full"))?;
             }
         }
     };
@@ -158,4 +214,73 @@ pub(super) async fn serve(
     }
     drop(listener);
     tasks.shutdown().await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use halcyon_sim::Position;
+
+    #[tokio::test]
+    async fn teammates_share_ciphertext_while_opponents_and_reconnects_keep_their_view() {
+        let rooms = Rooms::new("127.0.0.1".parse().unwrap(), "127.0.0.1".into(), 1, None);
+        let id = Uuid::new_v4();
+        let players = [Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4()];
+        rooms
+            .reserve(Reservation {
+                match_id: id,
+                players: players.to_vec(),
+                teams: vec![0, 0, 1],
+                mode: "5v5".into(),
+            })
+            .unwrap();
+        let shared = rooms.room(id).unwrap();
+        let mut room = shared.lock().unwrap();
+        room.phase("running");
+        room.world.tick = 1;
+        for entity in &mut room.world.entities {
+            entity.position = Position {
+                x: if entity.team == 0 { -80. } else { 80. },
+                y: 0.,
+            };
+        }
+        let position = room.world.entities[0].position;
+        for seat in &mut room.seats {
+            seat.locked = true;
+        }
+        let attach = |room: &mut Room, id| {
+            let (tx, rx) = mpsc::channel(16);
+            let (_, channel, generation, _) = room.attach(id, tx, watch::channel(false).0).unwrap();
+            assert_eq!(channel, 1);
+            (rx, generation)
+        };
+        let (mut a, generation) = attach(&mut room, players[0]);
+        let (mut b, _) = attach(&mut room, players[1]);
+        let (mut other, _) = attach(&mut room, players[2]);
+        let movement = [Event::Move { id: 1, position }];
+        room.replicate(&movement);
+        let first = a.try_recv().unwrap();
+        let second = b.try_recv().unwrap();
+        let cipher = MatchCipher::new(&id.to_string());
+        let (mut scratch_a, mut scratch_b) = (Vec::new(), Vec::new());
+        let bytes_a = first.bytes(&cipher, &mut scratch_a).unwrap();
+        let bytes_b = second.bytes(&cipher, &mut scratch_b).unwrap();
+        assert!(std::ptr::eq(bytes_a, bytes_b));
+        assert_eq!(
+            bytes_a,
+            cipher
+                .encode(&Message::position(wire_id(1), position.x, position.y))
+                .unwrap()
+        );
+        assert!(other.try_recv().is_err());
+
+        room.detach(0, 1, generation);
+        let (mut reconnect, _) = attach(&mut room, players[0]);
+        room.replicate(&movement);
+        assert_eq!(
+            reconnect.try_recv().unwrap().into_records(),
+            second.into_records()
+        );
+        assert!(other.try_recv().is_err());
+    }
 }

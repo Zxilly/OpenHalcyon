@@ -25,7 +25,7 @@ use tokio::sync::{mpsc, watch};
 use uuid::Uuid;
 
 type Batch = Vec<Message>;
-type Sink = mpsc::Sender<Batch>;
+type Sink = mpsc::Sender<transport::Delivery>;
 type Finish = Arc<dyn Fn(Uuid, Value) + Send + Sync>;
 type Shared = Arc<Mutex<Room>>;
 #[derive(Clone)]
@@ -52,11 +52,10 @@ pub enum TerminateError {
 struct Peer {
     generation: u64,
     tx: Sink,
-    visible: HashSet<u32>,
     stalled: watch::Sender<bool>,
 }
 impl Peer {
-    fn send(&self, batch: Batch) {
+    fn send(&self, batch: transport::Delivery) {
         if self.tx.try_send(batch).is_err() {
             self.stalled.send_replace(true);
         }
@@ -112,6 +111,8 @@ struct Combat {
     healing: f64,
 }
 struct Room {
+    visible: [HashSet<u32>; 2],
+    next_visible: [HashSet<u32>; 2],
     replay_bytes: Arc<AtomicU64>,
     observers: HashMap<Uuid, observer::Observer>,
     latency: TickLatency,
@@ -476,6 +477,8 @@ impl Rooms {
         let (stop, stopped) = watch::channel(false);
         let t = Utc::now();
         let mut room = Room {
+            visible: Default::default(),
+            next_visible: Default::default(),
             replay_bytes: Arc::default(),
             admission_ready: watch::channel(admitted).0,
             observers: HashMap::new(),
@@ -566,20 +569,23 @@ impl Room {
         }
         self.last_active = Instant::now();
         self.generation += 1;
+        if game {
+            // The reconnect snapshot represents precisely this simulation tick.
+            let team = self.world.entities[idx].team;
+            let visible = &mut self.visible[usize::from(team)];
+            visible.clear();
+            visible.extend(
+                self.world
+                    .entities
+                    .iter()
+                    .filter(|e| e.hp > 0. && self.world.visible(team, e))
+                    .map(|e| e.id),
+            );
+        }
         self.seats[idx].peers[ch] = Some(Peer {
             generation: self.generation,
             tx,
             stalled,
-            visible: if game {
-                self.world
-                    .entities
-                    .iter()
-                    .filter(|e| self.world.visible(self.world.entities[idx].team, e))
-                    .map(|e| e.id)
-                    .collect()
-            } else {
-                HashSet::new()
-            },
         });
         self.seats[idx].last = Some(Utc::now());
         if self.phase == "allocated" {
@@ -664,7 +670,7 @@ impl Room {
             if except != Some(i)
                 && let Some(p) = &s.peers[0]
             {
-                p.send(vec![roster.clone()]);
+                p.send(transport::Delivery::Private(vec![roster.clone()]));
             }
         }
         roster
@@ -726,7 +732,7 @@ impl Room {
                     .visible(self.world.entities[j].team, &self.world.entities[i])
                 && let Some(peer) = &seat.peers[1]
             {
-                peer.send(ack.clone());
+                peer.send(transport::Delivery::Private(ack.clone()));
             }
         }
         self.publish_observers(&ack);
@@ -862,15 +868,15 @@ impl Room {
                 _ => {}
             }
         }
-        // Both teams share visibility, so compute at most twice per tick.
-        let visible: [HashSet<u32>; 2] = std::array::from_fn(|team| {
-            self.world
-                .entities
-                .iter()
-                .filter(|e| e.hp > 0. && self.world.visible(team as u8, e))
-                .map(|e| e.id)
-                .collect()
-        });
+        self.replicate(&events);
+        if self.world.winner.is_some() {
+            self.reason = Some("completed");
+            self.phase("ending");
+            self.stop.send_replace(true);
+        }
+    }
+
+    fn replicate(&mut self, events: &[Event]) {
         let fallen: HashSet<u32> = events
             .iter()
             .filter_map(|event| match event {
@@ -878,20 +884,30 @@ impl Room {
                 _ => None,
             })
             .collect();
-        for (i, seat) in self.seats.iter_mut().enumerate() {
-            let Some(peer) = &mut seat.peers[1] else {
+        for team in 0..2 {
+            let mut peers = self
+                .seats
+                .iter()
+                .zip(&self.world.entities)
+                .filter(|(_, actor)| usize::from(actor.team) == team)
+                .filter_map(|(seat, _)| seat.peers[1].as_ref())
+                .peekable();
+            let Some(first) = peers.next() else {
                 continue;
             };
             let mut out = vec![];
-            let team = usize::from(self.world.entities[i].team);
-            let current = &visible[team];
+            let previous = &mut self.visible[team];
+            let current = &mut self.next_visible[team];
+            current.clear();
             for e in &self.world.entities {
-                if current.contains(&e.id) && !peer.visible.contains(&e.id) {
-                    out.push(spawn(e, &self.picks, self.data.as_deref()));
+                if e.hp > 0. && self.world.visible(team as u8, e) {
+                    current.insert(e.id);
+                    if !previous.contains(&e.id) {
+                        out.push(spawn(e, &self.picks, self.data.as_deref()));
+                    }
                 }
             }
-
-            for ev in &events {
+            for ev in events {
                 if let Event::Move { id, position } = ev
                     && current.contains(id)
                 {
@@ -899,22 +915,25 @@ impl Room {
                 } else {
                     messages::append_combat(&mut out, ev, |actor| {
                         current.contains(&actor)
-                            || (fallen.contains(&actor) && peer.visible.contains(&actor))
+                            || (fallen.contains(&actor) && previous.contains(&actor))
                     });
                 }
             }
-            peer.visible.clone_from(current);
+            std::mem::swap(previous, current);
             if self.world.tick.is_multiple_of(20) {
                 out.push(snapshot(&self.world, &self.players, &self.picks));
             }
-            if !out.is_empty() {
-                peer.send(out);
+            if out.is_empty() {
+                continue;
             }
-        }
-        if self.world.winner.is_some() {
-            self.reason = Some("completed");
-            self.phase("ending");
-            self.stop.send_replace(true);
+            if peers.peek().is_none() {
+                first.send(transport::Delivery::Private(out));
+            } else {
+                let batch = transport::TeamBatch::new(out);
+                for peer in std::iter::once(first).chain(peers) {
+                    peer.send(transport::Delivery::Team(batch.clone()));
+                }
+            }
         }
     }
 }
