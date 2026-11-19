@@ -26,6 +26,12 @@ fn mode_name(queue: &str) -> &'static str {
         _ => "*GameMode_5v5_Casual*",
     }
 }
+pub(super) fn scene_mode(queue: &str, flag: u8) -> Message {
+    let mut body = vec![0; 69];
+    put_text(&mut body[..64], mode_name(queue));
+    body[68] = flag;
+    Message::new(0x046f, body)
+}
 fn settings(seat: usize, mode: &str, draft: bool) -> Message {
     let mut b = vec![0; 101];
     b[..4].copy_from_slice(&u32::from(wire_id(seat as u32 + 1)).to_be_bytes());
@@ -186,11 +192,8 @@ pub(super) fn world_header(
         .collect();
     let game_mode = mode_name(mode);
     out.push(settings(seat, game_mode, false));
-    let mut mode_name = vec![0; 69];
-    put_text(&mut mode_name[..64], game_mode);
-    mode_name[68] = 1;
     out.push(Message::new(0x46c, [0]));
-    out.push(Message::new(0x46f, mode_name));
+    out.push(scene_mode(mode, 1));
     out.push(Message::new(0x470, [0]));
     out.extend((0..10).map(|i| info(world, players, picks, i, true)));
     out.push(Message::new(0x451, [0; 4]));

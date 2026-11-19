@@ -9,35 +9,6 @@ pub(super) fn legacy_queue(name: &str) -> bool {
     name == halcyon_data::LEGACY_ARAL_QUEUE
 }
 
-#[derive(Default)]
-pub(super) struct Preamble(usize);
-
-impl Preamble {
-    const OPS: [u16; 3] = [0x046e, 0x0471, 0x046d];
-
-    pub fn observe(&mut self, message: &Message, actor: u32) {
-        let known = match message.opcode {
-            0x046e | 0x046d => message.body == [0; 6],
-            0x0471 => {
-                let body = &message.body;
-                body.len() == 6 && body[..4] == actor.to_be_bytes() && body[4..] == [1, 0]
-            }
-            _ => false,
-        };
-        if known && Self::OPS.get(self.0) == Some(&message.opcode) {
-            self.0 += 1;
-        }
-    }
-
-    pub fn scene_requested(&self) -> bool {
-        self.0 >= 2
-    }
-
-    pub fn confirmed(&self) -> bool {
-        self.0 == Self::OPS.len()
-    }
-}
-
 pub(super) fn roster(room: &Room, remaining: f32, private: bool) -> Message {
     use halcyon_protocol::AralRoster;
     let mut body = vec![0; AralRoster::BODY_BYTES];
@@ -92,22 +63,10 @@ pub(super) fn setup(room: &Room, seat: usize, remaining: f32) -> Batch {
     batch
 }
 
-fn players(room: &Room) -> impl Iterator<Item = Message> {
-    (0..SEATS).map(|index| messages::info(&room.world, &room.players, &room.picks, index, true))
-}
-
-pub(super) fn begin_loading(room: &Room) -> Batch {
-    players(room)
-        .chain(std::iter::once(Message::new(0x046c, [0])))
-        .collect()
-}
-
 pub(super) fn opening(room: &Room, team: Option<u8>) -> Batch {
     let mut batch: Batch = Vec::new();
-    let mut name = vec![0; 69];
-    name[..MODE.len()].copy_from_slice(MODE.as_bytes());
-    batch.push(Message::new(0x046f, name));
-    batch.extend(players(room));
+    batch.push(messages::scene_mode(&room.queue, 0));
+    batch.extend(crate::scene::players(room));
     batch.push(clock(room.world.tick));
     for actor in room
         .world
@@ -207,7 +166,7 @@ mod tests {
 
     #[test]
     fn readiness_requires_order_and_authenticated_actor_id() {
-        let mut preamble = Preamble::default();
+        let mut preamble = crate::scene::Preamble::default();
         preamble.observe(&Message::new(0x046d, [0; 6]), 1505);
         preamble.observe(&Message::new(0x046e, [0; 6]), 1505);
         preamble.observe(&Message::new(0x0471, [0, 0, 5, 224, 1, 0]), 1505);

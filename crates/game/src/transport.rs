@@ -53,6 +53,13 @@ impl Delivery {
         }
     }
 
+    fn contains(&self, opcode: u16) -> bool {
+        let messages = match self {
+            Self::Private(messages) => messages,
+            Self::Team(team) => &team.messages,
+        };
+        messages.iter().any(|m| m.opcode == opcode)
+    }
     fn into_records(self) -> Batch {
         match self {
             Self::Private(messages) => messages,
@@ -159,31 +166,50 @@ async fn connection(mut sock: TcpStream, room: Shared, manager: Rooms) -> io::Re
         .unwrap()
         .attach(uuid, tx.clone(), stalled)
         .ok_or(bad("unavailable seat"))?;
-    let mut recording = if seat == 0 && ch == 1 {
-        let root = manager.0.replay_directory.lock().unwrap().clone();
-        root.map(|root| {
+    let mut replay_root = (seat == 0
+        && (ch == 1 || {
             let state = room.lock().unwrap();
-            recording::Recorder::start(
-                root,
-                state.id,
-                generation,
-                state.world.tick,
-                state.replay_bytes.clone(),
-            )
-        })
-    } else {
-        None
-    };
+            state.legacy_aral() || state.solo_scene()
+        }))
+    .then(|| manager.0.replay_directory.lock().unwrap().clone())
+    .flatten();
+    let mut recording = None;
     let _connected = Connected(room.clone(), seat, ch, generation);
     let (mut rd, mut wr) = sock.into_split();
     let write_loop = async {
         let mut next = Some(Delivery::Private(initial));
         let mut bytes = Vec::new();
+        let mut waiting_for_scene = ch == 0 && room.lock().unwrap().solo_scene();
         while let Some(batch) = next {
             write(&mut wr, &manager.0, batch.bytes(&cipher, &mut bytes)?).await?;
+            if waiting_for_scene && batch.contains(0x046f) {
+                let mut state = room.lock().unwrap();
+                let seat = &mut state.seats[seat];
+                if seat.peers[ch]
+                    .as_ref()
+                    .is_some_and(|p| p.generation == generation)
+                {
+                    seat.scene_written = true;
+                }
+                waiting_for_scene = false;
+            }
             // Large initial catalogs are sent once. Keep steady-state buffers small.
             if bytes.capacity() > 32 * 1024 {
                 bytes = Vec::new();
+            }
+            // A shared control connection becomes a world stream at the scene header.
+            // Skip the private draft, including controls that later yield to a second socket.
+            if replay_root.is_some() && (ch == 1 || batch.contains(0x046f)) {
+                let state = room.lock().unwrap();
+                recording = replay_root.take().map(|root| {
+                    recording::Recorder::start(
+                        root,
+                        state.id,
+                        generation,
+                        state.world.tick,
+                        state.replay_bytes.clone(),
+                    )
+                });
             }
             if let Some(recorder) = recording.as_mut() {
                 let tick = room.lock().unwrap().world.tick;
