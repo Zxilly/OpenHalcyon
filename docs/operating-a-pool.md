@@ -84,10 +84,10 @@ the measurements. A complete set is cached for 20 seconds, and a partial set for
 
 This RTT measures the home-to-host service path and can include connection
 establishment. Players connect to the game host directly, so their measured
-network latency can differ. The service does not read native client ping values.
+network latency can differ.
 
 Set a nonempty table for an operator-maintained latency allowlist. The service
-uses the exact supplied values and considers only the named hosts. Replace
+uses these values as its baseline and considers only the named hosts. Replace
 the sample UUIDs with configured voters.
 
 ```toml
@@ -96,6 +96,20 @@ the sample UUIDs with configured voters.
 "00000000-0000-4000-8000-000000000002" = 35
 "00000000-0000-4000-8000-000000000003" = 75
 ```
+
+To advertise an existing client probe endpoint, configure up to 32 sites on the home. Each entry maps a unique site name and advertised host to a distinct pool node. Android receives just the site, host and port in `startSessionForPlayer.pingHostPortInfo`.
+
+```toml
+[[ping_sites]]
+site = "WEST"
+host = "probe.example.net"
+port = 1119
+node_id = "00000000-0000-4000-8000-000000000002"
+```
+
+Android reports `site`, `host`, `avg`, `stdDev`, `max` and `current` in `joinLobby`. The home accepts only exact configured site/host pairs and finite, nonnegative numeric samples below the observed two-second timeout. For each eligible host it takes the greater of the trusted baseline and the rounded-up largest reported RTT. This also applies to the queueing member's report for a party. Other members retain the baseline estimate and the matcher considers the worst ticket estimate. Unknown sites, missing reports and timeout samples leave the baseline in effect. Client-supplied host strings are compared locally. The server only connects to its configured federation peers.
+
+The isolated 147219 Android client connected nine times to a loopback TCP endpoint per run. An accepting listener saw no TCP payload or UDP datagrams. With the connection held open, the client reported a 2000.520 ms average; immediate orderly TCP closure yielded 2000.105 ms. Both outcomes match a timeout. The expected successful application response remains unverified. Configure an existing compatible service if available.
 
 Each enqueue stores the entire ticket in the home journal before submission.
 Timeout retries, cancellation and restart reuse that payload. An upgrade reads

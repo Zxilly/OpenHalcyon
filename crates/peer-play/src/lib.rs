@@ -114,7 +114,8 @@ impl PeerPlay {
         let _ = done.wait_for(|v| *v).await;
     }
     pub async fn join(&self, token: &str, mode: String, seats: u8) -> halcyon_platform::Result<()> {
-        self.join_roster(token, mode, seats, None, false).await
+        self.join_roster(token, mode, seats, None, false, BTreeMap::new())
+            .await
     }
     pub async fn join_party_or_solo(
         &self,
@@ -122,7 +123,8 @@ impl PeerPlay {
         mode: String,
         seats: u8,
     ) -> halcyon_platform::Result<()> {
-        self.join_roster(token, mode, seats, None, true).await
+        self.join_roster(token, mode, seats, None, true, BTreeMap::new())
+            .await
     }
     pub async fn join_party_with_difficulty(
         &self,
@@ -131,9 +133,21 @@ impl PeerPlay {
         seats: u8,
         difficulty: Option<BotDifficulty>,
     ) -> halcyon_platform::Result<()> {
-        self.join_roster(token, mode, seats, difficulty, true).await
+        self.join_roster(token, mode, seats, difficulty, true, BTreeMap::new())
+            .await
     }
 
+    pub async fn join_party_with_site_report(
+        &self,
+        token: &str,
+        mode: String,
+        seats: u8,
+        difficulty: Option<BotDifficulty>,
+        estimates: BTreeMap<Uuid, u32>,
+    ) -> halcyon_platform::Result<()> {
+        self.join_roster(token, mode, seats, difficulty, true, estimates)
+            .await
+    }
     async fn join_roster(
         &self,
         token: &str,
@@ -141,6 +155,7 @@ impl PeerPlay {
         seats: u8,
         difficulty: Option<BotDifficulty>,
         with_party: bool,
+        estimates: BTreeMap<Uuid, u32>,
     ) -> halcyon_platform::Result<()> {
         let s = &self.inner;
         if seats == 0 || seats > 10 {
@@ -148,7 +163,14 @@ impl PeerPlay {
         }
         let intent = if with_party {
             s.platform
-                .federated_join_party_with_difficulty(token, s.cfg.pool_id, mode, seats, difficulty)
+                .federated_join_party_with_site_report(
+                    token,
+                    s.cfg.pool_id,
+                    mode,
+                    seats,
+                    difficulty,
+                    estimates,
+                )
                 .await?
         } else {
             s.platform
@@ -277,11 +299,18 @@ impl Inner {
         if let Some(ticket) = frozen {
             return Ok(ticket);
         }
-        let latency_ms = if self.cfg.peer_latency_ms.is_empty() {
+        let mut latency_ms = if self.cfg.peer_latency_ms.is_empty() {
             self.rtt.sample(&self.fed).await?
         } else {
             self.cfg.peer_latency_ms.clone()
         };
+        // The reporting member can raise the estimate for the entire roster.
+        // Only trusted, eligible hosts already in the baseline participate.
+        for (node, ms) in &i.reported_ms {
+            if let Some(baseline) = latency_ms.get_mut(node) {
+                *baseline = (*baseline).max(*ms);
+            }
+        }
         self.journal.freeze_ticket(Ticket {
             id: i.ticket,
             generation: 1,

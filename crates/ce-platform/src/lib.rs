@@ -7,6 +7,8 @@ mod match_stats;
 mod meta;
 mod notify;
 mod party_notify;
+mod ping;
+pub use ping::PingSite;
 mod profile;
 use profile::player_info;
 mod provider;
@@ -72,6 +74,7 @@ pub struct Platform {
     grants: notify::Grants,
     native_state_updates: bool,
     xmpp: xmpp::Chat,
+    sites: ping::Sites,
     versions: Mutex<HashMap<Uuid, (Uuid, u64)>>,
     meta: meta::Meta,
     provider: Option<provider::Verifier>,
@@ -131,6 +134,7 @@ impl Platform {
             grants: Default::default(),
             native_state_updates: false,
             xmpp: Default::default(),
+            sites: Default::default(),
             versions: Default::default(),
             community: halcyon_community::Community::open(database)?,
             meta: meta::Meta::open(database)?,
@@ -403,11 +407,12 @@ async fn dispatch(s: &Platform, m: &str, params: &[Value]) -> Result<(String, Va
             };
             if let Some(peers) = &s.peers {
                 peers
-                    .join_party_with_difficulty(
+                    .join_party_with_site_report(
                         &session,
                         mode.to_owned(),
                         u8::try_from(seats).map_err(|_| Error::Invalid)?,
                         difficulty,
+                        s.sites.report(&obj["sites"]),
                     )
                     .await?;
             } else {
@@ -620,7 +625,7 @@ impl Platform {
             "platformUrl":format!("https://{}",self.config.authority),"region":"na","country":"US",
             "platformTime":now(),"enableStateUpdates":self.native_state_updates,"missedStateUpdateMessagesThreshold":-1,
             "notifyUrl":ws,"notifyFallbackUrl":http,"chatUrl":format!("ws://{}/chat/{grant}",self.config.notify_authority),"chatPass":grant,
-            "chatUser":p.player_id,"pingPostToAnalytics":false,"pingHostPortInfo":[],
+            "chatUser":p.player_id,"pingPostToAnalytics":false,"pingHostPortInfo":self.sites.announcement(),
             "unityAdsGameId":"","ironsourceAppId":null,"experimentDetails":[],
             "askRegistrationConsent":false,"bucketIncrementer":3000,"failoverThreshold":4000,
             "supportUrls":{"staticContentUrl":""},"constants":{},"playerConfig":null,"pendingTeamInvites":0,

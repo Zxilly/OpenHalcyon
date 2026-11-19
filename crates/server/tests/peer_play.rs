@@ -890,11 +890,12 @@ async fn enqueue_freezes_before_quorum_and_resumes_with_the_same_payload() {
     let token = &guest.session_token;
     let enqueue = timeout(
         Duration::from_secs(7),
-        home.peer_play.join_party_with_difficulty(
+        home.peer_play.join_party_with_site_report(
             token,
             "5v5_bots_coop".into(),
             3,
             Some(halcyon_platform::BotDifficulty::VeryHard),
+            BTreeMap::from([(host, 41), (Uuid::new_v4(), 1)]),
         ),
     )
     .await
@@ -904,7 +905,8 @@ async fn enqueue_freezes_before_quorum_and_resumes_with_the_same_payload() {
     let id = intent.ticket;
     assert!(!intent.pre_freeze);
     let expected = frozen_ticket(&home.peer_config.database, id);
-    assert_eq!(expected.latency_ms, explicit);
+    assert_eq!(expected.latency_ms, BTreeMap::from([(host, 41)]));
+    assert_eq!(intent.reported_ms[&host], 41);
     assert_eq!(expected.max_latency_ms, 75);
     assert_eq!(expected.players, [guest.player_id]);
     assert_eq!(expected.queue.name, "5v5_bots_coop");

@@ -1,6 +1,7 @@
 use halcyon_community::queue as community_queue;
 use rusqlite::{Connection, OptionalExtension, Row, Transaction, params};
 use serde_json::{Value, json};
+use std::collections::BTreeMap;
 use uuid::Uuid;
 
 use super::{
@@ -14,6 +15,7 @@ use super::{
 #[derive(Clone, Debug)]
 pub struct FederatedIntent {
     pub ticket: Uuid,
+    pub reported_ms: BTreeMap<Uuid, u32>,
     pub player: Uuid,
     pub players: Vec<Uuid>,
     pub pool: Uuid,
@@ -32,11 +34,12 @@ pub struct FederatedIntent {
 const FIELDS: &str =
     "f.ticket, f.player, f.pool, f.mode, f.seats, f.accepted_match, f.cancel, f.phase,
      f.match_id, f.address, f.result,
-     (SELECT json_group_array(player ORDER BY pos) FROM federated_queue_members WHERE ticket=f.ticket), f.enqueue_schema, f.difficulty";
+     (SELECT json_group_array(player ORDER BY pos) FROM federated_queue_members WHERE ticket=f.ticket), f.enqueue_schema, f.difficulty, (SELECT estimates FROM federated_site_reports WHERE ticket=f.ticket)";
 
 pub(super) fn initialize(tx: &Transaction<'_>) -> Result<()> {
     tx.execute_batch(
-        "CREATE TABLE IF NOT EXISTS federated_queue (
+        "CREATE TABLE IF NOT EXISTS federated_site_reports(ticket TEXT PRIMARY KEY REFERENCES federated_queue(ticket) ON DELETE CASCADE, estimates TEXT NOT NULL);
+         CREATE TABLE IF NOT EXISTS federated_queue (
             ticket TEXT PRIMARY KEY, player TEXT NOT NULL REFERENCES players(id),
             pool TEXT NOT NULL, mode TEXT NOT NULL, seats INTEGER NOT NULL,
             accepted_match TEXT, cancel INTEGER NOT NULL DEFAULT 0, phase TEXT NOT NULL DEFAULT 'pending',
@@ -137,6 +140,8 @@ fn row_intent(row: &Row<'_>) -> rusqlite::Result<FederatedIntent> {
             .unwrap_or_default(),
         pre_freeze: row.get::<_, u32>(12)? == 0,
         difficulty: read_difficulty(row, 13)?,
+        reported_ms: parse(row, 14, |s| serde_json::from_str(s).map_err(Into::into))?
+            .unwrap_or_default(),
     })
 }
 
@@ -148,7 +153,7 @@ impl AppState {
         mode: String,
         seats: u8,
     ) -> Result<FederatedIntent> {
-        self.federated_join_roster(token, pool, mode, seats, None, false)
+        self.federated_join_roster(token, pool, mode, seats, None, (false, BTreeMap::new()))
             .await
     }
 
@@ -159,7 +164,7 @@ impl AppState {
         mode: String,
         seats: u8,
     ) -> Result<FederatedIntent> {
-        self.federated_join_roster(token, pool, mode, seats, None, true)
+        self.federated_join_roster(token, pool, mode, seats, None, (true, BTreeMap::new()))
             .await
     }
 
@@ -171,7 +176,27 @@ impl AppState {
         seats: u8,
         difficulty: Option<BotDifficulty>,
     ) -> Result<FederatedIntent> {
-        self.federated_join_roster(token, pool, mode, seats, difficulty, true)
+        self.federated_join_roster(
+            token,
+            pool,
+            mode,
+            seats,
+            difficulty,
+            (true, BTreeMap::new()),
+        )
+        .await
+    }
+
+    pub async fn federated_join_party_with_site_report(
+        &self,
+        token: &str,
+        pool: Uuid,
+        mode: String,
+        seats: u8,
+        difficulty: Option<BotDifficulty>,
+        estimates: BTreeMap<Uuid, u32>,
+    ) -> Result<FederatedIntent> {
+        self.federated_join_roster(token, pool, mode, seats, difficulty, (true, estimates))
             .await
     }
 
@@ -182,8 +207,12 @@ impl AppState {
         mode: String,
         seats: u8,
         difficulty: Option<BotDifficulty>,
-        with_party: bool,
+        roster_input: (bool, BTreeMap<Uuid, u32>),
     ) -> Result<FederatedIntent> {
+        let (with_party, estimates) = roster_input;
+        if estimates.len() > 32 || estimates.values().any(|ms| !(1..=2000).contains(ms)) {
+            return Err(PlatformError::Invalid("invalid site estimates"));
+        }
         validate_mode(&mode, usize::from(seats))?;
         validate_difficulty(&mode, difficulty)?;
         let key = digest(token);
@@ -212,6 +241,9 @@ impl AppState {
                 "INSERT INTO federated_queue(ticket, player, pool, mode, seats, enqueue_schema, difficulty) VALUES(?, ?, ?, ?, ?, 1, ?)",
                 params![ticket, id, pool.to_string(), mode, seats, difficulty.map(BotDifficulty::as_str)],
             )?;
+            if !estimates.is_empty() {
+                tx.execute("INSERT INTO federated_site_reports(ticket,estimates) VALUES(?,?)",params![ticket,json!(estimates).to_string()])?;
+            }
             for (index, member) in roster.players.iter().enumerate() {
                 tx.execute(
                     "INSERT INTO federated_queue_members(ticket, player, pos) VALUES(?, ?, ?)",

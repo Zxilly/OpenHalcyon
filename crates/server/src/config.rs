@@ -19,6 +19,8 @@ pub struct Config {
     pub notify_listen: SocketAddr,
     #[serde(default)]
     pub native_state_updates: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ping_sites: Vec<halcyon_ce_platform::PingSite>,
     pub xmpp_listen: Option<SocketAddr>,
     pub game_bind: IpAddr,
     pub game_port_range: Option<halcyon_game::PortRange>,
@@ -100,6 +102,7 @@ impl Config {
             platform_listen: SocketAddr::new(bound, 8443),
             notify_listen: SocketAddr::new(bound, 2112),
             native_state_updates: false,
+            ping_sites: vec![],
             xmpp_listen: Some(SocketAddr::new(bound, 5222)),
             game_bind: bound,
             game_port_range: None,

@@ -41,7 +41,7 @@ async fn android_guest_lobby_notifications_and_recovery() {
         Arc::new(Host),
     )
     .unwrap();
-    let adapter = Platform::new(
+    let mut adapter = Platform::new(
         app.clone(),
         Config {
             authority: "localhost:8443".into(),
@@ -50,6 +50,16 @@ async fn android_guest_lobby_notifications_and_recovery() {
         &[71; 32],
         &path,
         None,
+    )
+    .unwrap();
+    Platform::configure_ping_sites(
+        &mut adapter,
+        vec![halcyon_ce_platform::PingSite {
+            site: "lab".into(),
+            host: "127.0.0.1".into(),
+            port: 41119,
+            node_id: uuid::Uuid::new_v4(),
+        }],
     )
     .unwrap();
     let r = adapter.rpc();
@@ -87,6 +97,10 @@ async fn android_guest_lobby_notifications_and_recovery() {
     assert_eq!(session["returnValue"]["state"], "menus");
     let token = &session["sessionToken"];
     let bootstrap = &session["returnValue"];
+    assert_eq!(
+        bootstrap["pingHostPortInfo"],
+        json!([{"site":"lab","host":"127.0.0.1","port":41119}])
+    );
     for field in [
         "pendingMessages",
         "pendingPartyInvites",
