@@ -54,6 +54,10 @@ struct Stats {
     initial_rooms: AtomicU64,
     completed: AtomicU64,
     slow_disconnects: AtomicU64,
+    clocks_sent: AtomicU64,
+    clock_echoes: AtomicU64,
+    clock_sequence_errors: AtomicU64,
+    end_frames: AtomicU64,
 }
 #[derive(Clone)]
 struct Api {
@@ -189,6 +193,7 @@ impl Socket {
         // Keep the frame reader alive across timer ticks. Cancelling a partial
         // read when writing a movement command would desynchronize the stream.
         let reader = async {
+            let mut last_clock = 0u32;
             loop {
                 let n = rd.read_u16().await? as usize;
                 ensure!((2..=MAX_PAYLOAD).contains(&n), "invalid frame");
@@ -200,10 +205,21 @@ impl Socket {
                 if m.opcode == 0x42e {
                     stats.positions.fetch_add(1, Ordering::Relaxed);
                 }
+                if m.opcode == 0 && m.body.len() >= 4 {
+                    let time = f32::from_be_bytes(m.body[..4].try_into().unwrap());
+                    let index = (time / 0.4).round() as u32;
+                    let stride = if game { 5 } else { 1 };
+                    if index != last_clock + stride {
+                        stats.clock_sequence_errors.fetch_add(1, Ordering::Relaxed);
+                    }
+                    last_clock = index;
+                    stats.clock_echoes.fetch_add(1, Ordering::Relaxed);
+                }
                 if !delay.is_zero() {
                     sleep(delay).await;
                 }
                 if m.opcode == 0x485 {
+                    stats.end_frames.fetch_add(1, Ordering::Relaxed);
                     return Ok(true);
                 }
             }
@@ -222,6 +238,9 @@ impl Socket {
                     Message::clock(index as f32 * 0.4)
                 };
                 wr.write_all(&cipher.encode(&msg)?).await?;
+                if msg.opcode == 0 {
+                    stats.clocks_sent.fetch_add(1, Ordering::Relaxed);
+                }
                 stats.writes.fetch_add(1, Ordering::Relaxed);
             }
         };
@@ -233,7 +252,7 @@ async fn setup(
     players: &[Player],
     mode: &str,
     stats: &Arc<Stats>,
-) -> Result<Vec<(Socket, Socket)>> {
+) -> Result<(String, Vec<(Socket, Socket)>)> {
     for p in players {
         api.rpc("joinLobby", json!([p.token,{"lobby":mode},"147219"]))
             .await?;
@@ -279,7 +298,7 @@ async fn setup(
         sockets.push((c, game));
     }
     stats.opened.fetch_add(1, Ordering::Relaxed);
-    Ok(sockets)
+    Ok((room, sockets))
 }
 async fn room(
     api: Api,
@@ -296,21 +315,23 @@ async fn room(
     }
     // Each benchmark room uses its own queue name so simultaneous rounds never mix rosters.
     let mode = format!("bench_{number}");
-    let mut first = true;
+    let mut round = 0u64;
     loop {
         if *stop.borrow() {
             return Ok(());
         }
-        let sockets = setup(&api, &players, &mode, &stats).await?;
-        if first {
+        let (room_id, sockets) = setup(&api, &players, &mode, &stats).await?;
+        round += 1;
+        if round == 1 {
             stats.initial_rooms.fetch_add(1, Ordering::Relaxed);
-            first = false;
         }
         let mut peers = JoinSet::new();
         for (seat, (ctrl, game)) in sockets.into_iter().enumerate() {
             let ctrl_stop = stop.clone();
             peers.spawn(async move {
                 (
+                    seat,
+                    false,
                     false,
                     ctrl.play(seat, false, Duration::ZERO, ctrl_stop).await,
                 )
@@ -322,10 +343,17 @@ async fn room(
                 Duration::ZERO
             };
             let game_stop = stop.clone();
-            peers.spawn(async move { (slow, game.play(seat, true, delay, game_stop).await) });
+            peers.spawn(async move {
+                (
+                    seat,
+                    true,
+                    slow,
+                    game.play(seat, true, delay, game_stop).await,
+                )
+            });
         }
-        let res = loop {
-            let (slow, res) = peers.join_next().await.context("no sockets")??;
+        let (failed_seat, game_channel, res) = loop {
+            let (seat, game, slow, res) = peers.join_next().await.context("no sockets")??;
             if slow && res.is_err() {
                 let state = api.rpc("update", json!([players[0].token])).await?;
                 if state["returnValue"]["state"] == "playing" {
@@ -333,7 +361,7 @@ async fn room(
                     continue;
                 }
             }
-            break res;
+            break (seat, game, res);
         };
         if *stop.borrow() {
             return Ok(());
@@ -350,7 +378,8 @@ async fn room(
             }
             ensure!(
                 Instant::now() < until,
-                "socket ended before settlement: {res:?}"
+                "socket ended before settlement: group={number} round={round} room={room_id} seat={failed_seat} game={game_channel} state={} result={res:?}",
+                v["returnValue"]["state"]
             );
             sleep(Duration::from_millis(100)).await;
         }
@@ -425,6 +454,8 @@ async fn main() -> Result<()> {
             "elapsed_s":started.elapsed().as_secs_f64(),"steady_s":full.map(|t|t.elapsed().as_secs_f64()),
             "opened":opened,"initial_rooms":established,"completed":stats.completed.load(Ordering::Relaxed),
             "slow_disconnects":stats.slow_disconnects.load(Ordering::Relaxed),
+            "clocks_sent":stats.clocks_sent.load(Ordering::Relaxed),"clock_echoes":stats.clock_echoes.load(Ordering::Relaxed),
+            "clock_sequence_errors":stats.clock_sequence_errors.load(Ordering::Relaxed),"end_frames":stats.end_frames.load(Ordering::Relaxed),
             "frames":stats.frames.load(Ordering::Relaxed),"gs_bytes":stats.bytes.load(Ordering::Relaxed),
             "positions":stats.positions.load(Ordering::Relaxed),"client_commands":stats.writes.load(Ordering::Relaxed)
         });

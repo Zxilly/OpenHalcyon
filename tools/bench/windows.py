@@ -102,11 +102,15 @@ def measure(args, root, humans, cpu):
         client_path = run / "client.jsonl"
         client_log = teardown.enter_context(client_path.open("wb"))
         client_err = teardown.enter_context((run / "client.err").open("wb"))
+        load_env = env | {"TOKIO_WORKER_THREADS": str(args.client_workers or len(args.client_cpus))}
         client = subprocess.Popen([load_bin,"--platform",origin,"--certificate",instance/"tls.pem","--rooms",str(args.rooms),"--humans",str(humans),"--seconds",str(args.seconds),"--slow-reader-ms",str(args.slow_reader_ms)]+(["--ramp-seconds",str(args.ramp_seconds)] if args.ramp_seconds else [])+(["--allow-admin-rotation"] if args.rotate_seconds else []),
-            env=env, stdout=client_log,stderr=client_err,creationflags=subprocess.CREATE_NO_WINDOW)
+            env=load_env, stdout=client_log,stderr=client_err,creationflags=subprocess.CREATE_NO_WINDOW)
         teardown.callback(client.wait)
         teardown.callback(client.kill)
-        psutil.Process(client.pid).cpu_affinity(args.client_cpus)
+        load_proc=psutil.Process(client.pid)
+        load_proc.cpu_affinity(args.client_cpus)
+        if sorted(load_proc.cpu_affinity()) != sorted(set(args.client_cpus)):
+            raise RuntimeError('load-process affinity was not applied')
         samples = []
         rotated = []
         t0 = time.monotonic()
@@ -120,8 +124,13 @@ def measure(args, root, humans, cpu):
                     page = admin("matches?" + urllib.parse.urlencode({"limit": 100, "cursor": cursor}))
                     rooms.extend(page["items"])
                 cpu_times = proc.cpu_times()
-                row = {"wall_s": time.monotonic()-t0, "cpu_s": cpu_times.user+cpu_times.system, "rss":proc.memory_info().rss,
-                    "rooms":[{k:r.get(k) for k in ("id","phase","tickLatency")} for r in rooms],"client":latest_client(client_path)}
+                try:
+                    load_times=load_proc.cpu_times()
+                    load_cpu=load_times.user+load_times.system
+                except psutil.NoSuchProcess:
+                    load_cpu=None
+                row = {"wall_s": time.monotonic()-t0, "cpu_s": cpu_times.user+cpu_times.system, "load_cpu_s":load_cpu, "rss":proc.memory_info().rss,
+                    "rooms":[{k:r.get(k) for k in ("id","phase","tickLatency","fanoutQueueFull","simTick","admitted")} for r in rooms],"client":latest_client(client_path)}
                 log.write(json.dumps(row,separators=(",",":"))+"\n")
                 samples.append(row)
                 if args.rotate_seconds and row["client"].get("steady_s", 0) is not None:
@@ -133,6 +142,13 @@ def measure(args, root, humans, cpu):
                             rotated.append(eligible["id"])
                 if client.poll() is not None:
                     if client.returncode != 0:
+                        write_json(run/"failure.json", {
+                            "client_exit":client.returncode, "wall_s":row["wall_s"],
+                            "last_client":row["client"], "server_rss_bytes":row["rss"],
+                            "running_rooms":sum(room["phase"]=="running" for room in rooms),
+                            "max_observed_tick_us":max((room["tickLatency"]["maxUs"] for room in rooms if room.get("tickLatency")),default=None),
+                            "client_cpus":args.client_cpus, "server_cpu":cpu,
+                        })
                         raise RuntimeError(f"load client failed: {(run/'client.err').read_text()}")
                     break
                 if row["wall_s"] > args.seconds + args.ramp_seconds + 120:
@@ -172,6 +188,7 @@ def measure(args, root, humans, cpu):
             "logical_cpu":cpu,"commit_limit_bytes":1024**3,"server_cpu_percent":100*(end["cpu_s"]-start["cpu_s"])/elapsed,
             "max_60s_server_cpu_percent":max(minute_cpu, default=None),
             "sampled_active_room_fraction":room_seconds/(args.rooms*elapsed),
+            "load_tokio_workers":args.client_workers or len(args.client_cpus),
             "peak_sampled_rss_bytes":max(r["rss"] for r in active),"ticks":ticks,"over40ms":over,
             "max_sampled_room_window_p99_us":max(v["p99Us"] or 0 for r in active for x in r["rooms"] if (v:=x["tickLatency"])),
             "max_tick_us":max(v["maxUs"] for v in last.values()),"p99_within_40ms":ticks>0 and over/ticks<=0.01,
@@ -186,6 +203,7 @@ def main():
     parser.add_argument("--rooms",type=int,default=4)
     parser.add_argument("--humans",type=int,nargs="+",default=[1,5,10])
     parser.add_argument("--server-cpus",type=int,nargs="+",required=True)
+    parser.add_argument("--client-workers",type=int,help="load-process Tokio workers (default: one per specified client CPU)")
     parser.add_argument("--client-cpus",type=int,nargs="+",required=True)
     parser.add_argument("--data-dir",type=Path)
     parser.add_argument("--slow-reader-ms",type=int,default=0)
@@ -194,7 +212,7 @@ def main():
     parser.add_argument("--output",type=Path,required=True)
     parser.add_argument("--binary-dir",type=Path,default=ROOT/"target"/"release")
     args=parser.parse_args()
-    if os.name!="nt" or len(args.server_cpus)!=len(args.humans) or len(set(args.server_cpus))!=len(args.server_cpus) or set(args.server_cpus)&set(args.client_cpus):
+    if os.name!="nt" or (args.client_workers is not None and args.client_workers<1) or len(args.server_cpus)!=len(args.humans) or len(set(args.server_cpus))!=len(args.server_cpus) or set(args.server_cpus)&set(args.client_cpus):
         parser.error("provide one distinct server CPU per scenario and separate client CPUs on Windows")
     root=args.output.resolve()
     root.mkdir(parents=True,exist_ok=False)
