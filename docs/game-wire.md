@@ -132,3 +132,34 @@ Android 147219's captured Solo Bots draft returns a 0x0459 roster, echoes the fi
 Seven archived live ARAL matches each contain exactly one 0x03F1 immediately after the 0x048D statistics report. In five games the losing side's crystal died 6.049–6.104 seconds before this pair, the reported team was the opponent, and the reason was zero. The other two had reason 2 and no crystal death. A further 8–93 world updates follow the request. Held-out 5v5 playback also shows a reason-zero request in a crystal victory. [Independent playback results](https://github.com/TurnaboutHero/vainglory-replay-decoder/blob/f4743be743564e3aadef1566499fe25d9d0f9ffc/vg/docs/ENDGAME_HELDOUT_2026-10-05.md)
 
 On authoritative crystal defeat the game host sends the winning team's number (1 or 2) and reason zero to active world connections and observers in ARAL, 5v5 PvP and 5v5 Solo Bots. The Android Solo Bots recording carries the same result action with team 2 and reason 2. Reason zero for a destroyed crystal follows the verified 5v5 crystal path. ARAL waits six seconds after the death. The local 5v5 host delivers the action in the final flush. The service only has a subset of the original 0x048D counters, so it currently decodes that report offline. The CE platform commits its own results independently of a client's socket read. Display of this result on an unmodified Android client still needs a complete native match.
+## Solo replay and live position / actor declarations
+
+The 14 local Android Solo VGR chunks contain 140 full actor declarations
+(0x03F3). Each chunk repeats one full declaration for each of the same ten
+heroes, with no repeated full declaration for an actor within a chunk. There
+are 130 bodies of 746 bytes and ten bodies of 750 bytes. The first compact
+structure declarations and later entity updates use other opcodes. These
+chunk-local roster snapshots do not show a full reintroduction at a visibility
+transition.
+
+Seven played April live ARAL captures contain one opening set of six distinct
+hero 0x03F3 declarations each, all with 750-byte decrypted bodies. The
+server used 0x042E for 62,855 position
+updates in those matches. Each decrypted body is 14 bytes, with a big-endian
+actor ID at offset 0, two big-endian floats at offsets 4 and 8, and two zero
+bytes at offsets 12 and 13. Every referenced ID was declared earlier in the same capture.
+The current position encoder writes the actor as a zero-extended 16-bit ID,
+then the two floats. Transport padding produces the observed two zero bytes.
+This is evidence for the live shape and not evidence of the Solo transport's
+choice of opcode.
+
+The Solo replay contains no 0x042E. It contains 4,397 0x03F8 records with a
+one-byte selector and big-endian floats at offsets 1 and 5. All 4,045 14-byte
+bodies have five trailing zero bytes, and 352 bodies are nine bytes. Live
+0x03F8 can echo a point-command destination, as documented in the live capture
+audit. A destination and a current position represent different state, and
+the selector has no verified general mapping to the simulator's actor IDs.
+The server continues to replicate authoritative positions with 0x042E and
+send a declaration before updates for actors that enter its visibility set.
+Verified live Solo visibility-transition traffic would be needed to replace
+that policy with the native one.
