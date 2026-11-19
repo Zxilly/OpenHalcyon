@@ -45,7 +45,7 @@ scope, visibility, rate and game rules are implemented separately.
 | 046E | 7 | Scene request paired with 0471 on the existing stream. The supported native preamble produces mode, roster and scene contents. |
 | 0471 | 7 | Finishes the scene request with the seat's registered actor and flags. Mismatched actors cannot confirm it. All seven played ARAL captures contain the pair. |
 | 0472 | 1 | Surrender vote. The confirmed ARAL actor can vote on its own team; the single captured client vote was 1. Team boards and two reason-2 endings corroborate the lifecycle. |
-| 0484 | 6 | Talent slot selection. All six requests got an actor-tagged 0481. The ARAL room implements the 255/level-zero clear. Positive slots still lack an authoritative named-talent mapping. |
+| 0484 | 6 | Talent slot selection. All six requests got an actor-tagged 0481. A confirmed ARAL seat can clear at level zero or use a positive slot when the host has a verified numeric grant for its current hero. |
 | 0485 | 6 | Recommended build selection. All six had a matching 0488 for the requesting actor. The room bounds path values and scopes broadcast by mode. |
 
 The 15 draft refreshes all began with six zero body bytes. Between each request
@@ -199,3 +199,29 @@ broadcasts refer to other heroes without linked account inventories. The
 31 archived notifyPlayerAction requests reported leaderboard views. A named
 equip event tied to a selector, or a matched inventory with a unique level,
 would distinguish the corresponding talent.
+
+### Item reorder and activation
+
+Seven ARAL recordings establish the incoming network direction independently of the serializer names. Across the seven captured client perspectives, all four `0438` actions refer to a different hero from that connection's `03E9` actor. The slot byte pairs were (4,3), (3,2), (6,5) and (3,2). All 150 `0448` messages name item instances previously granted by `043D` to another hero. In 142 cases a later `044C` for the same instance appeared within 250 milliseconds. The other eight have no such nearby match. Those comparisons use stream order and the observed grant owner. They do not establish successful use, cooldown or item consumption.
+
+| Opcode | Client to server | Server to client | Decrypted body |
+| --- | ---: | ---: | --- |
+| 0438 | 0 | 4 | Actor and two slot bytes (6 bytes) |
+| 0448 | 0 | 150 | Item instance and two opaque trailing bytes (6 bytes) |
+| 0449 | 0 | 0 | Two-word request prefix from independent serializer research |
+| 044A | 0 | 66 | Three vector words, one argument, six trailing bytes (22 bytes) |
+| 044C | 0 | 218 | Actor, item instance, target word, two coordinate words, mode and a trailing byte (22 bytes) |
+
+The protocol reader retains raw argument and coordinate bits and all trailing bytes. For `044C`, the independent receiver description in `REA_ITEM_ACTIVATION_2026-10-14.md` identifies a target in mode 0 and a position in mode 1. Mode 2 consumes neither. Other modes retain their raw operands. Independent documentation also describes compact outgoing request serializers. Implementing native player item use or reordering still requires a controlled client request tied to an owned item or slot and its resulting state change.
+
+
+All 41 actor-tagged notifications had a corresponding preceding server 0484
+with the same selector. Six applied to the receiving seat, 14 to other
+allied seats and 21 to opposing seats. The room shares a changed selection
+across both teams and live authorized observers. A duplicate receives its
+confirmation on the issuing connection; it produces no second public change.
+Fresh player and observer scenes restore the actor-tagged selections. The
+game recorder retains those authoritative 0481 records. A positive selection
+uses the immutable numeric level bound to that seat and its current hero in
+the reservation. Equal verified ownership levels for all three candidate
+talents suffice to establish that number without choosing a named effect.

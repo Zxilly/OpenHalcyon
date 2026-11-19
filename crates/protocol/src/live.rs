@@ -3,6 +3,7 @@ use super::{ActionWords, EquippedTalent, Fields, TalentSelection};
 
 #[derive(Debug, PartialEq)]
 pub enum LiveFields<'a> {
+    Item(super::ItemAction<'a>),
     SurrenderRequest(u8),
     AralSurrenderBoard(super::AralSurrenderBoard),
     AbilityTarget {
@@ -54,6 +55,9 @@ pub enum LiveFields<'a> {
     },
 }
 pub(super) fn fields(op: u16, b: &[u8]) -> Option<Fields<'_>> {
+    if let Some(item) = super::ItemAction::decode(op, b) {
+        return Some(Fields::Live(LiveFields::Item(item)));
+    }
     let expected = |n: usize| b.len() == n || b.len() == (n + 2).next_multiple_of(8) - 2;
     let word = |i: usize| u32::from_be_bytes(b[i..i + 4].try_into().unwrap());
     let half = |i: usize| u16::from_be_bytes(b[i..i + 2].try_into().unwrap());
@@ -162,10 +166,7 @@ pub(super) fn fields(op: u16, b: &[u8]) -> Option<Fields<'_>> {
     let (words, has_halfword, bytes) = match op {
         0x3ea | 0x3ec | 0x423 | 0x425 | 0x451 => (1, false, 0),
         0x414 => (0, false, 2),
-        0x438 => (1, false, 2),
-        0x448 => (1, false, 0),
-        0x44a => (4, false, 0),
-        0x403 | 0x44c => (5, false, 1),
+        0x403 => (5, false, 1),
         0x406 => (8, false, 0),
         0x407 => (4, false, 0),
         0x409 | 0x410 | 0x416 => (4, false, 1),

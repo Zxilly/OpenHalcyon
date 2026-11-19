@@ -19,6 +19,8 @@ mod aral;
 pub use aral::AralRoster;
 mod abilities;
 mod gold;
+mod item_actions;
+pub use item_actions::ItemAction;
 mod live;
 pub use live::LiveFields;
 mod metadata;
@@ -1021,7 +1023,6 @@ mod tests {
             (0x41f, 2, false, 0),
             (0x443, 3, false, 0),
             (0x446, 2, false, 0),
-            (0x44c, 5, false, 1),
             (0x478, 2, false, 1),
         ] {
             let words: Vec<_> = (0..n).map(|j| 0xa0123400u32 + j).collect();
