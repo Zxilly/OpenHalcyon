@@ -1,3 +1,5 @@
+#[path = "support/aral_talent_pool.rs"]
+mod aral_talent_pool;
 #[path = "../../federation/tests/support/pool.rs"]
 mod pool;
 use axum::{
@@ -115,11 +117,22 @@ impl Member {
         listener: Option<std::net::TcpListener>,
         host: Uuid,
     ) -> Self {
+        Self::start_with_data(path, index, config, listener, host, None).await
+    }
+
+    async fn start_with_data(
+        path: &Path,
+        index: usize,
+        config: FederationConfig,
+        listener: Option<std::net::TcpListener>,
+        host: Uuid,
+        data: Option<Arc<halcyon_data::GameData>>,
+    ) -> Self {
         let rooms = Rooms::new(
             Ipv4Addr::LOCALHOST.into(),
             "127.0.0.1".into(),
             usize::from(config.node_id == host),
-            None,
+            data,
         );
         let path_to_db = path.join(format!("platform-{index}.sqlite"));
         let app = AppState::open(
