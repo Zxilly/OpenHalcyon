@@ -127,3 +127,179 @@ async fn android_guest_lobby_notifications_and_recovery() {
         -32601
     );
 }
+
+#[tokio::test]
+async fn linked_identity_and_game_currency_survive_transport_retries() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("platform.sqlite");
+    let app = AppState::open(
+        PlatformConfig {
+            database_path: path.clone(),
+            public_address: "localhost:8443".into(),
+            seats_per_match: 1,
+        },
+        Arc::new(Host),
+    )
+    .unwrap();
+    let guest = app.create_guest("Local player".into()).await.unwrap();
+    let initial = guest.recovery_token.unwrap();
+    let content = dir.path().join("content.json");
+    std::fs::write(&content,serde_json::to_vec(&json!({
+        "items":[{"id":"silver","slot":"currency","name":"Silver"},{"id":"card","slot":"card","name":"Card"}],
+        "exchanges":{"collectHeroChest":{"starter":{"reward":{"silver":10},"limit":1}},
+          "forgeCard":{"unit":{"cost":{"silver":7},"reward":{"card":1}}}}
+    })).unwrap()).unwrap();
+    app.link_account(
+        &guest.session_token,
+        "local@example.test",
+        "fixture-only".into(),
+    )
+    .await
+    .unwrap();
+    let r = Platform::new(
+        app.clone(),
+        Config {
+            authority: "localhost:8443".into(),
+            notify_authority: "localhost:2112".into(),
+        },
+        &[37; 32],
+        &path,
+        None,
+    )
+    .unwrap()
+    .with_content(&content)
+    .await
+    .unwrap()
+    .rpc();
+    let denied = rpc(
+        &r,
+        "getPlayerFromPlatform",
+        json!(["local@example.test", "wrong-value"]),
+    )
+    .await;
+    assert_eq!(denied["code"], -1);
+    let login = rpc(
+        &r,
+        "getPlayerFromPlatform",
+        json!(["LOCAL@example.test", "fixture-only"]),
+    )
+    .await;
+    let session = rpc(
+        &r,
+        "startSessionForPlayer",
+        json!([login["returnValue"]["playerUUID"]]),
+    )
+    .await;
+    let token = &session["sessionToken"];
+    assert_eq!(
+        session["returnValue"]["playerUUID"],
+        guest.player_id.to_string()
+    );
+    assert!(app.resume_guest(initial).await.is_err());
+    let grant = rpc(&r, "collectHeroChest", json!([token, "starter"])).await;
+    assert_eq!(grant["code"], 0);
+    let duplicate = rpc(&r, "collectHeroChest", json!([token, "starter"])).await;
+    assert_eq!(duplicate["code"], 0);
+    assert_ne!(
+        rpc(
+            &r,
+            "collectHeroChest",
+            json!([grant["sessionToken"], "starter"])
+        )
+        .await["code"],
+        0
+    );
+    let buy = rpc(&r, "forgeCard", json!([token, "unit"])).await;
+    assert_eq!(buy["code"], 0);
+    assert_eq!(
+        rpc(&r, "forgeCard", json!([token, "unit"])).await["code"],
+        0
+    );
+    assert_ne!(
+        rpc(&r, "forgeCard", json!([buy["sessionToken"], "unit"])).await["code"],
+        0
+    );
+    let inventory = rpc(&r, "getPlayerCardInventory", json!([token])).await;
+    assert_eq!(inventory["returnValue"]["ownedCards"][0]["count"], 1);
+    assert_eq!(
+        rpc(&r, "storeProcessIAP", json!([token, {}])).await["code"],
+        -6
+    );
+    for n in [3, 10, 1] {
+        assert_eq!(
+            rpc(&r, "achievementStoreScore", json!([token, "practice", n])).await["code"],
+            0
+        );
+    }
+    assert_eq!(
+        rpc(&r, "achievementGetScore", json!([token, "practice"])).await["returnValue"]["score"],
+        10
+    );
+}
+
+#[tokio::test]
+async fn cataloged_names_reach_rpc_handlers() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("platform.sqlite");
+    let app = AppState::open(
+        PlatformConfig {
+            database_path: path.clone(),
+            public_address: "localhost:8443".into(),
+            seats_per_match: 1,
+        },
+        Arc::new(Host),
+    )
+    .unwrap();
+    let r = Platform::new(
+        app,
+        Config {
+            authority: "localhost:8443".into(),
+            notify_authority: "localhost:2112".into(),
+        },
+        &[19; 32],
+        &path,
+        None,
+    )
+    .unwrap()
+    .rpc();
+    let guest = rpc(
+        &r,
+        "createGuestPlayer",
+        json!([
+            "kindred",
+            "en",
+            "US",
+            "production",
+            "en",
+            "BAKLAVA",
+            "android",
+            "",
+            "147219",
+            1,
+            "device",
+            "model",
+            "0"
+        ]),
+    )
+    .await;
+    let session = rpc(
+        &r,
+        "startSessionForPlayer",
+        json!([guest["returnValue"]["playerUUID"]]),
+    )
+    .await;
+    let token = &session["sessionToken"];
+    let mut names = std::collections::BTreeSet::new();
+    for row in include_str!("../../../docs/ce-rpc.tsv").lines().skip(1) {
+        let method = row.split('\t').next().unwrap();
+        assert!(names.insert(method), "duplicate catalog method {method}");
+        if method == "endSession" {
+            continue;
+        }
+        let response = rpc(&r, method, json!([token])).await;
+        let code = response["code"].as_i64().expect("CE RPC status code");
+        assert_ne!(code, -32601, "unimplemented route {method}");
+        assert_ne!(code, -3, "internal error in {method}");
+    }
+    assert_eq!(rpc(&r, "endSession", json!([token])).await["code"], 0);
+}

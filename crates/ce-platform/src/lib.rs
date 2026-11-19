@@ -1,8 +1,14 @@
 //! Compatibility layer for the Android Community Edition platform protocol.
+mod activity;
 mod auth;
 mod community;
+mod content;
 mod meta;
 mod notify;
+mod provider;
+pub use provider::{ProviderConfig, ProviderProduct};
+mod spectator;
+mod xmpp;
 use auth::{Scope, Tokens};
 use axum::{
     Json, Router,
@@ -30,6 +36,8 @@ pub enum Error {
     Unauthorized,
     #[error("unsupported method")]
     Unsupported,
+    #[error("{0}")]
+    Unavailable(&'static str),
     #[error(transparent)]
     Community(#[from] halcyon_community::CommunityError),
     #[error("internal platform error")]
@@ -58,9 +66,12 @@ pub struct Platform {
     config: Config,
     tokens: Tokens,
     grants: notify::Grants,
+    xmpp: xmpp::Chat,
     versions: Mutex<HashMap<Uuid, (Uuid, u64)>>,
     meta: meta::Meta,
+    provider: Option<provider::Verifier>,
     community: halcyon_community::Community,
+    content: content::Content,
     peers: Option<halcyon_peer_play::PeerPlay>,
     talents: Value,
     skins: Value,
@@ -105,9 +116,12 @@ impl Platform {
             config,
             tokens: Tokens::new(secret)?,
             grants: Default::default(),
+            xmpp: Default::default(),
             versions: Default::default(),
-            meta: meta::Meta::open(database)?,
             community: halcyon_community::Community::open(database)?,
+            meta: meta::Meta::open(database)?,
+            provider: None,
+            content: Default::default(),
             peers: None,
             talents: load("official_getTalentsData.json", json!({}))?,
             skins: load("official_getSkinManifest.json", json!("{}"))?,
@@ -194,6 +208,7 @@ async fn rpc(
                     (-1, "invalid credentials")
                 }
                 Error::Unsupported => (-32601, "method not implemented"),
+                Error::Unavailable(reason) => (-6, *reason),
                 Error::Invalid
                 | Error::Platform(PlatformError::Invalid(_))
                 | Error::Community(halcyon_community::CommunityError::Invalid(_)) => {
@@ -222,12 +237,44 @@ fn arg(params: &[Value], i: usize) -> Result<&str, Error> {
     params.get(i).and_then(Value::as_str).ok_or(Error::Invalid)
 }
 
+fn local_credentials(params: &[Value]) -> Result<(&str, String), Error> {
+    if let Some(obj) = params.first().and_then(Value::as_object) {
+        let name = obj
+            .get("username")
+            .and_then(Value::as_str)
+            .ok_or(Error::Invalid)?;
+        let password = obj
+            .get("password")
+            .and_then(Value::as_str)
+            .ok_or(Error::Invalid)?;
+        Ok((name, password.to_owned()))
+    } else {
+        Ok((arg(params, 0)?, arg(params, 1)?.to_owned()))
+    }
+}
+
 async fn dispatch(s: &Platform, m: &str, params: &[Value]) -> Result<(String, Value), Error> {
     if m == "createGuestPlayer" {
         if params.len() != 13 || arg(params, 0)? != "kindred" || arg(params, 8)? != "147219" {
             return Err(Error::Invalid);
         }
         return s.guest_response(s.app.create_guest("Guest".into()).await?, None);
+    }
+    if m == "getPlayerFromPlatform" {
+        let (name, password) = local_credentials(params)?;
+        return s.guest_response(s.app.login_account(name, password).await?, None);
+    }
+    if m == "authenticate" && params.first().is_some_and(Value::is_object) {
+        let (name, password) = local_credentials(params)?;
+        let guest = s.app.login_account(name, password).await?;
+        let profile = s.app.profile(&guest.session_token).await?;
+        s.community
+            .observe_player(profile.player_id, profile.name.clone(), true)
+            .await?;
+        let token = s
+            .tokens
+            .sign(profile.player_id, &guest.session_token, Scope::Session)?;
+        return Ok((token, s.start_session(&guest.session_token, &profile)?));
     }
     let token = arg(params, 0)?;
     if m == "getPlayerForGuestAccount" {
@@ -246,6 +293,14 @@ async fn dispatch(s: &Platform, m: &str, params: &[Value]) -> Result<(String, Va
     let profile = s.app.profile(&session).await?;
     let id = profile.player_id;
     let mut rv = match m {
+        "link_account" | "createAccountForPlayer" => {
+            let (name, password) = local_credentials(&params[1..])?;
+            s.app.link_account(&session, name, password).await?;
+            json!({"success":true,"username":name,"playerUUID":id})
+        }
+        "isGovernmentIdVerified" | "verifyGovernmentId" | "storePrepareIAP" | "storeProcessIAP" => {
+            provider::dispatch(s.provider.as_ref(), &s.meta, id, m, &params[1..]).await?
+        }
         "authenticate" | "startSessionForPlayer" => {
             s.community
                 .observe_player(id, profile.name.clone(), true)
@@ -300,7 +355,7 @@ async fn dispatch(s: &Platform, m: &str, params: &[Value]) -> Result<(String, Va
             };
             if let Some(peers) = &s.peers {
                 peers
-                    .join(
+                    .join_party_or_solo(
                         &session,
                         mode.to_owned(),
                         u8::try_from(seats).map_err(|_| Error::Invalid)?,
@@ -308,7 +363,7 @@ async fn dispatch(s: &Platform, m: &str, params: &[Value]) -> Result<(String, Va
                     .await?;
             } else {
                 s.app
-                    .join_with_seats(&session, mode.to_owned(), seats)
+                    .join_party_or_solo(&session, mode.to_owned(), seats)
                     .await?;
             }
             json!({"success":true,"ttl":100})
@@ -322,8 +377,12 @@ async fn dispatch(s: &Platform, m: &str, params: &[Value]) -> Result<(String, Va
             s.accept(&session, room).await?;
             s.start_session(&session, &s.app.profile(&session).await?)?
         }
+        "spectateFriend" => spectator::begin(s, &session, params).await?,
+        "spectatorExitMatch" => spectator::exit(s, &session).await?,
         "exitLobby" | "rejectMatch" | "notifyExitPostMatch" => {
-            if profile.lobby.is_some() {
+            if spectator::is_spectating(&profile) {
+                s.app.leave_spectator(&session).await?;
+            } else if profile.lobby.is_some() {
                 match &s.peers {
                     Some(peers) => peers.leave(&session).await?,
                     None => s.app.leave(&session).await?,
@@ -375,9 +434,11 @@ async fn dispatch(s: &Platform, m: &str, params: &[Value]) -> Result<(String, Va
                 .await?;
             player_info(&profile)
         }
+        m if activity::handles(m) => s.activity_rpc(&profile, m, params).await?,
+        m if content::Content::handles(m) => s.content_rpc(&profile, m, params).await?,
         "getLeaderboardData" => s.meta.ranking().await?,
-        "getLiveEventData" => json!({"events":[]}),
         "endSession" => {
+            s.app.leave_spectator(&session).await?;
             s.app.end_session(&session).await?;
             s.community
                 .observe_player(id, profile.name.clone(), false)
@@ -391,7 +452,8 @@ async fn dispatch(s: &Platform, m: &str, params: &[Value]) -> Result<(String, Va
             ));
         }
         _ => {
-            let patch = community::dispatch(&s.community, &profile, m, params).await?;
+            let patch =
+                community::dispatch(&s.community, &profile, m, params, Some(&s.app)).await?;
             if matches!(
                 m,
                 "partyLobbyEnter"
@@ -413,6 +475,29 @@ async fn dispatch(s: &Platform, m: &str, params: &[Value]) -> Result<(String, Va
             }
         }
     };
+    if rv.get("playerInfo").is_some() || rv.get("completed").is_some() {
+        let fields = s.meta.player_fields(id).await?;
+        if rv.get("playerInfo").is_some() {
+            for name in [
+                "pendingMessages",
+                "pendingPartyInvites",
+                "pendingGuildInvites",
+                "pendingTeamInvites",
+            ] {
+                if let Some(flag) = fields.get(name) {
+                    rv[name] = flag.clone();
+                }
+            }
+            rv["playerInfo"]
+                .as_object_mut()
+                .ok_or(Error::Internal)?
+                .extend(fields.as_object().unwrap().clone());
+        } else {
+            rv.as_object_mut()
+                .ok_or(Error::Internal)?
+                .extend(fields.as_object().unwrap().clone());
+        }
+    }
     if rv.get("version").is_some() {
         let mut versions = s.versions.lock().map_err(|_| Error::Internal)?;
         let current = now();
@@ -445,15 +530,19 @@ fn state(p: &PlayerProfile) -> Value {
         Some("queued" | "pending") => ("pending_auto", 10),
         Some("offered") => ("match_pending", 59),
         Some("playing") => ("playing", 100),
+        Some("spectating") => ("spectating", 100),
         Some("finished" | "post_match") => ("post_match", 100),
         _ => ("menus", 100),
     };
     let mut v = json!({"state":name,"ttl":ttl,"expiry":now()+ttl,"version":Uuid::new_v4(),
         "lastVersion":Uuid::nil(),"numPlayers":1,"notify":matches!(name,"pending_auto"|"match_pending")});
     if let Some(l) = l
-        && name == "playing"
+        && matches!(name, "playing" | "spectating")
     {
         v["matchId"] = json!(l.match_id);
+        if let Some(credential) = l.spectator_id {
+            v["spectatorId"] = json!(credential);
+        }
         if let Some((host, port)) = l.address.as_deref().and_then(|a| a.rsplit_once(':')) {
             v["host"] = json!(host);
             v["port"] = json!(port.parse::<u16>().ok());
@@ -479,6 +568,18 @@ impl Platform {
         rv.as_object_mut()
             .unwrap()
             .extend(extras.as_object().unwrap().clone());
+        if let Some(fields) = self.xmpp.fields(session, p)? {
+            rv["jsonChatUrl"] = rv["chatUrl"].clone();
+            rv["constants"]["featuresEnabled"]["inGameChat"] = json!(true);
+            rv.as_object_mut()
+                .expect("session response is an object")
+                .extend(
+                    fields
+                        .as_object()
+                        .expect("chat fields are an object")
+                        .clone(),
+                );
+        }
         Ok(rv)
     }
 }

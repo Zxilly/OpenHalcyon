@@ -1,5 +1,4 @@
-//! Player-owned metadata and social graph. Changes are serialized in SQLite
-//! transactions so repeat deliveries cannot create duplicate friendships.
+//! Durable, player-scoped preferences and platform telemetry.
 use super::{Error, now};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::{Value, json};
@@ -19,17 +18,27 @@ impl Meta {
                 PRIMARY KEY(player,category));
             CREATE TABLE IF NOT EXISTS ce_metrics(player TEXT NOT NULL,match_id TEXT NOT NULL,data TEXT NOT NULL,
                 PRIMARY KEY(player,match_id));")?;
+        super::activity::initialize(&db)?;
+        super::provider::initialize(&db)?;
         Ok(Self(Arc::new(Mutex::new(db))))
     }
 
-    async fn transaction<R: Send + 'static>(
+    pub(crate) async fn transaction<R: Send + 'static>(
         &self,
+        work: impl FnOnce(&Transaction<'_>) -> Result<R, Error> + Send + 'static,
+    ) -> Result<R, Error> {
+        self.with_behavior(rusqlite::TransactionBehavior::Deferred, work)
+            .await
+    }
+    pub(crate) async fn with_behavior<R: Send + 'static>(
+        &self,
+        behavior: rusqlite::TransactionBehavior,
         work: impl FnOnce(&Transaction<'_>) -> Result<R, Error> + Send + 'static,
     ) -> Result<R, Error> {
         let db = self.0.clone();
         tokio::task::spawn_blocking(move || {
             let mut db = db.lock().map_err(|_| Error::Internal)?;
-            let tx = db.transaction()?;
+            let tx = db.transaction_with_behavior(behavior)?;
             let result = work(&tx)?;
             tx.commit()?;
             Ok(result)
@@ -67,10 +76,10 @@ impl Meta {
     }
     pub async fn ranking(&self) -> Result<Value, Error> {
         self.transaction(|tx|{
-            let mut q=tx.prepare("SELECT p.id,p.name,COUNT(*) AS played FROM events e JOIN players p ON p.id=e.player
-                WHERE json_extract(e.body,'$.type')='match_finished' GROUP BY p.id ORDER BY played DESC,p.id LIMIT 100")?;
-            let entries=q.query_map([],|r|Ok(json!({"playerUUID":r.get::<_,String>(0)?,"handle":r.get::<_,String>(1)?,"completed":r.get::<_,u64>(2)?})))?.collect::<Result<Vec<_>,_>>()?;
-            Ok(json!({"leaderboards":[{"entries":entries}],"events":[],"time":now()}))
+            let mut q=tx.prepare("SELECT p.id,p.name,COUNT(*) AS played,SUM(c.won) FROM ce_completed c JOIN players p ON p.id=c.player
+                GROUP BY p.id ORDER BY played DESC,p.id LIMIT 100")?;
+            let entries=q.query_map([],|r|Ok(json!({"playerUUID":r.get::<_,String>(0)?,"handle":r.get::<_,String>(1)?,"completed":r.get::<_,u64>(2)?,"wins":r.get::<_,u64>(3)?})))?.collect::<Result<Vec<_>,_>>()?;
+            Ok(json!({"leaderboards":[{"leaderboardId":"completed","leaderboardTitle":"Completed matches","entries":entries}],"events":[],"time":now()}))
         }).await
     }
 }

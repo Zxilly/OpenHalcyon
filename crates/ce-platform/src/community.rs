@@ -5,7 +5,7 @@
 use std::collections::BTreeMap;
 
 use halcyon_community::{Action, Community, GroupKind, GroupSettings, Role};
-use halcyon_platform::PlayerProfile;
+use halcyon_platform::{AppState, PlayerProfile};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
@@ -155,6 +155,18 @@ fn group(view: View, result: Value, actor: Uuid) -> Value {
     }
 }
 
+pub(crate) async fn guild_state(community: &Community, actor: Uuid) -> Result<Value, Error> {
+    let data = community
+        .execute(
+            actor,
+            Action::Group {
+                kind: GroupKind::Guild,
+            },
+        )
+        .await?;
+    Ok(group(View::Guild, data, actor))
+}
+
 fn inventory(result: Value) -> Value {
     let mut groups = BTreeMap::<String, Vec<Value>>::new();
     for item in array(&result, "items") {
@@ -229,6 +241,7 @@ pub(crate) async fn dispatch(
     profile: &PlayerProfile,
     method: &str,
     params: &[Value],
+    notify: Option<&AppState>,
 ) -> Result<Value, Error> {
     let args = Args::new(params)?;
     let actor = profile.player_id;
@@ -357,6 +370,35 @@ pub(crate) async fn dispatch(
             View::Party,
         ),
         "partyBalanceTeams" => (Action::BalanceParty, View::Party),
+        "updateQuintPartyState" => {
+            if args
+                .structured
+                .as_ref()
+                .and_then(Value::as_object)
+                .is_some_and(|object| {
+                    object
+                        .keys()
+                        .any(|key| !MODE.contains(&key.as_str()) && key != "lobbyOpen")
+                })
+            {
+                return Err(Error::Invalid);
+            }
+            let (mode, open) = if args.structured.is_some() {
+                (
+                    args.field(0, MODE)
+                        .map(|_| args.text(0, MODE))
+                        .transpose()?,
+                    args.field(0, &["lobbyOpen"])
+                        .map(|_| args.flag(0, &["lobbyOpen"]))
+                        .transpose()?,
+                )
+            } else if args.entries.first().is_some_and(Value::is_boolean) {
+                (None, Some(args.flag(0, &[])?))
+            } else {
+                (Some(args.text(0, &[])?), None)
+            };
+            (Action::UpdatePartyState { mode, open }, View::Party)
+        }
         "partyChangeQueueMode" => (
             Action::UpdateGroup {
                 kind: GroupKind::Party,
@@ -447,6 +489,20 @@ pub(crate) async fn dispatch(
             },
             View::Guild,
         ),
+        "changeGuildMembership" => {
+            let join = match args.field(1, &["join", "action"]) {
+                Some(Value::String(action)) if action == "join" => true,
+                Some(Value::String(action)) if action == "leave" => false,
+                _ => args.flag(1, &["join", "action"])?,
+            };
+            (
+                Action::ChangeGuildMembership {
+                    group: args.id(0, GROUP_ID)?,
+                    join,
+                },
+                View::Guild,
+            )
+        }
         "leaveGuild" => (
             Action::LeaveGroup {
                 kind: GroupKind::Guild,
@@ -553,10 +609,11 @@ pub(crate) async fn dispatch(
             },
             View::Inventory,
         ),
-        "equippedHat" | "equippedEmoji" | "equippedPingPack" => {
+        "equippedHat" | "equippedEmoji" | "equippedPingPack" | "charm" | "social_ping_pack" => {
             let slot = match method {
                 "equippedHat" => "hat",
                 "equippedEmoji" => "emoji",
+                "charm" => "charm",
                 _ => "social_ping_pack",
             };
             let action = if args.field(0, ITEM).is_some() {
@@ -605,7 +662,31 @@ pub(crate) async fn dispatch(
         ),
         _ => return Err(Error::Unsupported),
     };
+    let mut refresh = match &action {
+        Action::RequestFriend { target } | Action::RemoveFriend { target } => vec![actor, *target],
+        Action::ResolveFriend { requester, .. } => vec![actor, *requester],
+        Action::FavoriteFriend { .. } | Action::SetReceivePresence { .. } => vec![actor],
+        _ => Vec::new(),
+    };
+    let publish_presence = matches!(
+        action,
+        Action::SetPresence { .. } | Action::SetInvisible { .. }
+    );
     let data = community.execute(actor, action).await?;
+    if let Some(notify) = notify {
+        if publish_presence {
+            refresh.extend(
+                array(&data, "friends")
+                    .iter()
+                    .filter_map(|entry| Uuid::parse_str(entry["playerId"].as_str()?).ok()),
+            );
+        }
+        if !refresh.is_empty()
+            && let Err(error) = notify.refresh_friends(refresh).await
+        {
+            tracing::warn!(%error, "local friends refresh could not be published");
+        }
+    }
     if matches!(view, View::Guild) && !data.is_null() && data["kind"] != "guild" {
         return Err(Error::Invalid);
     }
@@ -671,7 +752,7 @@ mod tests {
     ) -> Result<Value, Error> {
         let mut params = vec![Value::Null];
         params.extend(payload);
-        dispatch(community, player, name, &params).await
+        dispatch(community, player, name, &params, None).await
     }
 
     #[tokio::test]

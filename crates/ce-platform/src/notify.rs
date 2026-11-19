@@ -5,38 +5,72 @@ use axum::{
         Path, Query, State, WebSocketUpgrade,
         ws::{Message, WebSocket},
     },
-    http::StatusCode,
+    http::{StatusCode, header},
     response::{IntoResponse, Response},
     routing::get,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
-    collections::HashMap,
+    cmp::Reverse,
+    collections::{BinaryHeap, HashMap},
     sync::{Arc, Mutex},
     time::Duration,
 };
 use uuid::Uuid;
 
 #[derive(Default)]
-pub(crate) struct Grants(Mutex<HashMap<Uuid, (String, u64)>>);
+pub(crate) struct Grants(Mutex<GrantIndex>);
+
+#[derive(Default)]
+struct GrantIndex {
+    sessions: HashMap<String, Uuid>,
+    grants: HashMap<Uuid, (String, u64)>,
+    deadlines: BinaryHeap<Reverse<(u64, Uuid)>>,
+}
+
+impl GrantIndex {
+    fn expire(&mut self, current: u64) {
+        while let Some(&Reverse((deadline, id))) = self.deadlines.peek() {
+            if deadline > current {
+                break;
+            }
+            self.deadlines.pop();
+            if let Some((_, expires)) = self.grants.get(&id)
+                && *expires > current
+            {
+                // Each capability occupies exactly one timer entry even when renewed.
+                self.deadlines.push(Reverse((*expires, id)));
+            } else if let Some((key, _)) = self.grants.remove(&id) {
+                self.sessions.remove(&key);
+            }
+        }
+    }
+}
 impl Grants {
     pub fn issue(&self, session: &str) -> Result<Uuid, Error> {
         let mut grants = self.0.lock().map_err(|_| Error::Internal)?;
         let current = now();
-        grants.retain(|_, (_, expires)| *expires > current);
-        if let Some((id, (_, expiry))) = grants.iter_mut().find(|(_, (s, _))| s == session) {
+        grants.expire(current);
+        if let Some(id) = grants.sessions.get(session).copied()
+            && let Some((_, expiry)) = grants.grants.get_mut(&id)
+        {
             *expiry = current + 86400;
-            return Ok(*id);
+            return Ok(id);
         }
         let id = Uuid::new_v4();
-        grants.insert(id, (session.to_owned(), current + 86400));
+        grants.sessions.insert(session.to_owned(), id);
+        grants
+            .grants
+            .insert(id, (session.to_owned(), current + 86400));
+        grants.deadlines.push(Reverse((current + 86400, id)));
         Ok(id)
     }
     fn resolve(&self, id: Uuid) -> Option<String> {
         self.0
             .lock()
             .ok()?
+            .grants
             .get(&id)
             .filter(|(_, expires)| *expires > now())
             .map(|(session, _)| session.clone())
@@ -48,21 +82,46 @@ struct Cursor {
     tag: Option<String>,
     time: Option<String>,
 }
+#[derive(Clone, Copy)]
+struct Position {
+    after: i64,
+    time: u64,
+    initial: bool,
+}
+
 impl Cursor {
-    fn after(&self) -> Result<i64, StatusCode> {
-        if self
-            .time
-            .as_ref()
-            .is_some_and(|v| !v.is_empty() && v.parse::<u64>().is_err())
-        {
-            return Err(StatusCode::BAD_REQUEST);
-        }
-        match self.tag.as_deref() {
-            Some(tag) if !tag.is_empty() => Uuid::parse_str(tag)
-                .ok()
-                .and_then(|id| i64::try_from(id.as_u128()).ok())
-                .ok_or(StatusCode::BAD_REQUEST),
-            _ => Ok(0),
+    fn position(&self) -> Result<Position, StatusCode> {
+        let time = self.time.as_deref().filter(|time| !time.is_empty());
+        let tag = self.tag.as_deref().filter(|tag| !tag.is_empty());
+        let after = tag
+            .map(|tag| {
+                Uuid::parse_str(tag)
+                    .ok()
+                    .and_then(|id| i64::try_from(id.as_u128()).ok())
+                    .ok_or(StatusCode::BAD_REQUEST)
+            })
+            .transpose()?
+            .unwrap_or(0);
+        let initial = time.is_none() && tag.is_none();
+        let time = time
+            .map(|time| time.parse::<u64>().map_err(|_| StatusCode::BAD_REQUEST))
+            .transpose()?
+            .unwrap_or(0);
+        Ok(Position {
+            after,
+            time,
+            initial,
+        })
+    }
+}
+
+fn platform_status(error: halcyon_platform::PlatformError) -> StatusCode {
+    match error {
+        halcyon_platform::PlatformError::Unauthorized => StatusCode::UNAUTHORIZED,
+        halcyon_platform::PlatformError::Invalid(_) => StatusCode::BAD_REQUEST,
+        _ => {
+            tracing::warn!(%error, "notification storage unavailable");
+            StatusCode::SERVICE_UNAVAILABLE
         }
     }
 }
@@ -75,48 +134,67 @@ pub fn router(s: Arc<Platform>) -> Router {
         .with_state(s)
 }
 
-async fn update(s: &Platform, key: &str, after: i64) -> Result<(i64, Value), StatusCode> {
-    let batch = s
+async fn update(s: &Platform, key: &str, old: Position) -> Result<(Position, Value), StatusCode> {
+    let event = s
         .app
-        .events(key, after, true)
+        .next_notification(key, old.after, old.initial)
         .await
-        .map_err(|_| StatusCode::UNAUTHORIZED)?;
-    let changed = !batch.events.is_empty();
-    let mut rv = json!({"httpStatus":if changed{200}else{304},"time":now().to_string(),"tag":Uuid::from_u128(batch.cursor as u128)});
-    if changed {
-        let profile = s
-            .app
-            .profile(key)
-            .await
-            .map_err(|_| StatusCode::UNAUTHORIZED)?;
-        let state = super::state(&profile);
+        .map_err(platform_status)?;
+    if event.is_none() && !old.initial {
+        return Ok((
+            old,
+            json!({
+                "httpStatus":304,"time":old.time.to_string(),"tag":Uuid::from_u128(old.after as u128),
+            }),
+        ));
+    }
+    let next = Position {
+        after: event.as_ref().map_or(0, |event| event.cursor),
+        time: now(),
+        initial: false,
+    };
+    let tag = Uuid::from_u128(next.after as u128);
+    let text = if !old.initial
+        && event
+            .as_ref()
+            .is_some_and(|event| event.body["type"] == "friends_changed")
+    {
+        json!({"code":0,"type":"friendsListUpdate","friendsListUpdate":true})
+    } else {
+        let profile = s.app.profile(key).await.map_err(platform_status)?;
+        let mut state = super::state(&profile);
+        state["version"] = json!(tag);
+        state["lastVersion"] = json!(Uuid::from_u128(old.after as u128));
         let states: serde_json::Map<_, _> = state
             .as_object()
-            .unwrap()
+            .expect("state is an object")
             .iter()
-            .map(|(k, v)| {
-                (
-                    k.clone(),
-                    json!(
-                        v.as_str()
-                            .map(ToOwned::to_owned)
-                            .unwrap_or_else(|| v.to_string())
-                    ),
-                )
+            .filter(|(key, _)| key.as_str() != "spectatorId")
+            .map(|(key, value)| {
+                let value = value
+                    .as_str()
+                    .map_or_else(|| value.to_string(), ToOwned::to_owned);
+                (key.clone(), json!(value))
             })
             .collect();
-        rv["text"] = json!({"type":"stateUpdate","code":0,"states":states,"counts":[1]});
-    }
-    Ok((batch.cursor, rv))
+        json!({"type":"stateUpdate","code":0,"states":states,"counts":[1]})
+    };
+    Ok((
+        next,
+        json!({"httpStatus":200,"time":next.time.to_string(),"tag":tag,"text":text}),
+    ))
 }
 
 async fn poll(
     State(s): State<Arc<Platform>>,
     Path(id): Path<Uuid>,
     Query(cursor): Query<Cursor>,
-) -> Result<Json<Value>, StatusCode> {
+) -> Result<impl IntoResponse, StatusCode> {
     let key = s.grants.resolve(id).ok_or(StatusCode::UNAUTHORIZED)?;
-    Ok(Json(update(&s, &key, cursor.after()?).await?.1))
+    Ok((
+        [(header::CACHE_CONTROL, "no-store")],
+        Json(update(&s, &key, cursor.position()?).await?.1),
+    ))
 }
 
 async fn socket(
@@ -126,7 +204,8 @@ async fn socket(
     ws: WebSocketUpgrade,
 ) -> Result<Response, StatusCode> {
     let key = s.grants.resolve(id).ok_or(StatusCode::UNAUTHORIZED)?;
-    let after = cursor.after()?;
+    let after = cursor.position()?;
+    s.app.profile(&key).await.map_err(platform_status)?;
     Ok(ws.max_message_size(4096).on_upgrade(move |mut socket| async move {
         let mut cursor=after;
         loop {
@@ -159,6 +238,7 @@ async fn chat(
     ws: WebSocketUpgrade,
 ) -> Result<Response, StatusCode> {
     let key = s.grants.resolve(id).ok_or(StatusCode::UNAUTHORIZED)?;
+    s.app.profile(&key).await.map_err(platform_status)?;
     Ok(ws.max_message_size(4096).on_upgrade(move |mut sock|async move{
         let mut cursor=0;
         loop {

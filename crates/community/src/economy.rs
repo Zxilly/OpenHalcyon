@@ -110,32 +110,43 @@ impl Community {
         item: String,
         count: u32,
     ) -> Result<()> {
-        let item = key(item)?;
+        self.run(move |tx| Self::award_item_in_transaction(tx, grant, player, &item, count))
+            .await
+    }
+
+    /// Apply the grant inside a caller-owned transaction with its source receipt.
+    pub fn award_item_in_transaction(
+        tx: &Transaction<'_>,
+        grant: Uuid,
+        player: Uuid,
+        item: &str,
+        count: u32,
+    ) -> Result<()> {
+        let item = key(item.to_owned())?;
         if count == 0 {
             return Err(CommunityError::Invalid("item count must be positive"));
         }
-        self.run(move |tx| {
-            let player = player.to_string();
-            let grant = grant.to_string();
-            ensure_player(tx, &player)?;
-            item_slot(tx, &item)?;
-            let inserted = tx.execute(
-                "INSERT INTO community_item_grants(id,player,item,count) VALUES(?,?,?,?) ON CONFLICT DO NOTHING",
-                params![grant, player, item, count],
+        let player = player.to_string();
+        let grant = grant.to_string();
+        ensure_player(tx, &player)?;
+        item_slot(tx, &item)?;
+        let inserted = tx.execute(
+            "INSERT INTO community_item_grants(id,player,item,count) VALUES(?,?,?,?) ON CONFLICT DO NOTHING",
+            params![grant, player, item, count],
+        )?;
+        if inserted == 1 {
+            add_item(tx, &player, &item, count)?;
+        } else {
+            let same: bool = tx.query_row(
+                "SELECT player=? AND item=? AND count=? FROM community_item_grants WHERE id=?",
+                params![player, item, count, grant],
+                |row| row.get(0),
             )?;
-            if inserted == 1 {
-                add_item(tx, &player, &item, count)?;
-            } else {
-                let same: bool = tx.query_row(
-                    "SELECT player=? AND item=? AND count=? FROM community_item_grants WHERE id=?",
-                    params![player, item, count, grant], |row| row.get(0),
-                )?;
-                if !same {
-                    return Err(CommunityError::Conflict("grant id is already in use"));
-                }
+            if !same {
+                return Err(CommunityError::Conflict("grant id is already in use"));
             }
-            Ok(())
-        }).await
+        }
+        Ok(())
     }
 
     /// Apply verified progress exactly once per trusted event id.
