@@ -3,6 +3,7 @@ mod actor_slots;
 mod admission;
 pub use admission::{AdmissionPolicy, PortRange, ResourceMetrics};
 mod aral;
+mod aral_death;
 mod aral_spawn;
 mod commands;
 mod compact;
@@ -139,6 +140,7 @@ struct Combat {
 struct Room {
     solo_slots: actor_slots::ActorSlots,
     aral_slots: aral_spawn::WaveSlots,
+    dead_actors: Vec<aral_death::Pending>,
     surrender: [surrender::Ballot; 2],
     visible: [HashSet<u32>; 2],
     next_visible: [HashSet<u32>; 2],
@@ -551,6 +553,7 @@ impl Rooms {
         let mut room = Room {
             solo_slots: actor_slots::ActorSlots::from_roster(&world.entities),
             aral_slots: Default::default(),
+            dead_actors: Vec::new(),
             surrender: Default::default(),
             visible: Default::default(),
             next_visible: Default::default(),
@@ -1189,6 +1192,12 @@ impl Room {
             return;
         }
         if self.phase == "ending" && self.reason == Some("completed") {
+            if !self.dead_actors.is_empty() {
+                let elapsed = self.phase_start.elapsed().as_millis()
+                    * u128::from(halcyon_sim::TICK_HZ)
+                    / 1000;
+                aral_death::flush(self, self.world.tick.saturating_add(elapsed as u64));
+            }
             let delay = if self.surrender.iter().any(surrender::Ballot::passed) {
                 15
             } else {
@@ -1240,6 +1249,10 @@ impl Room {
             scene::initial_structures(self);
         }
         let events = self.world.step();
+        if legacy {
+            aral_death::flush(self, self.world.tick);
+            aral_death::schedule(self, &events);
+        }
         self.tick_observers(&events);
         for event in &events {
             match *event {
@@ -1418,7 +1431,13 @@ impl Room {
                     if legacy_aral && let Event::Death { id, .. } = ev {
                         let death_sent = out.len() != before;
                         if death_sent {
-                            self.aral_slots.death_sent(*id, team as u8);
+                            aral_death::witness(
+                                &mut self.dead_actors,
+                                *id,
+                                team as u8,
+                                &self.seats,
+                                &self.world,
+                            );
                         }
                         let known_ally = previous.contains(id)
                             && self.world.entities.iter().any(|actor| {

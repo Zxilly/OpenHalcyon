@@ -174,8 +174,8 @@ impl WaveSlots {
         }
     }
 
-    /// Reuse only after every team to which this actor was sent got its death.
-    pub fn death_sent(&mut self, id: u32, team: u8) {
+    /// Reuse only after the delayed destroy for every team that saw the actor.
+    pub fn destroy_sent(&mut self, id: u32, team: u8) {
         if let Some(slot) = self
             .slots
             .iter_mut()
@@ -332,14 +332,14 @@ mod tests {
         assert_eq!(restored.body[42..46], damaged.hp.to_be_bytes());
         assert_eq!(restored.body[46..50], damaged.max_hp.to_be_bytes());
 
-        slots.death_sent(first.id, 0);
+        slots.destroy_sent(first.id, 0);
         let mut later = first.clone();
         later.id += 100;
         let before_other_team = slots
             .declaration(&world, &later, &[], None, 0, true)
             .unwrap();
         assert_eq!(before_other_team.body[116], 24);
-        slots.death_sent(first.id, 1);
+        slots.destroy_sent(first.id, 1);
         later.id += 1;
         let after_both_teams = slots
             .declaration(&world, &later, &[], None, 0, true)

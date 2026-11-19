@@ -67,7 +67,7 @@ shape for pristine simulated wave creation with the corresponding levels.
 Its full 0x03F3 snapshot preserves actual HP when reintroducing a damaged
 minion or restoring a scene. Those two declaration forms share the actor
 slot. Dynamic slots start at 22 and never overlap the fixed room actors.
-The allocator recycles only after sending the actor's death to all teams
+The allocator recycles only after the delayed 0x040B destroy for all teams
 that were sent its declaration. Where a death cannot be disclosed, its slot
 stays unavailable. Capacity exhaustion defers the declaration and associated
 updates, while the actor remains in the simulation.
@@ -77,3 +77,32 @@ all 16 compact map slots, authenticated readiness and point
 acknowledgement, actual motion in those coordinates, and a rejoining seat.
 The terrain and server-side replication are a supported subset. Rendering
 of the new scene and wave packets on the original client remains unverified.
+
+### Delayed actor death and lane slot reuse
+
+In seven ARAL game streams, all 958 server 0x0431 records followed a
+same-actor 0x0430 once per death. Each body is a BE32 actor and two zero
+padding bytes. The observed delay depends on the kind of actor.
+
+| Actor | Deaths with 0x0431 / observed 0x0430 | Time from 0x0430 |
+| --- | ---: | --- |
+| Hero | 73 / 74 | 1.726–1.917 s, median 1.818 s |
+| Lane minion 287 | 173 / 174 | 3.717–3.932 s, median 3.803 s |
+| Lane minion 288 | 170 / 173 | 3.668–3.876 s, median 3.804 s |
+| Lane minion 289 | 347 / 355 | 3.674–3.925 s, median 3.810 s |
+| Tower or crystal | 0 / 40 | No delayed record observed |
+
+All 690 lane-minion 0x0431 records preceded a same-actor 0x040B in the
+same timestamped receive segment. Other actors' events could intervene.
+Each of the 607 observed subsequent lane-minion slot reuses followed that
+destroy. After 63 of the 73 hero markers the same hero respawned via 0x0432.
+The remaining ten had no later recorded death, destroy or respawn for that hero.
+
+The room uses 1.8 seconds for heroes and 3.8 seconds for its three lane
+minion templates. A hero retains its registration. A lane minion's
+registration becomes reusable when every team that saw it has completed
+the destroy sequence. A hidden death can keep the slot reserved. The
+notification goes to the world connections that received the death and to
+the same still-authorized observer streams. Reconnection begins from the
+current scene. These timings are hosting rules derived from recorded
+network arrival times. Other transient templates exhibited different delays.

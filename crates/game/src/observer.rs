@@ -274,6 +274,30 @@ impl Room {
         }
         self.publish_observers(&out);
     }
+    pub(super) fn death_observers(&self) -> Vec<mpsc::WeakSender<Batch>> {
+        self.observers
+            .values()
+            .filter_map(|o| o.live.as_ref().map(mpsc::Sender::downgrade))
+            .collect()
+    }
+    pub(super) fn publish_witnessed_death(
+        &mut self,
+        observed: &[mpsc::WeakSender<Batch>],
+        out: &[Message],
+    ) {
+        self.observers.retain(|_, o| {
+            if let Some(tx) = &o.live
+                && observed
+                    .iter()
+                    .any(|prior| prior.upgrade().is_some_and(|old| old.same_channel(tx)))
+                && tx.try_send(out.to_vec()).is_err()
+            {
+                o.stop.send_replace(true);
+                return false;
+            }
+            true
+        });
+    }
     pub(super) fn publish_observers(&mut self, out: &[Message]) {
         self.observers.retain(|_, o| {
             if o.live
@@ -292,6 +316,123 @@ impl Room {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn delayed_aral_lifecycle_is_timed_and_bound_to_original_world_streams() {
+        use crate::aral_death;
+        use halcyon_sim::Kind;
+        let rooms = Rooms::new("127.0.0.1".parse().unwrap(), "127.0.0.1".into(), 1, None);
+        let id = Uuid::new_v4();
+        rooms
+            .reserve(Reservation {
+                match_id: id,
+                players: (0..6).map(|_| Uuid::new_v4()).collect(),
+                teams: vec![0, 0, 1, 0, 1, 1],
+                mode: "casual_aral".into(),
+                difficulty: None,
+            })
+            .unwrap();
+        let shared = rooms.room(id).unwrap();
+        shared.lock().unwrap().phase("running");
+        let (_, grant) = rooms.observe(id, Uuid::new_v4()).unwrap();
+        let (_, late) = rooms.observe(id, Uuid::new_v4()).unwrap();
+        let mut room = shared.lock().unwrap();
+        let mut streams = vec![];
+        for i in 0..3 {
+            let (tx, rx) = mpsc::channel(8);
+            room.seats[i].peers[1] = Some(Peer {
+                generation: i as u64 + 1,
+                tx,
+                stalled: watch::channel(false).0,
+            });
+            streams.push(rx);
+        }
+        let (observer, mut watched) = mpsc::channel(8);
+        room.observers.get_mut(&grant).unwrap().live = Some(observer);
+        for _ in 0..15 * halcyon_sim::TICK_HZ {
+            room.world.step();
+        }
+        let minion = room
+            .world
+            .entities
+            .iter()
+            .find(|e| e.kind == Kind::Minion && e.team == 0)
+            .unwrap()
+            .id;
+        let tower = room
+            .world
+            .entities
+            .iter()
+            .find(|e| e.kind == Kind::Tower)
+            .unwrap()
+            .id;
+        room.visible[0].extend([1, 2, minion, tower]);
+        room.world.entities[1].hp = 0.;
+        room.world.entities.retain(|e| e.id != minion);
+        let events = [
+            Event::Death { id: 2, killer: 1 },
+            Event::Death {
+                id: minion,
+                killer: 1,
+            },
+            Event::Death {
+                id: tower,
+                killer: 1,
+            },
+        ];
+        aral_death::schedule(&mut room, &events);
+        room.tick_observers(&events);
+        room.replicate(&events);
+        let field = |m: &Message| u32::from_be_bytes(m.body[..4].try_into().unwrap());
+        let deaths = |b: &[Message]| {
+            b.iter()
+                .filter(|m| m.opcode == 0x430)
+                .map(field)
+                .collect::<Vec<_>>()
+        };
+        assert!(deaths(&watched.try_recv().unwrap()).contains(&u32::from(wire_id(minion))));
+        assert!(deaths(&streams[0].try_recv().unwrap().into_records()).contains(&1501));
+        for stream in &mut streams {
+            while stream.try_recv().is_ok() {}
+        }
+        assert_eq!(room.dead_actors.len(), 2);
+        let (late_observer, mut unwatched) = mpsc::channel(8);
+        room.observers.get_mut(&late).unwrap().live = Some(late_observer);
+        let (replacement, mut reconnected) = mpsc::channel(8);
+        room.seats[1].peers[1] = Some(Peer {
+            generation: 90,
+            tx: replacement,
+            stalled: watch::channel(false).0,
+        });
+        let now = room.world.tick;
+        aral_death::flush(&mut room, now + 35);
+        assert!(streams[0].try_recv().is_err());
+        aral_death::flush(&mut room, now + 36);
+        let check = |m: &[Message], expected: &[u16], actor: u32| {
+            assert_eq!(m.iter().map(|p| p.opcode).collect::<Vec<_>>(), expected);
+            assert!(m.iter().all(|p| field(p) == actor && p.body[4..] == [0; 2]));
+        };
+        check(&watched.try_recv().unwrap(), &[0x431], 1501);
+        check(
+            &streams[0].try_recv().unwrap().into_records(),
+            &[0x431],
+            1501,
+        );
+        room.observers.remove(&grant);
+        aral_death::flush(&mut room, now + 75);
+        assert!(streams[0].try_recv().is_err());
+        aral_death::flush(&mut room, now + 76);
+        check(
+            &streams[0].try_recv().unwrap().into_records(),
+            &[0x431, 0x40b],
+            u32::from(wire_id(minion)),
+        );
+        assert!(room.dead_actors.is_empty());
+        assert!(watched.try_recv().is_err());
+        assert!(unwatched.try_recv().is_err());
+        assert!(reconnected.try_recv().is_err());
+        assert!(streams[2].try_recv().is_err());
+    }
 
     #[tokio::test]
     async fn revoked_observer_receives_no_further_native_abilities() {

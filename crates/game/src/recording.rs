@@ -167,6 +167,7 @@ fn sanitize(m: &mut Message) -> bool {
                     actor: 1500..=1505, seconds, remaining: [0, 0, 0, 0, 0, 0]
                 }) if seconds.is_finite() && seconds > 0.0
             ) => {}
+        0x431 | 0x40b if matches!(m.body.as_slice(), [0, 0, _, _, 0, 0]) => {}
         0x430 if m.body.len() == 14 && m.body[8..] == [0; 6] => {}
         // A recorded vote contains only the authored three-seat view of this team.
         0x473 if m.body.len() == 155 => {
@@ -275,6 +276,8 @@ mod tests {
         move_to.extend_from_slice(&1.0_f32.to_be_bytes());
         for mut m in [
             Message::new(0x03f8, move_to),
+            Message::new(0x0431, [0, 0, 5, 220, 0, 0]),
+            Message::new(0x040b, [0, 0, 8, 13, 0, 0]),
             Message::new(0x0424, [0, 0, 5, 221, 0, 0]),
             Message::ability_learned(1501, 3),
             Message::ability_learned(1501, 4),
