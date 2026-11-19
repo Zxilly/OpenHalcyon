@@ -43,6 +43,9 @@ async fn until(s: &mut TcpStream, c: &MatchCipher, op: u16) -> Message {
 #[tokio::test]
 async fn reservation_and_two_authenticated_sockets() {
     let rooms = Rooms::new(Ipv4Addr::LOCALHOST.into(), "127.0.0.1".into(), 1, None);
+    let replay_temp = tempfile::tempdir().unwrap();
+    let replay_root = replay_temp.path().join("private");
+    rooms.set_replay_directory(&replay_root).unwrap();
     let id = Uuid::new_v4();
     let player = Uuid::new_v4();
     let req = Reservation {
@@ -156,6 +159,42 @@ async fn reservation_and_two_authenticated_sockets() {
     );
     assert!(TcpStream::connect(addr).await.is_err());
     assert!(rooms.outbound_bytes() > 1000);
+    // Finishing the room deliberately does not wait for the independent disk writer.
+    let (recorded, ops) = timeout(Duration::from_secs(4), async {
+        loop {
+            let file = std::fs::read_dir(replay_root.join(id.to_string()))
+                .ok()
+                .and_then(|mut d| d.next())
+                .and_then(Result::ok)
+                .map(|d| d.path().join("00000000.vgr.partial"));
+            if let Some(bytes) = file.and_then(|p| std::fs::read(p).ok()) {
+                let mut reader = halcyon_protocol::ReplayReader::new(bytes.as_slice());
+                let mut ops = Vec::new();
+                let complete = loop {
+                    match reader.next_record() {
+                        Ok(Some(r)) => ops.push(r.message.opcode),
+                        Ok(None) => break true,
+                        Err(_) => break false,
+                    }
+                };
+                if complete && ops.contains(&0x42e) {
+                    break (bytes, ops);
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(ops.contains(&0x3f3));
+    assert!(ops.contains(&0x42e));
+    assert!(!ops.contains(&0x3e8));
+    assert!(!ops.contains(&0x453));
+    assert!(
+        !recorded
+            .windows(36)
+            .any(|b| b == player.to_string().as_bytes())
+    );
     assert_eq!(rooms.events(id, 0, 1).unwrap()["hasMore"], true);
 }
 

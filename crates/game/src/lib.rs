@@ -3,6 +3,7 @@ mod admission;
 pub use admission::{AdmissionPolicy, PortRange, ResourceMetrics};
 mod messages;
 mod observer;
+mod recording;
 mod transport;
 use chrono::{DateTime, Utc};
 use halcyon_data::GameData;
@@ -31,6 +32,7 @@ type Shared = Arc<Mutex<Room>>;
 pub struct Rooms(Arc<Manager>);
 struct Manager {
     bind_ip: IpAddr,
+    replay_directory: Mutex<Option<std::path::PathBuf>>,
     gate: Mutex<admission::Gate>,
     monitor_started: AtomicBool,
     ports: admission::Ports,
@@ -110,6 +112,7 @@ struct Combat {
     healing: f64,
 }
 struct Room {
+    replay_bytes: Arc<AtomicU64>,
     observers: HashMap<Uuid, observer::Observer>,
     latency: TickLatency,
     admitted: bool,
@@ -170,6 +173,7 @@ impl Rooms {
             gate: Mutex::new(admission::Gate::new(policy)?),
             monitor_started: AtomicBool::default(),
             ports,
+            replay_directory: Mutex::default(),
             bind_ip,
             host: advertised_host,
             capacity,
@@ -183,6 +187,9 @@ impl Rooms {
     }
     pub fn set_finish_handler(&self, handler: Finish) {
         *self.0.finish.lock().unwrap() = Some(handler);
+    }
+    pub fn clear_finish_handler(&self) {
+        self.0.finish.lock().unwrap().take();
     }
     /// Active rooms, admitted human and bot seats, and all staged seats.
     pub fn hosting_counts(&self) -> (usize, usize, usize, usize) {
@@ -466,6 +473,7 @@ impl Rooms {
         let (stop, stopped) = watch::channel(false);
         let t = Utc::now();
         let mut room = Room {
+            replay_bytes: Arc::default(),
             admission_ready: watch::channel(admitted).0,
             observers: HashMap::new(),
             latency: TickLatency::default(),

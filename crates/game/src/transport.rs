@@ -61,16 +61,37 @@ async fn connection(mut sock: TcpStream, room: Shared, manager: Rooms) -> io::Re
         .unwrap()
         .attach(uuid, tx.clone(), stalled)
         .ok_or(bad("unavailable seat"))?;
+    let mut recording = if seat == 0 && ch == 1 {
+        let root = manager.0.replay_directory.lock().unwrap().clone();
+        root.map(|root| {
+            let state = room.lock().unwrap();
+            recording::Recorder::start(
+                root,
+                state.id,
+                generation,
+                state.world.tick,
+                state.replay_bytes.clone(),
+            )
+        })
+    } else {
+        None
+    };
     let _connected = Connected(room.clone(), seat, ch, generation);
     let (mut rd, mut wr) = sock.into_split();
     let write_loop = async {
         let mut next = Some(initial);
         while let Some(batch) = next {
             let mut bytes = Vec::new();
-            for m in batch {
-                bytes.extend(cipher.encode(&m)?);
+            for m in &batch {
+                bytes.extend(cipher.encode(m)?);
             }
             write(&mut wr, &manager.0, &bytes).await?;
+            if let Some(recorder) = recording.as_mut() {
+                let tick = room.lock().unwrap().world.tick;
+                if !recorder.record(tick, batch) {
+                    recording = None;
+                }
+            }
             next = rx.recv().await;
         }
         Ok(())

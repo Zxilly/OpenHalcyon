@@ -5,7 +5,7 @@ use blowfish::{
     cipher::{BlockDecrypt, BlockEncrypt, KeyInit},
 };
 use md5::{Digest, Md5};
-use std::io::{self, Read};
+use std::io::{self, Read, Write};
 
 mod metadata;
 mod opcode;
@@ -374,6 +374,28 @@ pub struct ReplayRecord {
     pub time: f32,
     pub message: Message,
 }
+/// Big-endian VGR timestamp, opcode-inclusive payload length, opcode, and body.
+pub struct ReplayWriter<W>(W);
+impl<W: Write> ReplayWriter<W> {
+    pub fn new(writer: W) -> Self {
+        Self(writer)
+    }
+    pub fn write_record(&mut self, time: f32, message: &Message) -> io::Result<()> {
+        let length = message
+            .body
+            .len()
+            .checked_add(2)
+            .filter(|n| *n <= 1024 * 1024)
+            .ok_or_else(|| invalid("replay record too large"))?;
+        self.0.write_all(&time.to_be_bytes())?;
+        self.0.write_all(&(length as u32).to_be_bytes())?;
+        self.0.write_all(&message.opcode.to_be_bytes())?;
+        self.0.write_all(&message.body)
+    }
+    pub fn into_inner(self) -> W {
+        self.0
+    }
+}
 pub struct ReplayReader<R>(R);
 impl<R: Read> ReplayReader<R> {
     pub fn new(reader: R) -> Self {
@@ -431,6 +453,9 @@ mod tests {
     #[test]
     fn replay_boundaries() {
         let b = [0x40, 0, 0, 0, 0, 0, 0, 3, 0xff, 0x11, 0];
+        let mut writer = ReplayWriter::new(Vec::new());
+        writer.write_record(2., &Message::new(0xff11, [0])).unwrap();
+        assert_eq!(writer.into_inner(), b);
         let mut reader = ReplayReader::new(b.as_slice());
         assert_eq!(
             reader.next_record().unwrap(),
