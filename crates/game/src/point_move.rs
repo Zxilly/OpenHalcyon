@@ -38,6 +38,13 @@ pub(super) fn full_spawn(
     let mut declaration = messages::spawn(actor, picks, data);
     if legacy_aral && let Some(slot) = aral_slot(actor) {
         declaration.body[745] = slot;
+        let (height, heading) = if actor.team == 0 {
+            (1.297_397_4_f32, 1.0_f32)
+        } else {
+            (1.777_397_4, -1.0)
+        };
+        declaration.body[22..26].copy_from_slice(&height.to_be_bytes());
+        declaration.body[30..34].copy_from_slice(&heading.to_be_bytes());
     }
     declaration
 }

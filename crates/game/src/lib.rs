@@ -3,6 +3,7 @@ mod actor_slots;
 mod admission;
 pub use admission::{AdmissionPolicy, PortRange, ResourceMetrics};
 mod aral;
+mod aral_spawn;
 mod commands;
 mod compact;
 mod messages;
@@ -134,6 +135,7 @@ struct Combat {
 }
 struct Room {
     solo_slots: actor_slots::ActorSlots,
+    aral_slots: aral_spawn::WaveSlots,
     visible: [HashSet<u32>; 2],
     next_visible: [HashSet<u32>; 2],
     replay_bytes: Arc<AtomicU64>,
@@ -510,6 +512,11 @@ impl Rooms {
         world
             .assign_teams(&req.teams)
             .map_err(|_| PlatformError::Invalid("invalid human teams"))?;
+        if legacy_aral {
+            world
+                .use_aral_lane()
+                .map_err(|_| PlatformError::Invalid("invalid ARAL layout"))?;
+        }
         world.set_bot_difficulty(req.difficulty);
         let mut picks = Vec::with_capacity(hero_seats);
         for i in 0..hero_seats {
@@ -547,6 +554,7 @@ impl Rooms {
         let t = Utc::now();
         let mut room = Room {
             solo_slots: actor_slots::ActorSlots::from_roster(&world.entities),
+            aral_slots: Default::default(),
             visible: Default::default(),
             next_visible: Default::default(),
             replay_bytes: Arc::default(),
@@ -654,6 +662,13 @@ impl Room {
                 .all(|seat| seat.preamble.confirmed() && seat.peers[0].is_some())
         {
             return;
+        }
+        // Every control stream has completed the same pristine ARAL opening.
+        // Mark only currently visible actors to retain normal team visibility.
+        for (team, visible) in self.visible.iter_mut().enumerate() {
+            visible.extend(self.world.entities.iter().filter_map(|actor| {
+                (actor.hp > 0.0 && self.world.visible(team as u8, actor)).then_some(actor.id)
+            }));
         }
         let mut records = self.recommended_paths(None);
         records.push(Message::new(0x03ef, []));
@@ -1248,6 +1263,17 @@ impl Room {
         let postgame = result_frames::aral_lost_crystal(self.legacy_aral(), &self.world);
         let legacy_aral = self.legacy_aral();
         let control_stream = legacy_aral || native_solo;
+        let born: HashSet<u32> = if legacy_aral {
+            events
+                .iter()
+                .filter_map(|event| match event {
+                    Event::Spawn { id } => Some(*id),
+                    _ => None,
+                })
+                .collect()
+        } else {
+            HashSet::new()
+        };
         for team in 0..2 {
             let mut peers = self
                 .seats
@@ -1273,13 +1299,17 @@ impl Room {
                                 &self.picks,
                                 self.data.as_deref(),
                             )
-                        } else {
-                            Some(point_move::full_spawn(
+                        } else if legacy_aral {
+                            self.aral_slots.declaration(
+                                &self.world,
                                 e,
                                 &self.picks,
                                 self.data.as_deref(),
-                                legacy_aral,
-                            ))
+                                team as u8,
+                                born.contains(&e.id),
+                            )
+                        } else {
+                            Some(spawn(e, &self.picks, self.data.as_deref()))
                         };
                         let Some(message) = message else { continue };
                         out.push(message);
@@ -1324,6 +1354,12 @@ impl Room {
                         && let Event::Death { id, .. } = ev
                     {
                         self.solo_slots.released(*id);
+                    }
+                    if legacy_aral
+                        && out.len() != before
+                        && let Event::Death { id, .. } = ev
+                    {
+                        self.aral_slots.death_sent(*id, team as u8);
                     }
                 }
             }

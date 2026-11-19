@@ -31,3 +31,36 @@ The server sends the two loading waves in this order and runs a six-hero simulat
 The Android 147219 reader copies 0x046C's one-byte body in the case at `0x82cf48` and dispatches to the registered listener through `0x8e0854`. The 0x0451 case at `0x82d490` byte-swaps the first four bytes. Its reader at `0x82b300` loads a float and calls `0x8bd5c0`, which stores it in the active object. All 248 captured 0x0451 frames were server-to-client. After the initial zero values their elapsed-time floats and arrival timestamps advanced approximately every 10 seconds. The legacy ARAL path reports time every 10 simulated seconds. The ARAL wire order does not establish the full Android 5v5 transition.
 
 All five archived crystal defeats include a header-only 0x0452 immediately before the 0x0430 crystal death (one intervening position update in one match). The statistics report follows 6.05–6.10 seconds later. The two other archived endings contain no 0x0452. The ARAL host announces postgame on the authoritative crystal-death tick to all six seats and authorized observers, before publishing the final report and winning team after the delay.
+
+## Authoritative lane scene
+
+Seven played ARAL captures agree on six hero pads in team roster order.
+Home pads are (-78.18, 0.88), (-81.81, 1.97), and (-77.03, -1.94).
+Away pads are (79.66, -0.91), (78.60, -5.06), and (83.22, 0.72).
+The full hero declaration carries these X/Z coordinates from the simulator,
+team height 1.2973974 or 1.7773974, and actor-order slots 16–21.
+Movement requests and authoritative updates share these world coordinates.
+
+The initial scene sends the simulator's two crystals and ten towers in
+0x03F2 before 0x03EF. Slots 1 and 9 use crystals 292 and 293. Slots
+3–7 and 11–15 use tower templates 300/301. Their positions and health come
+from the simulated actors. Shop and beacon slots 0, 2, 8, and 10 are
+unused by this model. Running rejoin obeys the existing team view.
+
+Across the seven captures, 784 first wave-minion declarations use mask 1,
+routes 0/1, and the observed templates 287–289. All omit numeric HP
+fields. Their wave markers at +119 are 2, 3, or 4. The server uses this
+shape for pristine simulated wave creation with the corresponding levels.
+Its full 0x03F3 snapshot preserves actual HP when reintroducing a damaged
+minion or restoring a scene. Those two declaration forms share the actor
+slot. Dynamic slots start at 22 and never overlap the fixed room actors.
+The allocator recycles only after sending the actor's death to all teams
+that were sent its declaration. Where a death cannot be disclosed, its slot
+stays unavailable. Capacity exhaustion defers the declaration and associated
+updates, while the actor remains in the simulation.
+
+A six-client Rust socket test verifies the measured pad declarations,
+the set of compact structure slots, authenticated readiness and point
+acknowledgement, actual motion in those coordinates, and a rejoining seat.
+The terrain and server-side replication are a supported subset. Rendering
+of the new scene and wave packets on the original client remains unverified.

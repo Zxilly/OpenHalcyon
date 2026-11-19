@@ -90,25 +90,26 @@ pub(super) fn setup(room: &Room, seat: usize, remaining: f32) -> Batch {
     batch
 }
 
-pub(super) fn opening(room: &Room, team: Option<u8>) -> Batch {
+pub(super) fn opening(room: &mut Room, team: Option<u8>) -> Batch {
     let mut batch: Batch = Vec::new();
     batch.push(messages::scene_mode(&room.queue, 0));
     batch.extend(crate::scene::players(room));
     batch.push(clock(room.world.tick));
-    for actor in room
-        .world
-        .entities
-        .iter()
-        .take(SEATS)
-        .filter(|actor| actor.hp > 0. && team.is_none_or(|id| room.world.visible(id, actor)))
-    {
-        batch.push(super::point_move::full_spawn(
+    for actor in &room.world.entities {
+        if actor.hp <= 0.0 || team.is_some_and(|side| !room.world.visible(side, actor)) {
+            continue;
+        }
+        if let Some(declaration) = room.aral_slots.declaration(
+            &room.world,
             actor,
             &room.picks,
             room.data.as_deref(),
-            true,
-        ));
-        messages::append_inventory(&mut batch, actor);
+            team.unwrap_or(actor.team),
+            false,
+        ) {
+            batch.push(declaration);
+            messages::append_inventory(&mut batch, actor);
+        }
     }
     batch.extend(room.recommended_paths(team));
     batch
@@ -191,6 +192,15 @@ mod tests {
             assert_eq!(clock.body, [0; 6]);
         }
         let mut declared = false;
+        let mut structures = Vec::new();
+        let pads = [
+            (-78.18_f32, 0.88_f32),
+            (79.66, -0.91),
+            (-81.81, 1.97),
+            (78.6, -5.06),
+            (-77.03, -1.94),
+            (83.22, 0.72),
+        ];
         loop {
             let frame = next(socket, cipher).await;
             if frame.opcode == probe.opcode {
@@ -201,9 +211,28 @@ mod tests {
                 assert!((1500..1506).contains(&id));
                 assert_eq!(frame.body[745], 16 + (id - 1500) as u8);
                 declared |= id == actor;
+                if initial {
+                    let (x, z) = pads[(id - 1500) as usize];
+                    assert_eq!(frame.body[18..22], x.to_be_bytes());
+                    assert_eq!(frame.body[26..30], z.to_be_bytes());
+                    let height = if id % 2 == 0 {
+                        1.297_397_4_f32
+                    } else {
+                        1.777_397_4
+                    };
+                    assert_eq!(frame.body[22..26], height.to_be_bytes());
+                }
+            }
+            if frame.opcode == 0x03f2 {
+                structures.push(frame.body[116]);
+                assert!(super::super::aral_spawn::recordable(&frame.body[..122]));
             }
         }
         assert!(declared, "own actor declaration precedes readiness");
+        if initial {
+            structures.sort_unstable();
+            assert_eq!(structures, [1, 3, 4, 5, 6, 7, 9, 11, 12, 13, 14, 15]);
+        }
         assert_eq!(next(socket, cipher).await.opcode, request.opcode);
     }
 
@@ -339,10 +368,11 @@ mod tests {
                 .iter()
                 .all(|seat| seat.world_actor_written)
         );
-        let point = |x: f32| Message::new(0x03f5, [x.to_be_bytes(), 0f32.to_be_bytes()].concat());
-        for (seat, x) in [(0, 2.0), (3, 4.0), (0, 2.0)] {
+        let point =
+            |x: f32, z: f32| Message::new(0x03f5, [x.to_be_bytes(), z.to_be_bytes()].concat());
+        for (seat, x, z) in [(0, -74.0, 0.88), (3, 75.0, -5.06), (0, -74.0, 0.88)] {
             clients[seat]
-                .write_all(&cipher.encode(&point(x)).unwrap())
+                .write_all(&cipher.encode(&point(x, z)).unwrap())
                 .await
                 .unwrap();
             let reply = until(&mut clients[seat], &cipher, 0x03f8).await;
@@ -351,11 +381,23 @@ mod tests {
                 Fields::MoveAction {
                     selector: 16 + seat as u8,
                     x,
-                    y: 0.,
+                    y: z,
                     remaining: &[0; 5]
                 }
             );
         }
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let m = next(&mut clients[0], &cipher).await;
+                if let Fields::Position { entity: 1500, x, y } = m.fields().unwrap() {
+                    assert!((-78.18..=-74.0).contains(&x) && x > -78.18);
+                    assert!((y - 0.88).abs() < 0.01);
+                    break;
+                }
+            }
+        })
+        .await
+        .unwrap();
         let barrier = Message::new(0, [0; 6]);
         clients[1]
             .write_all(&cipher.encode(&barrier).unwrap())
@@ -445,7 +487,7 @@ mod tests {
         request_scene(&mut returned, &cipher, 1503, false).await;
         ready(&mut returned, &cipher).await;
         returned
-            .write_all(&cipher.encode(&point(4.)).unwrap())
+            .write_all(&cipher.encode(&point(75.0, -5.06)).unwrap())
             .await
             .unwrap();
         assert_eq!(until(&mut returned, &cipher, 0x03f8).await.body[0], 19);
