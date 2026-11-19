@@ -50,6 +50,7 @@ struct Manager {
     host: String,
     capacity: usize,
     data: Option<Arc<GameData>>,
+    catalog: Arc<[[u8; 32]]>,
     rooms: Mutex<HashMap<Uuid, Shared>>,
     finish: Mutex<Option<Finish>>,
     bytes: AtomicU64,
@@ -155,7 +156,7 @@ struct Room {
     players: Vec<Uuid>,
     requested_teams: Vec<u8>,
     combat: [Combat; 10],
-    catalog: Vec<String>,
+    catalog: Arc<[[u8; 32]]>,
     seats: Vec<Seat>,
     world: World,
     phase: &'static str,
@@ -206,6 +207,7 @@ impl Rooms {
             bind_ip,
             host: advertised_host,
             capacity,
+            catalog: messages::catalog_entries(data.as_deref()),
             data,
             rooms: Mutex::default(),
             finish: Mutex::default(),
@@ -542,15 +544,6 @@ impl Rooms {
                 locked: bot,
             });
         }
-        let catalog = match &self.0.data {
-            Some(data) if !data.hero_names.is_empty() => data
-                .hero_names
-                .iter()
-                .map(|h| format!("*{h}*"))
-                .chain(data.skin_names.iter().cloned())
-                .collect(),
-            _ => vec!["*Ringo*".to_owned()],
-        };
         let listener = tokio::net::TcpListener::from_std(listener)
             .map_err(|_| PlatformError::HostUnavailable)?;
         let (stop, stopped) = watch::channel(false);
@@ -575,7 +568,7 @@ impl Rooms {
             players: req.players,
             requested_teams: req.teams,
             combat: [Combat::default(); 10],
-            catalog,
+            catalog: self.0.catalog.clone(),
             seats: (0..n).map(|_| Seat::default()).collect(),
             world,
             phase: "allocated",

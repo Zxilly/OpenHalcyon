@@ -50,10 +50,28 @@ pub(super) fn world_settings(seat: usize, queue: &str) -> Message {
     settings(seat, mode_name(queue), false)
 }
 
+/// The catalog is immutable across rooms on a host. Prepare the exact draft payloads once.
+pub(super) fn catalog_entries(data: Option<&halcyon_data::GameData>) -> std::sync::Arc<[[u8; 32]]> {
+    fn entry(name: &str) -> [u8; 32] {
+        let mut body = [0; 32];
+        put_text(&mut body, name);
+        body
+    }
+    match data.filter(|d| !d.hero_names.is_empty()) {
+        Some(data) => data
+            .hero_names
+            .iter()
+            .map(|h| entry(&format!("*{h}*")))
+            .chain(data.skin_names.iter().map(|s| entry(s)))
+            .collect(),
+        None => [entry("*Ringo*")].into(),
+    }
+}
+
 pub fn setup(
     world: &World,
     players: &[Uuid],
-    catalog: &[String],
+    catalog: &[[u8; 32]],
     seat: usize,
     mode: &str,
     picks: &[Pick],
@@ -72,18 +90,15 @@ pub fn setup(
 pub(super) fn draft_catalog(
     world: &World,
     players: &[Uuid],
-    catalog: &[String],
+    catalog: &[[u8; 32]],
     queue: &str,
     picks: &[Pick],
 ) -> Vec<Message> {
     let mut mode = vec![0; 68];
     put_text(&mut mode[4..], mode_name(queue));
-    let mut out = vec![Message::new(0x454, mode)];
-    for name in catalog {
-        let mut b = vec![0; 32];
-        put_text(&mut b, name);
-        out.push(Message::new(0x453, b));
-    }
+    let mut out = Vec::with_capacity(catalog.len() + 2);
+    out.push(Message::new(0x454, mode));
+    out.extend(catalog.iter().map(|entry| Message::new(0x0453, *entry)));
     out.push(snapshot(world, players, picks));
     out
 }

@@ -85,13 +85,13 @@ pub(super) fn draft_catalog(room: &Room, remaining: f32) -> Batch {
     let mut mode = vec![0; 68];
     mode[..4].copy_from_slice(&3u32.to_be_bytes());
     mode[4..4 + MODE.len()].copy_from_slice(MODE.as_bytes());
-    let mut batch = vec![Message::new(0x0454, mode)];
-    for name in &room.catalog {
-        let mut body = [0; 32];
-        let count = name.len().min(body.len());
-        body[..count].copy_from_slice(&name.as_bytes()[..count]);
-        batch.push(Message::new(0x0453, body));
-    }
+    let mut batch = Vec::with_capacity(room.catalog.len() + 2);
+    batch.push(Message::new(0x0454, mode));
+    batch.extend(
+        room.catalog
+            .iter()
+            .map(|entry| Message::new(0x0453, *entry)),
+    );
     batch.push(roster(room, remaining, false));
     batch
 }
