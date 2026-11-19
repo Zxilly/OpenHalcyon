@@ -203,6 +203,17 @@ broadcasts refer to other heroes without linked account inventories. The
 equip event tied to a selector, or a matched inventory with a unique level,
 would distinguish the corresponding talent.
 
+All 41 actor-tagged notifications had a corresponding preceding server 0484
+with the same selector. Six applied to the receiving seat, 14 to other
+allied seats and 21 to opposing seats. The room shares a changed selection
+across both teams and live authorized observers. A duplicate receives its
+confirmation on the issuing connection; it produces no second public change.
+Fresh player and observer scenes restore the actor-tagged selections. The
+game recorder retains those authoritative 0481 records. A positive selection
+uses the immutable numeric level bound to that seat and its current hero in
+the reservation. Equal verified ownership levels for all three candidate
+talents suffice to establish that number without choosing a named effect.
+
 ### Item reorder and activation
 
 Seven ARAL recordings establish the incoming network direction independently of the serializer names. Across the seven captured client perspectives, all four `0438` actions refer to a different hero from that connection's `03E9` actor. The slot byte pairs were (4,3), (3,2), (6,5) and (3,2). All 150 `0448` messages name item instances previously granted by `043D` to another hero. In 142 cases a later `044C` for the same instance appeared within 250 milliseconds. The other eight have no such nearby match. Those comparisons use stream order and the observed grant owner. They do not establish successful use, cooldown or item consumption.
@@ -239,18 +250,5 @@ No same-actor reorder occurred within two seconds of any sale. The seven
 client streams contain zero `044D` requests. These results support decoding
 a completed sale by owned instance. The client request path, sale eligibility
 and refund policy for other items remain unverified.
-
-
-
-All 41 actor-tagged notifications had a corresponding preceding server 0484
-with the same selector. Six applied to the receiving seat, 14 to other
-allied seats and 21 to opposing seats. The room shares a changed selection
-across both teams and live authorized observers. A duplicate receives its
-confirmation on the issuing connection; it produces no second public change.
-Fresh player and observer scenes restore the actor-tagged selections. The
-game recorder retains those authoritative 0481 records. A positive selection
-uses the immutable numeric level bound to that seat and its current hero in
-the reservation. Equal verified ownership levels for all three candidate
-talents suffice to establish that number without choosing a named effect.
 
 [Server emission matrix for all 103 observed opcodes](server-emissions.md)
