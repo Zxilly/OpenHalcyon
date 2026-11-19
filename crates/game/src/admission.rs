@@ -58,15 +58,19 @@ impl Ports {
             .is_some_and(|t| t > Instant::now())
     }
     pub fn bind(&self, ip: IpAddr) -> io::Result<TcpListener> {
+        self.bind_with(|port| TcpListener::bind(SocketAddr::new(ip, port)))
+    }
+
+    fn bind_with<T>(&self, mut bind: impl FnMut(u16) -> io::Result<T>) -> io::Result<T> {
         let Some(range) = self.range else {
-            return TcpListener::bind(SocketAddr::new(ip, 0));
+            return bind(0);
         };
         let total = self.slots() as u32;
         let start = self.next.load(Ordering::Relaxed);
         for offset in 0..total {
             let index = (start + offset) % total;
             let port = range.first + index as u16;
-            match TcpListener::bind(SocketAddr::new(ip, port)) {
+            match bind(port) {
                 Ok(listener) => {
                     self.next.store((index + 1) % total, Ordering::Relaxed);
                     *self.retry.lock().unwrap() = None;
@@ -327,29 +331,32 @@ mod tests {
     }
     #[test]
     fn range_scans_occupied_ports_and_wraps() {
-        let ip = IpAddr::from([127, 0, 0, 1]);
-        // Obtain two adjacent test ports without depending on a globally fixed range.
-        let (busy, spare, first) = loop {
-            let busy = TcpListener::bind((ip, 0)).unwrap();
-            let port = busy.local_addr().unwrap().port();
-            if port < u16::MAX
-                && let Ok(other) = TcpListener::bind((ip, port + 1))
-            {
-                break (busy, other, port);
-            }
-        };
         let ports = Ports::new(Some(PortRange {
-            first,
-            last: first + 1,
+            first: 54000,
+            last: 54001,
         }))
         .unwrap();
-        assert!(ports.bind(ip).is_err());
+        let try_bind = |occupied: &[u16], port| {
+            if occupied.contains(&port) {
+                Err(io::Error::from(io::ErrorKind::AddrInUse))
+            } else {
+                Ok(port)
+            }
+        };
+        assert_eq!(
+            ports
+                .bind_with(|port| try_bind(&[54000, 54001], port))
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::AddrInUse
+        );
         assert!(ports.exhausted());
-        drop(spare);
-        let found = ports.bind(ip).unwrap();
-        assert_eq!(found.local_addr().unwrap().port(), first + 1);
+        assert_eq!(
+            ports.bind_with(|port| try_bind(&[54000], port)).unwrap(),
+            54001
+        );
         assert!(!ports.exhausted());
-        drop(busy);
-        assert_eq!(ports.bind(ip).unwrap().local_addr().unwrap().port(), first);
+        assert_eq!(ports.bind_with(Ok).unwrap(), 54000);
+        assert_eq!(Ports::new(None).unwrap().bind_with(Ok).unwrap(), 0);
     }
 }
