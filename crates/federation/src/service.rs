@@ -104,8 +104,7 @@ impl Federation {
                 } else {
                     Duration::from_secs(12)
                 };
-                let response = match timeout(limit, self.route(peer, request.map(Body::new)))
-                .await
+                let response = match timeout(limit, self.route(peer, request.map(Body::new))).await
                 {
                     Ok(Ok(response)) => response,
                     Ok(Err(e)) => {

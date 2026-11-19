@@ -48,7 +48,12 @@ impl PoolAdmin {
         let leader = self.members().await?.leader;
         let applied: Result<(), String> = self
             .0
-            .post(leader, "/internal/reconfigure", request, CHANGE_REQUEST + READ)
+            .post(
+                leader,
+                "/internal/reconfigure",
+                request,
+                CHANGE_REQUEST + READ,
+            )
             .await?;
         applied.map_err(anyhow::Error::msg)
     }
