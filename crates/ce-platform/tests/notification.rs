@@ -419,3 +419,72 @@ async fn party_notices_are_private_replayable_and_revoked_with_membership() {
     assert_eq!(outsider_event["text"]["type"], "stateUpdate");
     task.abort();
 }
+
+#[tokio::test]
+async fn match_acceptance_is_bound_to_the_supplied_offer() {
+    let temp = tempfile::tempdir().unwrap();
+    let database = temp.path().join("offer.sqlite");
+    let app = AppState::open(
+        PlatformConfig {
+            database_path: database.clone(),
+            public_address: "localhost:8443".into(),
+            seats_per_match: 3,
+        },
+        Arc::new(Host),
+    )
+    .unwrap();
+    let platform = Platform::new(
+        app,
+        Config {
+            authority: "localhost:8443".into(),
+            notify_authority: "localhost:8080".into(),
+        },
+        &[72; 32],
+        &database,
+        None,
+    )
+    .unwrap();
+    let api = platform.rpc();
+    let mut tokens = Vec::new();
+    for handle in ["North", "South", "West"] {
+        let player = guest(&api, handle).await;
+        let token = player["sessionToken"].clone();
+        rpc(&api, "joinLobby", json!([token, {"lobby":"5v5_pvp_casual"}])).await;
+        tokens.push(token);
+    }
+    let db = rusqlite::Connection::open(database).unwrap();
+    let offered: String = db
+        .query_row("SELECT id FROM matches WHERE phase='offered'", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    let accepted = || {
+        db.query_row(
+            "SELECT sum(accepted) FROM tickets WHERE match_id=?",
+            [&offered],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap()
+    };
+    for (wrong, code) in [
+        (json!(Uuid::new_v4()), -2),
+        (json!("malformed"), -32602),
+        (json!(1), -32602),
+    ] {
+        assert_eq!(
+            rpc_response(&api, "acceptMatch", json!([tokens[0], wrong])).await["code"],
+            code
+        );
+        assert_eq!(accepted(), 0);
+    }
+    for _ in 0..2 {
+        let response = rpc(&api, "acceptMatch", json!([tokens[0], offered])).await;
+        assert_eq!(response["returnValue"], true);
+        assert_eq!(accepted(), 1);
+    }
+    assert_eq!(
+        rpc(&api, "acceptMatch", json!([tokens[1], ""])).await["returnValue"],
+        true
+    );
+    assert_eq!(accepted(), 2);
+}

@@ -28,6 +28,8 @@ committed state changes.
 | Spectators | A confirmed friend on the player's home can watch a local or peer-hosted match through a dedicated read-only listener. A three-voter test covers roster ownership, snapshot delivery, revocation on visibility changes, and cleanup at settlement. Native spectator admission and friendships registered on different homes still need verification. |
 | Items, guilds, quests and accounts | SQLite transactions, permission and retry tests exercise the local rules. Operator-defined exchanges specify actual costs and rewards. Some archived methods have only static schema evidence. |
 
+The archived RPC traffic includes 15 successful `acceptMatch` calls with a second string argument. Eleven used a match UUID and four used an empty string; each returned boolean `true`. The CE handler now passes the supplied match ID to the platform's transactional offer check. A mismatched offer leaves the current match untouched. The observed empty-string form resolves the current offer. The existing session-only local form retains its session-envelope response.
+
 ## Match transport
 
 The [protocol crate](../crates/protocol/src/lib.rs) implements length framing,

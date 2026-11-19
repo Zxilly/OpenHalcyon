@@ -418,13 +418,24 @@ async fn dispatch(s: &Platform, m: &str, params: &[Value]) -> Result<(String, Va
             joined
         }
         "acceptMatch" => {
-            let room = profile
-                .lobby
-                .as_ref()
-                .and_then(|l| l.match_id)
-                .ok_or(Error::Invalid)?;
+            let requested = params
+                .get(1)
+                .map(|v| v.as_str().ok_or(Error::Invalid))
+                .transpose()?;
+            let room = match requested {
+                Some(raw) if !raw.is_empty() => Uuid::parse_str(raw).map_err(|_| Error::Invalid)?,
+                _ => profile
+                    .lobby
+                    .as_ref()
+                    .and_then(|l| l.match_id)
+                    .ok_or(Error::Invalid)?,
+            };
             s.accept(&session, room).await?;
-            s.start_session(&session, &s.app.profile(&session).await?)?
+            if requested.is_some() {
+                json!(true)
+            } else {
+                s.start_session(&session, &s.app.profile(&session).await?)?
+            }
         }
         "spectateFriend" => spectator::begin(s, &session, params).await?,
         "spectatorExitMatch" => spectator::exit(s, &session).await?,
