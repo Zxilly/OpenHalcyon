@@ -1,3 +1,6 @@
+mod federation;
+pub use federation::FederatedIntent;
+
 use std::{
     path::PathBuf,
     sync::{Arc, Mutex},
@@ -113,6 +116,17 @@ pub struct PlayerPage {
     pub players: Vec<PlayerProfile>,
 }
 
+pub struct PlayerActivity {
+    pub profile: PlayerProfile,
+    pub last_seen: i64,
+    pub online: bool,
+}
+
+pub struct PlatformCounts {
+    pub online_players: u64,
+    pub queued_players: u64,
+}
+
 fn parse_id(id: &str) -> Result<Uuid> {
     Uuid::parse_str(id).map_err(|_| PlatformError::WorkerUnavailable)
 }
@@ -126,6 +140,10 @@ pub struct AppState {
 }
 
 impl AppState {
+    pub fn seats_per_match(&self) -> usize {
+        self.config.seats_per_match
+    }
+
     pub fn open(config: PlatformConfig, host: Arc<dyn MatchHost>) -> Result<Self> {
         if !(1..=64).contains(&config.seats_per_match) {
             return Err(PlatformError::Invalid(
@@ -137,7 +155,8 @@ impl AppState {
             "PRAGMA journal_mode=WAL;
              PRAGMA foreign_keys=ON;
              CREATE TABLE IF NOT EXISTS players (
-                id TEXT PRIMARY KEY, name TEXT NOT NULL, recovery BLOB NOT NULL UNIQUE
+                id TEXT PRIMARY KEY, name TEXT NOT NULL, recovery BLOB NOT NULL UNIQUE,
+                last_seen INTEGER NOT NULL DEFAULT (unixepoch())
              );
              CREATE TABLE IF NOT EXISTS sessions (
                 key BLOB PRIMARY KEY, player TEXT NOT NULL UNIQUE REFERENCES players(id)
@@ -151,6 +170,13 @@ impl AppState {
                 player TEXT NOT NULL UNIQUE REFERENCES players(id), mode TEXT NOT NULL,
                 match_id TEXT REFERENCES matches(id), accepted INTEGER NOT NULL DEFAULT 0
              );
+             CREATE TABLE IF NOT EXISTS federated_intents (
+                ticket TEXT PRIMARY KEY, player TEXT NOT NULL UNIQUE REFERENCES players(id),
+                pool TEXT NOT NULL, mode TEXT NOT NULL, seats INTEGER NOT NULL,
+                accepted_match TEXT, cancel INTEGER NOT NULL DEFAULT 0, phase TEXT NOT NULL DEFAULT 'pending',
+                match_id TEXT, address TEXT, result TEXT
+             );
+             CREATE INDEX IF NOT EXISTS federated_intents_by_pool ON federated_intents(pool);
              CREATE TABLE IF NOT EXISTS events (
                 cursor INTEGER PRIMARY KEY AUTOINCREMENT,
                 player TEXT NOT NULL REFERENCES players(id), body TEXT NOT NULL
@@ -374,11 +400,17 @@ fn bearer(headers: &HeaderMap) -> Result<&str> {
 }
 
 fn player(db: &Connection, key: &[u8]) -> Result<String> {
-    db.query_row("SELECT player FROM sessions WHERE key=?", [key], |row| {
-        row.get(0)
-    })
-    .optional()?
-    .ok_or(PlatformError::Unauthorized)
+    let id: String = db
+        .query_row("SELECT player FROM sessions WHERE key=?", [key], |row| {
+            row.get(0)
+        })
+        .optional()?
+        .ok_or(PlatformError::Unauthorized)?;
+    db.execute(
+        "UPDATE players SET last_seen=unixepoch() WHERE id=? AND last_seen < unixepoch() - 15",
+        [&id],
+    )?;
+    Ok(id)
 }
 
 fn issue_session(tx: &Transaction<'_>, id: &str) -> Result<String> {
@@ -387,6 +419,7 @@ fn issue_session(tx: &Transaction<'_>, id: &str) -> Result<String> {
         "INSERT INTO sessions(key, player) VALUES(?, ?) ON CONFLICT(player) DO UPDATE SET key=excluded.key",
         params![digest(&token), id],
     )?;
+    tx.execute("UPDATE players SET last_seen=unixepoch() WHERE id=?", [id])?;
     Ok(token)
 }
 
@@ -473,9 +506,11 @@ impl AppState {
                 .map_err(|_| PlatformError::WorkerUnavailable)?;
             let id = player(&db, &key)?;
             db.query_row(
-                "SELECT p.id, p.name, t.mode, m.id, m.phase, m.address, m.result
+                "SELECT p.id, p.name, coalesce(t.mode, f.mode), coalesce(m.id, f.match_id), coalesce(m.phase, f.phase),
+                  coalesce(m.address, f.address), coalesce(m.result, f.result)
                  FROM players p LEFT JOIN tickets t ON t.player=p.id
-                 LEFT JOIN matches m ON m.id=t.match_id WHERE p.id=?",
+                 LEFT JOIN matches m ON m.id=t.match_id
+                 LEFT JOIN federated_intents f ON f.player=p.id AND f.phase<>'closed' WHERE p.id=?",
                 [&id],
                 read_profile,
             )
@@ -486,6 +521,75 @@ impl AppState {
 }
 
 impl AppState {
+    pub async fn player_activity(&self, id: Uuid) -> Result<Option<PlayerActivity>> {
+        self.run(move |state| {
+            let db = state
+                .db
+                .lock()
+                .map_err(|_| PlatformError::WorkerUnavailable)?;
+            let sql = format!("{ACTIVITY_QUERY} WHERE p.id=?");
+            db.query_row(&sql, [id.to_string()], read_activity)
+                .optional()
+                .map_err(Into::into)
+        })
+        .await
+    }
+
+    pub async fn player_activity_page(
+        &self,
+        after: Option<Uuid>,
+        online: Option<bool>,
+        limit: usize,
+    ) -> Result<Vec<PlayerActivity>> {
+        if !(1..=101).contains(&limit) {
+            return Err(PlatformError::Invalid("invalid activity page size"));
+        }
+        self.run(move |state| {
+            let db = state
+                .db
+                .lock()
+                .map_err(|_| PlatformError::WorkerUnavailable)?;
+            let sql = format!(
+                "{ACTIVITY_QUERY} WHERE p.id > ?1 AND (?2 IS NULL OR ({ONLINE_SQL}) = ?2)
+                 ORDER BY p.id LIMIT ?3"
+            );
+            let after = after.map_or_else(String::new, |id| id.to_string());
+            let mut statement = db.prepare(&sql)?;
+            statement
+                .query_map(params![after, online, limit], read_activity)?
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(Into::into)
+        })
+        .await
+    }
+
+    pub async fn counts(&self) -> Result<PlatformCounts> {
+        self.expire_offers().await?;
+        self.run(|state| {
+            let db = state
+                .db
+                .lock()
+                .map_err(|_| PlatformError::WorkerUnavailable)?;
+            let sql = format!(
+                "SELECT count(*) FILTER (WHERE {ONLINE_SQL}),
+                        count(*) FILTER (WHERE (t.player IS NOT NULL AND
+                          (t.match_id IS NULL OR m.phase IN ('offered', 'reserving')))
+                          OR f.phase IN ('pending', 'queued', 'offered'))
+                 FROM players p LEFT JOIN sessions s ON s.player=p.id
+                 LEFT JOIN tickets t ON t.player=p.id LEFT JOIN matches m ON m.id=t.match_id
+                 LEFT JOIN federated_intents f ON f.player=p.id"
+            );
+            db.query_row(&sql, [], |row| {
+                Ok(PlatformCounts {
+                    online_players: row.get(0)?,
+                    queued_players: row.get(1)?,
+                })
+            })
+            .map_err(Into::into)
+        })
+        .await
+    }
+
     pub async fn rename(&self, session_token: &str, name: String) -> Result<()> {
         let key = digest(session_token);
         let name = display_name(name)?;
@@ -524,9 +628,11 @@ impl AppState {
                 .map_err(|_| PlatformError::WorkerUnavailable)?;
             let total = db.query_row("SELECT count(*) FROM players", [], |row| row.get(0))?;
             let mut statement = db.prepare(
-                "SELECT p.id, p.name, t.mode, m.id, m.phase, m.address, m.result
+                "SELECT p.id, p.name, coalesce(t.mode, f.mode), coalesce(m.id, f.match_id), coalesce(m.phase, f.phase),
+                  coalesce(m.address, f.address), coalesce(m.result, f.result)
                  FROM players p LEFT JOIN tickets t ON t.player=p.id
                  LEFT JOIN matches m ON m.id=t.match_id
+                 LEFT JOIN federated_intents f ON f.player=p.id AND f.phase<>'closed'
                  ORDER BY p.rowid LIMIT ? OFFSET ?",
             )?;
             let players = statement
@@ -536,6 +642,23 @@ impl AppState {
         })
         .await
     }
+}
+
+const ONLINE_SQL: &str = "s.player IS NOT NULL AND p.last_seen >= unixepoch() - 90";
+const ACTIVITY_QUERY: &str =
+    "SELECT p.id, p.name, coalesce(t.mode, f.mode), coalesce(m.id, f.match_id), coalesce(m.phase, f.phase),
+                  coalesce(m.address, f.address), coalesce(m.result, f.result), p.last_seen,
+            s.player IS NOT NULL AND p.last_seen >= unixepoch() - 90
+     FROM players p LEFT JOIN sessions s ON s.player=p.id
+     LEFT JOIN tickets t ON t.player=p.id LEFT JOIN matches m ON m.id=t.match_id
+     LEFT JOIN federated_intents f ON f.player=p.id AND f.phase<>'closed'";
+
+fn read_activity(row: &rusqlite::Row<'_>) -> rusqlite::Result<PlayerActivity> {
+    Ok(PlayerActivity {
+        profile: read_profile(row)?,
+        last_seen: row.get(7)?,
+        online: row.get(8)?,
+    })
 }
 
 fn read_profile(row: &rusqlite::Row<'_>) -> rusqlite::Result<PlayerProfile> {
@@ -642,6 +765,13 @@ impl AppState {
         self.run(move |state| {
             state.transaction(|tx| {
                 let id = player(tx, &key)?;
+                if tx.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM federated_intents WHERE player=?)",
+                    [&id],
+                    |row| row.get(0),
+                )? {
+                    return Err(PlatformError::Conflict("player has a federated ticket"));
+                }
                 let inserted = tx.execute(
                     "INSERT INTO tickets(player, mode) VALUES(?, ?) ON CONFLICT(player) DO NOTHING",
                     params![id, mode],

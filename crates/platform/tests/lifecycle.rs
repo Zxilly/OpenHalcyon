@@ -152,3 +152,103 @@ async fn guest_rotation_match_acceptance_and_result_survive_reopen() {
     assert_eq!(events["events"][0]["body"]["type"], "match_playing");
     assert_eq!(events["events"][1]["body"]["type"], "match_finished");
 }
+
+#[tokio::test]
+async fn federation_intent_reopens_and_excludes_local_queue_until_confirmed_release() {
+    let directory = tempfile::tempdir().unwrap();
+    let config = PlatformConfig {
+        database_path: directory.path().join("platform.sqlite"),
+        public_address: "localhost:8000".into(),
+        seats_per_match: 2,
+    };
+    let pool = Uuid::new_v4();
+    let host = Arc::new(Host::default());
+    let state = AppState::open(config.clone(), host.clone()).unwrap();
+    let guest = state.create_guest("Remote".into()).await.unwrap();
+    let key = &guest.session_token;
+    let intent = state
+        .federated_join(key, pool, "cross_pool".into(), 2)
+        .await
+        .unwrap();
+    assert_eq!(intent.phase, "pending");
+    assert!(state.events(key, 0, false).await.unwrap().events.is_empty());
+    assert!(matches!(
+        state.join(key, "duo".into()).await,
+        Err(PlatformError::Conflict(_))
+    ));
+    assert!(matches!(
+        state
+            .federated_join(key, Uuid::new_v4(), "cross_pool".into(), 2)
+            .await,
+        Err(PlatformError::Conflict(_)),
+    ));
+    assert!(matches!(
+        state.federated_release(intent.ticket).await,
+        Err(PlatformError::Conflict(_))
+    ));
+
+    state
+        .federated_project(intent.ticket, "queued", None, None, None)
+        .await
+        .unwrap();
+    let match_id = Uuid::new_v4();
+    state
+        .federated_project(intent.ticket, "offered", Some(match_id), None, None)
+        .await
+        .unwrap();
+    state
+        .federated_action(intent.ticket, Some(match_id), false)
+        .await
+        .unwrap();
+    assert_eq!(state.counts().await.unwrap().queued_players, 1);
+    drop(state);
+
+    let state = AppState::open(config, host).unwrap();
+    let loaded = state.federated_intents(pool).await.unwrap().remove(0);
+    assert_eq!(loaded.ticket, intent.ticket);
+    assert_eq!(loaded.accepted_match, Some(match_id));
+    let address = Some("127.0.0.1:9000".into());
+    state
+        .federated_project(
+            intent.ticket,
+            "playing",
+            Some(match_id),
+            address.clone(),
+            None,
+        )
+        .await
+        .unwrap();
+    state
+        .federated_project(intent.ticket, "playing", Some(match_id), address, None)
+        .await
+        .unwrap();
+    let lobby = state.profile(key).await.unwrap().lobby.unwrap();
+    assert_eq!(lobby.phase, "playing");
+    assert_eq!(lobby.match_id, Some(match_id));
+    assert_eq!(state.counts().await.unwrap().queued_players, 0);
+    assert_eq!(
+        state
+            .events(key, 0, false)
+            .await
+            .unwrap()
+            .events
+            .iter()
+            .filter(|event| event.body["type"] == "match_playing")
+            .count(),
+        1,
+    );
+    state
+        .federated_project(
+            intent.ticket,
+            "finished",
+            Some(match_id),
+            None,
+            Some(json!({"winner":"blue"})),
+        )
+        .await
+        .unwrap();
+    state.federated_release(intent.ticket).await.unwrap();
+    assert!(state.federated_intent(key).await.unwrap().is_none());
+    assert!(state.profile(key).await.unwrap().lobby.is_none());
+    state.join(key, "duo".into()).await.unwrap();
+}
