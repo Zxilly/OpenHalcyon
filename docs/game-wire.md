@@ -136,6 +136,12 @@ On authoritative crystal defeat the game host sends the winning team's number (1
 **Final statistics coverage.** All seven archived ARAL endings and the Android Solo ending contain one 1,614-byte report body immediately before 0x03F1. The native reader consumes the first 1,612 bytes. Across these eight reports the 52 occupied player slots have team 1 or 2 and byte 255 at +0x50 plus the slot index. The 76 unused slots have player ID 0xffffffff, team 255 and byte zero in that column. Both report team IDs at +0x62c are present in all eight. The reader also exposes the four BE32 float bit patterns beginning at +0x63c. These feed minion damage ratios in the published Windows consumer. Their exact numerator and denominator assignments are unresolved. [Consumer analysis](https://github.com/TurnaboutHero/vainglory-replay-decoder/blob/f4743be743564e3aadef1566499fe25d9d0f9ffc/vg/docs/evidence/2026-09-08-endgame/native-static-analysis.md)
 
 Every report has 18–31 nonzero bytes in the additional player columns at +0x240 through +0x2ff and 25–67 nonzero bytes in +0x580 through +0x64b. The host lacks five-minute per-player farm and net-worth snapshots, the complete damage-type breakdown, and several team objective counters used by the native statistics consumer. Generating this report from the final roster or ordinary kills/deaths totals would lose these measurements.
+The protocol library can edit a caller-supplied, complete report through
+`MatchStatisticsMut`. Its checked setters update a selected occupied slot,
+team IDs or raw ratio inputs. Re-encoding retains unused slots, unidentified
+columns and the original padding. The live host has no complete source for
+these reports. [Statistics codec](../crates/protocol/src/statistics.rs)
+
 ## Solo replay and live position / actor declarations
 
 The 14 local Android Solo VGR chunks contain 140 full actor declarations

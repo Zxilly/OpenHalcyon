@@ -7,6 +7,8 @@ use blowfish::{
 use md5::{Digest, Md5};
 use std::io::{self, Read, Write};
 
+mod statistics;
+pub use statistics::{MatchStatistics, MatchStatisticsMut, PlayerStatistics};
 mod aral;
 pub use aral::AralRoster;
 mod live;
@@ -161,7 +163,7 @@ impl Message {
                 reason: b[4],
                 remaining: &b[5..],
             },
-            0x48d if matches!(b.len(), 1612 | 1614) => Fields::MatchStatistics(MatchStatistics(b)),
+            0x48d if statistics::complete(b) => Fields::MatchStatistics(MatchStatistics(b)),
             0x41a | 0x41b if b.len() == 14 => Fields::AbilityOverride {
                 actor: number(0)?,
                 key: number(4)?,
@@ -458,67 +460,6 @@ impl ActionWords<'_> {
     }
 }
 
-/// Structure-of-arrays record. Unknown columns and trailing bytes stay in Message::body.
-#[derive(Debug, PartialEq)]
-pub struct MatchStatistics<'a>(&'a [u8]);
-#[derive(Debug, PartialEq)]
-pub struct PlayerStatistics {
-    pub player: u32,
-    pub team: u8,
-    /// Raw +0x50 column. All eight observed reports used 255 for occupied slots and zero for unused slots.
-    pub slot_flag: u8,
-    pub damage_to_heroes: f32,
-    pub weapon_damage_to_heroes: f32,
-    pub crystal_damage_to_heroes: f32,
-    pub true_damage_to_heroes: f32,
-    pub damage_to_structures: f32,
-    pub ambient_gold_input: f32,
-    pub lane_farm_at_five: u16,
-    pub jungle_farm_at_five: u16,
-    pub net_worth_at_five: u16,
-    pub items: [u32; 10],
-}
-impl MatchStatistics<'_> {
-    /// Two wire team IDs associated with the report's team records.
-    pub fn team_ids(&self) -> [u8; 2] {
-        [self.0[0x62c], self.0[0x62d]]
-    }
-
-    /// Four original BE32 float bit patterns feeding two minion damage ratios.
-    /// The original numerator and denominator names remain unresolved.
-    pub fn minion_damage_ratio_inputs(&self) -> [u32; 4] {
-        std::array::from_fn(|i| {
-            let start = 0x63c + 4 * i;
-            u32::from_be_bytes(self.0[start..start + 4].try_into().unwrap())
-        })
-    }
-
-    /// Returns the raw slot, including any unused/sentinel player identifier.
-    pub fn slot(&self, i: usize) -> Option<PlayerStatistics> {
-        if i >= 16 {
-            return None;
-        }
-        let b = self.0;
-        let word = |p: usize| u32::from_be_bytes(b[p..p + 4].try_into().unwrap());
-        let float = |p: usize| f32::from_bits(word(p + 4 * i));
-        let half = |p: usize| u16::from_be_bytes(b[p + 2 * i..p + 2 * i + 2].try_into().unwrap());
-        Some(PlayerStatistics {
-            player: word(4 * i),
-            team: b[0x40 + i],
-            slot_flag: b[0x50 + i],
-            damage_to_heroes: float(0x60),
-            weapon_damage_to_heroes: float(0xa0),
-            crystal_damage_to_heroes: float(0xe0),
-            true_damage_to_heroes: float(0x120),
-            damage_to_structures: float(0x160),
-            ambient_gold_input: float(0x1a0),
-            lane_farm_at_five: half(0x1e0),
-            jungle_farm_at_five: half(0x200),
-            net_worth_at_five: half(0x220),
-            items: std::array::from_fn(|j| word(0x300 + 40 * i + 4 * j)),
-        })
-    }
-}
 /// Fields shared by the four captured Android Solo lane-minion templates.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LaneMinionSpawn {
