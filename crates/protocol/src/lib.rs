@@ -149,6 +149,48 @@ impl Message {
         };
         Ok(match self.opcode {
             0 => Fields::Clock(float(0)?),
+            0x3ef if b.is_empty() || (b.len() == 6 && b.iter().all(|&v| v == 0)) => {
+                Fields::HeaderOnly { remaining: b }
+            }
+            0x3f1 if matches!(b.len(), 5 | 6) => Fields::MatchRequest {
+                team_word: number(0)?,
+                reason: b[4],
+                remaining: &b[5..],
+            },
+            0x48d if matches!(b.len(), 1612 | 1614) => Fields::MatchStatistics(MatchStatistics(b)),
+            0x403 | 0x406 | 0x407 | 0x409 | 0x40e | 0x410 | 0x416 | 0x419 | 0x41f | 0x443
+            | 0x446 | 0x44c | 0x478 => {
+                // Actual endian-conversion boundaries in the 147219 dispatch branches.
+                let (words, has_halfword, bytes) = match self.opcode {
+                    0x403 | 0x44c => (5, false, 1),
+                    0x406 => (8, false, 0),
+                    0x407 => (4, false, 0),
+                    0x409 | 0x410 | 0x416 => (4, false, 1),
+                    0x40e => (6, true, 2),
+                    0x419 => (6, false, 0),
+                    0x41f | 0x446 => (2, false, 0),
+                    0x443 => (3, false, 0),
+                    0x478 => (2, false, 1),
+                    _ => unreachable!(),
+                };
+                let word_end = 4 * words;
+                let byte_start = word_end + 2 * usize::from(has_halfword);
+                let end = byte_start + bytes;
+                if b.len() != end && b.len() != (end + 2).next_multiple_of(8) - 2 {
+                    Fields::Opaque(b)
+                } else {
+                    Fields::ActionWords(ActionWords {
+                        words: b[..word_end].as_chunks::<4>().0,
+                        halfword: if has_halfword {
+                            Some(u16::from_be_bytes([b[word_end], b[word_end + 1]]))
+                        } else {
+                            None
+                        },
+                        bytes: &b[byte_start..end],
+                        remaining: &b[end..],
+                    })
+                }
+            }
             0x41a | 0x41b if b.len() == 14 => Fields::AbilityOverride {
                 actor: number(0)?,
                 key: number(4)?,
@@ -429,8 +471,76 @@ pub struct ControlEntry {
     pub flag: u8,
 }
 
+/// Endian-converted operands from an Android action reader. The opcode determines the layout.
+#[derive(Debug, PartialEq)]
+pub struct ActionWords<'a> {
+    words: &'a [[u8; 4]],
+    pub halfword: Option<u16>,
+    pub bytes: &'a [u8],
+    pub remaining: &'a [u8],
+}
+impl ActionWords<'_> {
+    pub fn words(&self) -> impl ExactSizeIterator<Item = u32> + '_ {
+        self.words.iter().copied().map(u32::from_be_bytes)
+    }
+}
+
+/// Structure-of-arrays record. Unknown columns and trailing bytes stay in Message::body.
+#[derive(Debug, PartialEq)]
+pub struct MatchStatistics<'a>(&'a [u8]);
+#[derive(Debug, PartialEq)]
+pub struct PlayerStatistics {
+    pub player: u32,
+    pub team: u8,
+    pub damage_to_heroes: f32,
+    pub weapon_damage_to_heroes: f32,
+    pub crystal_damage_to_heroes: f32,
+    pub true_damage_to_heroes: f32,
+    pub damage_to_structures: f32,
+    pub ambient_gold_input: f32,
+    pub lane_farm_at_five: u16,
+    pub jungle_farm_at_five: u16,
+    pub net_worth_at_five: u16,
+    pub items: [u32; 10],
+}
+impl MatchStatistics<'_> {
+    /// Returns the raw slot, including any unused/sentinel player identifier.
+    pub fn slot(&self, i: usize) -> Option<PlayerStatistics> {
+        if i >= 16 {
+            return None;
+        }
+        let b = self.0;
+        let word = |p: usize| u32::from_be_bytes(b[p..p + 4].try_into().unwrap());
+        let float = |p: usize| f32::from_bits(word(p + 4 * i));
+        let half = |p: usize| u16::from_be_bytes(b[p + 2 * i..p + 2 * i + 2].try_into().unwrap());
+        Some(PlayerStatistics {
+            player: word(4 * i),
+            team: b[0x40 + i],
+            damage_to_heroes: float(0x60),
+            weapon_damage_to_heroes: float(0xa0),
+            crystal_damage_to_heroes: float(0xe0),
+            true_damage_to_heroes: float(0x120),
+            damage_to_structures: float(0x160),
+            ambient_gold_input: float(0x1a0),
+            lane_farm_at_five: half(0x1e0),
+            jungle_farm_at_five: half(0x200),
+            net_worth_at_five: half(0x220),
+            items: std::array::from_fn(|j| word(0x300 + 40 * i + 4 * j)),
+        })
+    }
+}
 #[derive(Debug, PartialEq)]
 pub enum Fields<'a> {
+    HeaderOnly {
+        remaining: &'a [u8],
+    },
+    MatchRequest {
+        team_word: u32,
+        reason: u8,
+        remaining: &'a [u8],
+    },
+    ActionWords(ActionWords<'a>),
+    MatchStatistics(MatchStatistics<'a>),
     AbilityOverride {
         actor: u32,
         key: u32,
@@ -843,6 +953,98 @@ impl<R: Read> ReplayReader<R> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn action_layouts_convert_only_measured_operands() {
+        for (op, n, half, bytes) in [
+            (0x403, 5, false, 1),
+            (0x406, 8, false, 0),
+            (0x407, 4, false, 0),
+            (0x409, 4, false, 1),
+            (0x40e, 6, true, 2),
+            (0x410, 4, false, 1),
+            (0x416, 4, false, 1),
+            (0x419, 6, false, 0),
+            (0x41f, 2, false, 0),
+            (0x443, 3, false, 0),
+            (0x446, 2, false, 0),
+            (0x44c, 5, false, 1),
+            (0x478, 2, false, 1),
+        ] {
+            let words: Vec<_> = (0..n).map(|j| 0xa0123400u32 + j).collect();
+            let mut b: Vec<_> = words.iter().flat_map(|w| w.to_be_bytes()).collect();
+            if half {
+                b.extend(0xcde1u16.to_be_bytes());
+            }
+            b.extend([0x89, 0xab].into_iter().take(bytes));
+            let len = b.len();
+            let padded = (len + 2).next_multiple_of(8) - 2;
+            for size in [len, padded] {
+                b.resize(size, 0xa5);
+                let message = Message::new(op, b.as_slice());
+                let Fields::ActionWords(a) = message.fields().unwrap() else {
+                    panic!("opcode {op:x}")
+                };
+                assert_eq!(a.words().collect::<Vec<_>>(), words);
+                assert_eq!(a.halfword, half.then_some(0xcde1));
+                assert_eq!(a.bytes, &[0x89, 0xab][..bytes]);
+                assert_eq!(a.remaining, &b[len..]);
+            }
+            assert!(matches!(
+                Message::new(op, &b[..len - 1]).fields().unwrap(),
+                Fields::Opaque(_)
+            ));
+        }
+    }
+
+    #[test]
+    fn android_match_markers_and_sixteen_statistics_slots() {
+        assert!(matches!(
+            Message::new(0x3ef, [0; 6]).fields().unwrap(),
+            Fields::HeaderOnly { .. }
+        ));
+        assert!(matches!(
+            Message::new(0x3ef, [1; 6]).fields().unwrap(),
+            Fields::Opaque(_)
+        ));
+        assert!(matches!(
+            Message::new(0x3f1, [0x10, 0, 0, 2, 7, 0xaa])
+                .fields()
+                .unwrap(),
+            Fields::MatchRequest {
+                team_word: 0x10000002,
+                reason: 7,
+                remaining: [0xaa]
+            }
+        ));
+        let mut b = vec![0u8; 1614];
+        let i = 15;
+        b[4 * i..4 * i + 4].copy_from_slice(&0x10203040u32.to_be_bytes());
+        b[0x40 + i] = 2;
+        b[0xa0 + 4 * i..0xa4 + 4 * i].copy_from_slice(&123.5f32.to_be_bytes());
+        b[0x220 + 2 * i..0x222 + 2 * i].copy_from_slice(&0x1234u16.to_be_bytes());
+        let item = 0x300 + 40 * i + 9 * 4;
+        b[item..item + 4].copy_from_slice(&0xba987654u32.to_be_bytes());
+        let m = Message::new(0x48d, b.as_slice());
+        let Fields::MatchStatistics(stats) = m.fields().unwrap() else {
+            panic!()
+        };
+        let last = stats.slot(i).unwrap();
+        assert_eq!(
+            (
+                last.player,
+                last.team,
+                last.weapon_damage_to_heroes,
+                last.net_worth_at_five,
+                last.items[9]
+            ),
+            (0x10203040, 2, 123.5, 0x1234, 0xba987654)
+        );
+        assert!(stats.slot(16).is_none());
+        assert!(matches!(
+            Message::new(0x48d, &b[..1611]).fields().unwrap(),
+            Fields::Opaque(_)
+        ));
+    }
     #[test]
     fn game_setup_retains_raw_state_input_and_other_converted_words() {
         for state_input in [0u32, 1, 0x01020304] {

@@ -24,7 +24,7 @@ The local VGR export contains 153 modifier records (0x041C) and one item removal
 To verify the native handoff, a matching successful Android 147219 session would need to cover the lock acknowledgement, connection and channel order, initial replies and the first rendered battlefield. Complete message bodies, their directions and channel association are needed to compare that transition with replay initialization. The operator can decode locally and substitute consistent anonymous player identifiers.
 ## Read-only record variants
 
-A full pass over all 43,160 local VGR records using `ReplayReader` and `Message::fields` produced 43,061 typed records and 99 opaque records, with zero decoding errors. A typed record may expose only a prefix. `Message::body` retains the complete body, including padding.
+A full pass over all 43,160 local VGR records using `ReplayReader` and `Message::fields` produced 43,160 records with decoded structural fields or a confirmed header-only form and zero wholly opaque records, with zero decoding errors. A typed record may expose only a prefix. `Message::body` retains the complete body, including padding.
 
 | Opcode | Recovered fields and limits |
 | --- | --- |
@@ -40,7 +40,7 @@ Independent source details include the receiver's actor resolution, leading-text
 
 ## Health and death
 
-The local replay contains 1,735 health impacts (0x041E) and 102 death actions (0x0430). The 147219 reader consumes 16 structural bytes for an impact and eight for a death. The replay bodies contain 22 and 14 bytes respectively. The impact prefix contains target and source references, a signed float operand and three presentation fields. Death contains the dying actor and the raw source. The codec retains each suffix. [Native impact serializer and receiver](https://github.com/TurnaboutHero/vainglory-replay-decoder/blob/f4743be743564e3aadef1566499fe25d9d0f9ffc/vg/docs/impact_wire_2026-10-16/01_NATIVE.md) ¡¤ [Death evidence](https://github.com/TurnaboutHero/vainglory-replay-decoder/blob/f4743be743564e3aadef1566499fe25d9d0f9ffc/vg/docs/DEATH_EVENTS_2026-09-09.md)
+The local replay contains 1,735 health impacts (0x041E) and 102 death actions (0x0430). The 147219 reader consumes 16 structural bytes for an impact and eight for a death. The replay bodies contain 22 and 14 bytes respectively. The impact prefix contains target and source references, a signed float operand and three presentation fields. Death contains the dying actor and the raw source. The codec retains each suffix. [Native impact serializer and receiver](https://github.com/TurnaboutHero/vainglory-replay-decoder/blob/f4743be743564e3aadef1566499fe25d9d0f9ffc/vg/docs/impact_wire_2026-10-16/01_NATIVE.md) Â· [Death evidence](https://github.com/TurnaboutHero/vainglory-replay-decoder/blob/f4743be743564e3aadef1566499fe25d9d0f9ffc/vg/docs/DEATH_EVENTS_2026-09-09.md)
 
 The server sends negative applied damage and positive healing using the locally observed presentation tuple (5, 0, 0). Both actor references must be visible to the recipient. A victim visible on the previous tick remains eligible for its lethal impact and death. Spectators receive the full field of view, and per-player VGR recordings retain only combat events delivered to that player. The decoder's attack-target request (0x0424) and target-change action (0x0425) describe target selection. A corresponding CE input for a completed attack or ability cast still needs a trace linking the command to the action.
 
@@ -48,11 +48,11 @@ Hero deaths also emit the local modifier form with operand +1, layer 0 and opera
 
 ## Additional action records
 
-The native receiver's field conversions and the local replay agree on the following layouts. These paths are read-only. They preserve raw selectors, keys and unused bytes. [Native receiver branches and class associations](https://github.com/TurnaboutHero/vainglory-replay-decoder/blob/f4743be743564e3aadef1566499fe25d9d0f9ffc/vg/docs/vg-binary-event-candidates-2026-09-09-details.md) ¡¤ [Cooldown layouts](https://github.com/TurnaboutHero/vainglory-replay-decoder/blob/f4743be743564e3aadef1566499fe25d9d0f9ffc/vg/docs/COOLDOWN_EVENT_FIELDS_2026-10-14.md)
+The native receiver's field conversions and the local replay agree on the following layouts. These paths are read-only. They preserve raw selectors, keys and unused bytes. [Native receiver branches and class associations](https://github.com/TurnaboutHero/vainglory-replay-decoder/blob/f4743be743564e3aadef1566499fe25d9d0f9ffc/vg/docs/vg-binary-event-candidates-2026-09-09-details.md) Â· [Cooldown layouts](https://github.com/TurnaboutHero/vainglory-replay-decoder/blob/f4743be743564e3aadef1566499fe25d9d0f9ffc/vg/docs/COOLDOWN_EVENT_FIELDS_2026-10-14.md)
 
 | Records | Local evidence and interpretation |
 | --- | --- |
-| 0x040B, 0x0431, 0x042F, 0x0432 | Destroy, dead-state and undead-state records carry the actor reference. The respawn record also carries three position floats. In 55 same-chunk cases, the dead-state action followed the same actor's death by 1.73¨C4.25 seconds. The simulator has no separate dead-state transition at those delays. |
+| 0x040B, 0x0431, 0x042F, 0x0432 | Destroy, dead-state and undead-state records carry the actor reference. The respawn record also carries three position floats. In 55 same-chunk cases, the dead-state action followed the same actor's death by 1.73 to 4.25 seconds. The simulator has no separate dead-state transition at those delays. |
 | 0x040D, 0x0415, 0x043C | The projectile action has two reference words and a float. The ability action has an actor, another reference and a selector. Local selectors include 8 through 15. A cancellation exposes two reference words. These server-side records cannot identify the native client's ability-button command. |
 | 0x0428, 0x048A | Both cooldown records have an owner, lookup key and value. The shorter form adds a mode byte. The longer form adds a second float and six raw bytes. The key has no validated mapping to a specific local ability. |
 | 0x041A, 0x041B, 0x0441, 0x0445 | All 12 actor/key pairs from ability override records recur in clear-override records. Buff-duration and buff-cancel records share 26 actor/key pairs. All corresponding actor references occur in local spawn records. |
@@ -60,7 +60,30 @@ The native receiver's field conversions and the local replay agree on the follow
 | 0x03F9, 0x03FA, 0x03FB | The native movement receivers convert three floats after a selector, two references or one actor respectively. The decoder keeps the three values in wire order. |
 | 0x0434, 0x043A | Level and grant-ability records carry an actor and a 32-bit operand. The local level samples alone cannot distinguish an increment from an absolute level. |
 
-Remaining opaque records include less common projectile, scripted movement, buff, effects, match-state and aggregate statistics variants. A native class label and copied byte count alone cannot establish the assignment of application fields. In particular, the cumulative statistics record in the local corpus has only one example.
+## The final 99 replay records
+
+These counts cover one 14-chunk Android replay. The dispatch addresses refer to the original Android 147219 arm64 image. In the table, W denotes a 32-bit word explicitly converted from network order, H a converted 16-bit word, and B an unconverted byte. Values appear in wire order. The action reader exposes raw operands and preserves remaining bytes.
+
+| Opcode | Records | Android dispatch | Layout and corroboration |
+| --- | ---: | --- | --- |
+| 0x03EF | 1 | 0x82bfa8 | Header only. The Android constructor takes no data from the body. The single padded example has six zero bytes. Windows reports a one-byte formatter, so other padded variants stay opaque. |
+| 0x03F1 | 1 | 0x82bfc0 | One team word and a reason byte. Android takes the low byte of the word and the reason. The end-request class in Windows and the live Android control capture have different contexts. Recording continues after this record. |
+| 0x0403 | 11 | 0x82c92c | 5W + 1B, auto-move. Word 0 matches a spawned actor in all 11 records. |
+| 0x0406 | 10 | 0x82d048 | 8W, auto-orbit. Words 0 and 3 both match spawned actors in all 10 records. |
+| 0x0407 | 4 | 0x82ca1c | 4W, cancel-orbit. Word 0 matches a spawned actor in all four records. |
+| 0x0409 | 7 | 0x82ca60 | 4W + 1B, teleport. Word 0 matches a spawned actor in all seven records. |
+| 0x040E | 15 | 0x82bb60 | 6W + 1H + 2B, fire projectile. |
+| 0x0410 | 3 | 0x82cb58 | 4W + 1B, detonate projectile. |
+| 0x0416 | 21 | 0x82cba4 | 4W + 1B, play ability. Word 0 matches a spawned actor in all 21 records. |
+| 0x0419 | 1 | 0x82cc0c | 6W, location effect. Word 1 matches a spawned actor in this example. |
+| 0x041F | 6 | 0x82ccc0 | 2W passed separately to the game-mode-variable constructor. |
+| 0x0443 | 1 | 0x82d760 | 3W passed separately to the buff-stack constructor. |
+| 0x0446 | 1 | 0x82baa4 | 2W passed separately to the buff-timeout constructor. |
+| 0x044C | 2 | 0x82d3e0 | 5W + 1B, item activation. |
+| 0x0478 | 14 | 0x82cf5c | 2W + 1B, minimap phase. Word 0 matches a spawned actor in all 14 records. |
+| 0x048D | 1 | 0x82d8fc | 1,612 structural bytes. Android consumer 0x81DFC0 reads 16 player slots by column with ten BE32 item identifiers per slot. The decoder exposes verified player, team, damage, farm and net-worth columns, including unused slots. |
+
+The projectile owners, movement targets, ability inputs and remaining aggregate columns are unresolved. Actor matches establish value correspondence. Windows class names provide context for the independent Android field-width and endian-conversion evidence. The named statistics agree with Android offsets, strides, field widths and destination layout. [Action-family research](https://github.com/TurnaboutHero/vainglory-replay-decoder/blob/f4743be743564e3aadef1566499fe25d9d0f9ffc/vg/docs/vg-binary-event-candidates-2026-09-09-details.md) Â· [Statistics consumer research](https://github.com/TurnaboutHero/vainglory-replay-decoder/blob/f4743be743564e3aadef1566499fe25d9d0f9ffc/vg/docs/evidence/2026-09-08-endgame/native-static-analysis.md)
 
 ## Android draft settings and roster consumers
 
