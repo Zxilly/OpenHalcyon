@@ -108,10 +108,47 @@ impl Message {
                     .unwrap(),
             ))
         };
+        let number = |i: usize| -> io::Result<u32> {
+            Ok(u32::from_be_bytes(
+                b.get(i..i + 4)
+                    .ok_or(invalid("missing u32 field"))?
+                    .try_into()
+                    .unwrap(),
+            ))
+        };
+        let word = |i: usize| -> io::Result<u16> {
+            Ok(u16::from_be_bytes(
+                b.get(i..i + 2)
+                    .ok_or(invalid("missing u16 field"))?
+                    .try_into()
+                    .unwrap(),
+            ))
+        };
         Ok(match self.opcode {
             0 => Fields::Clock(float(0)?),
+            0x45e => Fields::HeroSelection {
+                template: number(0)?,
+                skin: number(4)?,
+            },
+            0x3f3 => Fields::Spawn {
+                template: word(2)?,
+                skin: number(4)?,
+                entity: word(10)?,
+                team: number(12)?,
+                x: float(18)?,
+                height: float(22)?,
+                z: float(26)?,
+                hp: float(42)?,
+                max_hp: float(46)?,
+            },
+            0x3ee => Fields::PlayerInfo {
+                entity: number(160)?,
+                template: number(164)?,
+                skin: number(168)?,
+            },
+
             6 => Fields::Heartbeat,
-            0x455 => Fields::HeroLock,
+            0x455 | 0x463 => Fields::HeroLock,
             0x3f4 => Fields::Movement {
                 x: float(0)?,
                 y: float(4)?,
@@ -143,12 +180,43 @@ impl Message {
 }
 #[derive(Debug, PartialEq)]
 pub enum Fields<'a> {
+    HeroSelection {
+        template: u32,
+        skin: u32,
+    },
+    Spawn {
+        template: u16,
+        skin: u32,
+        entity: u16,
+        team: u32,
+        x: f32,
+        height: f32,
+        z: f32,
+        hp: f32,
+        max_hp: f32,
+    },
+    PlayerInfo {
+        entity: u32,
+        template: u32,
+        skin: u32,
+    },
     Clock(f32),
     Heartbeat,
     HeroLock,
-    Movement { x: f32, y: f32 },
-    Position { entity: u16, x: f32, y: f32 },
-    EntityStat { entity: u16, value: f32, stat: u8 },
+    Movement {
+        x: f32,
+        y: f32,
+    },
+    Position {
+        entity: u16,
+        x: f32,
+        y: f32,
+    },
+    EntityStat {
+        entity: u16,
+        value: f32,
+        stat: u8,
+    },
     PlayerUuid(&'a str),
     HeroCatalog(&'a str),
     GameMode(&'a str),

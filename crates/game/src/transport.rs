@@ -104,11 +104,19 @@ pub(super) async fn serve(
 ) {
     let mut tasks = JoinSet::new();
     let mut tick = time::interval(Duration::from_millis(1000 / halcyon_sim::TICK_HZ));
-    tick.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
+    tick.set_missed_tick_behavior(time::MissedTickBehavior::Burst);
     loop {
         tokio::select! {
             _=stopped.changed()=>break,
-            _=tick.tick()=>room.lock().unwrap().tick(),
+            scheduled=tick.tick()=>{
+                {
+                    let mut state=room.lock().unwrap();let before=state.world.tick;state.tick();
+                    if state.world.tick!=before{let us=scheduled.elapsed().as_micros().min(u128::from(u64::MAX)) as u64;state.latency.observe(us);}
+                }
+                // Share the runtime with sockets and other rooms between catch-up ticks.
+                if scheduled.elapsed()>=tick.period(){tokio::task::yield_now().await;}
+
+            },
             res=listener.accept()=>match res{
                 Ok((sock,_)) if tasks.len()<64=>{tasks.spawn(connection(sock,room.clone(),manager.clone()));}
                 Ok(_)=>{}

@@ -77,10 +77,10 @@ async fn reservation_and_two_authenticated_sockets() {
     assert_eq!(&updated.body[17..19], &243u16.to_be_bytes());
     assert_eq!(&updated.body[21..25], &0xf240ebfeu32.to_be_bytes());
     control
-        .write_all(&c.encode(&Message::new(0x455, [0; 6])).unwrap())
+        .write_all(&c.encode(&Message::new(0x463, [0; 6])).unwrap())
         .await
         .unwrap();
-    until(&mut control, &c, 0x455).await;
+    until(&mut control, &c, 0x463).await;
     let mut game = login(&addr, player, &c).await;
     let info = until(&mut game, &c, 0x3ee).await;
     assert_eq!(&info.body[160..164], &1500u32.to_be_bytes());

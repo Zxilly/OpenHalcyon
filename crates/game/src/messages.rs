@@ -11,6 +11,26 @@ fn put_text(buf: &mut [u8], s: &str) {
     let n = s.len().min(buf.len());
     buf[..n].copy_from_slice(&s.as_bytes()[..n]);
 }
+fn mode_name(mode: &str) -> &'static str {
+    if mode.contains("aral") {
+        "*GameMode_Aral_Casual*"
+    } else {
+        "*GameMode_5v5_SoloBots*"
+    }
+}
+fn settings(seat: usize, mode: &str, draft: bool) -> Message {
+    let mut b = vec![0; 101];
+    b[..4].copy_from_slice(&u32::from(wire_id(seat as u32 + 1)).to_be_bytes());
+    put_text(&mut b[32..96], mode);
+    b[100] = 1;
+    if draft {
+        b[7] = 1;
+        b[10..12].fill(0xff);
+        b[16..18].fill(5);
+        b[96..100].copy_from_slice(&1f32.to_be_bytes());
+    }
+    Message::new(0x3e9, b)
+}
 pub fn setup(
     world: &World,
     players: &[Uuid],
@@ -19,20 +39,10 @@ pub fn setup(
     mode: &str,
     picks: &[Pick],
 ) -> Vec<Message> {
-    let game_mode = if mode.contains("aral") {
-        "*GameMode_Aral_Casual*"
-    } else {
-        "*GameMode_5v5_SoloBots*"
-    };
-    let mut settings = vec![0; 101];
-    settings[..4].copy_from_slice(&u32::from(wire_id(seat as u32 + 1)).to_be_bytes());
-    settings[7] = 1;
-    settings[10..12].fill(0xff);
-    settings[16..18].fill(5);
-    put_text(&mut settings[32..64], game_mode);
+    let game_mode = mode_name(mode);
     let mut mode = vec![0; 68];
     put_text(&mut mode[4..], game_mode);
-    let mut out = vec![Message::new(0x3e9, settings), Message::new(0x454, mode)];
+    let mut out = vec![settings(seat, game_mode, true), Message::new(0x454, mode)];
     for name in catalog {
         let mut b = vec![0; 32];
         put_text(&mut b, name);
@@ -66,7 +76,7 @@ pub fn snapshot(world: &World, players: &[Uuid], picks: &[Pick]) -> Message {
                 put_text(&mut r[25..57], "Guest");
                 put_text(&mut r[105..141], &uuid.to_string());
             } else {
-                put_text(&mut r[25..57], &format!("Ringo Bot {}", idx + 1));
+                put_text(&mut r[25..57], &format!("{} Bot", pick.name));
                 put_text(&mut r[105..141], "__Kindred_Player_Bot__");
             }
         }
@@ -102,7 +112,7 @@ pub fn spawn(e: &Entity, picks: &[Pick], data: Option<&halcyon_data::GameData>) 
             (190, unit.armor),
             (202, unit.shield),
             (214, unit.weapon),
-            (226, unit.range),
+            (226, 0.5),
         ] {
             b[offset..offset + 4].copy_from_slice(&value.to_be_bytes());
         }
@@ -158,16 +168,10 @@ pub(super) fn world_header(
     let mut out: Vec<_> = (0..10)
         .map(|i| info(world, players, picks, i, false))
         .collect();
-    out.push(setup(world, players, &[], seat, mode, picks).remove(0));
+    out.push(settings(seat, mode_name(mode), false));
+    let game_mode = mode_name(mode);
     let mut mode_name = vec![0; 69];
-    put_text(
-        &mut mode_name[..64],
-        if mode.contains("aral") {
-            "*GameMode_Aral_Casual*"
-        } else {
-            "*GameMode_5v5_SoloBots*"
-        },
-    );
+    put_text(&mut mode_name[..64], game_mode);
     mode_name[68] = 1;
     out.push(Message::new(0x46c, [0]));
     out.push(Message::new(0x46f, mode_name));

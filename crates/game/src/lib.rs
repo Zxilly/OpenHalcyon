@@ -9,7 +9,7 @@ use halcyon_sim::{Command, Event, Position, World};
 use messages::{setup, snapshot, spawn, wire_id, world_header};
 use serde_json::{Value, json};
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, VecDeque},
     net::{IpAddr, TcpListener},
     sync::{
         Arc, Mutex,
@@ -67,7 +67,36 @@ struct Pick {
     selected: bool,
     locked: bool,
 }
+#[derive(Default)]
+struct TickLatency {
+    count: u64,
+    total_us: u64,
+    max_us: u64,
+    misses: u64,
+    over40: u64,
+    recent: VecDeque<u64>,
+}
+impl TickLatency {
+    fn observe(&mut self, us: u64) {
+        self.count += 1;
+        self.total_us = self.total_us.saturating_add(us);
+        self.max_us = self.max_us.max(us);
+        self.over40 += u64::from(us > 40_000);
+        self.misses += u64::from(us > 1_000_000 / halcyon_sim::TICK_HZ);
+        if self.recent.len() == 1024 {
+            self.recent.pop_front();
+        }
+        self.recent.push_back(us);
+    }
+    fn report(&self) -> Value {
+        let mut recent: Vec<_> = self.recent.iter().copied().collect();
+        recent.sort_unstable();
+        let index = (recent.len() * 99).div_ceil(100).saturating_sub(1);
+        json!({"count":self.count,"totalUs":self.total_us,"maxUs":self.max_us,"missedDeadlines":self.misses,"over40ms":self.over40,"recentSampleCount":recent.len(),"p99Us":recent.get(index)})
+    }
+}
 struct Room {
+    latency: TickLatency,
     admitted: bool,
     data: Option<Arc<GameData>>,
     picks: Vec<Pick>,
@@ -313,35 +342,49 @@ impl Rooms {
         };
         let seed = req.match_id.as_u128() as u64;
         let n = req.players.len() as u8;
-        let world = match &self.0.data {
+        let mut world = match &self.0.data {
             Some(d) => World::from_data(seed, n, d).map_err(|_| PlatformError::HostUnavailable)?,
             None => World::new(seed, n),
         };
-        let mut catalog = vec!["*Ringo*".to_owned()];
-        if let Some(d) = &self.0.data {
-            for entry in &d.manifest {
-                if entry.path.starts_with("build://Characters/") && entry.name.len() <= 32 {
-                    catalog.push(entry.name.clone());
+        let mut picks = Vec::with_capacity(10);
+        for i in 0..10 {
+            let bot = i >= usize::from(n);
+            let mut name = "Ringo";
+            if bot
+                && let Some(d) = &self.0.data
+                && !d.hero_names.is_empty()
+            {
+                let idx = (seed as usize).wrapping_add(i * 7) % d.hero_names.len();
+                let candidate = &d.hero_names[idx];
+                if world.select_hero(i, candidate, d).is_ok() {
+                    name = candidate;
                 }
             }
-            catalog.sort();
-            catalog.dedup();
+            picks.push(Pick {
+                name: name.into(),
+                skin: halcyon_protocol::skin_hash(&format!("{name}_DefaultSkin")),
+                selected: bot,
+                locked: bot,
+            });
         }
+        let catalog = match &self.0.data {
+            Some(data) if !data.hero_names.is_empty() => data
+                .hero_names
+                .iter()
+                .map(|h| format!("*{h}*"))
+                .chain(data.skin_names.iter().cloned())
+                .collect(),
+            _ => vec!["*Ringo*".to_owned()],
+        };
         let listener = tokio::net::TcpListener::from_std(listener)
             .map_err(|_| PlatformError::HostUnavailable)?;
         let (stop, stopped) = watch::channel(false);
         let t = Utc::now();
         let mut room = Room {
+            latency: TickLatency::default(),
             admitted,
             data: self.0.data.clone(),
-            picks: (0..10)
-                .map(|i| Pick {
-                    name: "Ringo".into(),
-                    skin: halcyon_protocol::skin_hash("Ringo_DefaultSkin"),
-                    selected: i >= usize::from(n),
-                    locked: i >= usize::from(n),
-                })
-                .collect(),
+            picks,
             id: req.match_id,
             address: address.clone(),
             queue: req.mode,
@@ -375,6 +418,7 @@ impl Rooms {
 }
 impl Room {
     fn event(&mut self, kind: &str, message: &str, mut extra: Value) {
+        tracing::debug!(room=%self.id,kind,message,opcode=extra["opcode"].as_str(),channel=extra["channel"].as_str(),"room event");
         let o = extra.as_object_mut().unwrap();
         o.insert("seq".into(), json!(self.events.len() + 1));
         o.insert("kind".into(), json!(kind));
@@ -393,9 +437,10 @@ impl Room {
     fn view(&self, detail: bool) -> Value {
         let mut v = json!({"id":self.id,"queue":self.queue,"phase":self.phase,"createdAt":self.created.to_rfc3339(),"phaseSince":self.since.to_rfc3339(),
         "endedAt":self.ended.map(|x|x.to_rfc3339()),"endReason":self.reason,"humanPlayers":self.players.len(),"botPlayers":10-self.players.len(),"poolId":null});
+        v["tickLatency"] = self.latency.report();
         if detail {
             v["participants"]=Value::Array((0..10).map(|i|{let s=self.seats.get(i);
-            json!({"slot":i,"playerId":self.players.get(i),"homeInstanceId":null,"botProfile":if s.is_none(){Some("lane-v1")}else{None},"displayName":if s.is_some(){"Guest".into()}else{format!("Ringo Bot {}",i+1)},"hero":self.picks[i].name,"locked":s.is_none_or(|s|s.locked),"controlConnected":s.is_some_and(|s|s.peers[0].is_some()),"gameConnected":s.is_some_and(|s|s.peers[1].is_some()),"lastEventAt":s.and_then(|s|s.last).map(|x|x.to_rfc3339())})
+            json!({"slot":i,"playerId":self.players.get(i),"homeInstanceId":null,"botProfile":if s.is_none(){Some("lane-v1")}else{None},"displayName":if s.is_some(){"Guest".into()}else{format!("{} Bot",self.picks[i].name)},"hero":self.picks[i].name,"locked":s.is_none_or(|s|s.locked),"controlConnected":s.is_some_and(|s|s.peers[0].is_some()),"gameConnected":s.is_some_and(|s|s.peers[1].is_some()),"lastEventAt":s.and_then(|s|s.last).map(|x|x.to_rfc3339())})
         }).collect());
         }
         v
@@ -491,6 +536,14 @@ impl Room {
                     .to_be_bytes(),
             );
         }
+        if self.phase == "loading" {
+            roster.body[..4].copy_from_slice(
+                &(7. - self.phase_start.elapsed().as_secs_f32())
+                    .max(0.)
+                    .to_be_bytes(),
+            );
+            roster.body[4..8].copy_from_slice(&7f32.to_be_bytes());
+        }
         for (i, s) in self.seats.iter().enumerate() {
             if except != Some(i)
                 && let Some(p) = &s.peers[0]
@@ -508,14 +561,13 @@ impl Room {
         }
         let mut out = vec![];
         match m.fields()? {
-            Fields::Movement { x, y }
-                if (ch == 1 || self.seats[i].peers[1].is_none()) && self.phase == "running" =>
-            {
+            Fields::Movement { x, y } if ch == 1 && self.phase == "running" => {
                 let _ = self
                     .world
                     .command(i as u32 + 1, Command::MoveTo(Position { x, y }));
             }
             Fields::HeroLock if ch == 0 => {
+                let op = m.opcode;
                 out.push(m);
                 if !self.seats[i].locked {
                     self.seats[i].locked = true;
@@ -524,43 +576,15 @@ impl Room {
                     self.event(
                         "protocol",
                         "Hero locked",
-                        json!({"playerId":self.players[i],"opcode":"0x0455"}),
+                        json!({"playerId":self.players[i],"opcode":format!("0x{op:04X}")}),
                     );
                     out.push(self.roster_update(Some(i)));
                     if self.seats.iter().all(|s| s.locked) {
                         self.phase("loading");
-                        // Some CE builds continue on control. A separate game socket
-                        // will receive the same world header at its own attach time.
-                        for j in 0..self.seats.len() {
-                            if self.seats[j].peers[1].is_some() {
-                                continue;
-                            }
-                            let mut header = world_header(
-                                &self.world,
-                                &self.players,
-                                &self.picks,
-                                &self.queue,
-                                j,
-                            );
-                            header.extend(
-                                self.world
-                                    .entities
-                                    .iter()
-                                    .filter(|e| self.world.visible((j % 2) as u8, e))
-                                    .map(|e| spawn(e, &self.picks, self.data.as_deref())),
-                            );
-                            if j == i {
-                                out.extend(header);
-                            } else if let Some(peer) = &self.seats[j].peers[0] {
-                                peer.send(header);
-                            }
-                        }
                     }
                 }
             }
-            _ if m.opcode == 0x45e && ch == 0 && !self.seats[i].locked && m.body.len() >= 8 => {
-                let template = u32::from_be_bytes(m.body[..4].try_into().unwrap());
-                let skin = u32::from_be_bytes(m.body[4..8].try_into().unwrap());
+            Fields::HeroSelection { template, skin } if ch == 0 && !self.seats[i].locked => {
                 let name = if template == 243 {
                     Some("Ringo".to_owned())
                 } else {
@@ -592,6 +616,11 @@ impl Room {
                 }
                 out.push(m);
             }
+            _ if ch == 0 && m.opcode == 0x45f && m.body.len() >= 4 => {
+                self.picks[i].skin = u32::from_be_bytes(m.body[..4].try_into().unwrap());
+                out.push(self.roster_update(Some(i)));
+                out.push(m);
+            }
             Fields::Clock(_) | Fields::Heartbeat => out.push(m),
             _ if [0x458, 0x45e, 0x46b, 0x45f, 0x46e, 0x471, 0x46d].contains(&m.opcode) => {
                 out.push(m)
@@ -615,13 +644,13 @@ impl Room {
             self.stop.send_replace(true);
             return;
         }
-        if self.phase == "hero_select" && self.last_roster.elapsed().as_secs() >= 1 {
+        if matches!(self.phase, "hero_select" | "loading")
+            && self.last_roster.elapsed().as_secs() >= 1
+        {
             self.last_roster = Instant::now();
             self.roster_update(None);
         }
-        if self.phase == "loading" && self.phase_start.elapsed().as_secs() >= 2 {
-            self.phase("running");
-        }
+
         if self.phase != "running" {
             return;
         }
@@ -636,8 +665,7 @@ impl Room {
                 .collect()
         });
         for (i, seat) in self.seats.iter_mut().enumerate() {
-            let channel = usize::from(seat.peers[1].is_some());
-            let Some(peer) = &mut seat.peers[channel] else {
+            let Some(peer) = &mut seat.peers[1] else {
                 continue;
             };
             let mut out = vec![];
