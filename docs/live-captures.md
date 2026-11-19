@@ -217,6 +217,30 @@ Seven ARAL recordings establish the incoming network direction independently of 
 
 The protocol reader retains raw argument and coordinate bits and all trailing bytes. For `044C`, the independent receiver description in `REA_ITEM_ACTIVATION_2026-10-14.md` identifies a target in mode 0 and a position in mode 1. Mode 2 consumes neither. Other modes retain their raw operands. Independent documentation also describes compact outgoing request serializers. Implementing native player item use or reordering still requires a controlled client request tied to an owned item or slot and its resulting state change.
 
+### Item sales
+
+All four ARAL `044D` records were server-to-client. In every case the two
+big-endian words matched the actor and item instance of an earlier `043D`
+grant. Within 70 ms the same actor lost that instance via `044B`, followed by
+a stat-6 `041D` carrying the new balance (mode 1). The six trailing bytes
+were zero in these records. The typed reader also preserves nonzero suffixes.
+
+| Sold template | Balance immediately before sale | Reported balance | Difference |
+|---|---:|---:|---:|
+| 473 | 1661.25 | 1786.25 | 125 |
+| 463 | 1275 | 1625 | 350 |
+| 519 | 3695 | 4895 | 1200 |
+| 495 | 2210 | 2235 | 25 |
+
+The pre-sale balances use the 2000 ARAL opening balance and all preceding
+mode-0 stat-6 deltas for the same actor. The first three sales also reversed
+item stats through `041C`. The fourth had no accompanying stat reversal.
+No same-actor reorder occurred within two seconds of any sale. The seven
+client streams contain zero `044D` requests. These results support decoding
+a completed sale by owned instance. The client request path, sale eligibility
+and refund policy for other items remain unverified.
+
+
 
 All 41 actor-tagged notifications had a corresponding preceding server 0484
 with the same selector. Six applied to the receiving seat, 14 to other

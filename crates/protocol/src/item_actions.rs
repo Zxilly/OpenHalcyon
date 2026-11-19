@@ -2,6 +2,11 @@
 //! the network sender's identity nor that the server applied the command.
 #[derive(Debug, PartialEq)]
 pub enum ItemAction<'a> {
+    Sell {
+        actor: u32,
+        instance: u32,
+        suffix: &'a [u8],
+    },
     Reorder {
         actor: u32,
         slots: [u8; 2],
@@ -34,7 +39,7 @@ impl<'a> ItemAction<'a> {
         let prefix: usize = match op {
             0x438 => 6,
             0x448 => 4,
-            0x449 => 8,
+            0x449 | 0x44d => 8,
             0x44a => 16,
             0x44c => 21,
             _ => return None,
@@ -46,6 +51,11 @@ impl<'a> ItemAction<'a> {
         let word = |offset: usize| u32::from_be_bytes(body[offset..offset + 4].try_into().unwrap());
         let suffix = &body[prefix..];
         Some(match op {
+            0x44d => Self::Sell {
+                actor: word(0),
+                instance: word(4),
+                suffix,
+            },
             0x438 => Self::Reorder {
                 actor: word(0),
                 slots: [body[4], body[5]],
@@ -114,6 +124,7 @@ mod tests {
             (0x449, 8, 14),
             (0x44a, 16, 22),
             (0x44c, 21, 22),
+            (0x44d, 8, 14),
         ] {
             for size in [prefix, padded] {
                 let m = Message::new(op, &bytes[..size]);
@@ -137,6 +148,11 @@ mod tests {
                     0x44a => ItemAction::VectorRequest {
                         vector_bits: [0x80818283, 0x84858687, 0x88898a8b],
                         argument: 0x8c8d8e8f,
+                        suffix,
+                    },
+                    0x44d => ItemAction::Sell {
+                        actor: 0x80818283,
+                        instance: 0x84858687,
                         suffix,
                     },
                     _ => ItemAction::Activation {
