@@ -203,7 +203,7 @@ async fn federation_intent_reopens_and_excludes_local_queue_until_confirmed_rele
     assert_eq!(state.counts().await.unwrap().queued_players, 1);
     drop(state);
 
-    let state = AppState::open(config, host).unwrap();
+    let state = AppState::open(config.clone(), host.clone()).unwrap();
     let loaded = state.federated_intents(pool).await.unwrap().remove(0);
     assert_eq!(loaded.ticket, intent.ticket);
     assert_eq!(loaded.accepted_match, Some(match_id));
@@ -247,6 +247,29 @@ async fn federation_intent_reopens_and_excludes_local_queue_until_confirmed_rele
         )
         .await
         .unwrap();
+    let settled = state
+        .profile(key)
+        .await
+        .unwrap()
+        .lobby
+        .unwrap()
+        .settled_at_ms
+        .unwrap();
+    let reopened = AppState::open(config.clone(), host.clone()).unwrap();
+    reopened
+        .federated_project(
+            intent.ticket,
+            "finished",
+            Some(match_id),
+            None,
+            Some(json!({"winner":"blue"})),
+        )
+        .await
+        .unwrap();
+    let lobby = reopened.profile(key).await.unwrap().lobby.unwrap();
+    assert_eq!(lobby.settled_at_ms, Some(settled));
+    assert_eq!(lobby.match_id, Some(match_id));
+    assert_eq!(lobby.result, Some(json!({"winner":"blue"})));
     state.federated_release(intent.ticket).await.unwrap();
     assert!(state.federated_intent(key).await.unwrap().is_none());
     assert!(state.profile(key).await.unwrap().lobby.is_none());
@@ -561,7 +584,12 @@ async fn legacy_single_player_federation_ticket_migrates_without_reissuing() {
     {
         let db = rusqlite::Connection::open(&config.database_path).unwrap();
         db.execute_batch(
-            "DROP TABLE federated_queue_members;
+            "DROP TRIGGER native_offer_assignment;
+             DROP TRIGGER native_offer_accept;
+             DROP TABLE native_offer_seats;
+             DROP TRIGGER native_local_settlement;
+             DROP TABLE native_settlements;
+             DROP TABLE federated_queue_members;
              DROP TABLE federated_queue;
              ALTER TABLE tickets DROP COLUMN seat_limit;
              ALTER TABLE tickets DROP COLUMN difficulty;

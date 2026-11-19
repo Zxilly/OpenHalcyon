@@ -33,6 +33,18 @@ impl Platform {
         if rv["state"] == "pending_auto" {
             rv["numPlayers"] = json!(self.app.native_queue_party_size(key).await?);
         }
+        if rv["state"] == "post_match"
+            && let Some(settled) = p.lobby.as_ref().and_then(|l| l.settled_at_ms)
+            && let Some(stamp) = chrono::DateTime::from_timestamp_millis(settled)
+        {
+            let expiry_ms = settled + 100_000;
+            let remaining_ms = (expiry_ms - chrono::Utc::now().timestamp_millis()).max(0);
+            rv["ttl"] = json!(((remaining_ms + 999) / 1000).min(100));
+            rv["expiry"] = json!(expiry_ms as f64 / 1000.0);
+            rv["timestamp"] = json!(stamp.format("%m/%d/%y %H:%M:%S").to_string());
+            rv["site"] = json!("");
+            rv["notify"] = json!(true);
+        }
         if let Some(o) = self.native_offer(key, p).await? {
             let l = p.lobby.as_ref().expect("bound offer");
             rv["numPlayers"] = json!(o.seats.len());

@@ -15,6 +15,29 @@ pub struct NativeOffer {
 }
 
 pub(super) fn initialize(tx: &rusqlite::Transaction<'_>) -> Result<()> {
+    let had_settlements: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name='native_settlements')",
+        [], |row| row.get(0),
+    )?;
+    // Multiple home tickets may settle the same room. Keep the first committed
+    // local observation even if a later replay projects another ticket.
+    tx.execute_batch("CREATE TABLE IF NOT EXISTS native_settlements(
+            room TEXT PRIMARY KEY, at_ms INTEGER NOT NULL);
+        CREATE TRIGGER IF NOT EXISTS native_local_settlement AFTER UPDATE OF phase ON matches
+            WHEN NEW.phase='finished' AND OLD.phase<>'finished' BEGIN
+            INSERT OR IGNORE INTO native_settlements VALUES(NEW.id, CAST(unixepoch('subsec') * 1000 AS INTEGER)); END;
+        CREATE TRIGGER IF NOT EXISTS native_peer_settlement AFTER UPDATE OF phase ON federated_queue
+            WHEN NEW.phase='finished' AND OLD.phase<>'finished' AND NEW.match_id IS NOT NULL BEGIN
+            INSERT OR IGNORE INTO native_settlements VALUES(NEW.match_id, CAST(unixepoch('subsec') * 1000 AS INTEGER)); END;")?;
+    // Older versions did not persist a completion instant. Anchor outstanding
+    // results once at migration so repeated opens cannot restart their clock.
+    if !had_settlements {
+        tx.execute_batch("INSERT OR IGNORE INTO native_settlements
+        SELECT room, CAST(unixepoch('subsec') * 1000 AS INTEGER) FROM (
+          SELECT DISTINCT t.match_id AS room FROM tickets t JOIN matches m ON m.id=t.match_id WHERE m.phase='finished'
+          UNION SELECT match_id FROM federated_queue WHERE phase='finished' AND match_id IS NOT NULL
+        );")?;
+    }
     tx.execute_batch("CREATE TABLE IF NOT EXISTS native_offer_seats(
         room TEXT NOT NULL REFERENCES matches(id) ON DELETE CASCADE,
         player TEXT NOT NULL, entry TEXT NOT NULL, position INTEGER NOT NULL, accepted INTEGER NOT NULL,

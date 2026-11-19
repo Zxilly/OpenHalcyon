@@ -690,4 +690,47 @@ async fn aral_offer_projection_is_private_read_only_and_survives_reopen() {
     assert_eq!(end["returnValue"]["state"], "post_match");
     assert_eq!(end["returnValue"]["numPlayers"], 6);
     assert_eq!(end["returnValue"]["notify"], true);
+    let settled = end["returnValue"]["expiry"].as_f64().unwrap();
+    assert!(end["returnValue"]["ttl"].as_u64().unwrap() <= 100);
+    let stamp = end["returnValue"]["timestamp"].clone();
+    app.finish_match(room, json!({"winner":0})).unwrap();
+    drop(r);
+    drop(app);
+    let (_app, r) = open();
+    let resumed = rpc(&r, "startSessionForPlayer", json!([tokens[2]])).await;
+    assert_eq!(resumed["returnValue"]["expiry"], settled);
+    assert_eq!(resumed["returnValue"]["timestamp"], stamp);
+    // The two captured pairs retain an identical absolute expiry and timestamp.
+    let dbw = rusqlite::Connection::open(&db).unwrap();
+    dbw.execute(
+        "UPDATE native_settlements SET at_ms=at_ms-30000 WHERE room=?",
+        [room.to_string()],
+    )
+    .unwrap();
+    let aged = rpc(&r, "update", json!([tokens[2]])).await;
+    assert_eq!(aged["returnValue"]["expiry"], settled - 30.0);
+    assert!(aged["returnValue"]["ttl"].as_u64().unwrap() <= 70);
+    dbw.execute(
+        "UPDATE native_settlements SET at_ms=at_ms-100000 WHERE room=?",
+        [room.to_string()],
+    )
+    .unwrap();
+    let expired = rpc(&r, "update", json!([tokens[2]])).await;
+    assert_eq!(expired["returnValue"]["state"], "post_match");
+    assert_eq!(expired["returnValue"]["ttl"], 0);
+    let metrics = rpc(
+        &r,
+        "recordMatchExperienceMetrics",
+        json!([tokens[2], room, 0, "test-platform", "test-build", 1.25, 0]),
+    )
+    .await;
+    assert_eq!(metrics["code"], 0);
+    assert_eq!(metrics["returnValue"], json!({}));
+    let exit = rpc(&r, "notifyExitPostMatch", json!([tokens[2]])).await;
+    assert_eq!(exit["code"], 0);
+    assert_eq!(exit["returnValue"], json!({"success":true}));
+    assert_eq!(
+        rpc(&r, "update", json!([tokens[2]])).await["returnValue"]["state"],
+        "menus"
+    );
 }

@@ -136,6 +136,8 @@ pub struct Lobby {
     pub result: Option<Value>,
     #[serde(skip_serializing)]
     pub spectator_id: Option<Uuid>,
+    #[serde(skip_serializing)]
+    pub settled_at_ms: Option<i64>,
 }
 
 #[derive(Serialize)]
@@ -744,11 +746,12 @@ const ONLINE_SQL: &str = "s.player IS NOT NULL AND p.last_seen >= unixepoch() - 
 const PROFILE_FIELDS: &str =
     "p.id, p.name, coalesce(t.mode, f.mode, sm.mode, ps.mode), coalesce(m.id, f.match_id, sm.id, ps.match_id),
      coalesce(m.phase, f.phase, CASE WHEN sm.id IS NOT NULL OR ps.match_id IS NOT NULL THEN 'spectating' END),
-     coalesce(m.address, f.address, sp.address, ps.address), coalesce(m.result, f.result), coalesce(sp.spectator_id, ps.spectator_id)";
+     coalesce(m.address, f.address, sp.address, ps.address), coalesce(m.result, f.result), coalesce(sp.spectator_id, ps.spectator_id), settlement.at_ms";
 const PROFILE_JOINS: &str = "FROM players p LEFT JOIN sessions s ON s.player=p.id
      LEFT JOIN tickets t ON t.player=p.id LEFT JOIN matches m ON m.id=t.match_id
      LEFT JOIN federated_queue_members fm ON fm.player=p.id AND fm.released=0
      LEFT JOIN federated_queue f ON f.ticket=fm.ticket AND f.phase<>'closed'
+     LEFT JOIN native_settlements settlement ON settlement.room=coalesce(m.id,f.match_id)
      LEFT JOIN spectator_sessions sp ON sp.player=p.id AND sp.spectator_id IS NOT NULL
      LEFT JOIN matches sm ON sm.id=sp.match_id AND sm.phase='playing'
      LEFT JOIN pooled_spectators ps ON ps.player=p.id AND ps.spectator_id IS NOT NULL";
@@ -756,8 +759,8 @@ const PROFILE_JOINS: &str = "FROM players p LEFT JOIN sessions s ON s.player=p.i
 fn read_activity(row: &rusqlite::Row<'_>) -> rusqlite::Result<PlayerActivity> {
     Ok(PlayerActivity {
         profile: read_profile(row)?,
-        last_seen: row.get(8)?,
-        online: row.get(9)?,
+        last_seen: row.get(9)?,
+        online: row.get(10)?,
     })
 }
 
@@ -783,6 +786,7 @@ fn read_profile(row: &rusqlite::Row<'_>) -> rusqlite::Result<PlayerProfile> {
                 .get::<_, Option<String>>(4)?
                 .unwrap_or_else(|| "queued".into()),
             address: row.get(5)?,
+            settled_at_ms: row.get(8)?,
             spectator_id: row
                 .get::<_, Option<String>>(7)?
                 .as_deref()
