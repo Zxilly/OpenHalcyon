@@ -595,6 +595,7 @@ impl World {
                 && self.entities.iter().any(|a| {
                     a.team == team
                         && a.hp > 0.
+                        && (a.position.x - e.position.x).abs() <= SIGHT
                         && a.position.dist(e.position) <= SIGHT
                         && self.layout.clear(a.position, e.position)
                 }))
@@ -909,6 +910,52 @@ impl World {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn visibility_matches_radial_check_at_the_sight_boundary_and_during_play() {
+        fn baseline(world: &World, team: u8, entity: &Entity) -> bool {
+            entity.team == team
+                || (entity.hp > 0.
+                    && world.entities.iter().any(|ally| {
+                        ally.team == team
+                            && ally.hp > 0.
+                            && ally.position.dist(entity.position) <= SIGHT
+                            && world.layout.clear(ally.position, entity.position)
+                    }))
+        }
+        let mut world = World::new(1, 0);
+        for _ in 0..2000 {
+            world.step();
+            if world.tick.is_multiple_of(50) {
+                for entity in &world.entities {
+                    for team in 0..2 {
+                        assert_eq!(world.visible(team, entity), baseline(&world, team, entity));
+                    }
+                }
+            }
+        }
+        let mut world = World::new(1, 0);
+        world.entities.truncate(1);
+        world.entities[0].position = Position { x: 0., y: 0. };
+        let team = world.entities[0].team;
+        let mut enemy = world.entities[0].clone();
+        enemy.team = 1 - team;
+        for x in [
+            0.,
+            SIGHT.next_down(),
+            SIGHT,
+            SIGHT.next_up(),
+            -SIGHT,
+            -SIGHT.next_up(),
+            f32::MAX,
+            f32::NAN,
+        ] {
+            for y in [0., 0.001, SIGHT, SIGHT.next_up()] {
+                enemy.position = Position { x, y };
+                assert_eq!(world.visible(team, &enemy), baseline(&world, team, &enemy));
+            }
+        }
+    }
 
     #[test]
     fn only_the_hero_return_tick_emits_a_respawn_with_the_home_position() {
