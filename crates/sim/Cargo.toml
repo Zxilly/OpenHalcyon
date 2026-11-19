@@ -1,0 +1,8 @@
+[package]
+name = "halcyon-sim"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+halcyon-data = { path = "../data" }
+serde = { version = "1", features = ["derive"] }
