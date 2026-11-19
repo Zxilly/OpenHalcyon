@@ -84,6 +84,12 @@ impl Message {
             &bytes[2..],
         ))
     }
+    pub fn actor_visibility(actor: u32, index: u8, state: u8, masks: [u8; 2]) -> Self {
+        let mut body = [0; 14];
+        body[..4].copy_from_slice(&actor.to_be_bytes());
+        body[4..8].copy_from_slice(&[index, state, masks[0], masks[1]]);
+        Self::new(Opcode::EntityState as u16, body)
+    }
     /// The charge operand is an unsigned wire word; its interpretation depends on the mode.
     pub fn modify_ability_charges(owner: u32, ability_slot: u32, operand: u32, mode: u8) -> Self {
         let mut body = [0; 14];
@@ -332,6 +338,13 @@ impl Message {
                 x: float(1)?,
                 y: float(5)?,
                 remaining: &b[9..],
+            },
+            0x42b if matches!(b.len(), 8 | 14) => Fields::ActorVisibility {
+                actor: number(0)?,
+                index: b[4],
+                state: b[5],
+                masks: [b[6], b[7]],
+                remaining: &b[8..],
             },
             0x42b | 0x43e | 0x43f => Fields::EntityPrefix {
                 kind: Opcode::try_from(self.opcode).expect("matched known opcode"),
@@ -686,6 +699,13 @@ pub enum Fields<'a> {
     },
     ControlByte {
         value: u8,
+        remaining: &'a [u8],
+    },
+    ActorVisibility {
+        actor: u32,
+        index: u8,
+        state: u8,
+        masks: [u8; 2],
         remaining: &'a [u8],
     },
     EntityPrefix {
@@ -1310,6 +1330,28 @@ mod tests {
         }
     }
 
+    #[test]
+    fn actor_visibility_roundtrips_distinct_index_state_and_masks() {
+        let mut message = Message::actor_visibility(1500, 4, 1, [0x81, 0x42]);
+        assert_eq!(
+            message.body,
+            [0, 0, 5, 220, 4, 1, 0x81, 0x42, 0, 0, 0, 0, 0, 0]
+        );
+        for length in [14, 8] {
+            message.body[8..].fill(0x55);
+            message.body.truncate(length);
+            assert_eq!(
+                message.fields().unwrap(),
+                Fields::ActorVisibility {
+                    actor: 1500,
+                    index: 4,
+                    state: 1,
+                    masks: [0x81, 0x42],
+                    remaining: &message.body[8..],
+                }
+            );
+        }
+    }
     #[test]
     fn read_only_prefixes_and_compact_spawn_variants() {
         for (code, kind) in [

@@ -12,6 +12,7 @@ for individual actions is listed below.
 | Opcodes | Message | Implemented behavior and evidence |
 | --- | --- | --- |
 | 0x0005, 0x03E8 | Hello and player UUID | Control and game sockets are associated with the reserved player. The native client connected for the draft. |
+| 0x042B | Actor visibility mutation | The codec reads and writes actor ID, index, state bits and two independent mask bytes. A padded capture retains the six following bytes. The 3,999 Solo VGR records used eight index values, two state values, seven distinct first masks and one second mask. The meanings of individual bits for observer or team visibility remain unresolved. [Native field study](https://github.com/TurnaboutHero/vainglory-replay-decoder/blob/f4743be743564e3aadef1566499fe25d9d0f9ffc/vg/docs/NATIVE_EVENT_TRACE_2026-09-06.md) |
 | 0x0000, 0x0006 | Clock and heartbeat | Clock float and heartbeat are decoded and echoed. |
 | 0x03E9, 0x0454, 0x0453 | Setup, game mode, hero and skin catalog | Server sends mode settings and catalog strings before the draft roster. The Android client displayed the picker. |
 | 0x0459 | 5v5 draft roster | The server encodes timers and 16 seat records, including occupied seats, team, player or bot identity, template, skin and lock state. The native client displayed selections and lock confirmation. |
