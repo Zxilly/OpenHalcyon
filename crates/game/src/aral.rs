@@ -533,6 +533,54 @@ mod tests {
             .await;
             return;
         }
+        if !surrender {
+            let socket = &mut clients[0];
+            let learn = Message::new(0x0436, [1, 0, 0, 0, 0, 0]);
+            socket
+                .write_all(&cipher.encode(&learn).unwrap())
+                .await
+                .unwrap();
+            until(socket, &cipher, 0x043a).await;
+            let mut body = [0; 14];
+            body[4..8].copy_from_slice(&(-0.0_f32).to_be_bytes());
+            body[8..12].copy_from_slice(&0.88_f32.to_be_bytes());
+            body[12] = 3;
+            body[..4].copy_from_slice(&1000_f32.to_be_bytes());
+            let invalid = Message::new(0x0412, body);
+            socket
+                .write_all(&cipher.encode(&invalid).unwrap())
+                .await
+                .unwrap();
+            let barrier = Message::new(0, [0; 6]);
+            socket
+                .write_all(&cipher.encode(&barrier).unwrap())
+                .await
+                .unwrap();
+            loop {
+                let frame = next(socket, &cipher).await;
+                assert!(!matches!(frame.opcode, 0x0412 | 0x0416));
+                if frame == barrier {
+                    break;
+                }
+            }
+            body[..4].copy_from_slice(&(-74.0_f32).to_be_bytes());
+            let cast = Message::new(0x0412, body);
+            socket
+                .write_all(&cipher.encode(&cast).unwrap())
+                .await
+                .unwrap();
+            loop {
+                let frame = next(socket, &cipher).await;
+                assert_ne!(frame.opcode, 0x0416);
+                if frame.opcode == 0x0412 {
+                    assert_eq!(frame, cast);
+                    break;
+                }
+            }
+            let release = until(socket, &cipher, 0x0416).await;
+            assert_eq!(release.body[..4], 1500_u32.to_be_bytes());
+            assert_eq!(release.body[4..17], cast.body[..13]);
+        }
         let point =
             |x: f32, z: f32| Message::new(0x03f5, [x.to_be_bytes(), z.to_be_bytes()].concat());
         for (seat, x, z) in [(0, -74.0, 0.88), (3, 75.0, -5.06), (0, -74.0, 0.88)] {

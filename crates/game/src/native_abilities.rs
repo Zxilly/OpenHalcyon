@@ -85,6 +85,7 @@ pub(super) fn receive(room: &mut Room, seat: usize, channel: usize, m: Message) 
                         selector,
                     ),
                 });
+                return vec![m];
             }
             Vec::new()
         }
@@ -290,14 +291,14 @@ mod tests {
         room.tick();
         assert!(drain(&mut recipients[0]).is_empty());
 
-        assert!(room.receive(0, 0, cast.clone()).unwrap().is_empty());
+        assert_eq!(room.receive(0, 0, cast.clone()).unwrap(), [cast.clone()]);
         room.world.command(1, Command::Stop).unwrap();
         for _ in 0..12 {
             room.tick();
         }
         assert!(drain(&mut recipients[0]).is_empty());
         assert!(drain(&mut recipients[1]).is_empty());
-        assert!(room.receive(0, 0, cast.clone()).unwrap().is_empty());
+        assert_eq!(room.receive(0, 0, cast.clone()).unwrap(), [cast.clone()]);
         assert!(room.receive(0, 0, cast.clone()).unwrap().is_empty());
         assert!(drain(&mut recipients[0]).is_empty());
         for _ in 0..12 {
@@ -385,7 +386,12 @@ mod tests {
                 body[4] = 2;
                 Message::new(0x0411, body)
             };
-            room.receive(0, 0, packet).unwrap();
+            let response = room.receive(0, 0, packet.clone()).unwrap();
+            if selector < 2 {
+                assert_eq!(response, [packet]);
+            } else {
+                assert!(response.is_empty());
+            }
             assert!(
                 room.seats[0].native_abilities.cast.is_some(),
                 "selector {selector}"

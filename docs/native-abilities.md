@@ -55,7 +55,7 @@ Learning index 1 on an authenticated, registered native control seat
 spends an available skill point before confirming. Repeated learning in
 the same simulation tick receives no additional grant. Point casting uses
 the simulator's target, range, resource and cooldown checks. Only an
-authoritative release emits 0x0416 to the originating connection.
+authoritative release emits 0x0416 to the originating connection. All 15 observed accepted point-cast inputs first received a byte-identical 0x0412 on their originating connection. The room confirms that input at acceptance, including when a later interruption cancels the windup.
 Canceled windups and rejected inputs do not emit it. The capture does not establish the exact native stamina, collision or
 damage rules.
 
