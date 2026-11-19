@@ -190,8 +190,12 @@ def measure(args, root, humans, cpu):
             for prev, nxt in zip(active, active[1:])
         )
         byte_delta=end["client"]["gs_bytes"]-start["client"]["gs_bytes"]
+        frame_delta=end["client"]["frames"]-start["client"]["frames"]
+        cpu_delta=end["cpu_s"]-start["cpu_s"]
         report={"humans_per_room":humans,"bots_per_room":10-humans,"rooms":args.rooms,"duration_s":elapsed,
-            "logical_cpu":cpu,"commit_limit_bytes":1024**3,"server_cpu_percent":100*(end["cpu_s"]-start["cpu_s"])/elapsed,
+            "logical_cpu":cpu,"commit_limit_bytes":1024**3,"server_cpu_percent":100*cpu_delta/elapsed,
+            "server_cpu_seconds":cpu_delta,"decoded_gs_frames":frame_delta,"received_gs_bytes":byte_delta,
+            "server_cpu_us_per_decoded_frame":cpu_delta*1e6/frame_delta if frame_delta else None,
             "max_60s_server_cpu_percent":max(minute_cpu, default=None),
             "sampled_active_room_fraction":room_seconds/(args.rooms*elapsed),
             "load_tokio_workers":args.client_workers or len(args.client_cpus),
