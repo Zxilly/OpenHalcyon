@@ -14,16 +14,7 @@ pub struct BuffPrefix {
 
 impl BuffPrefix {
     pub fn duration(self) -> f32 {
-        let bits = self.duration_bits;
-        let sign = u32::from(bits & 0x8000) << 16;
-        let exponent = u32::from((bits >> 10) & 31);
-        let fraction = u32::from(bits & 1023);
-        let magnitude = match exponent {
-            0 => (fraction as f32 * 2f32.powi(-24)).to_bits(),
-            31 => 0x7f800000 | (fraction << 13),
-            _ => ((exponent + 112) << 23) | (fraction << 13),
-        };
-        f32::from_bits(sign | magnitude)
+        half::f16::from_bits(self.duration_bits).to_f32()
     }
 }
 
