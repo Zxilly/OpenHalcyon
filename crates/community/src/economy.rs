@@ -192,7 +192,7 @@ fn item_slot(tx: &Transaction<'_>, item: &str) -> Result<String> {
     )
 }
 
-fn add_item(tx: &Transaction<'_>, player: &str, item: &str, count: u32) -> Result<()> {
+pub(super) fn add_item(tx: &Transaction<'_>, player: &str, item: &str, count: u32) -> Result<()> {
     let updated = tx.execute(
         "INSERT INTO community_inventory(player,item,count) VALUES(?,?,?)
          ON CONFLICT(player,item) DO UPDATE SET count=count+excluded.count WHERE count+excluded.count <= 4294967295",

@@ -173,7 +173,16 @@ fn update(tx: &Transaction<'_>, kind: GroupKind, id: &str, settings: GroupSettin
         .transpose()?;
     let mode = settings
         .mode
-        .map(|value| validated(value, 32, false))
+        .map(|value| {
+            let value = validated(value, 32, false)?;
+            if !value
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
+            {
+                return Err(CommunityError::Invalid("invalid party queue mode"));
+            }
+            Ok(value)
+        })
         .transpose()?;
     tx.execute(
         "UPDATE community_groups SET name=coalesce(?, name),tag=coalesce(?, tag),motto=coalesce(?, motto),
@@ -319,6 +328,94 @@ fn apply_membership(
     }
 }
 
+fn join_guild(tx: &Transaction<'_>, actor: &str, group: Uuid) -> Result<Value> {
+    let id = group.to_string();
+    let private: bool = optional_row(
+        tx.query_row(
+            "SELECT invite_only FROM community_groups WHERE id=? AND kind='guild'",
+            [&id],
+            |row| row.get(0),
+        ),
+        "guild does not exist",
+    )?;
+    if private {
+        return Err(CommunityError::Forbidden);
+    }
+    join(tx, actor, &id, GroupKind::Guild)?;
+    group_info(tx, actor, &id)
+}
+
+fn leave_group(
+    tx: &Transaction<'_>,
+    actor: &str,
+    kind: GroupKind,
+    expected: Option<Uuid>,
+) -> Result<Value> {
+    let Some((id, role)) = membership(tx, actor, kind)? else {
+        return Ok(Value::Null);
+    };
+    if expected.is_some_and(|expected| expected.to_string() != id) {
+        return Err(CommunityError::Conflict(
+            "player is no longer in this guild",
+        ));
+    }
+    if kind == GroupKind::Party {
+        ensure_unlocked(tx, &id)?;
+    }
+    if role == "owner" {
+        let successor: Option<String> = tx
+            .query_row(
+                "SELECT player FROM community_members WHERE group_id=? AND player<>?
+             ORDER BY role='officer' DESC,rowid LIMIT 1",
+                params![id, actor],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if let Some(successor) = successor {
+            tx.execute(
+                "UPDATE community_members SET role='owner' WHERE group_id=? AND player=?",
+                params![id, successor],
+            )?;
+        } else {
+            tx.execute("DELETE FROM community_groups WHERE id=?", [&id])?;
+            return Ok(Value::Null);
+        }
+    }
+    remove(tx, &id, actor)?;
+    Ok(Value::Null)
+}
+
+fn update_party(
+    tx: &Transaction<'_>,
+    actor: &str,
+    mode: Option<String>,
+    open: Option<bool>,
+) -> Result<Value> {
+    if mode.is_none() && open.is_none() {
+        return Err(CommunityError::Invalid("party state update is empty"));
+    }
+    let (id, role) = member(tx, actor, GroupKind::Party)?;
+    require_owner(&role)?;
+    if mode.is_some() {
+        update(
+            tx,
+            GroupKind::Party,
+            &id,
+            GroupSettings {
+                mode,
+                ..Default::default()
+            },
+        )?;
+    }
+    if let Some(open) = open {
+        tx.execute(
+            "UPDATE community_groups SET lobby_open=? WHERE id=?",
+            params![open, id],
+        )?;
+    }
+    group_info(tx, actor, &id)
+}
+
 pub(crate) fn execute(tx: &Transaction<'_>, actor: &str, action: Action) -> Result<Value> {
     match action {
         Action::CreateGroup {
@@ -373,21 +470,11 @@ pub(crate) fn execute(tx: &Transaction<'_>, actor: &str, action: Action) -> Resu
         Action::ResolveInvite { group, accept } => {
             apply_membership(tx, actor, group.to_string(), accept)
         }
-        Action::JoinOpenGuild { group } => {
-            let id = group.to_string();
-            let private: bool = optional_row(
-                tx.query_row(
-                    "SELECT invite_only FROM community_groups WHERE id=? AND kind='guild'",
-                    [&id],
-                    |row| row.get(0),
-                ),
-                "guild does not exist",
-            )?;
-            if private {
-                return Err(CommunityError::Forbidden);
-            }
-            join(tx, actor, &id, GroupKind::Guild)?;
-            group_info(tx, actor, &id)
+        Action::JoinOpenGuild { group } | Action::ChangeGuildMembership { group, join: true } => {
+            join_guild(tx, actor, group)
+        }
+        Action::ChangeGuildMembership { group, join: false } => {
+            leave_group(tx, actor, GroupKind::Guild, Some(group))
         }
         Action::JoinPartyByCode { code } => {
             let code = validated(code, 32, true)?.to_ascii_uppercase();
@@ -402,35 +489,7 @@ pub(crate) fn execute(tx: &Transaction<'_>, actor: &str, action: Action) -> Resu
             join(tx, actor, &id, GroupKind::Party)?;
             group_info(tx, actor, &id)
         }
-        Action::LeaveGroup { kind } => {
-            let Some((id, role)) = membership(tx, actor, kind)? else {
-                return Ok(Value::Null);
-            };
-            if kind == GroupKind::Party {
-                ensure_unlocked(tx, &id)?;
-            }
-            if role == "owner" {
-                let successor: Option<String> = tx
-                    .query_row(
-                        "SELECT player FROM community_members WHERE group_id=? AND player<>?
-                     ORDER BY role='officer' DESC,rowid LIMIT 1",
-                        params![id, actor],
-                        |row| row.get(0),
-                    )
-                    .optional()?;
-                if let Some(successor) = successor {
-                    tx.execute(
-                        "UPDATE community_members SET role='owner' WHERE group_id=? AND player=?",
-                        params![id, successor],
-                    )?;
-                } else {
-                    tx.execute("DELETE FROM community_groups WHERE id=?", [&id])?;
-                    return Ok(Value::Null);
-                }
-            }
-            remove(tx, &id, actor)?;
-            Ok(Value::Null)
-        }
+        Action::LeaveGroup { kind } => leave_group(tx, actor, kind, None),
         Action::DisbandGroup { kind } => {
             let (id, role) = member(tx, actor, kind)?;
             require_owner(&role)?;
@@ -555,15 +614,8 @@ pub(crate) fn execute(tx: &Transaction<'_>, actor: &str, action: Action) -> Resu
             }
             group_info(tx, actor, &id)
         }
-        Action::SetPartyLobby { open } => {
-            let (id, role) = member(tx, actor, GroupKind::Party)?;
-            require_owner(&role)?;
-            tx.execute(
-                "UPDATE community_groups SET lobby_open=? WHERE id=?",
-                params![open, id],
-            )?;
-            group_info(tx, actor, &id)
-        }
+        Action::SetPartyLobby { open } => update_party(tx, actor, None, Some(open)),
+        Action::UpdatePartyState { mode, open } => update_party(tx, actor, mode, open),
         _ => Err(CommunityError::Invalid("invalid group action")),
     }
 }

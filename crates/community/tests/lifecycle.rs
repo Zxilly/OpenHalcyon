@@ -373,3 +373,172 @@ async fn quests_and_inventory_can_only_be_earned_once() {
     let loadout = store.execute(actor, Action::Inventory).await.unwrap();
     assert_eq!(loadout["items"][0]["count"], 3);
 }
+
+#[tokio::test]
+async fn configured_guild_rewards_require_membership_and_bonus_is_lifetime() {
+    use halcyon_community::Recipe;
+    use std::collections::BTreeMap;
+
+    let store = Community::open(":memory:".as_ref()).unwrap();
+    let ids = players(&store, &["Organizer", "Joiner"]).await;
+    let [organizer, joiner] = ids[..] else {
+        unreachable!()
+    };
+    store
+        .define_item(ItemDefinition {
+            id: "crest".into(),
+            slot: "badge".into(),
+            name: "Guild crest".into(),
+        })
+        .await
+        .unwrap();
+    let reward = Recipe {
+        cost: BTreeMap::new(),
+        reward: BTreeMap::from([("crest".into(), 1)]),
+        limit: Some(1),
+    };
+    let claim = |receipt, sku: &str| {
+        store.redeem(
+            joiner,
+            "guildCollectJoinBonus".into(),
+            sku.to_owned(),
+            [receipt; 32],
+            reward.clone(),
+        )
+    };
+    assert!(matches!(
+        claim(1, "initial").await,
+        Err(CommunityError::Forbidden)
+    ));
+    let guild = store
+        .execute(
+            organizer,
+            Action::CreateGroup {
+                kind: GroupKind::Guild,
+                name: "Harbor Guild".into(),
+                settings: GroupSettings {
+                    invite_only: Some(false),
+                    ..Default::default()
+                },
+            },
+        )
+        .await
+        .unwrap();
+    let id = Uuid::parse_str(guild["id"].as_str().unwrap()).unwrap();
+    let search = store
+        .execute(
+            joiner,
+            Action::SearchGuilds {
+                term: "harbor".into(),
+                limit: 10,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(search["items"][0]["id"], id.to_string());
+    store
+        .execute(
+            joiner,
+            Action::ChangeGuildMembership {
+                group: id,
+                join: true,
+            },
+        )
+        .await
+        .unwrap();
+    claim(1, "initial").await.unwrap();
+    claim(1, "initial").await.unwrap();
+    assert!(matches!(
+        claim(2, "alternate").await,
+        Err(CommunityError::Conflict(_))
+    ));
+    assert_eq!(
+        store.execute(joiner, Action::Inventory).await.unwrap()["items"][0]["count"],
+        1
+    );
+    assert!(matches!(
+        store
+            .execute(
+                joiner,
+                Action::ChangeGuildMembership {
+                    group: Uuid::new_v4(),
+                    join: false
+                }
+            )
+            .await,
+        Err(CommunityError::Conflict(_)),
+    ));
+    store
+        .execute(
+            joiner,
+            Action::ChangeGuildMembership {
+                group: id,
+                join: false,
+            },
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        store
+            .redeem(
+                joiner,
+                "guildRedeemChest".into(),
+                "basic".into(),
+                [3; 32],
+                reward
+            )
+            .await,
+        Err(CommunityError::Forbidden),
+    ));
+}
+
+#[tokio::test]
+async fn quint_state_is_owner_only_and_updates_atomically() {
+    let store = Community::open(":memory:".as_ref()).unwrap();
+    let ids = players(&store, &["Organizer", "Joiner"]).await;
+    let [organizer, joiner] = ids[..] else {
+        unreachable!()
+    };
+    let kind = GroupKind::Party;
+    let group = store
+        .execute(
+            organizer,
+            Action::CreateGroup {
+                kind,
+                name: "Scrimmage".into(),
+                settings: GroupSettings::default(),
+            },
+        )
+        .await
+        .unwrap();
+    store
+        .execute(
+            joiner,
+            Action::JoinPartyByCode {
+                code: group["joinCode"].as_str().unwrap().into(),
+            },
+        )
+        .await
+        .unwrap();
+    let update = |mode: &str| Action::UpdatePartyState {
+        mode: Some(mode.into()),
+        open: Some(true),
+    };
+    assert!(matches!(
+        store.execute(joiner, update("practice")).await,
+        Err(CommunityError::Forbidden)
+    ));
+    assert!(matches!(
+        store.execute(organizer, update("invalid mode")).await,
+        Err(CommunityError::Invalid(_))
+    ));
+    let previous = store
+        .execute(organizer, Action::Group { kind })
+        .await
+        .unwrap();
+    assert_eq!(previous["lobbyOpen"], false);
+    assert_eq!(previous["mode"], "");
+    let updated = store.execute(organizer, update("practice")).await.unwrap();
+    assert_eq!(updated["lobbyOpen"], true);
+    assert_eq!(updated["mode"], "practice");
+}

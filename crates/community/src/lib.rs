@@ -1,10 +1,13 @@
 mod economy;
+mod exchange;
 mod groups;
 pub mod queue;
 mod social;
 
 pub use economy::{ItemDefinition, QuestDefinition};
+pub use exchange::Recipe;
 pub use groups::{GroupKind, GroupSettings, Role};
+pub use social::may_spectate;
 
 use std::{
     path::Path,
@@ -87,6 +90,10 @@ pub enum Action {
     JoinOpenGuild {
         group: Uuid,
     },
+    ChangeGuildMembership {
+        group: Uuid,
+        join: bool,
+    },
     JoinPartyByCode {
         code: String,
     },
@@ -120,6 +127,10 @@ pub enum Action {
     BalanceParty,
     SetPartyLobby {
         open: bool,
+    },
+    UpdatePartyState {
+        mode: Option<String>,
+        open: Option<bool>,
     },
     Inventory,
     Equip {
@@ -220,6 +231,7 @@ impl Community {
              );",
         )?;
         queue::initialize(&db)?;
+        exchange::initialize(&db)?;
         Ok(Self(Arc::new(Mutex::new(db))))
     }
 

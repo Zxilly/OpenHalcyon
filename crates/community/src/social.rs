@@ -173,3 +173,16 @@ fn friends(tx: &Transaction<'_>, actor: &str) -> Result<Value> {
         .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(json!({ "friends":contacts, "requests":requests }))
 }
+
+/// Check friendship and the target's opt-out on the platform's current transaction.
+pub fn may_spectate(db: &rusqlite::Connection, viewer: &str, friend: &str) -> Result<bool> {
+    db.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM community_friends f JOIN community_players p ON p.id=f.friend
+            WHERE f.player=? AND f.friend=? AND p.invisible=0
+         )",
+        params![viewer, friend],
+        |row| row.get(0),
+    )
+    .map_err(Into::into)
+}
