@@ -6,6 +6,7 @@ mod aral;
 mod commands;
 mod compact;
 mod messages;
+mod native_abilities;
 mod observer;
 mod point_move;
 mod recording;
@@ -78,6 +79,7 @@ struct Seat {
     control_world: bool,
     scene_written: bool,
     world_actor_written: bool,
+    native_abilities: native_abilities::NativeAbilities,
     peers: [Option<Peer>; 2],
     last: Option<DateTime<Utc>>,
     seen: [HashSet<u16>; 2],
@@ -998,6 +1000,12 @@ impl Room {
             }
             Fields::Live(halcyon_protocol::LiveFields::MovePoint { .. })
                 if ch == 0 && (legacy || solo_scene) => {}
+            Fields::Live(
+                halcyon_protocol::LiveFields::LearnSelection(_)
+                | halcyon_protocol::LiveFields::AbilityPoint { .. },
+            ) if game => {
+                out = native_abilities::receive(self, i, ch, m);
+            }
             Fields::Live(request) if game => {
                 if let Some(command) = commands::from_live(request) {
                     let aral_target = legacy && ch == 0 && matches!(command, Command::Attack(_));
@@ -1178,6 +1186,7 @@ impl Room {
             scene::initial_structures(self);
         }
         let events = self.world.step();
+        native_abilities::publish(self, &events);
         self.tick_observers(&events);
         for event in &events {
             match *event {
