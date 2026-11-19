@@ -3,6 +3,7 @@ mod admission;
 pub use admission::{AdmissionPolicy, PortRange, ResourceMetrics};
 mod aral;
 mod commands;
+mod compact;
 mod messages;
 mod observer;
 mod recording;
@@ -1060,6 +1061,9 @@ impl Room {
         // The world advances once the selected transport has confirmed admission.
         if self.phase != "running" {
             return;
+        }
+        if self.world.tick == 0 && self.solo_scene() && self.seats[0].control_world {
+            scene::initial_structures(self);
         }
         let events = self.world.step();
         self.tick_observers(&events);

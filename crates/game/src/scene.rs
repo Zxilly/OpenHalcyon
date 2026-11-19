@@ -89,6 +89,29 @@ pub(super) fn solo_opening(room: &mut Room, seat: usize) -> Batch {
     out
 }
 
+/// First authoritative tick, before stepping the pristine world. Mark only structures
+/// actually sent to this team; normal replication handles everything else.
+pub(super) fn initial_structures(room: &mut Room) {
+    let Some(peer) = room.seats[0].gameplay_peer() else {
+        return;
+    };
+    let team = room.world.entities[0].team;
+    let known = &mut room.visible[usize::from(team)];
+    let mut batch = Vec::new();
+    for entity in &room.world.entities {
+        if !known.contains(&entity.id)
+            && room.world.visible(team, entity)
+            && let Some(message) = super::compact::initial_structure(room.world.tick, entity)
+        {
+            known.insert(entity.id);
+            batch.push(message);
+        }
+    }
+    if !batch.is_empty() {
+        peer.send(super::transport::Delivery::Private(batch));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -189,12 +212,18 @@ mod tests {
             }
             assert_eq!(next(&mut socket, &cipher).await.opcode, 0x451);
             let mut hero_ids = Vec::new();
+            let mut full_structures = Vec::new();
             loop {
                 let m = next(&mut socket, &cipher).await;
                 if m.opcode == 0x46e {
                     break;
                 }
+                assert_ne!(m.opcode, 0x3f2);
                 if m.opcode == 0x3f3 {
+                    let template = u16::from_be_bytes(m.body[2..4].try_into().unwrap());
+                    if matches!(template, 295 | 296 | 340) {
+                        full_structures.push(template);
+                    }
                     let id = u16::from_be_bytes(m.body[10..12].try_into().unwrap());
                     if (1500..1510).contains(&id) {
                         hero_ids.push(id);
@@ -203,8 +232,11 @@ mod tests {
             }
             if reconnect {
                 assert!(hero_ids.len() < 10 && hero_ids.contains(&1500));
+                full_structures.sort_unstable();
+                assert_eq!(full_structures, [295, 340]);
             } else {
                 assert_eq!(hero_ids.len(), 10);
+                assert!(full_structures.is_empty());
                 assert_eq!(shared.lock().unwrap().world.tick, 0);
                 let (tx, _) = mpsc::channel(8);
                 assert!(
@@ -231,6 +263,46 @@ mod tests {
                 send(&mut socket, &cipher, clock.clone()).await;
                 assert_eq!(next(&mut socket, &cipher).await, clock);
                 assert_eq!(next(&mut socket, &cipher).await.opcode, 0x3ef);
+                let expected: Vec<_> = {
+                    let room = shared.lock().unwrap();
+                    room.world
+                        .entities
+                        .iter()
+                        .filter(|e| {
+                            e.team == 0
+                                && matches!(
+                                    e.kind,
+                                    halcyon_sim::Kind::Tower | halcyon_sim::Kind::Crystal
+                                )
+                        })
+                        .map(|e| {
+                            (
+                                u32::from(e.type_id),
+                                u32::from(messages::wire_id(e.id)),
+                                e.hp,
+                                e.max_hp,
+                            )
+                        })
+                        .collect()
+                };
+                assert_eq!(expected.len(), 2);
+                for (template, actor, hp, max_hp) in expected {
+                    let m = next(&mut socket, &cipher).await;
+                    assert_eq!(m.opcode, 0x3f2);
+                    assert_eq!(m.body.len(), 126);
+                    assert_eq!(m.body[121], 1);
+                    assert_eq!(m.body[116], if template == 295 { 6 } else { 9 });
+                    assert_eq!(
+                        u32::from_be_bytes(m.body[0..4].try_into().unwrap()),
+                        template
+                    );
+                    assert_eq!(u32::from_be_bytes(m.body[8..12].try_into().unwrap()), actor);
+                    assert_eq!(f32::from_be_bytes(m.body[36..40].try_into().unwrap()), hp);
+                    assert_eq!(
+                        f32::from_be_bytes(m.body[40..44].try_into().unwrap()),
+                        max_hp
+                    );
+                }
             }
             send(&mut socket, &cipher, Message::new(0x46d, [0; 6])).await;
             until(&mut socket, &cipher, 0x470).await;
@@ -243,6 +315,11 @@ mod tests {
                 loop {
                     let m = next(&mut socket, &cipher).await;
                     assert_ne!(m.opcode, 0x3ef);
+                    assert_ne!(m.opcode, 0x3f2);
+                    if m.opcode == 0x3f3 {
+                        let template = u16::from_be_bytes(m.body[2..4].try_into().unwrap());
+                        assert!(!matches!(template, 295 | 296 | 340));
+                    }
                     if m.opcode == 0 {
                         break;
                     }
