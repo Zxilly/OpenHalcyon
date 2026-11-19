@@ -149,6 +149,106 @@ impl Message {
         };
         Ok(match self.opcode {
             0 => Fields::Clock(float(0)?),
+            0x41a | 0x41b if b.len() == 14 => Fields::AbilityOverride {
+                actor: number(0)?,
+                key: number(4)?,
+                replacement: if self.opcode == 0x41a {
+                    Some(number(8)?)
+                } else {
+                    None
+                },
+                remaining: if self.opcode == 0x41a {
+                    &b[12..]
+                } else {
+                    &b[8..]
+                },
+            },
+            0x441 | 0x445 if b.len() == 14 => Fields::BuffAction {
+                actor: number(0)?,
+                key: number(4)?,
+                duration: if self.opcode == 0x441 {
+                    Some(float(8)?)
+                } else {
+                    None
+                },
+                remaining: if self.opcode == 0x441 {
+                    &b[12..]
+                } else {
+                    &b[8..]
+                },
+            },
+            0x42c if b.len() == 6 => Fields::CampVisibility {
+                actor: number(0)?,
+                bytes: [b[4], b[5]],
+            },
+            0x43c if b.len() == 14 => Fields::AbilityCancellation {
+                actor: number(0)?,
+                reference: number(4)?,
+                remaining: &b[8..],
+            },
+            0x48c if b.len() == 14 => Fields::AggroState {
+                prefix: [b[0], b[1]],
+                value: float(2)?,
+                remaining: &b[6..],
+            },
+            0x3fa if b.len() == 22 => Fields::MoveAndFace {
+                actor: number(0)?,
+                reference: number(4)?,
+                values: [float(8)?, float(12)?, float(16)?],
+                remaining: &b[20..],
+            },
+            0x3fb if b.len() == 22 => Fields::StopActor {
+                actor: number(0)?,
+                values: [float(4)?, float(8)?, float(12)?],
+                remaining: &b[16..],
+            },
+            0x3f9 if b.len() == 14 => Fields::ServerMove {
+                selector: b[0],
+                values: [float(1)?, float(5)?, float(9)?],
+                remaining: &b[13..],
+            },
+            0x432 if b.len() == 22 => Fields::Respawn {
+                actor: number(0)?,
+                position: [float(4)?, float(8)?, float(12)?],
+                remaining: &b[16..],
+            },
+            0x434 | 0x43a if b.len() == 14 => Fields::ProgressAction {
+                kind: Opcode::try_from(self.opcode).expect("matched known opcode"),
+                actor: number(0)?,
+                operand: number(4)?,
+                remaining: &b[8..],
+            },
+            0x40b | 0x42f | 0x431 => Fields::ActorLifecycle {
+                kind: Opcode::try_from(self.opcode).expect("matched known opcode"),
+                actor: number(0)?,
+                remaining: &b[4..],
+            },
+            0x40d if matches!(b.len(), 17 | 22) => Fields::Projectile {
+                reference0: number(0)?,
+                reference1: number(4)?,
+                value: float(8)?,
+                remaining: &b[12..],
+            },
+            0x415 if matches!(b.len(), 9 | 14) => Fields::AbilityAction {
+                actor: number(0)?,
+                reference: number(4)?,
+                selector: b[8],
+                remaining: &b[9..],
+            },
+            0x428 if b.len() == 14 => Fields::CooldownValue {
+                owner: number(0)?,
+                key: number(4)?,
+                value: float(8)?,
+                mode: b[12],
+                remaining: &b[13..],
+            },
+            0x48a if b.len() == 22 => Fields::CooldownSync {
+                owner: number(0)?,
+                key: number(4)?,
+                value: float(8)?,
+                config_value: float(12)?,
+                raw: b[16..22].try_into().unwrap(),
+            },
             0x430 => Fields::ActorDeath {
                 victim: number(0)?,
                 source: number(4)?,
@@ -327,6 +427,90 @@ pub struct ControlEntry {
 
 #[derive(Debug, PartialEq)]
 pub enum Fields<'a> {
+    AbilityOverride {
+        actor: u32,
+        key: u32,
+        replacement: Option<u32>,
+        remaining: &'a [u8],
+    },
+    BuffAction {
+        actor: u32,
+        key: u32,
+        duration: Option<f32>,
+        remaining: &'a [u8],
+    },
+    CampVisibility {
+        actor: u32,
+        bytes: [u8; 2],
+    },
+    AbilityCancellation {
+        actor: u32,
+        reference: u32,
+        remaining: &'a [u8],
+    },
+    AggroState {
+        prefix: [u8; 2],
+        value: f32,
+        remaining: &'a [u8],
+    },
+    MoveAndFace {
+        actor: u32,
+        reference: u32,
+        values: [f32; 3],
+        remaining: &'a [u8],
+    },
+    StopActor {
+        actor: u32,
+        values: [f32; 3],
+        remaining: &'a [u8],
+    },
+    ServerMove {
+        selector: u8,
+        values: [f32; 3],
+        remaining: &'a [u8],
+    },
+    Respawn {
+        actor: u32,
+        position: [f32; 3],
+        remaining: &'a [u8],
+    },
+    ProgressAction {
+        kind: Opcode,
+        actor: u32,
+        operand: u32,
+        remaining: &'a [u8],
+    },
+    ActorLifecycle {
+        kind: Opcode,
+        actor: u32,
+        remaining: &'a [u8],
+    },
+    Projectile {
+        reference0: u32,
+        reference1: u32,
+        value: f32,
+        remaining: &'a [u8],
+    },
+    AbilityAction {
+        actor: u32,
+        reference: u32,
+        selector: u8,
+        remaining: &'a [u8],
+    },
+    CooldownValue {
+        owner: u32,
+        key: u32,
+        value: f32,
+        mode: u8,
+        remaining: &'a [u8],
+    },
+    CooldownSync {
+        owner: u32,
+        key: u32,
+        value: f32,
+        config_value: f32,
+        raw: &'a [u8; 6],
+    },
     ActorDeath {
         victim: u32,
         source: u32,
@@ -650,6 +834,99 @@ impl<R: Read> ReplayReader<R> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn paired_ability_and_buff_records_share_the_same_key() {
+        let b = [0, 1, 0, 0, 0, 0, 0, 7, 0x40, 0, 0, 0, 8, 9];
+        for (op, replacement, n) in [(0x41a, Some(0x40000000), 12), (0x41b, None, 8)] {
+            assert_eq!(
+                Message::new(op, b).fields().unwrap(),
+                Fields::AbilityOverride {
+                    actor: 65536,
+                    key: 7,
+                    replacement,
+                    remaining: &b[n..]
+                }
+            );
+        }
+        for (op, duration, n) in [(0x441, Some(2.), 12), (0x445, None, 8)] {
+            assert_eq!(
+                Message::new(op, b).fields().unwrap(),
+                Fields::BuffAction {
+                    actor: 65536,
+                    key: 7,
+                    duration,
+                    remaining: &b[n..]
+                }
+            );
+        }
+        let aggro = [4, 5, 0x40, 0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8];
+        assert_eq!(
+            Message::new(0x48c, aggro).fields().unwrap(),
+            Fields::AggroState {
+                prefix: [4, 5],
+                value: 2.,
+                remaining: &aggro[6..]
+            }
+        );
+    }
+    #[test]
+    fn ability_projectile_and_cooldown_prefixes_remain_distinct() {
+        let b = [
+            0, 1, 0, 0, 0, 0, 0, 2, 0x3f, 0, 0, 0, 0x40, 0, 0, 0, 7, 8, 9, 10, 11, 12,
+        ];
+        assert_eq!(
+            Message::new(0x48a, b).fields().unwrap(),
+            Fields::CooldownSync {
+                owner: 65536,
+                key: 2,
+                value: 0.5,
+                config_value: 2.,
+                raw: &[7, 8, 9, 10, 11, 12]
+            }
+        );
+        assert_eq!(
+            Message::new(0x428, &b[..14]).fields().unwrap(),
+            Fields::CooldownValue {
+                owner: 65536,
+                key: 2,
+                value: 0.5,
+                mode: 0x40,
+                remaining: &[0]
+            }
+        );
+        assert_eq!(
+            Message::new(0x40d, b).fields().unwrap(),
+            Fields::Projectile {
+                reference0: 65536,
+                reference1: 2,
+                value: 0.5,
+                remaining: &b[12..]
+            }
+        );
+        assert_eq!(
+            Message::new(0x415, &b[..14]).fields().unwrap(),
+            Fields::AbilityAction {
+                actor: 65536,
+                reference: 2,
+                selector: 0x3f,
+                remaining: &b[9..14]
+            }
+        );
+        assert!(matches!(
+            Message::new(0x48a, &b[..21]).fields().unwrap(),
+            Fields::Opaque(_)
+        ));
+        for (code, kind) in [(0x40b, Opcode::DestroyEntity), (0x431, Opcode::ActorDead)] {
+            assert_eq!(
+                Message::new(code, &b[..6]).fields().unwrap(),
+                Fields::ActorLifecycle {
+                    kind,
+                    actor: 65536,
+                    remaining: &b[4..6]
+                }
+            );
+        }
+    }
     #[test]
     fn health_and_death_keep_raw_presentation_fields_and_padding() {
         let data = [0, 1, 0, 2, 0, 3, 0, 4, 0xc0, 0x60, 0, 0, 0, 74, 2, 1, 0xf1];

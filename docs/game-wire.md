@@ -22,7 +22,7 @@ The local VGR export contains 153 modifier records (0x041C) and one item removal
 To verify the native handoff, a matching successful Android 147219 session would need to cover the lock acknowledgement, connection and channel order, initial replies and the first rendered battlefield. Complete message bodies, their directions and channel association are needed to compare that transition with replay initialization. The operator can decode locally and substitute consistent anonymous player identifiers.
 ## Read-only record variants
 
-A full pass over all 43,160 local VGR records using `ReplayReader` and `Message::fields` produced 37,601 typed records and 5,559 opaque records, with zero decoding errors. A typed record may expose only a prefix. `Message::body` retains the complete body, including padding.
+A full pass over all 43,160 local VGR records using `ReplayReader` and `Message::fields` produced 43,061 typed records and 99 opaque records, with zero decoding errors. A typed record may expose only a prefix. `Message::body` retains the complete body, including padding.
 
 | Opcode | Recovered fields and limits |
 | --- | --- |
@@ -43,3 +43,19 @@ The local replay contains 1,735 health impacts (0x041E) and 102 death actions (0
 The server sends negative applied damage and positive healing using the locally observed presentation tuple (5, 0, 0). Both actor references must be visible to the recipient. A victim visible on the previous tick remains eligible for its lethal impact and death. Spectators receive the full field of view, and per-player VGR recordings retain only combat events delivered to that player. The decoder's attack-target request (0x0424) and target-change action (0x0425) describe target selection. A corresponding CE input for a completed attack or ability cast still needs a trace linking the command to the action.
 
 Hero deaths also emit the local modifier form with operand +1, layer 0 and operation 0. Attribute 42 increments the victim's death counter. Attribute 41 increments a hero killer's kill counter. The local replay contains six death modifiers and four kill modifiers with this layout. These counters follow the same visibility rule as the associated death. [Native counter fields](https://github.com/TurnaboutHero/vainglory-replay-decoder/blob/f4743be743564e3aadef1566499fe25d9d0f9ffc/vg/docs/NATIVE_COUNTER_FIELDS_2026-10-04.md)
+
+## Additional action records
+
+The native receiver's field conversions and the local replay agree on the following layouts. These paths are read-only. They preserve raw selectors, keys and unused bytes. [Native receiver branches and class associations](https://github.com/TurnaboutHero/vainglory-replay-decoder/blob/f4743be743564e3aadef1566499fe25d9d0f9ffc/vg/docs/vg-binary-event-candidates-2026-09-09-details.md) ¡¤ [Cooldown layouts](https://github.com/TurnaboutHero/vainglory-replay-decoder/blob/f4743be743564e3aadef1566499fe25d9d0f9ffc/vg/docs/COOLDOWN_EVENT_FIELDS_2026-10-14.md)
+
+| Records | Local evidence and interpretation |
+| --- | --- |
+| 0x040B, 0x0431, 0x042F, 0x0432 | Destroy, dead-state and undead-state records carry the actor reference. The respawn record also carries three position floats. In 55 same-chunk cases, the dead-state action followed the same actor's death by 1.73¨C4.25 seconds. The simulator has no separate dead-state transition at those delays. |
+| 0x040D, 0x0415, 0x043C | The projectile action has two reference words and a float. The ability action has an actor, another reference and a selector. Local selectors include 8 through 15. A cancellation exposes two reference words. These server-side records cannot identify the native client's ability-button command. |
+| 0x0428, 0x048A | Both cooldown records have an owner, lookup key and value. The shorter form adds a mode byte. The longer form adds a second float and six raw bytes. The key has no validated mapping to a specific local ability. |
+| 0x041A, 0x041B, 0x0441, 0x0445 | All 12 actor/key pairs from ability override records recur in clear-override records. Buff-duration and buff-cancel records share 26 actor/key pairs. All corresponding actor references occur in local spawn records. |
+| 0x042C, 0x048C | The camp visibility prefix has an actor and two bytes. All 12 referenced actors occur in local spawns. The aggro record has two leading bytes and an unaligned float at offset 2. Its first four bytes cannot generally be treated as an actor. |
+| 0x03F9, 0x03FA, 0x03FB | The native movement receivers convert three floats after a selector, two references or one actor respectively. The decoder keeps the three values in wire order. |
+| 0x0434, 0x043A | Level and grant-ability records carry an actor and a 32-bit operand. The local level samples alone cannot distinguish an increment from an absolute level. |
+
+Remaining opaque records include less common projectile, scripted movement, buff, effects, match-state and aggregate statistics variants. A native class label and copied byte count alone cannot establish the assignment of application fields. In particular, the cumulative statistics record in the local corpus has only one example.
