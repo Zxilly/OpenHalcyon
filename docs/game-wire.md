@@ -11,6 +11,7 @@ The Android reader table supplies 171 opcode entries. Fixed sizes in that table 
 | 0x045E, 0x045F, 0x0455, 0x0463 | Hero, skin and lock | The server validates available choices, updates the roster and acknowledges the control message. |
 | 0x03EE, 0x03F3 | World roster and actor spawn | Replay-derived roster and spawn fields include entity and template IDs. Spawns also carry skin, team, position and health. Unidentified fields use defaults. |
 | 0x03F4, 0x042E | Move and position | On a running game channel, movement updates the owning seat's simulation command. The server emits visible positions. Covered by local game-socket tests. |
+| 0x0411, 0x0412, 0x0415, 0x0416, 0x0436, 0x043A | Learn, cast and confirm | The Idris B and Lorelai A/B/C paths bind the captured target and selector to a registered human seat. Learning spends a skill point. Cast confirmation follows an authoritative release. [Ability evidence](native-abilities.md) |
 | 0x0439, 0x043D, 0x044B | Shop request, grant and removal | The game checks actor ownership, price and inventory. Upgrading a component emits removal and grant messages. |
 | 0x041D, 0x041C | Entity stat and modifier | Stat updates include entity, value and stat type. The shop also sends modifier changes when adding or replacing items. |
 | 0x0458, 0x046B, 0x046D, 0x046E, 0x0471 | Draft control traffic | The server echoes these observed messages. Their individual fields and effects need further evidence. |
