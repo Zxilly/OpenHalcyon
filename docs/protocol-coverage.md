@@ -88,6 +88,20 @@ from the rendered battlefield recovered the guest and authenticated fresh
 control sockets. No second world session or rendered battlefield followed on
 the device. Native reentry and a complete native victory screen remain open.
 
+A later Android 147219 run used the measured Solo mid-lane opening. Actor 1500
+started at X/Z (−90, 0). A touchscreen swipe produced 23 authoritative position
+updates, from (−89.8311, 0.0975) at 8.30 simulated seconds to
+(−86.3607, 2.1012) at 9.40 seconds. The client rendered its hero, HUD and
+friendly base in the map. The first connection ended about 38.2 seconds after
+the simulation started. Android's process history reports a native crash.
+Four fresh control sockets authenticated to the same room. The per-connection
+log recorded no new scene request on them. A native client victory screen
+and a rendered native rejoin are still unverified. The server binary used
+for this check had SHA-256
+`58570c9ef5f89f86329851e84b1f1dad38057015dd31cf2ce8a8e1b8c6e021c7`.
+The six-socket ARAL tests verify server-side delivery independently.
+[Measured Solo mid lane](solo-lane.md) · [ARAL settlement](aral.md)
+
 The nine historical TCP archives supply full-sized encrypted frames, including
 seven ARAL matches. Their decoded text previews only preserve prefixes. The
 offline inventory validated 1,824 client frames and 398,293 server frames after
