@@ -5,6 +5,7 @@ mod community;
 mod content;
 mod match_stats;
 mod meta;
+mod native_offer;
 mod notify;
 mod party_notify;
 mod ping;
@@ -307,7 +308,10 @@ async fn dispatch(s: &Platform, m: &str, params: &[Value]) -> Result<(String, Va
         let token = s
             .tokens
             .sign(profile.player_id, &guest.session_token, Scope::Session)?;
-        return Ok((token, s.start_session(&guest.session_token, &profile)?));
+        return Ok((
+            token,
+            s.start_session(&guest.session_token, &profile).await?,
+        ));
     }
     let token = arg(params, 0)?;
     if m == "getPlayerForGuestAccount" {
@@ -339,7 +343,7 @@ async fn dispatch(s: &Platform, m: &str, params: &[Value]) -> Result<(String, Va
                 .observe_player(id, profile.name.clone(), true)
                 .await?;
             s.meta.set(id, "last_login", json!(now() as f64)).await?;
-            let mut rv = s.start_session(&session, &profile)?;
+            let mut rv = s.start_session(&session, &profile).await?;
             rv["playerConfig"] = s.meta.prefs(id, "platform_config").await?;
             rv
         }
@@ -363,10 +367,11 @@ async fn dispatch(s: &Platform, m: &str, params: &[Value]) -> Result<(String, Va
         }
         "getSkinManifest" => s.skins.clone(),
         "getTalentsData" => s.talents_for(id).await?,
-        "update" | "queryPendingMatch" => {
+        "queryPendingMatch" => s.pending_match(&session, &profile).await?,
+        "update" => {
             if let Some(lobby) = &profile.lobby {
                 if lobby.mode == "5v5_bots_solo" && lobby.phase == "offered" {
-                    let mut snapshot = state(&profile);
+                    let mut snapshot = s.projected_state(&session, &profile).await?;
                     s.accept(&session, lobby.match_id.ok_or(Error::Internal)?)
                         .await?;
                     // The local bot host is already allocated; CE polls again at expiry.
@@ -374,7 +379,7 @@ async fn dispatch(s: &Platform, m: &str, params: &[Value]) -> Result<(String, Va
                     snapshot["expiry"] = json!(expiry_in(1));
                     snapshot
                 } else {
-                    state(&profile)
+                    s.projected_state(&session, &profile).await?
                 }
             } else {
                 state(&profile)
@@ -436,7 +441,8 @@ async fn dispatch(s: &Platform, m: &str, params: &[Value]) -> Result<(String, Va
             if requested.is_some() {
                 json!(true)
             } else {
-                s.start_session(&session, &s.app.profile(&session).await?)?
+                s.start_session(&session, &s.app.profile(&session).await?)
+                    .await?
             }
         }
         "spectateFriend" => spectator::begin(s, &session, params).await?,
@@ -444,7 +450,7 @@ async fn dispatch(s: &Platform, m: &str, params: &[Value]) -> Result<(String, Va
         // The Android startup sequence calls exitLobby even after resuming a
         // live seat. Leaving the pre-match lobby must preserve that seat.
         "exitLobby" if profile.lobby.as_ref().is_some_and(|l| l.phase == "playing") => {
-            state(&profile)
+            s.projected_state(&session, &profile).await?
         }
         "exitLobby" | "rejectMatch" | "notifyExitPostMatch" => {
             if spectator::is_spectating(&profile) || profile.lobby.is_none() {
@@ -528,7 +534,7 @@ async fn dispatch(s: &Platform, m: &str, params: &[Value]) -> Result<(String, Va
                     | "getEquipmentSlotInfo"
                     | "setPresenceInvisibility"
             ) {
-                let mut rv = s.start_session(&session, &profile)?;
+                let mut rv = s.start_session(&session, &profile).await?;
                 if let Some(fields) = patch.as_object() {
                     rv.as_object_mut()
                         .expect("session envelope")
@@ -592,7 +598,7 @@ fn state(p: &PlayerProfile) -> Value {
     let l = p.lobby.as_ref();
     let (name, ttl) = match l.map(|l| l.phase.as_str()) {
         Some("queued" | "pending") => ("pending_auto", 10),
-        Some("offered") => ("match_pending", 59),
+        Some("offered" | "reserving") => ("match_pending", 59),
         Some("playing") => ("playing", 100),
         Some("spectating") => ("spectating", 100),
         Some("finished" | "post_match") => ("post_match", 100),
@@ -618,8 +624,8 @@ fn state(p: &PlayerProfile) -> Value {
 }
 
 impl Platform {
-    fn start_session(&self, session: &str, p: &PlayerProfile) -> Result<Value, Error> {
-        let mut rv = state(p);
+    async fn start_session(&self, session: &str, p: &PlayerProfile) -> Result<Value, Error> {
+        let mut rv = self.projected_state(session, p).await?;
         let grant = self.grants.issue(session)?;
         let http = format!("http://{}/lp/{grant}", self.config.notify_authority);
         let ws = format!("ws://{}/ws/{grant}", self.config.notify_authority);

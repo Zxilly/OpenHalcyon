@@ -171,7 +171,10 @@ async fn update(s: &Platform, key: &str, old: Position) -> Result<(Position, Val
         }
         _ => {
             let profile = s.app.profile(key).await.map_err(platform_status)?;
-            let mut state = super::state(&profile);
+            let mut state = s
+                .projected_state(key, &profile)
+                .await
+                .map_err(platform_status)?;
             state["version"] = json!(tag);
             state["lastVersion"] = json!(Uuid::from_u128(old.after as u128));
             let states: serde_json::Map<_, _> = state

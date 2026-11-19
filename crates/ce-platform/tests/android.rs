@@ -547,3 +547,147 @@ async fn cataloged_names_reach_rpc_handlers() {
     }
     assert_eq!(rpc(&r, "endSession", json!([token])).await["code"], 0);
 }
+#[tokio::test]
+async fn aral_offer_projection_is_private_read_only_and_survives_reopen() {
+    struct Six;
+    impl MatchHost for Six {
+        fn reserve(&self, reservation: Reservation) -> halcyon_platform::Result<HostedMatch> {
+            assert_eq!(reservation.players.len(), 6);
+            Ok(HostedMatch {
+                address: "localhost:7012".into(),
+            })
+        }
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("offers.sqlite");
+    let open = || {
+        let app = AppState::open(
+            PlatformConfig {
+                database_path: db.clone(),
+                public_address: "localhost:8443".into(),
+                seats_per_match: 6,
+            },
+            Arc::new(Six),
+        )
+        .unwrap();
+        let ce = Platform::new(
+            app.clone(),
+            Config {
+                authority: "localhost:8443".into(),
+                notify_authority: "localhost:2112".into(),
+            },
+            &[19; 32],
+            &db,
+            None,
+        )
+        .unwrap();
+        (app, ce.rpc())
+    };
+    let (app, r) = open();
+    let mut tokens = Vec::new();
+    let mut players = Vec::new();
+    for n in 0..7 {
+        let guest = rpc(
+            &r,
+            "createGuestPlayer",
+            json!([
+                "kindred",
+                "en",
+                "US",
+                "production",
+                "en",
+                "BAKLAVA",
+                "android",
+                "",
+                "147219",
+                1,
+                "dev",
+                "model",
+                n.to_string()
+            ]),
+        )
+        .await;
+        let session = rpc(
+            &r,
+            "startSessionForPlayer",
+            json!([guest["returnValue"]["playerUUID"]]),
+        )
+        .await;
+        tokens.push(session["sessionToken"].clone());
+        players.push(session["returnValue"]["playerUUID"].clone());
+    }
+    for t in &tokens[..6] {
+        assert_eq!(
+            rpc(&r, "joinLobby", json!([t,{"lobby":"casual_aral"},"147219"])).await["code"],
+            0
+        );
+    }
+    let offer = rpc(&r, "queryPendingMatch", json!([tokens[0]])).await["returnValue"].clone();
+    assert_eq!(offer["isValid"], false);
+    let rows = offer["responses"].as_array().unwrap();
+    assert_eq!(rows.len(), 6);
+    for (row, id) in rows.iter().zip(&players) {
+        assert_eq!(
+            *row,
+            json!({"playerUUID":id,"response":0,"acceptDelay":0.0})
+        );
+    }
+    let stranger = rpc(
+        &r,
+        "queryPendingMatch",
+        json!([tokens[6], offer["matchId"]]),
+    )
+    .await;
+    assert_eq!(stranger["returnValue"]["responses"], json!([]));
+    let update = rpc(&r, "update", json!([tokens[0]])).await["returnValue"].clone();
+    assert_eq!(update["state"], "matched_partners");
+    assert_eq!(update["numPlayers"], 6);
+    assert_eq!(update["numQueuedEntries"], 6);
+    let expiry = update["expiry"].as_i64().unwrap();
+    let ttl = update["ttl"].as_i64().unwrap();
+    drop(r);
+    drop(app);
+    let (app, r) = open();
+    let reopened = rpc(&r, "update", json!([tokens[0]])).await;
+    assert_eq!(reopened["returnValue"]["expiry"], expiry);
+    // Move the existing offer clock back ten seconds without a wall-clock sleep.
+    rusqlite::Connection::open(&db)
+        .unwrap()
+        .execute(
+            "UPDATE matches SET offered_at=offered_at-10 WHERE id=?",
+            [offer["matchId"].as_str().unwrap()],
+        )
+        .unwrap();
+    let aged = rpc(&r, "update", json!([tokens[0]])).await;
+    assert_eq!(aged["returnValue"]["expiry"], expiry - 10);
+    assert!(aged["returnValue"]["ttl"].as_i64().unwrap() <= ttl - 10);
+    assert_eq!(
+        rpc(&r, "acceptMatch", json!([tokens[0], offer["matchId"]])).await["returnValue"],
+        true
+    );
+    assert_eq!(
+        rpc(&r, "update", json!([tokens[0]])).await["returnValue"]["state"],
+        "match_pending"
+    );
+    let partial = rpc(&r, "queryPendingMatch", json!([tokens[1]])).await;
+    assert_eq!(partial["returnValue"]["isValid"], true);
+    assert_eq!(partial["returnValue"]["responses"][0]["response"], 1);
+    assert_eq!(partial["returnValue"]["responses"][1]["response"], 0);
+    for t in &tokens[1..6] {
+        assert_eq!(
+            rpc(&r, "acceptMatch", json!([t, offer["matchId"]])).await["code"],
+            0
+        );
+    }
+    let resumed = rpc(&r, "startSessionForPlayer", json!([tokens[2]])).await;
+    assert_eq!(resumed["returnValue"]["state"], "playing");
+    assert_eq!(resumed["returnValue"]["matchId"], offer["matchId"]);
+    assert_eq!(resumed["returnValue"]["numPlayers"], 6);
+    let room = offer["matchId"].as_str().unwrap().parse().unwrap();
+    app.finish_match(room, json!({"winner":0})).unwrap();
+    rpc(&r, "notifyExitPostMatch", json!([tokens[0]])).await;
+    let end = rpc(&r, "update", json!([tokens[2]])).await;
+    assert_eq!(end["returnValue"]["state"], "post_match");
+    assert_eq!(end["returnValue"]["numPlayers"], 6);
+    assert_eq!(end["returnValue"]["notify"], true);
+}

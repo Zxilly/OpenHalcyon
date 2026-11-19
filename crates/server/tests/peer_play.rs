@@ -1439,20 +1439,77 @@ async fn public_and_ce_players_share_a_pool_and_cross_home_match_chat() {
     })
     .await
     .unwrap();
-    let accept = format!("/api/v1/matches/{id}/accept");
-    for (router, i) in [(a, 0), (b, 1)] {
-        rest(
-            router,
-            "POST",
-            &accept,
-            Some(token(i)),
-            Value::Null,
-            StatusCode::NO_CONTENT,
-        )
-        .await;
+    let pending = || rpc(b, "queryPendingMatch", json!([ce_token]));
+    let initial = pending().await;
+    let initial = &initial["returnValue"];
+    assert_eq!(initial["matchId"], id);
+    let responses = initial["responses"].as_array().unwrap();
+    assert_eq!(responses.len(), 3);
+    assert!(responses.iter().all(|row| row["response"] == 0));
+    assert_eq!(
+        pending().await["returnValue"]["responses"],
+        initial["responses"]
+    );
+    let home = &node(&cluster, 0).peer_play;
+    let first = home.native_offer(token(0)).await.unwrap().unwrap();
+    assert_eq!(first.entries, 2);
+    assert!(first.expires.is_none());
+    for (seat, row) in first.seats.iter().zip(responses) {
+        assert_eq!(row["playerUUID"], seat.player.to_string());
+        assert!(!seat.accepted);
     }
+    assert!(home.native_offer(token(2)).await.unwrap().is_none());
+    assert!(home.native_offer(token(1)).await.is_err());
+    let accept = format!("/api/v1/matches/{id}/accept");
+    rest(
+        a,
+        "POST",
+        &accept,
+        Some(token(0)),
+        Value::Null,
+        StatusCode::NO_CONTENT,
+    )
+    .await;
+    rest(
+        b,
+        "POST",
+        &accept,
+        Some(token(1)),
+        Value::Null,
+        StatusCode::NO_CONTENT,
+    )
+    .await;
+    let party_home = pending().await;
+    let partial = party_home["returnValue"]["responses"].as_array().unwrap();
+    assert!(
+        partial
+            .iter()
+            .any(|row| row["playerUUID"] == member.to_string() && row["response"] == 1)
+    );
+    let solo_home = home.native_offer(token(0)).await.unwrap().unwrap();
+    assert!(
+        solo_home
+            .seats
+            .iter()
+            .any(|s| s.player.to_string() == guests[0]["playerId"] && s.accepted)
+    );
+    assert!(
+        solo_home
+            .seats
+            .iter()
+            .any(|s| s.player == member && !s.accepted)
+    );
     rpc(b, "acceptMatch", json!([ce_token])).await;
-    assert_eq!(state(b, ce_token, "playing").await["matchId"], id);
+    let playing = state(b, ce_token, "playing").await;
+    assert_eq!(playing["matchId"], id);
+    assert_eq!(playing["numPlayers"], 3);
+    assert_eq!(playing["numQueuedEntries"], 2);
+    assert!(
+        pending().await["returnValue"]["responses"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
     rest(
         b,
         "DELETE",

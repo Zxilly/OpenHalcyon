@@ -37,10 +37,14 @@ pub(crate) async fn begin(
     if let Some(peers) = &platform.peers
         && peers.spectate_friend(session, friend).await?
     {
-        return platform.start_session(session, &platform.app.profile(session).await?);
+        return platform
+            .start_session(session, &platform.app.profile(session).await?)
+            .await;
     }
     platform.app.start_spectating(session, friend).await?;
-    platform.start_session(session, &platform.app.profile(session).await?)
+    platform
+        .start_session(session, &platform.app.profile(session).await?)
+        .await
 }
 
 pub(crate) async fn leave(platform: &Platform, session: &str) -> Result<(), Error> {
