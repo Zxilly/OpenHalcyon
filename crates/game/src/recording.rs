@@ -125,6 +125,10 @@ fn sanitize(m: &mut Message) -> bool {
                         m.body[116..122],
                         [52..=199, 0, 0, 1, 1, 1] | [52..=199, 0, 0, 1, 4, 2]
                     ))) => {}
+        0x3f8 if m.body.len() == 9 && (14..=23).contains(&m.body[0]) => {}
+        0x424 if matches!(m.body.as_slice(), [_, _, _, _, 0, 0]) => {}
+        0x481 if matches!(m.body.as_slice(), [0, 0, _, _, 255, 0]) => {}
+        0x488 if matches!(m.body.as_slice(), [0, 0, _, _, 0..=2 | 254]) => {}
         0x45c if matches!(m.body.len(), 96 | 102) && m.body[96..].iter().all(|&v| v == 0) => {}
         0x3ef if m.body.is_empty() || m.body == [0; 6] => {}
         0x41e if m.body.len() == 22 && m.body[16..] == [0; 6] => {}
@@ -208,6 +212,26 @@ mod tests {
         death.body.push(0);
         impact.body[16] = 1;
         assert!(!sanitize(&mut death) && !sanitize(&mut impact));
+    }
+
+    #[test]
+    fn records_authored_actions_and_discards_request_controls_and_surplus_bytes() {
+        let mut move_to = vec![14];
+        move_to.extend_from_slice(&(-80.0_f32).to_be_bytes());
+        move_to.extend_from_slice(&1.0_f32.to_be_bytes());
+        for mut m in [
+            Message::new(0x03f8, move_to),
+            Message::new(0x0424, [0, 0, 5, 221, 0, 0]),
+            Message::new(0x0481, [0, 0, 5, 220, 255, 0]),
+            Message::new(0x0488, [0, 0, 5, 220, 254]),
+        ] {
+            assert!(sanitize(&mut m));
+            m.body.push(42);
+            assert!(!sanitize(&mut m));
+        }
+        for control in [0x03f5, 0x0484, 0x0485] {
+            assert!(!sanitize(&mut Message::new(control, [0; 6])));
+        }
     }
 
     #[tokio::test]
