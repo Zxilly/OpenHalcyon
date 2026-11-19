@@ -38,7 +38,9 @@ const FIELDS: &str =
 
 pub(super) fn initialize(tx: &Transaction<'_>) -> Result<()> {
     tx.execute_batch(
-        "CREATE TABLE IF NOT EXISTS federated_site_reports(ticket TEXT PRIMARY KEY REFERENCES federated_queue(ticket) ON DELETE CASCADE, estimates TEXT NOT NULL);
+        "CREATE TABLE IF NOT EXISTS federated_chat_receipts(pool TEXT NOT NULL, room TEXT NOT NULL, id TEXT NOT NULL, seen INTEGER NOT NULL DEFAULT(unixepoch()), PRIMARY KEY(pool, room, id));
+         CREATE INDEX IF NOT EXISTS federated_chat_receipt_expiry ON federated_chat_receipts(seen);
+         CREATE TABLE IF NOT EXISTS federated_site_reports(ticket TEXT PRIMARY KEY REFERENCES federated_queue(ticket) ON DELETE CASCADE, estimates TEXT NOT NULL);
          CREATE TABLE IF NOT EXISTS federated_queue (
             ticket TEXT PRIMARY KEY, player TEXT NOT NULL REFERENCES players(id),
             pool TEXT NOT NULL, mode TEXT NOT NULL, seats INTEGER NOT NULL,

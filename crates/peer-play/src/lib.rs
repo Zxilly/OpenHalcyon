@@ -18,6 +18,7 @@ use std::{
 };
 use tokio::sync::watch;
 use uuid::Uuid;
+mod chat;
 mod journal;
 mod latency;
 mod observation;
@@ -39,6 +40,7 @@ struct Inner {
     rooms: Rooms,
     cfg: Config,
     journal: Journal,
+    chat_wake: tokio::sync::Notify,
     rtt: latency::HomeRtt,
     difficulty_rules: BTreeMap<BotDifficulty, String>,
 }
@@ -61,6 +63,7 @@ impl PeerPlay {
         );
         ensure!(!config.rules_digest.is_empty(), "empty rules digest");
         observation::attach(&federation, rooms.clone());
+        chat::attach(&federation, &platform, config.pool_id);
         let journal = Journal::open(&config.database, config.pool_id, config.node_id)?;
         // A reader of the home journal may restart without the game service.
         // Only a locally recorded room missing from this host can be lost.
@@ -80,6 +83,7 @@ impl PeerPlay {
             rooms,
             cfg: config,
             journal,
+            chat_wake: Default::default(),
             rtt: Default::default(),
             difficulty_rules,
         });
@@ -88,6 +92,7 @@ impl PeerPlay {
         let worker = inner.clone();
         tokio::spawn(async move {
             let observer_stop = stopped.clone();
+            let chat_stop = stopped.clone();
             tokio::join!(
                 async {
                     let mut state = Worker {
@@ -103,6 +108,7 @@ impl PeerPlay {
                     }
                 },
                 observation::reconcile(&worker, observer_stop),
+                chat::reconcile(&worker, chat_stop),
             );
             done_tx.send_replace(true);
         });

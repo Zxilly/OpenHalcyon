@@ -168,3 +168,18 @@ The benchmark seeds disposable databases with 128 or 1,024 settled matches. Each
 | 1,024 / 5,120 | 1,324.4 ms | 65.1 ms | 44,833,872 B | 148,352 B | 19.41 ms |
 
 These Windows 11 measurements on a Ryzen 9 9950X3D show constant WAL growth for the 32 new requests across the two history sizes. The cost of a complete snapshot grows with the retained history.
+
+### Cross-home match chat
+
+The player API and the CE chat WebSocket accept messages from a seated player on
+their authenticated home. The sender home finds the participating homes in the
+committed allocation and saves one pending delivery per home before returning.
+Only those homes receive the text over mutually authenticated peer connections.
+Raft holds the roster. Chat text travels directly between homes.
+
+Each receiver verifies the sender's home and roster, then inserts an event for
+every active local participant in one SQLite transaction with the message receipt.
+An acknowledgement lost after commit can be retried with the same message ID.
+Clients observe the usual home event cursor. Delivery can lag while a peer catches
+up with the committed roster. The sender retries for up to two minutes while the
+room is active and admits at most 4,096 outstanding home deliveries per node.
