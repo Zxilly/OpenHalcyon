@@ -100,3 +100,33 @@ a recording. The slot is an ability index. The neighboring `0x0428` timer action
 uses a separate lookup key and a floating-point operand. The local Solo and ARAL
 corpora contain no `0x0429` samples. The hosted abilities currently have no
 verified charge-change trigger. [Replay field evidence](https://github.com/TurnaboutHero/vainglory-replay-decoder/blob/f4743be743564e3aadef1566499fe25d9d0f9ffc/vg/docs/COOLDOWN_EVENT_FIELDS_2026-10-14.md)
+
+## Lorelai pool registration and lifetime
+
+Across seven ARAL streams, all six observed Lorelai A point releases created a
+compact `0x03F2` actor of template 410 at the exact release X/Z. The owner at
+body offset 112 matched the caster. The six slots at offset 116 were 34, 29,
+29, 34, 25 and 33. No other compact or full declaration reused any of those
+slots during that pool's lifetime. Each pool received two `0x043E` applications
+from the caster. Definition 949 arrived at release with duration bits
+`0x3a66` (about 0.8 seconds). Definition 950 arrived 0.70–0.80 seconds later
+with duration bits `0x4800` (8 seconds). Each pool received `0x0430` with
+source `0xffffffff` at 9.02–9.28 seconds after release, followed by both
+`0x0431` and `0x040B` at 12.82–13.05 seconds. The recordings show actor
+destruction without a corresponding explicit buff removal.
+
+All six belonged to one caster, observed from that player's connection in one
+match. Each declaration had eight per-view `0x042B` records with different
+mask operands. The capture establishes the caster's slots and timestamps.
+The other viewers' streams, registration on first sight, and the binding of
+the two opaque birth words at offsets 88 and 92 remain unverified. The hosted
+simulation applies Fish Food locally. Native registration and buff emission
+remain pending evidence for those fields and recipients.
+
+Five observed Lorelai B releases each preceded a template 411 at the cast X/Z
+by 0.9–1.1 seconds. Six template 411 actors appeared in total, including one
+without a matching B request. All six died 8.38–8.47 seconds after birth.
+The single observed C release coincided with definition 954 on its allied
+target. Across two matches, all 38 witnessed Idris B releases coincided with
+definition 820 on Idris, which also appeared 25 times outside those releases.
+These observations do not establish a unique B or C buff lifecycle to emit.
