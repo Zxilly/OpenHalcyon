@@ -1135,8 +1135,16 @@ impl Room {
             return;
         }
         if let Some(result) = result_frames::crystal_end(&self.queue, &self.world) {
-            self.publish_observers(std::slice::from_ref(&result));
-            let delivery = transport::TeamBatch::new(vec![result]);
+            let mut final_batch = Vec::with_capacity(2);
+            match result_frames::statistics_snapshot(&self.world) {
+                Ok(report) => final_batch.push(report),
+                Err(error) => {
+                    tracing::error!(room=%self.id, %error, "cannot encode final match statistics");
+                }
+            }
+            final_batch.push(result);
+            self.publish_observers(&final_batch);
+            let delivery = transport::TeamBatch::new(final_batch);
             for peer in self.seats.iter().filter_map(|s| s.gameplay_peer()) {
                 peer.send(transport::Delivery::Team(delivery.clone()));
             }

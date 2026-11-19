@@ -326,7 +326,7 @@ mod tests {
         sock
     }
 
-    async fn final_frames(mut stream: TcpStream, cipher: &MatchCipher) -> Vec<u16> {
+    async fn final_frames(mut stream: TcpStream, cipher: &MatchCipher) -> Vec<Message> {
         let mut received = Vec::new();
         let mut bytes = Vec::new();
         timeout(Duration::from_secs(2), stream.read_to_end(&mut bytes))
@@ -335,7 +335,7 @@ mod tests {
             .unwrap();
         let mut slice = bytes.as_slice();
         while let Some(body) = halcyon_protocol::read_frame(&mut slice).unwrap() {
-            received.push(cipher.decode(&body).unwrap().opcode);
+            received.push(cipher.decode(&body).unwrap());
         }
         received
     }
@@ -427,13 +427,27 @@ mod tests {
         let (player, observer) =
             tokio::join!(final_frames(data, &cipher), final_frames(view, &cipher));
         let revoked = final_frames(revoked_view, &cipher).await;
-        assert!(!revoked.contains(&0x430));
-        for stream in [player, observer] {
-            let death = stream.iter().position(|&op| op == 0x430).unwrap();
-            assert!(stream[..death].contains(&0x41e));
-            assert!(stream[death + 1..].contains(&0x459));
-            assert_eq!(stream.last(), Some(&0x3f1));
+        assert!(
+            !revoked
+                .iter()
+                .any(|m| matches!(m.opcode, 0x430 | 0x48d | 0x3f1))
+        );
+        for stream in [&player, &observer] {
+            let opcodes: Vec<_> = stream.iter().map(|m| m.opcode).collect();
+            let death = opcodes.iter().position(|&op| op == 0x430).unwrap();
+            assert!(opcodes[..death].contains(&0x41e));
+            assert!(opcodes[death + 1..].contains(&0x459));
+            assert!(opcodes.ends_with(&[0x048d, 0x03f1]));
         }
+        let player_report = &player[player.len() - 2];
+        assert_eq!(player_report, &observer[observer.len() - 2]);
+        let halcyon_protocol::Fields::MatchStatistics(stats) = player_report.fields().unwrap()
+        else {
+            panic!("expected match statistics")
+        };
+        assert_eq!(stats.slot(0).unwrap().player, 1500);
+        assert!(stats.slot(0).unwrap().damage_to_structures > 0.0);
+        assert_eq!(stats.slot(10).unwrap().player, u32::MAX);
     }
 
     #[tokio::test]

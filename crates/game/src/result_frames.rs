@@ -1,6 +1,11 @@
 //! End request measured in live ARAL and recorded 5v5 PvP crystal endings.
+pub(super) mod statistics;
 use halcyon_protocol::Message;
 use halcyon_sim::{Kind, World};
+
+pub(super) fn statistics_snapshot(world: &World) -> std::io::Result<Message> {
+    statistics::snapshot(world)
+}
 
 /// Builds the observed reason-zero request only for an authoritative crystal loss.
 /// The local ARAL captures place the statistics report and this request about six seconds after death.
