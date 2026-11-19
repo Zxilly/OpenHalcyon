@@ -857,3 +857,161 @@ async fn aral_offer_projection_is_private_read_only_and_survives_reopen() {
         "menus"
     );
 }
+
+#[tokio::test]
+async fn captured_guild_team_and_metric_envelopes_preserve_local_permissions() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("platform.sqlite");
+    let app = AppState::open(
+        PlatformConfig {
+            database_path: path.clone(),
+            public_address: "localhost:8443".into(),
+            seats_per_match: 10,
+        },
+        Arc::new(Host),
+    )
+    .unwrap();
+    let router = Platform::new(
+        app,
+        Config {
+            authority: "localhost:8443".into(),
+            notify_authority: "localhost:2112".into(),
+        },
+        &[77; 32],
+        &path,
+        None,
+    )
+    .unwrap()
+    .rpc();
+
+    async fn guest(router: &Router) -> Value {
+        let guest = rpc(
+            router,
+            "createGuestPlayer",
+            json!([
+                "kindred",
+                "en",
+                "US",
+                "production",
+                "en",
+                "BAKLAVA",
+                "android",
+                "",
+                "147219",
+                1,
+                "device",
+                "model",
+                "0"
+            ]),
+        )
+        .await;
+        assert_eq!(guest["code"], 0);
+        let session = rpc(
+            router,
+            "startSessionForPlayer",
+            json!([guest["returnValue"]["playerUUID"]]),
+        )
+        .await;
+        assert_eq!(session["code"], 0);
+        session["sessionToken"].clone()
+    }
+
+    let owner = guest(&router).await;
+    let visitor = guest(&router).await;
+    let absent = uuid::Uuid::new_v4();
+    let search = |page| {
+        json!({"minimumSkillTier":-2,"minNumMembers":0,"maxNumMembers":200,
+               "guildType":"GUILD_TYPE_ANY","guildLanguageCode":"EN","guildInviteOnly":false,
+               "name":"","tag":"","page":page})
+        .to_string()
+    };
+    for (method, params) in [
+        ("guildGetData", json!([visitor])),
+        ("queryGuildInvites", json!([visitor])),
+        ("queryTeamInvites", json!([visitor])),
+        ("guildSearch", json!([visitor, search(1)])),
+        ("queryGuildInfo", json!([visitor, absent, true])),
+        ("createTeam", json!([visitor, "", "team", "tag"])),
+        ("joinGuild", json!([visitor, ""])),
+        (
+            "recordMatchExperienceMetrics",
+            json!([visitor, absent, 15, "test", "local", 0.08, 0]),
+        ),
+    ] {
+        let result = rpc(&router, method, params).await;
+        assert_eq!(result["code"], 0, "{method}");
+        assert_eq!(result["returnValue"], json!({}), "{method}");
+        assert!(
+            result["sessionToken"]
+                .as_str()
+                .is_some_and(|s| !s.is_empty())
+        );
+    }
+    assert_eq!(
+        rpc(&router, "queryTeamInfo", json!([visitor])).await["returnValue"]["teamUUID"],
+        Value::Null
+    );
+
+    let private = rpc(
+        &router,
+        "createGuild",
+        json!([owner, {"name":"Private Guild","inviteOnly":true}]),
+    )
+    .await;
+    assert_eq!(private["code"], 0);
+    let private_id = &private["returnValue"]["guildUUID"];
+    assert_eq!(
+        rpc(
+            &router,
+            "queryGuildInfo",
+            json!([visitor, private_id, true])
+        )
+        .await["returnValue"],
+        json!({})
+    );
+    assert_eq!(
+        rpc(&router, "joinGuild", json!([visitor, private_id])).await["code"],
+        -5
+    );
+    let own = rpc(&router, "guildGetData", json!([owner])).await;
+    assert_eq!(own["returnValue"]["guildUUID"], *private_id);
+    assert_eq!(
+        rpc(&router, "guildSearch", json!([visitor, search(1)])).await["returnValue"],
+        json!({})
+    );
+
+    let public_owner = guest(&router).await;
+    let public = rpc(
+        &router,
+        "createGuild",
+        json!([public_owner, {"name":"Public Guild","inviteOnly":false}]),
+    )
+    .await;
+    assert_eq!(public["code"], 0);
+    let public_id = &public["returnValue"]["guildUUID"];
+    assert_eq!(
+        rpc(&router, "guildSearch", json!([visitor, search(1)])).await["returnValue"]["nearestGuilds"]
+            [0]["id"],
+        *public_id
+    );
+    assert_eq!(
+        rpc(&router, "guildSearch", json!([visitor, search(2)])).await["returnValue"],
+        json!({})
+    );
+    assert_eq!(
+        rpc(&router, "guildSearch", json!([visitor, search(0)])).await["code"],
+        -32602
+    );
+    let lookup = rpc(&router, "queryGuildInfo", json!([visitor, public_id, true])).await;
+    assert_eq!(lookup["returnValue"]["guildUUID"], *public_id);
+    assert_eq!(lookup["returnValue"]["members"], json!([]));
+    let join = rpc(&router, "joinGuild", json!([visitor, public_id])).await;
+    assert_eq!(join["returnValue"]["numMembers"], 2);
+    let created = rpc(
+        &router,
+        "createTeam",
+        json!([visitor, {"name":"Local Team"}]),
+    )
+    .await;
+    assert_eq!(created["returnValue"]["teamName"], "Local Team");
+}

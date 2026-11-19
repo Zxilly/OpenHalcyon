@@ -1,6 +1,6 @@
 //! Community projection for cataloged RPC names. The friend-list envelope is
-//! captured; other argument layouts and field mappings are inferred and need
-//! client validation. Unmapped methods return the RPC method-not-found error.
+//! captured, along with empty native guild/team responses. Populated local
+//! guild/team projections still need validation against original clients.
 
 use std::collections::BTreeMap;
 
@@ -68,6 +68,34 @@ impl<'a> Args<'a> {
             _ => Err(Error::Invalid),
         }
     }
+}
+
+/// The archive only establishes this browse preset and 1-based page numbers.
+fn native_guild_page(args: &Args<'_>) -> Result<Option<u32>, Error> {
+    let (Some(Value::String(_)), Some(Value::Object(options))) =
+        (args.entries.first(), args.structured.as_ref())
+    else {
+        return Ok(None);
+    };
+    if !options.contains_key("page") && !options.contains_key("minimumSkillTier") {
+        return Ok(None);
+    }
+    let mut preset = json!({
+        "minimumSkillTier":-2, "minNumMembers":0, "maxNumMembers":200,
+        "guildType":"GUILD_TYPE_ANY", "guildLanguageCode":"EN", "guildInviteOnly":false,
+        "name":"", "tag":""
+    });
+    let page = options
+        .get("page")
+        .and_then(Value::as_u64)
+        .and_then(|page| u32::try_from(page).ok())
+        .filter(|&page| page != 0)
+        .ok_or(Error::Invalid)?;
+    preset["page"] = json!(page);
+    if args.entries.len() != 1 || preset.as_object() != Some(options) {
+        return Err(Error::Invalid);
+    }
+    Ok(Some(page))
 }
 
 const PLAYER_ID: &[&str] = &["playerUUID", "playerId", "uuid", "targetUUID"];
@@ -245,6 +273,31 @@ pub(crate) async fn dispatch(
 ) -> Result<Value, Error> {
     let args = Args::new(params)?;
     let actor = profile.player_id;
+    let native_search = if method == "guildSearch" {
+        native_guild_page(&args)?
+    } else {
+        None
+    };
+    let native_info =
+        method == "queryGuildInfo" && matches!(args.entries, [Value::String(_), Value::Bool(true)]);
+    let native_empty = native_search.is_some()
+        || native_info
+        || (args.entries.is_empty()
+            && matches!(
+                method,
+                "guildGetData" | "queryGuildInvites" | "queryTeamInvites"
+            ));
+    match (method, args.entries) {
+        ("joinGuild", [Value::String(group)]) if group.is_empty() => return Ok(json!({})),
+        ("createTeam", [Value::String(prefix), Value::String(a), Value::String(b)])
+            if prefix.is_empty() && !a.trim().is_empty() && !b.trim().is_empty() =>
+        {
+            // The two strings' roles and the original mutation outcome are unknown.
+            return Ok(json!({}));
+        }
+        _ => {}
+    }
+
     let (action, view) = match method {
         "friendListAll" | "friendsListUpdate" => (Action::Friends, View::Friends),
         "friendRequestIssueByHandle" => {
@@ -598,9 +651,12 @@ pub(crate) async fn dispatch(
             )
         }
         "guildSearch" => (
-            Action::SearchGuilds {
-                term: args.text(0, &["query", "name", "tag"])?,
-                limit: 50,
+            match native_search {
+                Some(page) => Action::BrowseOpenGuilds { page },
+                None => Action::SearchGuilds {
+                    term: args.text(0, &["query", "name", "tag"])?,
+                    limit: 50,
+                },
             },
             View::GuildSearch,
         ),
@@ -678,8 +734,27 @@ pub(crate) async fn dispatch(
     let data = if crate::party_notify::is_mutation(&action) {
         crate::party_notify::execute(community, notify, actor, action).await?
     } else {
-        community.execute(actor, action).await?
+        match community.execute(actor, action).await {
+            Ok(data) => data,
+            Err(
+                halcyon_community::CommunityError::Missing(_)
+                | halcyon_community::CommunityError::Forbidden,
+            ) if native_info => {
+                return Ok(json!({}));
+            }
+            Err(error) => return Err(error.into()),
+        }
     };
+    if native_empty
+        && (data.is_null()
+            || (matches!(
+                view,
+                View::GuildSearch | View::GuildInvites | View::TeamInvites
+            ) && array(&data, "items").is_empty())
+            || (native_info && data["kind"] != "guild"))
+    {
+        return Ok(json!({}));
+    }
     if let Some(notify) = notify {
         if publish_presence {
             refresh.extend(

@@ -79,6 +79,9 @@ pub enum Action {
         term: String,
         limit: usize,
     },
+    BrowseOpenGuilds {
+        page: u32,
+    },
     Invite {
         kind: GroupKind,
         target: Uuid,

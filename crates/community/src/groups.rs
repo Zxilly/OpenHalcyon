@@ -262,7 +262,7 @@ fn group_info(tx: &Transaction<'_>, actor: &str, id: &str) -> Result<Value> {
     Ok(output.2)
 }
 
-fn search_guilds(tx: &Transaction<'_>, term: String, limit: usize) -> Result<Value> {
+fn search_guilds(tx: &Transaction<'_>, term: String, limit: usize, offset: u64) -> Result<Value> {
     if !(1..=100).contains(&limit) {
         return Err(CommunityError::Invalid("invalid guild page size"));
     }
@@ -271,9 +271,9 @@ fn search_guilds(tx: &Transaction<'_>, term: String, limit: usize) -> Result<Val
         "SELECT g.id,g.name,g.tag,g.motto,(SELECT count(*) FROM community_members m WHERE m.group_id=g.id)
          FROM community_groups g WHERE g.kind='guild' AND NOT g.invite_only
            AND (instr(lower(g.name), ?1)>0 OR instr(lower(g.tag), ?1)>0)
-         ORDER BY lower(g.name),g.id LIMIT ?2",
+         ORDER BY lower(g.name),g.id LIMIT ?2 OFFSET ?3",
     )?;
-    let items = query.query_map(params![term, limit], |row| Ok(json!({
+    let items = query.query_map(params![term, limit, offset], |row| Ok(json!({
         "id":row.get::<_, String>(0)?, "name":row.get::<_, String>(1)?, "tag":row.get::<_, String>(2)?,
         "motto":row.get::<_, String>(3)?, "memberCount":row.get::<_, u8>(4)?, "maxMembers":GroupKind::Guild.limit(),
     })))?.collect::<rusqlite::Result<Vec<_>>>()?;
@@ -447,7 +447,19 @@ pub(crate) fn execute(tx: &Transaction<'_>, actor: &str, action: Action) -> Resu
             .unwrap_or(Ok(Value::Null)),
         Action::GroupById { group } => group_info(tx, actor, &group.to_string()),
         Action::GroupInvites { kind } => invites(tx, actor, kind),
-        Action::SearchGuilds { term, limit } => search_guilds(tx, term, limit),
+        Action::SearchGuilds { term, limit } => search_guilds(tx, term, limit, 0),
+        Action::BrowseOpenGuilds { page } => {
+            const PER_PAGE: u32 = 50;
+            let index = page
+                .checked_sub(1)
+                .ok_or(CommunityError::Invalid("invalid guild page"))?;
+            search_guilds(
+                tx,
+                String::new(),
+                PER_PAGE as usize,
+                u64::from(index) * u64::from(PER_PAGE),
+            )
+        }
         Action::Invite { kind, target } => {
             let (id, role) = member(tx, actor, kind)?;
             if !matches!(role.as_str(), "owner" | "officer") {
