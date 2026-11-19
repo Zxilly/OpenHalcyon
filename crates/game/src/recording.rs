@@ -128,6 +128,7 @@ fn sanitize(m: &mut Message) -> bool {
         0x45c if matches!(m.body.len(), 96 | 102) && m.body[96..].iter().all(|&v| v == 0) => {}
         0x3ef if m.body.is_empty() || m.body == [0; 6] => {}
         0x41e if m.body.len() == 22 && m.body[16..] == [0; 6] => {}
+        0x432 if m.body.len() == 22 && m.body[16..] == [0; 6] => {}
         0x430 if m.body.len() == 14 && m.body[8..] == [0; 6] => {}
         // Our end report contains numeric in-match actors and counters only.
         0x48d if m.body.len() == 1612 => {}

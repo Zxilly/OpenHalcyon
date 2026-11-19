@@ -284,6 +284,17 @@ pub(super) fn modifier(actor: u32, stat: u8, value: f32) -> Message {
 /// may already have left the post-step visibility set.
 fn combat_event(event: &halcyon_sim::Event, visible: impl Fn(u32) -> bool) -> Option<Message> {
     use halcyon_sim::Event;
+    if let Event::Respawn { id, position } = *event {
+        if !visible(id) {
+            return None;
+        }
+        let mut body = [0; 22];
+        body[..4].copy_from_slice(&u32::from(wire_id(id)).to_be_bytes());
+        body[4..8].copy_from_slice(&position.x.to_be_bytes());
+        // OpenHalcyon's authoritative world is planar, with height zero.
+        body[12..16].copy_from_slice(&position.y.to_be_bytes());
+        return Some(Message::new(0x0432, body));
+    }
     let (target, source, operand) = match *event {
         Event::Damage {
             source,
@@ -345,6 +356,29 @@ mod combat_tests {
     use super::*;
     use halcyon_protocol::Fields;
     use halcyon_sim::Event;
+    #[test]
+    fn respawn_uses_the_authoritative_actor_and_spawn_point_inside_vision() {
+        let p = halcyon_sim::Position { x: 31.25, y: -4.5 };
+        let mut records = vec![];
+        append_combat(&mut records, &Event::Spawn { id: 4 }, |_| true);
+        append_combat(&mut records, &Event::Respawn { id: 4, position: p }, |_| {
+            false
+        });
+        assert!(records.is_empty());
+        append_combat(&mut records, &Event::Respawn { id: 4, position: p }, |id| {
+            id == 4
+        });
+        assert_eq!(records.len(), 1);
+        assert_eq!(
+            records[0].fields().unwrap(),
+            Fields::Respawn {
+                actor: 1503,
+                position: [31.25, 0., -4.5],
+                remaining: &[0; 6]
+            }
+        );
+    }
+
     #[test]
     fn visible_hero_death_adds_the_authoritative_counters_once() {
         let mut out = vec![];

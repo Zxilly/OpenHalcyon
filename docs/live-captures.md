@@ -110,3 +110,19 @@ The independent Windows action-class study associates 03F5 with a movement reque
 ### Request and world-action pairs
 
 All 22 client 03F5 two-float movement requests recurred at offsets +1 and +5 in subsequent server 03F8 movement records. All 22 server records carried selector 19. All 15 client 0412 requests had their complete three-word vector and selector reproduced in a server 0416 at offsets +4 through +16, 35–142 ms later. The local spawn manifest identified Lorelai for selectors 0 and 1 and Idris for selector 3. Lorelai's single client 0411 entity-target request with selector 2 recurred in 0415 at +4 through +8 after 55 ms. All four client 0424 requests named a spawned actor and carried flag zero. The 24 client 0436 learning requests used 0, 1 or 2; nearby server 043A grant operands could differ by hero. These correlations do not establish a universal mapping from network selectors to the simulator's ability slots.
+
+### Authoritative hero respawn
+
+All 63 live ARAL 0x0432 records and all six Android Solo 0x0432 records
+follow a prior death of the same actor. The wire reader consumes the actor
+and three big-endian position floats. The independent Windows formatter
+for ActionActorRespawn writes those same 16 bytes. OpenHalcyon emits this
+action when its respawn timer restores a hero's health and position. Its
+planar world supplies X and Z and uses zero for height. Visible players,
+authorized observers and their replay records receive the same position.
+Ordinary minion births and reconnect declarations do not trigger this action.
+
+The available point and entity ability requests are from Lorelai and Idris.
+Neither has an authoritative spell implementation in the current simulation.
+The capture does not bind those heroes' selectors to the implemented Ringo,
+Adagio, Lyra, SAW, Karas or Shin casts.

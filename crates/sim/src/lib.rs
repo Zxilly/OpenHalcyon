@@ -89,6 +89,11 @@ pub enum Event {
     Spawn {
         id: u32,
     },
+    /// A previously dead hero has returned to its home position.
+    Respawn {
+        id: u32,
+        position: Position,
+    },
     Move {
         id: u32,
         position: Position,
@@ -725,6 +730,10 @@ impl World {
                     e.path = Default::default();
                     e.position = base(e.team);
                     events.push(Event::Spawn { id: e.id });
+                    events.push(Event::Respawn {
+                        id: e.id,
+                        position: e.position,
+                    });
                 }
                 continue;
             }
@@ -891,6 +900,39 @@ impl World {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_the_hero_return_tick_emits_a_respawn_with_the_home_position() {
+        let mut world = World::new(0, 1);
+        world.entities[0].hp = 0.;
+        world.entities[0].respawn = 2;
+        world.entities[0].position = Position { x: 30., y: 4. };
+        assert!(
+            !world
+                .step()
+                .iter()
+                .any(|e| matches!(e, Event::Respawn { .. }))
+        );
+        let events = world.step();
+        let index = events
+            .iter()
+            .position(|e| *e == Event::Spawn { id: 1 })
+            .unwrap();
+        assert_eq!(
+            events[index + 1],
+            Event::Respawn {
+                id: 1,
+                position: base(0)
+            }
+        );
+        assert_eq!(world.entities[0].hp, world.entities[0].max_hp);
+        assert!(
+            !world
+                .step()
+                .iter()
+                .any(|e| matches!(e, Event::Respawn { .. }))
+        );
+    }
 
     #[test]
     fn difficulty_changes_only_hero_bot_decision_interval() {
