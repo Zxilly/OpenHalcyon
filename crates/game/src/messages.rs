@@ -129,7 +129,13 @@ pub fn spawn(e: &Entity, picks: &[Pick], data: Option<&halcyon_data::GameData>) 
     Message::new(0x3f3, b)
 }
 
-fn info(world: &World, players: &[Uuid], picks: &[Pick], i: usize, full: bool) -> Message {
+pub(super) fn info(
+    world: &World,
+    players: &[Uuid],
+    picks: &[Pick],
+    i: usize,
+    full: bool,
+) -> Message {
     let e = &world.entities[i];
     let p = &picks[i];
     let mut b = vec![0; if full { 222 } else { 216 }];

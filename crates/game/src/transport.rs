@@ -350,7 +350,7 @@ mod tests {
                 match_id: id,
                 players: vec![player],
                 teams: vec![0],
-                mode: "5v5".into(),
+                mode: "5v5_pvp_casual".into(),
                 difficulty: None,
             })
             .unwrap();
@@ -405,7 +405,8 @@ mod tests {
         for stream in [player, observer] {
             let death = stream.iter().position(|&op| op == 0x430).unwrap();
             assert!(stream[..death].contains(&0x41e));
-            assert_eq!(stream.last(), Some(&0x459));
+            assert!(stream[death + 1..].contains(&0x459));
+            assert_eq!(stream.last(), Some(&0x3f1));
         }
     }
 

@@ -4,6 +4,7 @@ pub use admission::{AdmissionPolicy, PortRange, ResourceMetrics};
 mod messages;
 mod observer;
 mod recording;
+mod result_frames;
 mod transport;
 use chrono::{DateTime, Utc};
 use halcyon_data::GameData;
@@ -807,6 +808,13 @@ impl Room {
         if !self.admitted {
             return;
         }
+        if self.phase == "ending" && self.reason == Some("completed") {
+            // Five live ARAL crystal defeats report their winner about six seconds later.
+            if self.phase_start.elapsed() >= std::time::Duration::from_secs(6) {
+                self.finish_world();
+            }
+            return;
+        }
         if self.last_active.elapsed().as_secs() > 300
             && self
                 .seats
@@ -853,8 +861,23 @@ impl Room {
         if self.world.winner.is_some() {
             self.reason = Some("completed");
             self.phase("ending");
-            self.stop.send_replace(true);
+            if !matches!(self.queue.as_str(), "aral" | "aral_casual" | "casual_aral") {
+                self.finish_world();
+            }
         }
+    }
+    fn finish_world(&mut self) {
+        if *self.stop.borrow() {
+            return;
+        }
+        if let Some(result) = result_frames::crystal_end(&self.queue, &self.world) {
+            self.publish_observers(std::slice::from_ref(&result));
+            let delivery = transport::TeamBatch::new(vec![result]);
+            for peer in self.seats.iter().filter_map(|s| s.peers[1].as_ref()) {
+                peer.send(transport::Delivery::Team(delivery.clone()));
+            }
+        }
+        self.stop.send_replace(true);
     }
 
     fn replicate(&mut self, events: &[Event]) {
