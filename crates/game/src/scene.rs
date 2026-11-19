@@ -247,6 +247,7 @@ mod tests {
                     if (1500..1510).contains(&id) {
                         if !reconnect && id == 1500 {
                             assert_eq!(m.body[18..22], (-90.0_f32).to_be_bytes());
+                            assert_eq!(m.body[22..26], 0x3d75_be29_u32.to_be_bytes());
                             assert_eq!(f32::from_be_bytes(m.body[26..30].try_into().unwrap()), 0.);
                             assert_eq!(m.body[745], 14);
                         }

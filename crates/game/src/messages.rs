@@ -150,6 +150,9 @@ pub(super) fn solo_hero_profile(message: &mut Message, entity: &Entity, tick: u6
     body[0x2c5..0x2c9].copy_from_slice(&selector.to_be_bytes());
     body[0x2e5..0x2e9].copy_from_slice(&u32::MAX.to_be_bytes());
     if tick == 0 {
+        // The ten Solo opening pads share the same measured ground height.
+        body[22..26].copy_from_slice(&0x3d75_be29_u32.to_be_bytes());
+        body[34..38].copy_from_slice(&(-0.0_f32).to_be_bytes());
         // Initial per-team flags differ from later visibility checkpoints.
         body[0x2c9..0x2d1].fill(1);
         body[0x2d1 + usize::from(entity.team) + 1] = 15;
