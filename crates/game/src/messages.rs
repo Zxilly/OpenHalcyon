@@ -45,6 +45,10 @@ fn settings(seat: usize, mode: &str, draft: bool) -> Message {
     }
     Message::new(0x3e9, b)
 }
+pub(super) fn world_settings(seat: usize, queue: &str) -> Message {
+    settings(seat, mode_name(queue), false)
+}
+
 pub fn setup(
     world: &World,
     players: &[Uuid],
@@ -190,8 +194,7 @@ pub(super) fn world_header(
     let mut out: Vec<_> = (0..10)
         .map(|i| info(world, players, picks, i, false))
         .collect();
-    let game_mode = mode_name(mode);
-    out.push(settings(seat, game_mode, false));
+    out.push(world_settings(seat, mode));
     out.push(Message::new(0x46c, [0]));
     out.push(scene_mode(mode, 1));
     out.push(Message::new(0x470, [0]));

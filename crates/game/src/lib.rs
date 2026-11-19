@@ -699,8 +699,14 @@ impl Room {
             "Authenticated",
             json!({"playerId":uuid,"channel":if game{"game"}else{"control"}}),
         );
-        let mut batch = if !game && self.solo_scene() && self.seats[idx].control_world {
-            Vec::new()
+        let solo_rejoin = !game && self.solo_scene() && self.seats[idx].control_world;
+        let mut batch = if solo_rejoin {
+            // A fresh control stream has never received the seat and world mode.
+            let mut records: Batch = scene::players(self).collect();
+            records.push(messages::world_settings(idx, &self.queue));
+            records.push(Message::new(0x046c, [0]));
+            self.seats[idx].loading_roster_sent = true;
+            records
         } else if legacy_aral {
             aral::setup(
                 self,
@@ -723,10 +729,7 @@ impl Room {
                 &self.picks,
             )
         };
-        if !game
-            && (legacy_aral || self.solo_scene() && self.seats[idx].control_world)
-            && matches!(self.phase, "loading" | "running")
-        {
+        if !game && legacy_aral && matches!(self.phase, "loading" | "running") {
             self.seats[idx].loading_roster_sent = true;
             batch.extend(scene::begin_loading(self));
         }

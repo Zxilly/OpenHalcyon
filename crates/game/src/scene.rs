@@ -338,8 +338,14 @@ mod tests {
                 .await
                 .unwrap();
                 socket = login(&hosted.address, player, &cipher).await;
-                assert_eq!(next(&mut socket, &cipher).await.opcode, 0x3ee);
-                until(&mut socket, &cipher, 0x46c).await;
+                for _ in 0..10 {
+                    assert_eq!(next(&mut socket, &cipher).await.opcode, 0x3ee);
+                }
+                let settings = next(&mut socket, &cipher).await;
+                assert_eq!(&settings.body[32..56], b"*GameMode_5v5_SoloBots*\0");
+                assert_eq!(settings.opcode, 0x03e9);
+                assert_eq!(&settings.body[..8], &[0, 0, 5, 220, 0, 0, 0, 0]);
+                assert_eq!(next(&mut socket, &cipher).await.opcode, 0x46c);
             }
         }
         drop(socket);
