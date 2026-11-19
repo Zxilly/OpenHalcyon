@@ -20,3 +20,5 @@ python -B tools/bench/windows.py --rooms 4 --seconds 1810 --server-cpus 4 8 12 -
 - 1 GiB 的 Windows 提交限制与 Linux cgroup 的内存计量不同。正式设定准入上限还需要运营者实际硬件及带宽预算，并对临界档进行至少两小时测试。远程负载机可以独立运行 `halcyon-loadtest --platform https://HOST:PORT --certificate tls.pem --rooms N --humans H --seconds S`；被测服需配置相应的真人席位数、房间容量和可达地址。
 
 临时实例含管理员初始凭据、证书私钥和游客数据库。发布结果只需脱敏的环境、采样与汇总文件。
+
+用 `--host-telemetry --room-capacity 5 --rooms 4` 每五秒采样管理端资源准入、排队人数和暂留席位，在满负载四局时保留一个房间供观察。负载端分别累计收到的伤害、治疗、死亡和英雄击杀/死亡计数帧。

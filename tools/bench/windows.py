@@ -66,7 +66,7 @@ def measure(args, root, humans, cpu):
                 text = re.sub(rf'(?m)^{name} = .*$', f'{name} = "127.0.0.1:{port}"', text)
             text = re.sub(r'(?m)^game_bind = .*$', 'game_bind = "127.0.0.1"', text)
             text = re.sub(r'(?m)^seats_per_match = .*$', f'seats_per_match = {humans}', text)
-            text = re.sub(r'(?m)^max_rooms = .*$', f'max_rooms = {args.rooms}', text)
+            text = re.sub(r'(?m)^max_rooms = .*$', f'max_rooms = {args.room_capacity or args.rooms}', text)
             text = re.sub(r'(?m)^origin = .*$', f'origin = "{origin}"', text)
             if args.data_dir:
                 text = "data_dir = " + json.dumps(str(args.data_dir.resolve())) + "\n" + text
@@ -123,13 +123,19 @@ def measure(args, root, humans, cpu):
                 while cursor := page.get("nextCursor"):
                     page = admin("matches?" + urllib.parse.urlencode({"limit": 100, "cursor": cursor}))
                     rooms.extend(page["items"])
+                host={}
+                if args.host_telemetry:
+                    overview=admin("overview")
+                    hosting=overview["hosting"]
+                    host={k:hosting.get(k) for k in ("admission","humanSeats","botSeats","reservedSeats","tickP99Ms","cpuPercent","rssBytes","outboundBytesPerSecond")}
+                    host["queuedPlayers"]=overview["queuedPlayers"]
                 cpu_times = proc.cpu_times()
                 try:
                     load_times=load_proc.cpu_times()
                     load_cpu=load_times.user+load_times.system
                 except psutil.NoSuchProcess:
                     load_cpu=None
-                row = {"wall_s": time.monotonic()-t0, "cpu_s": cpu_times.user+cpu_times.system, "load_cpu_s":load_cpu, "rss":proc.memory_info().rss,
+                row = {"wall_s": time.monotonic()-t0, "cpu_s": cpu_times.user+cpu_times.system, "load_cpu_s":load_cpu, "hosting":host, "rss":proc.memory_info().rss,
                     "rooms":[{k:r.get(k) for k in ("id","phase","tickLatency","fanoutQueueFull","simTick","admitted")} for r in rooms],"client":latest_client(client_path)}
                 log.write(json.dumps(row,separators=(",",":"))+"\n")
                 samples.append(row)
@@ -201,6 +207,8 @@ def main():
     parser=argparse.ArgumentParser()
     parser.add_argument("--seconds",type=int,default=1800)
     parser.add_argument("--rooms",type=int,default=4)
+    parser.add_argument("--room-capacity",type=int,help="provider room limit, defaults to requested rooms")
+    parser.add_argument("--host-telemetry",action="store_true",help="sample admission and tick gauges via the admin overview")
     parser.add_argument("--humans",type=int,nargs="+",default=[1,5,10])
     parser.add_argument("--server-cpus",type=int,nargs="+",required=True)
     parser.add_argument("--client-workers",type=int,help="load-process Tokio workers (default: one per specified client CPU)")
@@ -212,7 +220,7 @@ def main():
     parser.add_argument("--output",type=Path,required=True)
     parser.add_argument("--binary-dir",type=Path,default=ROOT/"target"/"release")
     args=parser.parse_args()
-    if os.name!="nt" or (args.client_workers is not None and args.client_workers<1) or len(args.server_cpus)!=len(args.humans) or len(set(args.server_cpus))!=len(args.server_cpus) or set(args.server_cpus)&set(args.client_cpus):
+    if os.name!="nt" or (args.room_capacity is not None and args.room_capacity<args.rooms) or (args.client_workers is not None and args.client_workers<1) or len(args.server_cpus)!=len(args.humans) or len(set(args.server_cpus))!=len(args.server_cpus) or set(args.server_cpus)&set(args.client_cpus):
         parser.error("provide one distinct server CPU per scenario and separate client CPUs on Windows")
     root=args.output.resolve()
     root.mkdir(parents=True,exist_ok=False)

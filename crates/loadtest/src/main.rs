@@ -58,6 +58,35 @@ struct Stats {
     clock_echoes: AtomicU64,
     clock_sequence_errors: AtomicU64,
     end_frames: AtomicU64,
+    damage_frames: AtomicU64,
+    heal_frames: AtomicU64,
+    death_frames: AtomicU64,
+    hero_kill_increments: AtomicU64,
+    hero_death_increments: AtomicU64,
+}
+impl Stats {
+    fn received(&self, wire_len: usize, msg: &Message) {
+        self.frames.fetch_add(1, Ordering::Relaxed);
+        self.bytes.fetch_add(wire_len as u64, Ordering::Relaxed);
+        let counter = match msg.opcode {
+            0x42e => &self.positions,
+            0x430 => &self.death_frames,
+            0x41c if msg.body.get(12) == Some(&41) => &self.hero_kill_increments,
+            0x41c if msg.body.get(12) == Some(&42) => &self.hero_death_increments,
+            0x41e if msg.body.len() >= 12 => {
+                let delta = f32::from_be_bytes(msg.body[8..12].try_into().unwrap());
+                if delta < 0. {
+                    &self.damage_frames
+                } else if delta > 0. {
+                    &self.heal_frames
+                } else {
+                    return;
+                }
+            }
+            _ => return,
+        };
+        counter.fetch_add(1, Ordering::Relaxed);
+    }
 }
 #[derive(Clone)]
 struct Api {
@@ -158,13 +187,7 @@ impl Socket {
         let mut bytes = vec![0; len];
         self.stream.read_exact(&mut bytes).await?;
         let msg = self.cipher.decode(&bytes)?;
-        self.stats.frames.fetch_add(1, Ordering::Relaxed);
-        self.stats
-            .bytes
-            .fetch_add(len as u64 + 2, Ordering::Relaxed);
-        if msg.opcode == 0x42e {
-            self.stats.positions.fetch_add(1, Ordering::Relaxed);
-        }
+        self.stats.received(len + 2, &msg);
         Ok(msg)
     }
     async fn until(&mut self, op: u16) -> Result<()> {
@@ -200,11 +223,7 @@ impl Socket {
                 let mut b = vec![0; n];
                 rd.read_exact(&mut b).await?;
                 let m = cipher.decode(&b)?;
-                stats.frames.fetch_add(1, Ordering::Relaxed);
-                stats.bytes.fetch_add((n + 2) as u64, Ordering::Relaxed);
-                if m.opcode == 0x42e {
-                    stats.positions.fetch_add(1, Ordering::Relaxed);
-                }
+                stats.received(n + 2, &m);
                 if m.opcode == 0 && m.body.len() >= 4 {
                     let time = f32::from_be_bytes(m.body[..4].try_into().unwrap());
                     let index = (time / 0.4).round() as u32;
@@ -456,6 +475,8 @@ async fn main() -> Result<()> {
             "slow_disconnects":stats.slow_disconnects.load(Ordering::Relaxed),
             "clocks_sent":stats.clocks_sent.load(Ordering::Relaxed),"clock_echoes":stats.clock_echoes.load(Ordering::Relaxed),
             "clock_sequence_errors":stats.clock_sequence_errors.load(Ordering::Relaxed),"end_frames":stats.end_frames.load(Ordering::Relaxed),
+            "damage_frames":stats.damage_frames.load(Ordering::Relaxed),"heal_frames":stats.heal_frames.load(Ordering::Relaxed),"death_frames":stats.death_frames.load(Ordering::Relaxed),
+            "hero_kill_increments":stats.hero_kill_increments.load(Ordering::Relaxed),"hero_death_increments":stats.hero_death_increments.load(Ordering::Relaxed),
             "frames":stats.frames.load(Ordering::Relaxed),"gs_bytes":stats.bytes.load(Ordering::Relaxed),
             "positions":stats.positions.load(Ordering::Relaxed),"client_commands":stats.writes.load(Ordering::Relaxed)
         });
