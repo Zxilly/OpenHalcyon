@@ -34,6 +34,9 @@ struct Args {
     humans: usize,
     #[arg(long)]
     seconds: u64,
+    /// Spread the initial room groups evenly across this many seconds.
+    #[arg(long, default_value_t = 0)]
+    ramp_seconds: u64,
     /// Delay each game frame for the last human seat in each room (zero for normal reading).
     #[arg(long, default_value_t = 0)]
     slow_reader_ms: u64,
@@ -48,6 +51,7 @@ struct Stats {
     writes: AtomicU64,
     positions: AtomicU64,
     opened: AtomicU64,
+    initial_rooms: AtomicU64,
     completed: AtomicU64,
     slow_disconnects: AtomicU64,
 }
@@ -292,11 +296,16 @@ async fn room(
     }
     // Each benchmark room uses its own queue name so simultaneous rounds never mix rosters.
     let mode = format!("bench_{number}");
+    let mut first = true;
     loop {
         if *stop.borrow() {
             return Ok(());
         }
         let sockets = setup(&api, &players, &mode, &stats).await?;
+        if first {
+            stats.initial_rooms.fetch_add(1, Ordering::Relaxed);
+            first = false;
+        }
         let mut peers = JoinSet::new();
         for (seat, (ctrl, game)) in sockets.into_iter().enumerate() {
             let ctrl_stop = stop.clone();
@@ -374,7 +383,7 @@ async fn main() -> Result<()> {
     let mut workers = JoinSet::new();
     let (stop, recv) = watch::channel(false);
     for i in 0..a.rooms {
-        workers.spawn(room(
+        let worker = room(
             api.clone(),
             a.humans,
             a.slow_reader_ms,
@@ -382,7 +391,14 @@ async fn main() -> Result<()> {
             i,
             stats.clone(),
             recv.clone(),
-        ));
+        );
+        let delay = Duration::from_secs_f64(
+            a.ramp_seconds as f64 * i as f64 / a.rooms.saturating_sub(1).max(1) as f64,
+        );
+        workers.spawn(async move {
+            sleep(delay).await;
+            worker.await
+        });
     }
     let started = Instant::now();
     let mut full = None;
@@ -396,16 +412,18 @@ async fn main() -> Result<()> {
             _=interval.tick()=>{}
         }
         let opened = stats.opened.load(Ordering::Relaxed);
-        if opened >= a.rooms as u64 && full.is_none() {
+        let established = stats.initial_rooms.load(Ordering::Relaxed);
+        if established == a.rooms as u64 && full.is_none() {
             full = Some(Instant::now());
         }
         ensure!(
-            full.is_some() || started.elapsed() < Duration::from_secs(90),
+            full.is_some()
+                || started.elapsed() < Duration::from_secs(90_u64.saturating_add(a.ramp_seconds)),
             "startup deadline"
         );
         let sample = json!({
             "elapsed_s":started.elapsed().as_secs_f64(),"steady_s":full.map(|t|t.elapsed().as_secs_f64()),
-            "opened":opened,"completed":stats.completed.load(Ordering::Relaxed),
+            "opened":opened,"initial_rooms":established,"completed":stats.completed.load(Ordering::Relaxed),
             "slow_disconnects":stats.slow_disconnects.load(Ordering::Relaxed),
             "frames":stats.frames.load(Ordering::Relaxed),"gs_bytes":stats.bytes.load(Ordering::Relaxed),
             "positions":stats.positions.load(Ordering::Relaxed),"client_commands":stats.writes.load(Ordering::Relaxed)

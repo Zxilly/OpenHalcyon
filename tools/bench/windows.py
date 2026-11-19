@@ -15,6 +15,7 @@ import ssl
 import subprocess
 import threading
 import time
+import urllib.parse
 import urllib.request
 
 import psutil
@@ -24,7 +25,7 @@ ROOT = Path(__file__).resolve().parents[2]
 PORT_LOCK = threading.Lock()
 
 def local_ports():
-    sockets = [socket.socket() for _ in range(3)]
+    sockets = [socket.socket() for _ in range(4)]
     try:
         for sock in sockets:
             sock.bind(("127.0.0.1", 0))
@@ -58,10 +59,10 @@ def measure(args, root, humans, cpu):
     env.update({"TOKIO_WORKER_THREADS": "1", "RUST_LOG": "warn"})
     with contextlib.ExitStack() as teardown:
         with PORT_LOCK:
-            bootstrap, https, notify = local_ports()
+            bootstrap, https, notify, xmpp = local_ports()
             origin = f"https://127.0.0.1:{https}"
             text = cfg.read_text(encoding="utf-8")
-            for name, port in (("bootstrap_listen", bootstrap), ("platform_listen", https), ("notify_listen", notify)):
+            for name, port in (("bootstrap_listen", bootstrap), ("platform_listen", https), ("notify_listen", notify), ("xmpp_listen", xmpp)):
                 text = re.sub(rf'(?m)^{name} = .*$', f'{name} = "127.0.0.1:{port}"', text)
             text = re.sub(r'(?m)^game_bind = .*$', 'game_bind = "127.0.0.1"', text)
             text = re.sub(r'(?m)^seats_per_match = .*$', f'seats_per_match = {humans}', text)
@@ -101,7 +102,7 @@ def measure(args, root, humans, cpu):
         client_path = run / "client.jsonl"
         client_log = teardown.enter_context(client_path.open("wb"))
         client_err = teardown.enter_context((run / "client.err").open("wb"))
-        client = subprocess.Popen([load_bin,"--platform",origin,"--certificate",instance/"tls.pem","--rooms",str(args.rooms),"--humans",str(humans),"--seconds",str(args.seconds),"--slow-reader-ms",str(args.slow_reader_ms)]+(["--allow-admin-rotation"] if args.rotate_seconds else []),
+        client = subprocess.Popen([load_bin,"--platform",origin,"--certificate",instance/"tls.pem","--rooms",str(args.rooms),"--humans",str(humans),"--seconds",str(args.seconds),"--slow-reader-ms",str(args.slow_reader_ms)]+(["--ramp-seconds",str(args.ramp_seconds)] if args.ramp_seconds else [])+(["--allow-admin-rotation"] if args.rotate_seconds else []),
             env=env, stdout=client_log,stderr=client_err,creationflags=subprocess.CREATE_NO_WINDOW)
         teardown.callback(client.wait)
         teardown.callback(client.kill)
@@ -113,7 +114,11 @@ def measure(args, root, humans, cpu):
             while True:
                 if server.poll() is not None:
                     raise RuntimeError("measured server exited")
-                rooms = admin("matches?limit=100")["items"]
+                page = admin("matches?limit=100")
+                rooms = page["items"]
+                while cursor := page.get("nextCursor"):
+                    page = admin("matches?" + urllib.parse.urlencode({"limit": 100, "cursor": cursor}))
+                    rooms.extend(page["items"])
                 cpu_times = proc.cpu_times()
                 row = {"wall_s": time.monotonic()-t0, "cpu_s": cpu_times.user+cpu_times.system, "rss":proc.memory_info().rss,
                     "rooms":[{k:r.get(k) for k in ("id","phase","tickLatency")} for r in rooms],"client":latest_client(client_path)}
@@ -130,7 +135,7 @@ def measure(args, root, humans, cpu):
                     if client.returncode != 0:
                         raise RuntimeError(f"load client failed: {(run/'client.err').read_text()}")
                     break
-                if row["wall_s"] > args.seconds + 120:
+                if row["wall_s"] > args.seconds + args.ramp_seconds + 120:
                     raise RuntimeError("load client failed to complete")
                 time.sleep(min(5, max(1,args.seconds//10)))
         active = [r for r in samples if r["client"].get("steady_s") is not None]
@@ -148,9 +153,25 @@ def measure(args, root, humans, cpu):
         begin = {r["id"]:r["tickLatency"] for r in start["rooms"] if r["tickLatency"]}
         ticks = sum(v["count"]-begin.get(k,{}).get("count",0) for k,v in last.items())
         over = sum(v["over40ms"]-begin.get(k,{}).get("over40ms",0) for k,v in last.items())
+        # All intervals include wall-clock scheduling time. Keep the oldest point
+        # spanning at least a minute for each rolling process-CPU observation.
+        left = 0
+        minute_cpu = []
+        for right in active:
+            while left + 1 < len(active) and right["wall_s"] - active[left + 1]["wall_s"] >= 60:
+                left += 1
+            interval = right["wall_s"] - active[left]["wall_s"]
+            if interval >= 60:
+                minute_cpu.append(100 * (right["cpu_s"] - active[left]["cpu_s"]) / interval)
+        room_seconds = sum(
+            sum(x["phase"] == "running" for x in prev["rooms"]) * (nxt["wall_s"] - prev["wall_s"])
+            for prev, nxt in zip(active, active[1:])
+        )
         byte_delta=end["client"]["gs_bytes"]-start["client"]["gs_bytes"]
         report={"humans_per_room":humans,"bots_per_room":10-humans,"rooms":args.rooms,"duration_s":elapsed,
             "logical_cpu":cpu,"commit_limit_bytes":1024**3,"server_cpu_percent":100*(end["cpu_s"]-start["cpu_s"])/elapsed,
+            "max_60s_server_cpu_percent":max(minute_cpu, default=None),
+            "sampled_active_room_fraction":room_seconds/(args.rooms*elapsed),
             "peak_sampled_rss_bytes":max(r["rss"] for r in active),"ticks":ticks,"over40ms":over,
             "max_sampled_room_window_p99_us":max(v["p99Us"] or 0 for r in active for x in r["rooms"] if (v:=x["tickLatency"])),
             "max_tick_us":max(v["maxUs"] for v in last.values()),"p99_within_40ms":ticks>0 and over/ticks<=0.01,
@@ -168,8 +189,10 @@ def main():
     parser.add_argument("--client-cpus",type=int,nargs="+",required=True)
     parser.add_argument("--data-dir",type=Path)
     parser.add_argument("--slow-reader-ms",type=int,default=0)
+    parser.add_argument("--ramp-seconds",type=int,default=0)
     parser.add_argument("--rotate-seconds",type=int,default=0)
     parser.add_argument("--output",type=Path,required=True)
+    parser.add_argument("--binary-dir",type=Path,default=ROOT/"target"/"release")
     args=parser.parse_args()
     if os.name!="nt" or len(args.server_cpus)!=len(args.humans) or len(set(args.server_cpus))!=len(args.server_cpus) or set(args.server_cpus)&set(args.client_cpus):
         parser.error("provide one distinct server CPU per scenario and separate client CPUs on Windows")
@@ -178,9 +201,9 @@ def main():
     binaries=root/"bin";binaries.mkdir()
     sha={}
     for name in ("openhalcyon.exe","halcyon-loadtest.exe"):
-        dst=binaries/name;shutil.copy2(ROOT/"target"/"release"/name,dst)
+        dst=binaries/name;shutil.copy2(args.binary_dir/name,dst)
         sha[name]=hashlib.sha256(dst.read_bytes()).hexdigest()
-    write_json(root/"environment.json",{"platform":platform.platform(),"cpu":platform.processor(),"logical_cpus":psutil.cpu_count(),"logical_to_physical_count":psutil.cpu_count(logical=False),"timestamp":time.time(),"binaries_sha256":sha,"git_head":subprocess.check_output(["git","rev-parse","HEAD"],cwd=ROOT,text=True).strip(),"dirty":bool(subprocess.check_output(["git","status","--porcelain"],cwd=ROOT)),"args":vars(args)|{"output":str(root),"data_dir":str(args.data_dir)}})
+    write_json(root/"environment.json",{"platform":platform.platform(),"cpu":platform.processor(),"logical_cpus":psutil.cpu_count(),"logical_to_physical_count":psutil.cpu_count(logical=False),"timestamp":time.time(),"binaries_sha256":sha,"git_head":subprocess.check_output(["git","rev-parse","HEAD"],cwd=ROOT,text=True).strip(),"dirty":bool(subprocess.check_output(["git","status","--porcelain"],cwd=ROOT)),"args":vars(args)|{"output":str(root),"data_dir":str(args.data_dir),"binary_dir":str(args.binary_dir)}})
     with concurrent.futures.ThreadPoolExecutor() as executor:
         tasks=[executor.submit(measure,args,root,h,c) for h,c in zip(args.humans,args.server_cpus)]
         results=[t.result() for t in tasks]
