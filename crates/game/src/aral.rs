@@ -129,6 +129,22 @@ pub(super) fn draft_catalog(room: &Room, remaining: f32) -> Batch {
     batch
 }
 
+pub(super) fn refresh(room: &mut Room, seat: usize) -> Batch {
+    let mut batch = draft_catalog(room, room.aral_remaining());
+    if !room.seats[seat].draft_sync_sent {
+        // The first refresh of all eight recorded ARAL connections used these four constants.
+        let mut body = [0; 86];
+        body[..4].copy_from_slice(&1_u32.to_be_bytes());
+        body[4..8].copy_from_slice(&5_u32.to_be_bytes());
+        body[76] = 1;
+        body[77..81].copy_from_slice(&3_u32.to_be_bytes());
+        batch.push(Message::new(0x0480, body));
+        batch.push(roster(room, room.aral_remaining(), false));
+        room.seats[seat].draft_sync_sent = true;
+    }
+    batch
+}
+
 pub(super) fn opening(room: &mut Room, team: Option<u8>) -> Batch {
     let mut batch: Batch = Vec::new();
     batch.push(messages::scene_mode(&room.queue, 0));
@@ -425,7 +441,7 @@ mod tests {
             clients.push(socket);
         }
 
-        for _ in 0..3 {
+        for refresh in 0..3 {
             let request = Message::new(0x0458, [0; 6]);
             clients[0]
                 .write_all(&cipher.encode(&request).unwrap())
@@ -436,7 +452,19 @@ mod tests {
             for _ in 0..catalog_len {
                 assert_eq!(next(&mut clients[0], &cipher).await.opcode, 0x0453);
             }
-            assert_eq!(next(&mut clients[0], &cipher).await.opcode, 0x045a);
+            let first = next(&mut clients[0], &cipher).await;
+            assert_eq!(first.opcode, 0x045a);
+            if refresh == 0 {
+                let sync = next(&mut clients[0], &cipher).await;
+                let mut expected = [0; 86];
+                for (i, value) in [(3, 1), (7, 5), (76, 1), (80, 3)] {
+                    expected[i] = value;
+                }
+                assert_eq!(sync, Message::new(0x0480, expected));
+                let second = next(&mut clients[0], &cipher).await;
+                assert_eq!(second.opcode, 0x045a);
+                assert_eq!(first.body[8..], second.body[8..]);
+            }
             assert_eq!(next(&mut clients[0], &cipher).await, request);
         }
         let room = rooms.room(room_id).unwrap();

@@ -1079,7 +1079,7 @@ impl Room {
                     && m.body == [0; 6] =>
             {
                 out = if legacy {
-                    aral::draft_catalog(self, self.aral_remaining())
+                    aral::refresh(self, i)
                 } else {
                     messages::draft_catalog(
                         &self.world,

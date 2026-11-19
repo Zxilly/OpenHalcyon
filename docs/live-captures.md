@@ -53,9 +53,12 @@ and its matching echo (20–55 ms), the server sent exactly 275 catalog entries.
 Thirteen refreshes used the ARAL roster and two used the HF Ranked roster.
 For the first ARAL refresh in each of eight streams, a 0480 and a second roster
 also appeared. Five later ARAL refreshes omitted that pair. Fourteen intervals
-began with 0454; the other began with 045F followed by 0454. The 0480 payload
-has a structural reader, but its values and role in the first refresh are
-unresolved. The 0463 interval showed the roster after 28 ms and the echo after
+began with 0454; the other began with 045F followed by 0454. All eight 0480 bodies were identical across their complete 86 bytes.
+The big-endian words at +0 and +4 were 1 and 5, the byte at +76 was 1,
+and the unaligned big-endian word at +77 was 3. All other bytes were zero.
+The surrounding rosters matched outside the two timer words. The ARAL host
+sends this marker and a freshly timed second roster on the first valid
+refresh of each draft control connection. Its gameplay meaning is unknown. The 0463 interval showed the roster after 28 ms and the echo after
 36 ms. The independent Windows action-class listing leaves 0458, 0463 and 046B
 unnamed. [Independent action-class table](https://github.com/TurnaboutHero/vainglory-replay-decoder/blob/f4743be743564e3aadef1566499fe25d9d0f9ffc/vg/docs/vg-binary-event-candidates-2026-09-09-details.md)
 
