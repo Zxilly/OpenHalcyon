@@ -54,6 +54,7 @@ opcodes! {
     ActorDeath = 0x0430,
     ActorDead = 0x0431,
     ActorRespawn = 0x0432,
+    ActorRespawnTimer = 0x0433,
     LevelUp = 0x0434,
     ShopRequest = 0x0439,
     GrantAbility = 0x043a,

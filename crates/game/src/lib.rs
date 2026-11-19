@@ -1422,11 +1422,20 @@ impl Room {
                     {
                         self.solo_slots.released(*id);
                     }
-                    if legacy_aral
-                        && out.len() != before
-                        && let Event::Death { id, .. } = ev
-                    {
-                        self.aral_slots.death_sent(*id, team as u8);
+                    if legacy_aral && let Event::Death { id, .. } = ev {
+                        let death_sent = out.len() != before;
+                        if death_sent {
+                            self.aral_slots.death_sent(*id, team as u8);
+                        }
+                        let known_ally = previous.contains(id)
+                            && self.world.entities.iter().any(|actor| {
+                                actor.id == *id
+                                    && actor.kind == halcyon_sim::Kind::Hero
+                                    && usize::from(actor.team) == team
+                            });
+                        if death_sent || known_ally {
+                            messages::append_respawn_timer(&mut out, &self.world, *id);
+                        }
                     }
                 }
             }

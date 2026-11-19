@@ -260,6 +260,9 @@ impl Room {
                 }
                 _ => {
                     super::messages::append_combat(&mut out, ev, |_| true);
+                    if aral && let Event::Death { id, .. } = ev {
+                        super::messages::append_respawn_timer(&mut out, &self.world, *id);
+                    }
                 }
             }
         }
@@ -325,6 +328,87 @@ mod tests {
         rooms.revoke_observer(id, grant).unwrap();
         super::super::native_abilities::publish(&mut shared.lock().unwrap(), &[cast]);
         assert!(rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn aral_respawn_timer_respects_known_actors_and_authorized_observers() {
+        use crate::{Peer, Rooms};
+        use halcyon_platform::{MatchHost, Reservation};
+        use halcyon_sim::{Command, Position};
+        use tokio::sync::{mpsc, watch};
+
+        let rooms = Rooms::new("127.0.0.1".parse().unwrap(), "127.0.0.1".into(), 1, None);
+        let match_id = Uuid::new_v4();
+        rooms
+            .reserve(Reservation {
+                match_id,
+                players: (0..6).map(|_| Uuid::new_v4()).collect(),
+                teams: vec![],
+                mode: "casual_aral".into(),
+                difficulty: None,
+            })
+            .unwrap();
+        let shared = rooms.room(match_id).unwrap();
+        shared.lock().unwrap().phase("running");
+        let (_, grant) = rooms.observe(match_id, Uuid::new_v4()).unwrap();
+        let mut room = shared.lock().unwrap();
+        let (view, mut observer) = mpsc::channel(8);
+        room.observers.get_mut(&grant).unwrap().live = Some(view);
+        let mut streams = Vec::new();
+        for i in 0..2 {
+            let (tx, rx) = mpsc::channel(8);
+            room.seats[i].peers[1] = Some(Peer {
+                generation: i as u64 + 1,
+                tx,
+                stalled: watch::channel(false).0,
+            });
+            streams.push(rx);
+        }
+        room.world.entities[0].position = Position { x: 0., y: 0. };
+        room.world.entities[1].position = Position { x: 3., y: 0. };
+        room.world.entities[1].hp = 0.1;
+        room.world.command(1, Command::Attack(2)).unwrap();
+        let events = (0..40)
+            .find_map(|_| {
+                let events = room.world.step();
+                events
+                    .iter()
+                    .any(|event| matches!(event, Event::Death { id: 2, .. }))
+                    .then_some(events)
+            })
+            .expect("hero dies from an authoritative attack");
+        let seconds = room.world.respawn_seconds(2).unwrap();
+        let expected = Message::actor_respawn_timer(1501, seconds);
+
+        // The victim's side knows its own hero but the killer is now outside its fog.
+        // The killer's side had visibility of both references when the victim fell.
+        room.visible[0].extend([1, 2]);
+        room.visible[1].insert(2);
+        room.replicate(&events);
+        let visible_enemy = streams[0].try_recv().unwrap().into_records();
+        let death_index = visible_enemy
+            .iter()
+            .position(|m| m.opcode == 0x0430)
+            .unwrap();
+        let timer_index = visible_enemy.iter().position(|m| m == &expected).unwrap();
+        assert!(death_index < timer_index);
+        assert_eq!(visible_enemy.iter().filter(|m| **m == expected).count(), 1);
+        let friendly = streams[1].try_recv().unwrap().into_records();
+        assert!(friendly.iter().all(|m| m.opcode != 0x0430));
+        assert_eq!(friendly.iter().filter(|m| **m == expected).count(), 1);
+
+        room.tick_observers(&events);
+        let observed = observer.try_recv().unwrap();
+        assert_eq!(observed.iter().filter(|m| **m == expected).count(), 1);
+        room.replicate(&[]);
+        assert!(streams[0].try_recv().is_err());
+
+        // A team never told about this death gets no timer for the enemy.
+        room.visible[0].remove(&2);
+        room.replicate(&events);
+        while let Ok(batch) = streams[0].try_recv() {
+            assert!(batch.into_records().iter().all(|m| m.opcode != 0x0433));
+        }
     }
 
     #[tokio::test]

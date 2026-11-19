@@ -104,6 +104,12 @@ impl Message {
         b.push(stat);
         Self::new(0x41d, b)
     }
+    pub fn actor_respawn_timer(actor: u32, seconds: f32) -> Self {
+        let mut body = [0; 14];
+        body[..4].copy_from_slice(&actor.to_be_bytes());
+        body[4..8].copy_from_slice(&seconds.to_be_bytes());
+        Self::new(0x0433, body)
+    }
     pub fn actor_death(victim: u32, source: u32) -> Self {
         let mut body = vec![0; 14];
         body[..4].copy_from_slice(&victim.to_be_bytes());
@@ -234,6 +240,11 @@ impl Message {
                 actor: number(0)?,
                 position: [float(4)?, float(8)?, float(12)?],
                 remaining: &b[16..],
+            },
+            0x433 if matches!(b.len(), 8 | 14) => Fields::RespawnTimer {
+                actor: number(0)?,
+                seconds: float(4)?,
+                remaining: &b[8..],
             },
             0x434 | 0x43a if b.len() == 14 => Fields::ProgressAction {
                 kind: Opcode::try_from(self.opcode).expect("matched known opcode"),
@@ -561,6 +572,11 @@ pub enum Fields<'a> {
     Respawn {
         actor: u32,
         position: [f32; 3],
+        remaining: &'a [u8],
+    },
+    RespawnTimer {
+        actor: u32,
+        seconds: f32,
         remaining: &'a [u8],
     },
     ProgressAction {
@@ -930,6 +946,24 @@ impl<R: Read> ReplayReader<R> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn respawn_timer_keeps_fractional_seconds_in_a_padded_frame() {
+        let timer = Message::actor_respawn_timer(1503, 13.4974);
+        assert_eq!(timer.opcode, Opcode::ActorRespawnTimer as u16);
+        let cipher = MatchCipher::new("local-respawn-timer-test");
+        let wire = cipher.encode(&timer).unwrap();
+        let decoded = cipher.decode(&wire[2..]).unwrap();
+        assert_eq!(decoded, timer);
+        assert_eq!(
+            decoded.fields().unwrap(),
+            Fields::RespawnTimer {
+                actor: 1503,
+                seconds: 13.4974,
+                remaining: &[0; 6],
+            }
+        );
+    }
+
     #[test]
     fn action_layouts_convert_only_measured_operands() {
         for (op, n, half, bytes) in [

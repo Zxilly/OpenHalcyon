@@ -378,6 +378,15 @@ pub(super) fn append_combat(
         }
     }
 }
+pub(super) fn append_respawn_timer(out: &mut Vec<Message>, world: &World, actor: u32) {
+    if let Some(seconds) = world.respawn_seconds(actor) {
+        out.push(Message::actor_respawn_timer(
+            u32::from(wire_id(actor)),
+            seconds,
+        ));
+    }
+}
+
 fn hero_counter(id: u32, stat: u8) -> Message {
     let mut body = vec![0; 22];
     body[..4].copy_from_slice(&u32::from(wire_id(id)).to_be_bytes());

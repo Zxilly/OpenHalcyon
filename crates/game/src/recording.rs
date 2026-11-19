@@ -160,6 +160,13 @@ fn sanitize(m: &mut Message) -> bool {
         0x41e if m.body.len() == 22 && m.body[16..] == [0; 6] => {}
         0x434 if m.body.len() == 14 && m.body[4..] == [0, 0, 0, 1, 0, 0, 0, 0, 0, 0] => {}
         0x432 if m.body.len() == 22 && m.body[16..] == [0; 6] => {}
+        0x433
+            if matches!(
+                m.fields(),
+                Ok(halcyon_protocol::Fields::RespawnTimer {
+                    actor: 1500..=1505, seconds, remaining: [0, 0, 0, 0, 0, 0]
+                }) if seconds.is_finite() && seconds > 0.0
+            ) => {}
         0x430 if m.body.len() == 14 && m.body[8..] == [0; 6] => {}
         // A recorded vote contains only the authored three-seat view of this team.
         0x473 if m.body.len() == 155 => {

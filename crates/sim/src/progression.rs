@@ -19,6 +19,15 @@ impl World {
         self.layout.native_xp_required(level)
     }
 
+    /// Time until a fallen hero's authoritative respawn tick.
+    pub fn respawn_seconds(&self, id: u32) -> Option<f32> {
+        let actor = &self.entities[self.index(id)?];
+        if actor.kind != Kind::Hero || actor.hp > 0.0 || actor.respawn <= self.tick {
+            return None;
+        }
+        Some((actor.respawn - self.tick) as f32 / TICK_HZ as f32)
+    }
+
     pub(super) fn award_xp(&mut self, i: usize, xp: f32, events: &mut Vec<Event>) {
         let layout = &self.layout;
         let e = &mut self.entities[i];
@@ -244,6 +253,31 @@ impl World {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn remaining_respawn_time_uses_the_authoritative_tick() {
+        let mut world = World::new(7, 2);
+        assert_eq!(world.respawn_seconds(2), None);
+        world.tick = 137;
+        let mut events = vec![];
+        world.hurt(1, 0, 1, 5000.0, DamageSchool::True, &mut events);
+        assert!(events.contains(&Event::Death { id: 2, killer: 1 }));
+        let respawn = world.entities[1].respawn;
+        assert_eq!(
+            world.respawn_seconds(2),
+            Some((respawn - world.tick) as f32 / TICK_HZ as f32)
+        );
+        world.tick = respawn - 1;
+        assert_eq!(world.respawn_seconds(2), Some(0.05));
+        assert!(
+            world
+                .step()
+                .iter()
+                .any(|event| matches!(event, Event::Respawn { id: 2, .. }))
+        );
+        assert_eq!(world.respawn_seconds(2), None);
+        assert_eq!(world.respawn_seconds(9999), None);
+    }
+
     #[test]
     fn native_modes_use_independent_thresholds_and_single_gain_events() {
         let mut aral = World::new(9, 6);

@@ -173,7 +173,7 @@ pub(super) fn fields(op: u16, b: &[u8]) -> Option<Fields<'_>> {
         0x40f => (10, true, 2),
         0x419 | 0x435 => (6, false, 0),
         0x421 => (6, false, 1),
-        0x41f | 0x446 | 0x433 | 0x44d => (2, false, 0),
+        0x41f | 0x446 | 0x44d => (2, false, 0),
         0x443 | 0x447 => (3, false, 0),
         0x44e => (5, false, 2),
         0x478 => (2, false, 1),
