@@ -240,9 +240,9 @@ mod tests {
         let shared = rooms.room(match_id).unwrap();
         let mut room = shared.lock().unwrap();
         let mut recipients = Vec::new();
-        for i in 0..2 {
+        for (i, seat) in room.seats.iter_mut().enumerate().take(2) {
             let (tx, rx) = mpsc::channel(64);
-            room.seats[i].peers[0] = Some(Peer {
+            seat.peers[0] = Some(Peer {
                 generation: 1 + i as u64,
                 tx,
                 stalled: watch::channel(false).0,
@@ -252,8 +252,7 @@ mod tests {
                 (0x0471, [0, 0, 5, 220 + i as u8, 1, 0]),
                 (0x046d, [0; 6]),
             ] {
-                room.seats[i]
-                    .preamble
+                seat.preamble
                     .observe(&Message::new(opcode, body), 1500 + i as u32);
             }
             recipients.push(rx);

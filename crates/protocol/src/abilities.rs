@@ -22,7 +22,12 @@ impl Message {
     pub fn ability_point_used(actor: u32, coordinates: [f32; 3], selector: u8) -> Self {
         let mut body = [0; 17];
         body[..4].copy_from_slice(&actor.to_be_bytes());
-        for (word, coordinate) in body[4..16].chunks_exact_mut(4).zip(coordinates) {
+        for (word, coordinate) in body[4..16]
+            .as_chunks_mut::<4>()
+            .0
+            .iter_mut()
+            .zip(coordinates)
+        {
             word.copy_from_slice(&coordinate.to_be_bytes());
         }
         body[16] = selector;
