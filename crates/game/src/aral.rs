@@ -76,10 +76,16 @@ pub(super) fn setup(room: &Room, seat: usize, remaining: f32) -> Batch {
     settings[32..32 + MODE.len()].copy_from_slice(MODE.as_bytes());
     settings[96..100].copy_from_slice(&5f32.to_be_bytes());
     settings[100] = room.world.entities[seat].team + 1;
+    let mut batch = vec![Message::new(0x03e9, settings)];
+    batch.extend(draft_catalog(room, remaining));
+    batch
+}
+
+pub(super) fn draft_catalog(room: &Room, remaining: f32) -> Batch {
     let mut mode = vec![0; 68];
     mode[..4].copy_from_slice(&3u32.to_be_bytes());
     mode[4..4 + MODE.len()].copy_from_slice(MODE.as_bytes());
-    let mut batch = vec![Message::new(0x03e9, settings), Message::new(0x0454, mode)];
+    let mut batch = vec![Message::new(0x0454, mode)];
     for name in &room.catalog {
         let mut body = [0; 32];
         let count = name.len().min(body.len());
@@ -364,6 +370,20 @@ mod tests {
             clients.push(socket);
         }
 
+        for _ in 0..3 {
+            let request = Message::new(0x0458, [0; 6]);
+            clients[0]
+                .write_all(&cipher.encode(&request).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(next(&mut clients[0], &cipher).await.opcode, 0x0454);
+            let catalog_len = rooms.room(room_id).unwrap().lock().unwrap().catalog.len();
+            for _ in 0..catalog_len {
+                assert_eq!(next(&mut clients[0], &cipher).await.opcode, 0x0453);
+            }
+            assert_eq!(next(&mut clients[0], &cipher).await.opcode, 0x045a);
+            assert_eq!(next(&mut clients[0], &cipher).await, request);
+        }
         let room = rooms.room(room_id).unwrap();
         {
             let mut room = room.lock().unwrap();

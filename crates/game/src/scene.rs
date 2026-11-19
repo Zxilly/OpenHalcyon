@@ -427,7 +427,11 @@ mod tests {
             let mut room = shared.lock().unwrap();
             let (tx, mut rx) = mpsc::channel(16);
             room.attach(player, tx, watch::channel(false).0).unwrap();
-            room.receive(0, 0, Message::new(0x463, [0; 6])).unwrap();
+            let locked = room.receive(0, 0, Message::new(0x463, [0; 6])).unwrap();
+            assert_eq!(
+                locked.iter().map(|m| m.opcode).collect::<Vec<_>>(),
+                [0x0459, 0x0463]
+            );
             room.phase_start = Instant::now() - Duration::from_secs(8);
             room.tick();
             rx.try_recv().unwrap();

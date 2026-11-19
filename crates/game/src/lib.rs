@@ -1054,6 +1054,27 @@ impl Room {
             {
                 out = self.buy(i, actor, item);
             }
+            Fields::ControlByte { value: 0, .. }
+                if m.opcode == 0x0458
+                    && (legacy || self.solo_scene() || self.queue == "ranked")
+                    && ch == 0
+                    && self.phase == "hero_select"
+                    && self.seats[i].peers[0].is_some()
+                    && m.body == [0; 6] =>
+            {
+                out = if legacy {
+                    aral::draft_catalog(self, self.aral_remaining())
+                } else {
+                    messages::draft_catalog(
+                        &self.world,
+                        &self.players,
+                        &self.catalog,
+                        &self.queue,
+                        &self.picks,
+                    )
+                };
+                out.push(m);
+            }
             Fields::HeroLock if ch == 0 && !legacy => {
                 let op = m.opcode;
                 out.push(m);
@@ -1066,7 +1087,12 @@ impl Room {
                         "Hero locked",
                         json!({"playerId":self.players[i],"opcode":format!("0x{op:04X}")}),
                     );
-                    out.push(self.roster_update(Some(i)));
+                    let roster = self.roster_update(Some(i));
+                    if op == 0x0463 {
+                        out.insert(0, roster);
+                    } else {
+                        out.push(roster);
+                    }
                     if self.seats.iter().all(|s| s.locked) {
                         self.phase("loading");
                     }
@@ -1462,6 +1488,43 @@ mod tests {
         assert_eq!(events.len(), 2);
         assert_eq!(events[0]["generation"], 1);
         assert_eq!(events[1]["generation"], 2);
+    }
+    #[tokio::test]
+    async fn ranked_and_solo_draft_requests_repeat_the_registered_catalog_and_current_roster() {
+        for (queue, mode, count) in [
+            ("ranked", "*GameMode_HF_Ranked*", 6),
+            ("solo", "*GameMode_5v5_SoloBots*", 1),
+        ] {
+            let rooms = Rooms::new("127.0.0.1".parse().unwrap(), "127.0.0.1".into(), 1, None);
+            let id = Uuid::new_v4();
+            let players = (0..count).map(|_| Uuid::new_v4()).collect::<Vec<_>>();
+            rooms
+                .reserve(Reservation {
+                    match_id: id,
+                    players: players.clone(),
+                    teams: vec![],
+                    mode: queue.into(),
+                    difficulty: None,
+                })
+                .unwrap();
+            let shared = rooms.room(id).unwrap();
+            let mut room = shared.lock().unwrap();
+            let (tx, _rx) = mpsc::channel(16);
+            let (_, _, _, initial) = room
+                .attach(players[0], tx, watch::channel(false).0)
+                .unwrap();
+            assert_eq!(initial[0].opcode, 0x03e9);
+            assert_eq!(initial[1].opcode, 0x0454);
+            assert_eq!(&initial[1].body[4..4 + mode.len()], mode.as_bytes());
+            for _ in 0..3 {
+                let request = Message::new(0x0458, [0; 6]);
+                let result = room.receive(0, 0, request.clone()).unwrap();
+                assert_eq!(result.last(), Some(&request));
+                assert_eq!(result[..result.len() - 1], initial[1..]);
+            }
+            let malformed = Message::new(0x0458, [0, 1, 0, 0, 0, 0]);
+            assert_eq!(room.receive(0, 0, malformed.clone()).unwrap(), [malformed]);
+        }
     }
     #[tokio::test]
     async fn shop_uses_authenticated_seat_and_authoritative_gold() {

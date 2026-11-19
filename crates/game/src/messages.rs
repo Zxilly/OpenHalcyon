@@ -13,6 +13,7 @@ fn put_text(buf: &mut [u8], s: &str) {
 }
 fn mode_name(queue: &str) -> &'static str {
     match queue {
+        "ranked" => "*GameMode_HF_Ranked*",
         "5v5_pvp_ranked" | "5v5_ranked" | "ranked_5v5" => "*GameMode_5v5_Ranked*",
         "5v5_bots_solo" | "solo" => "*GameMode_5v5_SoloBots*",
         "5v5_bots_coop" | "5v5_coop" => "*GameMode_5v5_CoopBots*",
@@ -57,10 +58,27 @@ pub fn setup(
     mode: &str,
     picks: &[Pick],
 ) -> Vec<Message> {
-    let game_mode = mode_name(mode);
+    let mut config = settings(seat, mode_name(mode), true);
+    if mode == "ranked" {
+        config.body[16..18].fill(3);
+        config.body[96..100].copy_from_slice(&5f32.to_be_bytes());
+        config.body[100] = world.entities[seat].team + 1;
+    }
+    let mut out = vec![config];
+    out.extend(draft_catalog(world, players, catalog, mode, picks));
+    out
+}
+
+pub(super) fn draft_catalog(
+    world: &World,
+    players: &[Uuid],
+    catalog: &[String],
+    queue: &str,
+    picks: &[Pick],
+) -> Vec<Message> {
     let mut mode = vec![0; 68];
-    put_text(&mut mode[4..], game_mode);
-    let mut out = vec![settings(seat, game_mode, true), Message::new(0x454, mode)];
+    put_text(&mut mode[4..], mode_name(queue));
+    let mut out = vec![Message::new(0x454, mode)];
     for name in catalog {
         let mut b = vec![0; 32];
         put_text(&mut b, name);

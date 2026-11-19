@@ -19,6 +19,58 @@ Nine captures had a complete plaintext hello/ack pair, zero truncated records or
 
 The inventory has 107 distinct encrypted opcodes across both directions. All observed frames expose at least a structural field or a verified header-only shape. Many operands remain unnamed. The decoder retains complete bodies including surplus bytes. The Android receiver explicitly ignores several request opcodes that its own sender can serialize. Applying a field decoder to a captured request confirms its shape; it cannot establish how an official server handled that request.
 
+### Client request crosswalk
+
+Each count is a complete encrypted client frame in these nine recordings. A
+reply in this table is backed by traffic where indicated. Host policies for
+scope, visibility, rate and game rules are implemented separately.
+
+| Opcode | Count | Request, host behavior and verification |
+| --- | ---: | --- |
+| 0000 | 1,182 | Clock. The room echoes the frame. On an authenticated Solo scene, a finite nonnegative clock can confirm readiness. There were 1,175 server clocks, so the archive does not establish a one-to-one pairing. |
+| 03E8 | 9 | Seat registration following plaintext hello/ACK. The room binds a reserved UUID and emits settings. All nine archives have the handshake and settings. |
+| 03F4 | 485 | Directional movement carries two floats. The simulator applies its movement and geometry checks to the authenticated actor. Original Android Solo sent this after joystick input. |
+| 03F5 | 22 | Point movement. Every archived request had a matching 03F8 destination and registered selector. The host checks the world registration, padding and legal destination. |
+| 0411 | 1 | Lorelai C targets an allied hero. The one observed request resulted in a 0415 after 55 ms; the room emits the confirmation on authoritative release. |
+| 0412 | 15 | Point casts. All 15 coordinate/selector pairs reappeared in 0416. Supported mappings are Lorelai A/B and Idris B. |
+| 0424 | 4 | Select an attack target. All four received identical six-byte confirmations. Current visibility, hostility and actor life gate acceptance. |
+| 0436 | 24 | Learn a slot. The room checks hero-specific grant mapping, available skill points, level and rank. Known requests on templates 254, 439, 273 and 409 have matching 043A operands. |
+| 0439 | 18 | Buy an item. The room requires the owned actor, base access, sufficient gold and inventory space. Measured receipts cover 12 templates including a two-component upgrade. |
+| 0458 | 15 | Zero-filled draft refresh. All 15 returned mode, catalog, roster and identical echo. Every valid ARAL, HF Ranked or Solo draft refresh receives the current catalog and roster, in addition to the initial setup. |
+| 045E | 2 | Hero and skin selection. The native draft validates catalog membership and updates the roster; legacy ARAL uses its assigned roster. |
+| 045F | 3 | Skin selection. The room validates the skin against the selected hero and sends a roster update and echo before loading. The stock Solo VS page displayed the selected nondefault skin. |
+| 0463 | 1 | HF Ranked draft lock. The single request received a 0459 roster and then identical 0463. The first non-ARAL 0463 lock follows that order. |
+| 046B | 9 | One zero input byte plus padding, echoed identically in all nine cases (27–146 ms). The draft handler echoes it. A distinct resulting state change remains unverified. |
+| 046D | 7 | Zero-filled world readiness. The ARAL preamble requires the scene request and matching actor before accepting it. Native Android Solo also demonstrated readiness via world input. |
+| 046E | 7 | Scene request paired with 0471 on the existing stream. The supported native preamble produces mode, roster and scene contents. |
+| 0471 | 7 | Finishes the scene request with the seat's registered actor and flags. Mismatched actors cannot confirm it. All seven played ARAL captures contain the pair. |
+| 0472 | 1 | Surrender vote. The confirmed ARAL actor can vote on its own team; the single captured client vote was 1. Team boards and two reason-2 endings corroborate the lifecycle. |
+| 0484 | 6 | Talent slot selection. All six requests got an actor-tagged 0481. The ARAL room implements the 255/level-zero clear. Positive slots still lack an authoritative named-talent mapping. |
+| 0485 | 6 | Recommended build selection. All six had a matching 0488 for the requesting actor. The room bounds path values and scopes broadcast by mode. |
+
+The 15 draft refreshes all began with six zero body bytes. Between each request
+and its matching echo (20–55 ms), the server sent exactly 275 catalog entries.
+Thirteen refreshes used the ARAL roster and two used the HF Ranked roster.
+For the first ARAL refresh in each of eight streams, a 0480 and a second roster
+also appeared. Five later ARAL refreshes omitted that pair. Fourteen intervals
+began with 0454; the other began with 045F followed by 0454. The 0480 payload
+has a structural reader, but its values and role in the first refresh are
+unresolved. The 0463 interval showed the roster after 28 ms and the echo after
+36 ms. The independent Windows action-class listing leaves 0458, 0463 and 046B
+unnamed. [Independent action-class table](https://github.com/TurnaboutHero/vainglory-replay-decoder/blob/f4743be743564e3aadef1566499fe25d9d0f9ffc/vg/docs/vg-binary-event-candidates-2026-09-09-details.md)
+
+Comparing the server inventory with that listing also identifies 0433 as
+ActionStartRespawnTimer. All 103 captured records reference a declared hero
+and carry a big-endian float duration followed by six zero padding bytes. For
+all 63 cases whose next same-actor lifecycle marker was 0432, the observed
+respawn occurred within 0.18 seconds of the timer prediction. The one 048F
+(ActionRejectBuyItem_Client) followed a server-side 0439. That client stream
+contained no purchase request in the preceding three seconds, so it does not
+establish a rejection response to the controlled player's own purchase.
+Other named server-only actions include projectile, buff, effect, zone, item
+and announcement events. Their names alone do not identify additional required
+acknowledgements for this client request inventory.
+
 ### Live opcodes absent from the 14 local VGR chunks
 
 The counts below exclude the 18 plaintext handshake frames. A dash indicates no encrypted frame in that direction.
@@ -122,10 +174,7 @@ planar world supplies X and Z and uses zero for height. Visible players,
 authorized observers and their replay records receive the same position.
 Ordinary minion births and reconnect declarations do not trigger this action.
 
-The available point and entity ability requests are from Lorelai and Idris.
-Neither has an authoritative spell implementation in the current simulation.
-The capture does not bind those heroes' selectors to the implemented Ringo,
-Adagio, Lyra, SAW, Karas or Shin casts.
+The room supports the captured Lorelai and Idris point forms and Lorelai's targeted ally form. Hero-specific learning is broader than the observed cast inventory. [Ability evidence and release rules](native-abilities.md) · [Shop receipts](aral-shop.md) · [Surrender boards](aral-surrender.md)
 
 ## Recommended build path
 
@@ -140,3 +189,13 @@ The four ARAL client attack-target selections (0x0424) were followed by identica
 Six 0x0484 requests and 41 0x0481 equipment notifications appear in the seven archives. Every notification refers to a previously declared hero. The six requesting players received an actor-tagged reply with their choice within 44–122 ms. The request carries a selector. The notification carries the actor, the selector and its level. For selector 255 all five server notifications had level zero. For selectors 0, 1 and 2 the archives contain several distinct levels for each selection. A confirmed ARAL connection can clear the player's talent and receive its own 0x0481 NoTalent action.
 
 The exported public definitions contain 171 talents for 57 heroes. Ringo has the three public IDs `ringo_rare`, `ringo_epic` and `ringo_legendary`, associated with LongShot, BulletSplit and SpikedBrew respectively. A fourth Ringo resource appears in the extracted definitions and has no matching entry in the public manifest. The two observed Ringo equipment records contain slot/level pairs (1,10) and (2,1), without a public talent ID. The order of resource strings also varies between hero definitions. Mapping a positive selector to a named talent requires a matching runtime catalog or an observation linking the selector to its equipped name. Applying the original per-level modifiers requires a verified scaling rule. The platform serves the player's local balances separately. [Local talent progression](local-content.md)
+
+
+Three positive equipment broadcasts can be linked to a same-session
+getTalentsData response for the controlled hero: Krul (slot 2, level 1),
+Yates (slot 2, level 1) and Idris (slot 0, level 1). Each response lists
+all three named talents for that hero at level 1. The other 33 positive
+broadcasts refer to other heroes without linked account inventories. The
+31 archived notifyPlayerAction requests reported leaderboard views. A named
+equip event tied to a selector, or a matched inventory with a unique level,
+would distinguish the corresponding talent.
