@@ -5,6 +5,8 @@ mod community;
 mod content;
 mod meta;
 mod notify;
+mod profile;
+use profile::player_info;
 mod provider;
 pub use provider::{ProviderConfig, ProviderProduct};
 mod spectator;
@@ -82,6 +84,14 @@ fn now() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs()
+}
+
+fn expiry_in(ttl: u64) -> f64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs_f64()
+        + ttl as f64
 }
 
 impl Platform {
@@ -305,16 +315,28 @@ async fn dispatch(s: &Platform, m: &str, params: &[Value]) -> Result<(String, Va
             s.community
                 .observe_player(id, profile.name.clone(), true)
                 .await?;
+            s.meta.set(id, "last_login", json!(now() as f64)).await?;
             let mut rv = s.start_session(&session, &profile)?;
             rv["playerConfig"] = s.meta.prefs(id, "platform_config").await?;
             rv
         }
         "getPlayerInfo" => {
-            let mut info = player_info(&profile);
-            if let Some(v) = s.meta.prefs(id, "tutorial").await?.as_i64() {
-                info["tutorialState"] = json!(v);
+            if let Some(target) = params.get(1) {
+                let requested = Uuid::parse_str(target.as_str().ok_or(Error::Invalid)?)
+                    .map_err(|_| Error::Invalid)?;
+                if requested != id {
+                    let other = s
+                        .app
+                        .player_activity(requested)
+                        .await?
+                        .ok_or(halcyon_community::CommunityError::Missing("unknown player"))?;
+                    return Ok((
+                        s.tokens.sign(id, &session, Scope::Session)?,
+                        json!({"playerUUID":requested,"handle":other.profile.name}),
+                    ));
+                }
             }
-            info
+            player_info(&profile)
         }
         "getSkinManifest" => s.skins.clone(),
         "getTalentsData" => s.talents.clone(),
@@ -326,7 +348,7 @@ async fn dispatch(s: &Platform, m: &str, params: &[Value]) -> Result<(String, Va
                         .await?;
                     // The local bot host is already allocated; CE polls again at expiry.
                     snapshot["ttl"] = json!(1);
-                    snapshot["expiry"] = json!(now() + 1);
+                    snapshot["expiry"] = json!(expiry_in(1));
                     snapshot
                 } else {
                     state(&profile)
@@ -366,7 +388,15 @@ async fn dispatch(s: &Platform, m: &str, params: &[Value]) -> Result<(String, Va
                     .join_party_or_solo(&session, mode.to_owned(), seats)
                     .await?;
             }
-            json!({"success":true,"ttl":100})
+            let mut joined = json!({"success":true,"ttl":100});
+            if mode == "casual_aral" {
+                let current = state(&s.app.profile(&session).await?);
+                if current["state"] == "pending_auto" {
+                    joined["state"] = current["state"].clone();
+                    joined["numPlayers"] = json!(s.meta.queued_party_size(id).await?);
+                }
+            }
+            joined
         }
         "acceptMatch" => {
             let room = profile
@@ -416,12 +446,13 @@ async fn dispatch(s: &Platform, m: &str, params: &[Value]) -> Result<(String, Va
             json!({})
         }
         "setTutorialState" => {
-            s.meta
-                .set(id, "tutorial", params.get(1).ok_or(Error::Invalid)?.clone())
-                .await?;
-            let mut info = player_info(&profile);
-            info["tutorialState"] = params[1].clone();
-            info
+            let mut state = profile::tutorial_state(params.get(1).ok_or(Error::Invalid)?)
+                .ok_or(Error::Invalid)?;
+            if let Some(mode) = params.get(2) {
+                state["clientMode"] = json!(mode.as_i64().ok_or(Error::Invalid)?);
+            }
+            s.meta.set(id, "tutorial", state).await?;
+            player_info(&profile)
         }
         "recordMatchExperienceMetrics" => {
             let room = Uuid::parse_str(arg(params, 1)?).map_err(|_| Error::Invalid)?;
@@ -497,6 +528,14 @@ async fn dispatch(s: &Platform, m: &str, params: &[Value]) -> Result<(String, Va
                 .ok_or(Error::Internal)?
                 .extend(fields.as_object().unwrap().clone());
         }
+        let info = if rv.get("playerInfo").is_some() {
+            &mut rv["playerInfo"]
+        } else {
+            &mut rv
+        };
+        if info.get("targeting").is_some() {
+            info["targeting"]["currency"] = fields["currency"].clone();
+        }
     }
     if rv.get("version").is_some() {
         let mut versions = s.versions.lock().map_err(|_| Error::Internal)?;
@@ -515,15 +554,6 @@ async fn dispatch(s: &Platform, m: &str, params: &[Value]) -> Result<(String, Va
     Ok((s.tokens.sign(id, &session, Scope::Session)?, rv))
 }
 
-fn player_info(p: &PlayerProfile) -> Value {
-    json!({"handle":p.name,"playerHandle":p.name,"level":1,"xp":0,
-        "karmaLevel":0,"skillTier":0,"skillTierBronzeLine":0,"skillTierSilverLine":0,"skillTierGoldLine":0,"mmrBucket":0,
-        "wins":0,"completed":0,"completed_non_tutorial":0,"canUseAllHeroes":true,
-        "freeunlocks":[],"playerChests":[],"trophyCase":[],"pendingPartyInvites":false,"pendingMessages":false,
-        "currency":{"gold":0,"silver":0,"essence":0,"opal":0,"epic_key":0,"seasonal_key":0},
-        "entitlement_5v5_casual":true,"entitlement_coopbots":true,"tutorialState":0})
-}
-
 fn state(p: &PlayerProfile) -> Value {
     let l = p.lobby.as_ref();
     let (name, ttl) = match l.map(|l| l.phase.as_str()) {
@@ -534,7 +564,7 @@ fn state(p: &PlayerProfile) -> Value {
         Some("finished" | "post_match") => ("post_match", 100),
         _ => ("menus", 100),
     };
-    let mut v = json!({"state":name,"ttl":ttl,"expiry":now()+ttl,"version":Uuid::new_v4(),
+    let mut v = json!({"state":name,"ttl":ttl,"expiry":expiry_in(ttl),"version":Uuid::new_v4(),
         "lastVersion":Uuid::nil(),"numPlayers":1,"notify":matches!(name,"pending_auto"|"match_pending")});
     if let Some(l) = l
         && matches!(name, "playing" | "spectating")
@@ -563,8 +593,11 @@ impl Platform {
             "platformUrl":format!("https://{}",self.config.authority),"region":"na","country":"US",
             "platformTime":now(),"enableStateUpdates":false,"missedStateUpdateMessagesThreshold":-1,
             "notifyUrl":ws,"notifyFallbackUrl":http,"chatUrl":format!("ws://{}/chat/{grant}",self.config.notify_authority),"chatPass":grant,
-            "pingHostPortInfo":[],"constants":{},"playerConfig":null,"pendingTeamInvites":false,
-            "pendingGuildInvites":false,"pendingPartyInvites":false,"pendingMessages":false});
+            "chatUser":p.player_id,"pingPostToAnalytics":false,"pingHostPortInfo":[],
+            "unityAdsGameId":"","ironsourceAppId":null,"experimentDetails":[],
+            "askRegistrationConsent":false,"bucketIncrementer":3000,"failoverThreshold":4000,
+            "supportUrls":{"staticContentUrl":""},"constants":{},"playerConfig":null,"pendingTeamInvites":0,
+            "pendingGuildInvites":0,"pendingPartyInvites":0,"pendingMessages":0});
         rv.as_object_mut()
             .unwrap()
             .extend(extras.as_object().unwrap().clone());

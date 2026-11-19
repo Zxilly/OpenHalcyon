@@ -170,6 +170,9 @@ impl Platform {
                 .filter(|row| row["slot"] == slot)
                 .cloned()
                 .collect();
+            if m == "getHeroMastery" {
+                info["heroStats"] = self.meta.hero_stats(profile.player_id).await?;
+            }
             return Ok(info);
         }
         let offers = self

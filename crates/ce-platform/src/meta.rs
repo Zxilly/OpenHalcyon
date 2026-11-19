@@ -12,14 +12,16 @@ use uuid::Uuid;
 pub(crate) struct Meta(Arc<Mutex<Connection>>);
 impl Meta {
     pub fn open(path: &Path) -> Result<Self, Error> {
-        let db = Connection::open(path)?;
+        let mut db = Connection::open(path)?;
         db.execute_batch("PRAGMA journal_mode=WAL;
             CREATE TABLE IF NOT EXISTS ce_preferences(player TEXT NOT NULL, category TEXT NOT NULL, data TEXT NOT NULL,
                 PRIMARY KEY(player,category));
             CREATE TABLE IF NOT EXISTS ce_metrics(player TEXT NOT NULL,match_id TEXT NOT NULL,data TEXT NOT NULL,
                 PRIMARY KEY(player,match_id));")?;
-        super::activity::initialize(&db)?;
-        super::provider::initialize(&db)?;
+        let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        super::activity::initialize(&tx)?;
+        super::provider::initialize(&tx)?;
+        tx.commit()?;
         Ok(Self(Arc::new(Mutex::new(db))))
     }
 
@@ -46,6 +48,21 @@ impl Meta {
         .await
         .map_err(|_| Error::Internal)?
     }
+    pub async fn queued_party_size(&self, id: Uuid) -> Result<u32, Error> {
+        self.transaction(move |tx| {
+            tx.query_row(
+                "SELECT max(1, count(*)) FROM community_members WHERE group_id IN (
+                     SELECT m.group_id FROM community_members m JOIN community_groups g
+                     ON g.id=m.group_id WHERE m.player=? AND g.kind='party'
+                 )",
+                [id.to_string()],
+                |row| row.get(0),
+            )
+            .map_err(Into::into)
+        })
+        .await
+    }
+
     pub async fn prefs(&self, id: Uuid, category: &'static str) -> Result<Value, Error> {
         self.transaction(move |tx| {
             let text: Option<String> = tx
@@ -81,5 +98,22 @@ impl Meta {
             let entries=q.query_map([],|r|Ok(json!({"playerUUID":r.get::<_,String>(0)?,"handle":r.get::<_,String>(1)?,"completed":r.get::<_,u64>(2)?,"wins":r.get::<_,u64>(3)?})))?.collect::<Result<Vec<_>,_>>()?;
             Ok(json!({"leaderboards":[{"leaderboardId":"completed","leaderboardTitle":"Completed matches","entries":entries}],"events":[],"time":now()}))
         }).await
+    }
+
+    pub async fn hero_stats(&self, id: Uuid) -> Result<Value, Error> {
+        self.transaction(move |tx| {
+            let mut query = tx.prepare(
+                "SELECT hero,count(*),sum(won) FROM ce_completed
+                 WHERE player=? AND hero IS NOT NULL GROUP BY hero ORDER BY hero",
+            )?;
+            let rows = query.query_map([id.to_string()], |row| {
+                Ok(
+                    json!({"hero":row.get::<_,String>(0)?,"completed":row.get::<_,u64>(1)?,
+                    "wins":row.get::<_,u64>(2)?}),
+                )
+            })?;
+            Ok(Value::Array(rows.collect::<rusqlite::Result<_>>()?))
+        })
+        .await
     }
 }

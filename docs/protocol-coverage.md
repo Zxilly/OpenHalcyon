@@ -25,7 +25,7 @@ committed state changes.
 | HTTP bootstrap, guest creation, guest recovery, session start | Original Android CE running in an isolated emulator connected to the Rust instance, reached the main menu and recovered the same account after restart. |
 | Solo Bot queue | Android client joined, received a room address, authenticated to the local game endpoint and displayed a native 5v5 roster. |
 | Cross-instance parties | Three TLS-authenticated voters, party members on one home and a solo player on another, served by a third node. Integration tests cover individual acceptance, the game socket, team allocation, settlement and independent exits. |
-| Spectators | A local friend can obtain a dedicated read-only listener. The loopback test checks a separate capability, snapshot delivery, rejected movement and revocation. Native spectator admission and cross-instance spectator grants require additional evidence. |
+| Spectators | A confirmed friend on the player's home can watch a local or peer-hosted match through a dedicated read-only listener. A three-voter test covers roster ownership, snapshot delivery, revocation on visibility changes, and cleanup at settlement. Native spectator admission and friendships registered on different homes still need verification. |
 | Items, guilds, quests and accounts | SQLite transactions, permission and retry tests exercise the local rules. Operator-defined exchanges specify actual costs and rewards. Some archived methods have only static schema evidence. |
 
 ## Match transport
@@ -64,3 +64,25 @@ Each record contains big-endian simulated seconds (f32), payload length includin
 Every 200 ticks, a closed, uninterrupted ten-second window is published as `NNNNNNNN.vgr`. An open window, a segment beginning partway through a window, or the trailing window retains the suffix `.vgr.partial`. A process failure may leave a truncated final record in a partial file. Continuation chunks contain the delivered deltas and can be read in order starting at the opening segment. Independent playback from each chunk and stock-client playback have not been verified.
 
 The async writer accepts at most eight batches of 64 KiB for each recorded connection. A 128 MiB per-match budget includes all reconnects. A full queue, exhausted budget or filesystem error stops that recording while the game continues. The service emits a warning for this condition.
+## Captured Android request and response shapes
+
+The standalone Android request log and relay response log contain the following counts of complete JSON records. A response counts only when its envelope reports success. Counts refer to records, including repeated polling. The Android router test supplies synthetic arguments of the captured types and exercises guest recovery, menu, queue, match assignment, exit and logout. The static skin manifest is a JSON string, while the talents catalog is a JSON object.
+
+| Method | Requests | Successful responses | Return-value shape |
+| --- | ---: | ---: | --- |
+| createGuestPlayer | 2 | 2 | Guest credential and start URL strings |
+| getPlayerForGuestAccount | 5 | 4 | Guest credential and start URL strings |
+| startSessionForPlayer | 4 | 4 | Menu state, platform and notification addresses, configuration, player data and integer counts |
+| getPlayerInfo | 8 | 9 | Player profile or state update, depending on captured response |
+| getSkinManifest | 18 | 18 | String |
+| getTalentsData | 4 | 4 | Object keyed by talent |
+| joinLobby | 8 | 8 | Success boolean and integer TTL. The two ARAL joins also returned queue state and player count. |
+| update | 300 | 300 | State, versions, fractional epoch expiry and integer TTL, plus state-dependent fields |
+| exitLobby | 6 | 5 | State and versions |
+| updatePlatformPlayerConfig | 1 | 1 | Empty object |
+| notifyExitPostMatch | 2 | 2 | Success boolean |
+| friendListAll | 1 | 1 | Confirmed and pending arrays, integer offline count |
+| recordMatchExperienceMetrics | 1 | 1 | Empty object |
+| endSession | 1 | 1 | Menu state with an empty envelope session token |
+
+The local session advertises empty experiments, ad identifiers and support-content location where the instance has no such services configured. These fields preserve the observed JSON types. Production experiment assignments and vendor content are outside the local runtime.

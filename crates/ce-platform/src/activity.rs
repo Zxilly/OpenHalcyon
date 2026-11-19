@@ -29,17 +29,32 @@ pub(crate) fn initialize(db: &Connection) -> Result<(), Error> {
         "CREATE TABLE IF NOT EXISTS ce_completed(
         player TEXT NOT NULL, room TEXT NOT NULL, won INTEGER NOT NULL, hero TEXT,
         PRIMARY KEY(player,room));
-        CREATE TRIGGER IF NOT EXISTS ce_result_event AFTER INSERT ON events
+        CREATE TABLE IF NOT EXISTS ce_migrations(name TEXT PRIMARY KEY);",
+    )?;
+    if db.execute(
+        "INSERT OR IGNORE INTO ce_migrations VALUES('match_mode_and_day')",
+        [],
+    )? == 1
+    {
+        db.execute_batch(
+            "ALTER TABLE ce_completed ADD COLUMN mode TEXT;
+            ALTER TABLE ce_completed ADD COLUMN day INTEGER;
+            CREATE INDEX ce_federated_match ON federated_queue(match_id);
+            UPDATE ce_completed SET mode=(SELECT mode FROM matches WHERE id=ce_completed.room);",
+        )?;
+    }
+    db.execute_batch("
+        DROP TRIGGER IF EXISTS ce_result_event;
+        CREATE TRIGGER ce_result_event AFTER INSERT ON events
         WHEN json_extract(NEW.body,'$.type')='match_finished'
+            AND coalesce(json_extract(NEW.body,'$.result.reason'),'completed')='completed'
         BEGIN
             INSERT OR IGNORE INTO ce_completed SELECT NEW.player,json_extract(NEW.body,'$.matchId'),
-               coalesce(json_extract(p.value,'$.victory')=1,0),json_extract(p.value,'$.hero')
+               coalesce(json_extract(p.value,'$.victory')=1,0),json_extract(p.value,'$.hero'),
+               coalesce((SELECT mode FROM matches WHERE id=json_extract(NEW.body,'$.matchId')),
+                    (SELECT mode FROM federated_queue WHERE match_id=json_extract(NEW.body,'$.matchId') LIMIT 1)),unixepoch()/86400
             FROM (SELECT 1) LEFT JOIN json_each(NEW.body,'$.result.players') p ON p.key=NEW.player;
         END;
-        INSERT OR IGNORE INTO ce_completed SELECT e.player,json_extract(e.body,'$.matchId'),
-            coalesce(json_extract(p.value,'$.victory')=1,0),json_extract(p.value,'$.hero')
-            FROM events e LEFT JOIN json_each(e.body,'$.result.players') p ON p.key=e.player
-            WHERE json_extract(e.body,'$.type')='match_finished';
         CREATE TRIGGER IF NOT EXISTS ce_match_quests AFTER INSERT ON ce_completed
         WHEN EXISTS(SELECT 1 FROM community_players WHERE id=NEW.player)
         BEGIN
@@ -51,6 +66,18 @@ pub(crate) fn initialize(db: &Connection) -> Result<(), Error> {
                 WHERE state='active';
         END;",
     )?;
+    if db.execute(
+        "INSERT OR IGNORE INTO ce_migrations VALUES('materialize_completed_matches')",
+        [],
+    )? == 1
+    {
+        db.execute_batch("INSERT OR IGNORE INTO ce_completed SELECT e.player,json_extract(e.body,'$.matchId'),
+            coalesce(json_extract(p.value,'$.victory')=1,0),json_extract(p.value,'$.hero'),
+            (SELECT mode FROM matches WHERE id=json_extract(e.body,'$.matchId')),NULL
+            FROM events e LEFT JOIN json_each(e.body,'$.result.players') p ON p.key=e.player
+            WHERE json_extract(e.body,'$.type')='match_finished'
+              AND coalesce(json_extract(e.body,'$.result.reason'),'completed')='completed' ORDER BY e.cursor;")?;
+    }
     Ok(())
 }
 
@@ -98,22 +125,55 @@ impl Meta {
     pub(crate) async fn player_fields(&self, player: Uuid) -> Result<Value, Error> {
         self.transaction(move|tx| {
             let player=player.to_string();
-            let mut info=tx.query_row("SELECT COUNT(*),COALESCE(SUM(won),0) FROM ce_completed WHERE player=?", [&player],
-                |r|Ok(json!({"completed":r.get::<_,u64>(0)?,"wins":r.get::<_,u64>(1)?})))?;
+            let mut info=tx.query_row("SELECT count(*), coalesce(sum(won),0),count(*) FILTER(WHERE mode NOT LIKE '%tutorial%'),
+                count(*) FILTER(WHERE won=1 AND day=unixepoch()/86400),
+                count(*) FILTER(WHERE won=1 AND mode LIKE '%aral%'), count(*) FILTER(WHERE won=1 AND mode LIKE '%blitz%'),
+                count(*) FILTER(WHERE won=1 AND mode='blitz_rounds_casual'),count(*) FILTER(WHERE won=1 AND mode LIKE '%casual%'),
+                count(*) FILTER(WHERE won=1 AND mode LIKE '%ranked%') FROM ce_completed WHERE player=?", [&player],
+                |r|Ok(json!({"completed":r.get::<_,u64>(0)?,"wins":r.get::<_,u64>(1)?,
+                    "completed_non_tutorial":r.get::<_,u64>(2)?,"winsToday":r.get::<_,u64>(3)?,
+                    "wins_aral":r.get::<_,u64>(4)?,"wins_blitz":r.get::<_,u64>(5)?,
+                    "wins_blitz_rounds_casual":r.get::<_,u64>(6)?,"wins_casual":r.get::<_,u64>(7)?,
+                    "wins_ranked":r.get::<_,u64>(8)?})))?;
+            let mut streak=tx.prepare("SELECT won FROM ce_completed WHERE player=? ORDER BY rowid DESC")?;
+            let mut streak=streak.query([&player])?;
+            if let Some(row)=streak.next()? {
+                let won:bool=row.get(0)?;
+                let mut length=1u64;
+                while let Some(row)=streak.next()? {
+                    if row.get::<_,bool>(0)?!=won {break;}
+                    length+=1;
+                }
+                info[if won {"winStreak"} else {"lossStreak"}]=json!(length);
+            }
             let mut inv=tx.prepare("SELECT item,count FROM community_inventory i JOIN community_items d ON d.id=i.item WHERE player=? AND d.slot='currency'")?;
             let balances=inv.query_map([&player],|r|Ok((r.get::<_,String>(0)?,json!(r.get::<_,u32>(1)?))))?
                 .collect::<rusqlite::Result<serde_json::Map<String,Value>>>()?;
-            let mut currency=json!({"gold":0,"silver":0,"essence":0,"opal":0,"epic_key":0,"seasonal_key":0});
+            let mut currency=super::profile::empty_currency();
             currency.as_object_mut().unwrap().extend(balances);
             info["currency"]=currency;
-            info["pendingMessages"]=json!(tx.query_row("SELECT EXISTS(SELECT 1 FROM ce_messages WHERE recipient=? AND dismissed=0)",[&player],|r|r.get::<_,bool>(0))?);
-            let mut invites=tx.prepare("SELECT DISTINCT g.kind FROM community_invites i JOIN community_groups g ON g.id=i.group_id WHERE i.player=?")?;
-            for k in invites.query_map([&player],|r|r.get::<_,String>(0))?{
-                let field = match k?.as_str() {"party"=>"pendingPartyInvites","team"=>"pendingTeamInvites","guild"=>"pendingGuildInvites",_=>continue};
-                info[field]=json!(true);
+            info["pendingMessages"]=json!(tx.query_row("SELECT count(*) FROM ce_messages WHERE recipient=? AND dismissed=0",[&player],|r|r.get::<_,u32>(0))?);
+            let mut invites=tx.prepare("SELECT g.kind,count(*) FROM community_invites i JOIN community_groups g ON g.id=i.group_id WHERE i.player=? GROUP BY g.kind")?;
+            for row in invites.query_map([&player],|r|Ok((r.get::<_,String>(0)?,r.get::<_,u32>(1)?)))?{
+                let (kind,count)=row?;
+                let field = match kind.as_str() {"party"=>"pendingPartyInvites","team"=>"pendingTeamInvites","guild"=>"pendingGuildInvites",_=>continue};
+                info[field]=json!(count);
             }
-            if let Some(tutorial)=tx.query_row("SELECT data FROM ce_preferences WHERE player=? AND category='tutorial'",[player],|r|r.get::<_,String>(0)).optional()?{
-                info["tutorialState"]=serde_json::from_str(&tutorial)?;
+            let mut groups=tx.prepare("SELECT kind,group_id FROM community_members WHERE player=?")?;
+            for row in groups.query_map([&player],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?)))? {
+                let (kind,id)=row?;
+                let field=match kind.as_str() {"party"=>"partyUUID","team"=>"teamUUID","guild"=>"guildUUID",_=>continue};
+                info[field]=json!(id);
+            }
+            let mut pref=tx.prepare("SELECT category,data FROM ce_preferences WHERE player=? AND category IN ('tutorial','last_login')")?;
+            for row in pref.query_map([player],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?)))? {
+                let (category,raw)=row?;
+                let data=serde_json::from_str(&raw)?;
+                if category=="last_login" {
+                    info["last_login"]=data;
+                } else if let Some(tutorial)=super::profile::tutorial_state(&data) {
+                    info["tutorialState"]=tutorial;
+                }
             }
             Ok(info)
         }).await

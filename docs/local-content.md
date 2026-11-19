@@ -28,10 +28,14 @@ is required for grants that cost nothing. The server debits the configured cost,
 credits the reward, updates depleted equipment and records the receipt in one
 transaction. An exact retry with the same session token reuses the receipt.
 Clients receive a fresh session token after successful RPCs. Price and inventory
-come from the server. Receipt handling for external app stores returns a provider
-unavailable result on a self-hosted instance.
+come from the server. Operators can configure a receipt verifier and an inventory
+mapping. An unconfigured instance reports that the provider is unavailable.
+[Operator attestations](provider-attestations.md)
 
 An optional `quests` array accepts definitions with `id`, `category`, `title`,
-`goal`, `skippable` and an optional `reward` pair such as `["silver", 2]`. An
+`goal`, `skippable` and an optional `reward` pair such as `["silver", 2]`.
+The `complete_match` category advances when the player's home records a completed
+game. The `win_match` category advances for the winning seats. Retrying the same
+settlement credits each player once, including games hosted on a pool peer. An
 optional `views` object maps supported manifest or offer RPC names to public
 response fields. Use original content or data supplied by the operator.

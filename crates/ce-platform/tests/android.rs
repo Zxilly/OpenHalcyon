@@ -42,7 +42,7 @@ async fn android_guest_lobby_notifications_and_recovery() {
     )
     .unwrap();
     let adapter = Platform::new(
-        app,
+        app.clone(),
         Config {
             authority: "localhost:8443".into(),
             notify_authority: "localhost:2112".into(),
@@ -76,9 +76,60 @@ async fn android_guest_lobby_notifications_and_recovery() {
     assert_eq!(guest["code"], 0);
     let recovery = &guest["returnValue"]["playerUUID"];
     assert_eq!(guest["sessionToken"], "");
-    let session = rpc(&r, "startSessionForPlayer", json!([recovery])).await;
+    let session = rpc(
+        &r,
+        "startSessionForPlayer",
+        json!([
+            recovery, "local", 1, "en", "device", "model", "147219", "local", "0", "0", "0"
+        ]),
+    )
+    .await;
     assert_eq!(session["returnValue"]["state"], "menus");
     let token = &session["sessionToken"];
+    let bootstrap = &session["returnValue"];
+    for field in [
+        "pendingMessages",
+        "pendingPartyInvites",
+        "pendingGuildInvites",
+        "pendingTeamInvites",
+        "bucketIncrementer",
+        "failoverThreshold",
+        "ttl",
+        "platformTime",
+    ] {
+        assert!(bootstrap[field].is_u64(), "{field}");
+    }
+    for field in [
+        "enableStateUpdates",
+        "askRegistrationConsent",
+        "pingPostToAnalytics",
+    ] {
+        assert!(bootstrap[field].is_boolean(), "{field}");
+    }
+    assert!(bootstrap["supportUrls"]["staticContentUrl"].is_string());
+    assert!(bootstrap["expiry"].is_f64());
+    assert!(bootstrap["experimentDetails"].is_array());
+    assert!(bootstrap["unityAdsGameId"].is_string());
+    assert!(bootstrap.get("ironsourceAppId").is_some_and(Value::is_null));
+    assert_eq!(bootstrap["chatUser"], bootstrap["playerUUID"]);
+    let skins = rpc(&r, "getSkinManifest", json!([token])).await;
+    assert!(skins["returnValue"].is_string());
+    let talents = rpc(&r, "getTalentsData", json!([token])).await;
+    assert!(talents["returnValue"].is_object());
+    let friends = rpc(&r, "friendListAll", json!([token, false])).await;
+    assert_eq!(
+        friends["returnValue"],
+        json!({"confirmed":[],"pending":[],"numOffline":0})
+    );
+    assert_eq!(
+        rpc(
+            &r,
+            "updatePlatformPlayerConfig",
+            json!([token, "{\"setting\":true}"])
+        )
+        .await["returnValue"],
+        json!({})
+    );
     assert_ne!(token, &guest["sessionToken"]);
     let notify = session["returnValue"]["notifyFallbackUrl"]
         .as_str()
@@ -109,7 +160,44 @@ async fn android_guest_lobby_notifications_and_recovery() {
     let playing = rpc(&r, "update", json!([token])).await;
     assert_eq!(playing["returnValue"]["state"], "playing");
     assert_eq!(playing["returnValue"]["port"], 7123);
-    let restored = rpc(&r, "getPlayerForGuestAccount", json!([recovery])).await;
+    let record = rpc(
+        &r,
+        "recordMatchExperienceMetrics",
+        json!([
+            token,
+            playing["returnValue"]["matchId"],
+            1,
+            "a",
+            "b",
+            1.5,
+            0
+        ]),
+    )
+    .await;
+    assert_eq!(record["returnValue"], json!({}));
+    app.finish_match(
+        playing["returnValue"]["matchId"]
+            .as_str()
+            .unwrap()
+            .parse()
+            .unwrap(),
+        json!({"winner":0}),
+    )
+    .unwrap();
+    assert_eq!(
+        rpc(&r, "notifyExitPostMatch", json!([token])).await["returnValue"],
+        json!({"success":true})
+    );
+    let exit = rpc(&r, "exitLobby", json!([token])).await;
+    assert!(exit["returnValue"]["expiry"].is_f64());
+    let restored = rpc(
+        &r,
+        "getPlayerForGuestAccount",
+        json!([
+            recovery, "a", "b", "c", 1, "en", "local", "device", "model", "0", "0"
+        ]),
+    )
+    .await;
     assert_eq!(restored["sessionToken"], "");
     let resumed = rpc(
         &r,
@@ -126,6 +214,25 @@ async fn android_guest_lobby_notifications_and_recovery() {
         rpc(&r, "notARealMethod", json!([resumed["sessionToken"]])).await["code"],
         -32601
     );
+    let aral = rpc(
+        &r,
+        "joinLobby",
+        json!([
+            resumed["sessionToken"],
+            "{\"lobby\":\"casual_aral\"}",
+            "147219"
+        ]),
+    )
+    .await;
+    assert_eq!(
+        aral["returnValue"],
+        json!({"success":true,"ttl":100,"state":"pending_auto","numPlayers":1})
+    );
+    let exit = rpc(&r, "exitLobby", json!([resumed["sessionToken"]])).await;
+    assert_eq!(exit["returnValue"]["state"], "menus");
+    let ended = rpc(&r, "endSession", json!([resumed["sessionToken"]])).await;
+    assert_eq!(ended["sessionToken"], "");
+    assert_eq!(ended["returnValue"]["state"], "menus");
 }
 
 #[tokio::test]
@@ -146,6 +253,9 @@ async fn linked_identity_and_game_currency_survive_transport_retries() {
     let content = dir.path().join("content.json");
     std::fs::write(&content,serde_json::to_vec(&json!({
         "items":[{"id":"silver","slot":"currency","name":"Silver"},{"id":"card","slot":"card","name":"Card"}],
+        "quests":[{"id":"first_win","category":"win_match","title":"Win one game","goal":1,
+            "skippable":false,"reward":["silver",2]},
+            {"id":"play_twice","category":"complete_match","title":"Finish two games","goal":2,"skippable":false}],
         "exchanges":{"collectHeroChest":{"starter":{"reward":{"silver":10},"limit":1}},
           "forgeCard":{"unit":{"cost":{"silver":7},"reward":{"card":1}}}}
     })).unwrap()).unwrap();
@@ -235,6 +345,75 @@ async fn linked_identity_and_game_currency_survive_transport_retries() {
         rpc(&r, "achievementGetScore", json!([token, "practice"])).await["returnValue"]["score"],
         10
     );
+
+    let other = app.create_guest("Other player".into()).await.unwrap();
+    let public = rpc(&r, "getPlayerInfo", json!([token, other.player_id])).await;
+    assert_eq!(
+        public["returnValue"],
+        json!({"handle":"Other player","playerUUID":other.player_id})
+    );
+    let own = json!([token, guest.player_id]);
+    let initial_info = rpc(&r, "getPlayerInfo", own.clone()).await;
+    assert_eq!(initial_info["returnValue"]["wins"], 0);
+    assert_eq!(initial_info["returnValue"]["tutorialState"]["state"], -1);
+    let update = rpc(&r, "setTutorialState", json!([token, 3, 1])).await;
+    assert_eq!(
+        update["returnValue"]["tutorialState"],
+        json!({"state":3,"clientMode":1})
+    );
+
+    let joined = rpc(
+        &r,
+        "joinLobby",
+        json!([token, {"lobby":"5v5_bots_solo"},"147219"]),
+    )
+    .await;
+    assert_eq!(joined["code"], 0);
+    rpc(&r, "update", json!([token])).await;
+    let playing = rpc(&r, "update", json!([token])).await;
+    let room = uuid::Uuid::parse_str(playing["returnValue"]["matchId"].as_str().unwrap()).unwrap();
+    let result = json!({"reason":"completed","players":{(guest.player_id.to_string()):{"hero":"Ringo","victory":true}}});
+    app.finish_match(room, result.clone()).unwrap();
+    app.finish_match(room, result).unwrap();
+    let progress = rpc(&r, "getQuestDisplayDataForPlayer", json!([token])).await;
+    let quests = progress["returnValue"]["questDisplayData"]
+        .as_array()
+        .unwrap();
+    assert_eq!(quests.len(), 2);
+    assert!(quests.iter().all(|quest| quest["progress"] == 1));
+    assert_eq!(
+        rpc(&r, "redeemQuestForPlayer", json!([token, "first_win"])).await["code"],
+        0
+    );
+    let info = rpc(&r, "getPlayerInfo", own.clone()).await;
+    let info = &info["returnValue"];
+    assert_eq!(info["completed"], 1);
+    assert_eq!(info["wins"], 1);
+    assert_eq!(info["winsToday"], 1);
+    assert_eq!(info["winStreak"], 1);
+    assert_eq!(info["completed_non_tutorial"], 1);
+    assert_eq!(info["currency"]["silver"], 5);
+    assert_eq!(info["currency"], info["targeting"]["currency"]);
+    let heroes = rpc(&r, "getHeroMastery", json!([token])).await;
+    assert_eq!(
+        heroes["returnValue"]["heroStats"],
+        json!([{"hero":"Ringo","completed":1,"wins":1}])
+    );
+    drop(r);
+    let reopened = Platform::new(
+        app,
+        Config {
+            authority: "localhost:8443".into(),
+            notify_authority: "localhost:2112".into(),
+        },
+        &[37; 32],
+        &path,
+        None,
+    )
+    .unwrap()
+    .rpc();
+    let after_restart = rpc(&reopened, "getPlayerInfo", own).await;
+    assert_eq!(after_restart["returnValue"], *info);
 }
 
 #[tokio::test]
