@@ -10,7 +10,10 @@ The original Android client can create or recover a guest, queue for 5v5 Solo
 Bots, select a hero and skin, and load the battlefield. On build 147219 an
 isolated client displayed the ten-player loading screen, build selection, the
 battlefield and HUD. Moving the touchscreen joystick sent both movement
-opcodes on the original TCP connection. [CE compatibility](docs/protocol-coverage.md)
+opcodes on the original TCP connection. The native Solo opening uses measured
+hero, crystal, mid-tower and minion positions. A device run verified movement
+from its starting pad and later ended in a native crash. Native reentry and
+the victory screen remain open. [CE compatibility](docs/protocol-coverage.md) · [Solo mid lane](docs/solo-lane.md)
 
 The Rust game host runs a match through crystal destruction and settlement.
 An integration test starts three independent server processes, signs two CE
@@ -31,7 +34,7 @@ On Windows the executable is `target\release\openhalcyon.exe`. Set `--host` to a
 
 The bootstrap endpoint is `http://HOST:8080/kindred/live/147219-status-redirect`. It advertises the HTTPS platform on port 8443. Notifications use port 2112. Newly initialized instances also advertise XMPP with STARTTLS on port 5222. Sign in to `https://HOST:8443/admin` as `admin` using `initial-admin-password`. Game rooms advertise their own TCP ports.
 
-Paths in `server.toml` are relative to that file. For a local research installation set `data_dir` to the directory containing `units.json`, `items.json` and `entity_manifest.json`, and `manifests_dir` to the directory containing the archived talents and skin manifest responses. Place these top-level keys before any TOML section. Only manifest payloads are consumed from those two responses. Keep private captures outside the checkout. With no external data the simulation uses the built-in validation lane.
+Paths in `server.toml` are relative to that file. For a local research installation set `data_dir` to the directory containing `units.json`, `items.json` and `entity_manifest.json`, and `manifests_dir` to the directory containing the archived talents and skin manifest responses. Place these top-level keys before any TOML section. Only manifest payloads are consumed from those two responses. Keep private captures outside the checkout. With no external data the simulation uses built-in unit statistics. Native Solo uses its mid-lane geometry and other hosts use the validation layout.
 
 An operator with a decoded draft trace can export the catalog once. Run
 `openhalcyon export-catalog --trace /private/match_decoded.jsonl > /srv/game-data/catalog.json`.
