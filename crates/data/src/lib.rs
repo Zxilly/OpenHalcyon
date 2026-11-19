@@ -4,7 +4,13 @@ pub use difficulty::BotDifficulty;
 
 /// Matchmaking ID observed in the iOS-era ARAL requests.
 pub const LEGACY_ARAL_QUEUE: &str = "casual_aral";
-pub const LEGACY_ARAL_SEATS: usize = 6;
+pub const THREE_PER_SIDE_SEATS: usize = 6;
+pub const LEGACY_ARAL_SEATS: usize = THREE_PER_SIDE_SEATS;
+
+/// These exact queue IDs advertise three human seats on each team.
+pub fn three_per_side(mode: &str) -> bool {
+    matches!(mode, LEGACY_ARAL_QUEUE | "ranked")
+}
 
 use serde::{Deserialize, de::DeserializeOwned};
 use serde_json::Value;

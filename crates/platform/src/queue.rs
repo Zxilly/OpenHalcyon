@@ -1,5 +1,5 @@
 use halcyon_community::{CommunityError, queue as community_queue};
-use halcyon_data::{BotDifficulty, LEGACY_ARAL_QUEUE, LEGACY_ARAL_SEATS};
+use halcyon_data::{BotDifficulty, THREE_PER_SIDE_SEATS, three_per_side};
 use rusqlite::{Transaction, params};
 use serde_json::json;
 use uuid::Uuid;
@@ -42,9 +42,9 @@ pub(super) fn validate_mode(mode: &str, seats: usize) -> Result<()> {
             "seat count must be between 1 and 64",
         ));
     }
-    if mode == LEGACY_ARAL_QUEUE && seats != LEGACY_ARAL_SEATS {
+    if three_per_side(mode) && seats != THREE_PER_SIDE_SEATS {
         return Err(PlatformError::Invalid(
-            "legacy ARAL requires six human seats",
+            "three-per-side queue requires six human seats",
         ));
     }
     if mode.is_empty()
@@ -339,8 +339,8 @@ pub fn plan_teams(party_sizes: &[usize]) -> Vec<u8> {
 }
 
 pub fn plan_teams_for_mode(mode: &str, party_sizes: &[usize]) -> Vec<u8> {
-    let side_capacity = if mode == LEGACY_ARAL_QUEUE {
-        LEGACY_ARAL_SEATS / 2
+    let side_capacity = if three_per_side(mode) {
+        THREE_PER_SIDE_SEATS / 2
     } else {
         5
     };

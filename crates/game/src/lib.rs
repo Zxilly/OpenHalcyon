@@ -470,10 +470,17 @@ impl Rooms {
             return Err(PlatformError::Invalid("invalid roster"));
         }
         let legacy_aral = aral::legacy_queue(&req.mode);
-        if legacy_aral && req.players.len() != aral::SEATS {
-            return Err(PlatformError::Invalid("ARAL requires six human players"));
+        let six_humans = halcyon_data::three_per_side(&req.mode);
+        if six_humans && req.players.len() != halcyon_data::THREE_PER_SIDE_SEATS {
+            return Err(PlatformError::Invalid(
+                "three-per-side queue requires six human players",
+            ));
         }
-        let hero_seats = if legacy_aral { aral::SEATS } else { 10 };
+        let hero_seats = if six_humans {
+            halcyon_data::THREE_PER_SIDE_SEATS
+        } else {
+            10
+        };
         let occupied = rooms
             .values()
             .filter(|r| r.lock().unwrap().ended.is_none())
@@ -507,14 +514,14 @@ impl Rooms {
                 || req.teams.iter().any(|t| *t > 1)
                 || [0, 1]
                     .iter()
-                    .any(|team| req.teams.iter().filter(|t| *t == team).count() > 5))
+                    .any(|team| req.teams.iter().filter(|t| *t == team).count() > hero_seats / 2))
         {
             return Err(PlatformError::Invalid("invalid human teams"));
         }
-        if legacy_aral {
+        if six_humans {
             world
                 .use_six_human_roster()
-                .map_err(|_| PlatformError::Invalid("invalid ARAL roster"))?;
+                .map_err(|_| PlatformError::Invalid("invalid six-human roster"))?;
         }
         world
             .assign_teams(&req.teams)
@@ -1547,6 +1554,124 @@ mod tests {
             assert_eq!(room.receive(0, 0, malformed.clone()).unwrap(), [malformed]);
         }
     }
+    #[tokio::test]
+    async fn ranked_three_per_side_from_platform_to_each_draft_seat() {
+        use halcyon_platform::{AppState, PlatformConfig, plan_teams_for_mode};
+        let dir = tempfile::tempdir().unwrap();
+        let rooms = Rooms::new("127.0.0.1".parse().unwrap(), "127.0.0.1".into(), 2, None);
+        let app = AppState::open(
+            PlatformConfig {
+                database_path: dir.path().join("ranked.sqlite"),
+                public_address: "localhost:8443".into(),
+                seats_per_match: 10,
+            },
+            Arc::new(rooms.clone()),
+        )
+        .unwrap();
+        assert_eq!(app.seats_for_mode("ranked"), 6);
+        assert_eq!(app.seats_for_mode("ranked_5v5"), 10);
+        assert_eq!(plan_teams_for_mode("ranked", &[3, 3]), [0, 0, 0, 1, 1, 1]);
+        let mut guests = Vec::new();
+        for i in 0..6 {
+            guests.push(app.create_guest(format!("Seat{i}")).await.unwrap());
+        }
+        assert!(
+            app.join_with_seats(&guests[0].session_token, "ranked".into(), 10)
+                .await
+                .is_err()
+        );
+        assert!(
+            app.federated_join(&guests[0].session_token, Uuid::new_v4(), "ranked".into(), 5)
+                .await
+                .is_err()
+        );
+        for guest in &guests {
+            app.join(&guest.session_token, "ranked".into())
+                .await
+                .unwrap();
+        }
+        let id = app
+            .profile(&guests[0].session_token)
+            .await
+            .unwrap()
+            .lobby
+            .unwrap()
+            .match_id
+            .unwrap();
+        for guest in &guests {
+            app.accept(&guest.session_token, id).await.unwrap();
+        }
+        let shared = rooms.room(id).unwrap();
+        let mut room = shared.lock().unwrap();
+        assert_eq!(room.picks.len(), 6);
+        let heroes: Vec<_> = room
+            .world
+            .entities
+            .iter()
+            .filter(|e| e.kind == halcyon_sim::Kind::Hero)
+            .collect();
+        assert_eq!(heroes.len(), 6);
+        assert!(heroes.iter().all(|e| !e.bot && e.gold == 0));
+        assert_eq!(heroes.iter().filter(|e| e.team == 0).count(), 3);
+        assert!(
+            heroes
+                .iter()
+                .filter(|e| e.team == 0)
+                .all(|e| e.position.x == heroes[0].position.x)
+        );
+        assert_ne!(heroes[0].position.x, heroes[1].position.x);
+        drop(heroes);
+        for (seat, guest) in guests.iter().enumerate() {
+            let (tx, _rx) = mpsc::channel(16);
+            let (_, _, _, opening) = room
+                .attach(guest.player_id, tx, watch::channel(false).0)
+                .unwrap();
+            assert_eq!(&opening[0].body[16..18], &[3, 3]);
+            assert_eq!(opening[0].body[100], room.world.entities[seat].team + 1);
+            let roster = opening.last().unwrap();
+            assert_eq!(roster.opcode, 0x459);
+            for (i, row) in roster.body.chunks_exact(161).take(16).enumerate() {
+                assert_eq!(row[8], u8::from(i < 6));
+                if let Some(participant) = guests.get(i) {
+                    assert_eq!(&row[105..141], participant.player_id.to_string().as_bytes());
+                    assert_eq!(row[16], room.world.entities[i].team + 1);
+                }
+            }
+            let req = Message::new(0x458, [0; 6]);
+            let repeat = room.receive(seat, 0, req).unwrap();
+            assert_eq!(&repeat[..repeat.len() - 1], &opening[1..]);
+        }
+        drop(room);
+        let players: Vec<_> = guests.iter().map(|g| g.player_id).collect();
+        for (roster, teams) in [
+            (players[..5].to_vec(), vec![]),
+            (players.clone(), vec![0, 0, 0, 0, 1, 1]),
+        ] {
+            assert!(
+                rooms
+                    .reserve(Reservation {
+                        match_id: Uuid::new_v4(),
+                        mode: "ranked".into(),
+                        players: roster,
+                        teams,
+                        difficulty: None
+                    })
+                    .is_err()
+            );
+        }
+        let five = Uuid::new_v4();
+        rooms
+            .reserve(Reservation {
+                match_id: five,
+                mode: "ranked_5v5".into(),
+                players,
+                teams: vec![],
+                difficulty: None,
+            })
+            .unwrap();
+        assert_eq!(rooms.room(five).unwrap().lock().unwrap().picks.len(), 10);
+    }
+
     #[tokio::test]
     async fn shop_uses_authenticated_seat_and_authoritative_gold() {
         let rooms = Rooms::new("127.0.0.1".parse().unwrap(), "127.0.0.1".into(), 1, None);

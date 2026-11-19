@@ -178,7 +178,7 @@ impl AppState {
     pub fn seats_for_mode(&self, mode: &str) -> usize {
         match mode {
             "5v5_bots_solo" | "solo" => 1,
-            LEGACY_ARAL_QUEUE => LEGACY_ARAL_SEATS,
+            mode if halcyon_data::three_per_side(mode) => halcyon_data::THREE_PER_SIDE_SEATS,
             _ => self.seats_per_match(),
         }
     }

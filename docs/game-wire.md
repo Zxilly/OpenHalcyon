@@ -233,3 +233,7 @@ actor order, independent of team. This was true in all 42 opening hero
 declarations. The ARAL host uses the same slot on opening, rejoin and later
 hero declarations. The packet and reconnect behavior are covered by local
 socket tests.
+
+### Halcyon Fold Ranked draft
+
+The observed queue ID `ranked` selects `*GameMode_HF_Ranked*` and reserves six human seats, three per side. The standard draft keeps those six actor identities and teams across setup requests. The remaining roster rows are inactive. The archived Ranked capture ends in draft. It supplies no active Halcyon Fold spawn positions, navigation geometry or economy values. Hosted play after this draft uses the validation layout. The `ranked_5v5` queue selects `*GameMode_5v5_Ranked*` and retains ten hero slots.

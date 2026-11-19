@@ -111,9 +111,13 @@ pub fn snapshot(world: &World, players: &[Uuid], picks: &[Pick]) -> Message {
         r[9] = idx as u8;
         r[12..15].fill(0xff);
         r[17..21].fill(0xff);
-        if let Some(e) = world.entities.iter().take(10).nth(idx) {
+        if let Some((e, pick)) = world
+            .entities
+            .get(idx)
+            .filter(|e| e.kind == halcyon_sim::Kind::Hero)
+            .zip(picks.get(idx))
+        {
             r[8] = 1;
-            let pick = &picks[idx];
             if pick.selected {
                 r[10] = 1;
                 r[11] = u8::from(pick.locked);
