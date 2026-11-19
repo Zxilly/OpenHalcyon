@@ -422,6 +422,7 @@ components:
         message: {type: string}
         playerId: {$ref: '#/components/schemas/Id'}
         channel: {enum: [control, game]}
+        generation: {type: integer, minimum: 1, description: 对局内连接序号，每次成功认证时递增}
         opcode: {type: string, pattern: '^0x[0-9A-F]{4}$'}
         actor: {type: string, description: 管理操作的发起账号}
     Termination:
