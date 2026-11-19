@@ -127,6 +127,18 @@ impl Message {
         Ok(match self.opcode {
             0 => Fields::Clock(float(0)?),
             0x459 => Fields::DraftRoster(DraftRoster::new(b)?),
+            0x41c => Fields::StatModifier {
+                actor: number(0)?,
+                source: number(4)?,
+                value: float(8)?,
+                stat: *b.get(12).ok_or(invalid("missing modifier stat"))?,
+                flags: *b.get(13).ok_or(invalid("missing modifier flags"))?,
+            },
+            0x44b => Fields::ItemRemoval {
+                actor: number(0)?,
+                instance: number(4)?,
+                flags: word(8)?,
+            },
             0x43d => Fields::ItemGrant {
                 actor: number(0)?,
                 item: number(4)?,
@@ -192,6 +204,18 @@ impl Message {
 #[derive(Debug, PartialEq)]
 pub enum Fields<'a> {
     DraftRoster(DraftRoster<'a>),
+    StatModifier {
+        actor: u32,
+        source: u32,
+        value: f32,
+        stat: u8,
+        flags: u8,
+    },
+    ItemRemoval {
+        actor: u32,
+        instance: u32,
+        flags: u16,
+    },
     ItemGrant {
         actor: u32,
         item: u32,
@@ -418,6 +442,33 @@ impl<R: Read> ReplayReader<R> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn inventory_event_fields_preserve_source_and_flags() {
+        let modifier = [0, 0, 0, 37, 0, 0, 0, 23, 0xc1, 0x48, 0, 0, 7, 2];
+        let removal = [0, 0, 0, 37, 0, 0, 0x11, 0x22, 0, 1];
+        let decoded = Message::new(0x41c, modifier);
+        assert_eq!(
+            decoded.fields().unwrap(),
+            Fields::StatModifier {
+                actor: 37,
+                source: 23,
+                value: -12.5,
+                stat: 7,
+                flags: 2
+            }
+        );
+        assert_eq!(
+            Message::new(0x44b, removal).fields().unwrap(),
+            Fields::ItemRemoval {
+                actor: 37,
+                instance: 0x1122,
+                flags: 1
+            }
+        );
+        assert!(Message::new(0x41c, &modifier[..13]).fields().is_err());
+        assert!(Message::new(0x44b, &removal[..9]).fields().is_err());
+    }
+
     #[test]
     fn independent_crypto_vector() {
         // Computed using PyCryptodome standard Blowfish with LE word conversion.
