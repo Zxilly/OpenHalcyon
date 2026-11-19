@@ -250,6 +250,9 @@ impl Rooms {
     pub fn detail(&self, id: Uuid) -> Option<Value> {
         Some(self.room(id)?.lock().unwrap().view(true))
     }
+    pub fn contains(&self, id: Uuid) -> bool {
+        self.room(id).is_some()
+    }
     pub fn events(&self, id: Uuid, after: u64, limit: usize) -> Option<Value> {
         let r = self.room(id)?;
         let r = r.lock().unwrap();

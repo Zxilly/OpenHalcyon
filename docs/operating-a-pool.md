@@ -64,6 +64,15 @@ WAL files. Only one process should own a given instance identity. Starting with 
 new Raft database or a second copy of a live voter changes the recovery problem.
 Use the existing surviving majority when recovering a failed member.
 
+When the assigned host restarts with its original identity and journal, it checks
+previously reserved games against the rooms still running in that process. For
+a committed game whose world was lost, the host journals a terminal
+`host_restarted` outcome and submits it to the pool. After quorum commits the
+outcome, each home clears the player's room and returns to the menu. This path
+awards no win, completion or quest credit. A persisted natural result takes
+precedence and uses the normal settlement outbox. A stopped home or an election
+alone leaves the running game on its host.
+
 ## Configure host latency
 
 An omitted or empty `[federation.latency_ms]` table enables automatic measurement.

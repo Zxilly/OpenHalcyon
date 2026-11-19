@@ -59,6 +59,13 @@ impl PeerPlay {
         ensure!(!config.rules_digest.is_empty(), "empty rules digest");
         observation::attach(&federation, rooms.clone());
         let journal = Journal::open(&config.database, config.pool_id, config.node_id)?;
+        // A reader of the home journal may restart without the game service.
+        // Only a locally recorded room missing from this host can be lost.
+        let lost_rooms = journal
+            .unsettled_rooms()?
+            .into_iter()
+            .filter(|id| !rooms.contains(*id))
+            .collect();
         let inner = Arc::new(Inner {
             fed: federation,
             platform,
@@ -74,7 +81,10 @@ impl PeerPlay {
             let observer_stop = stopped.clone();
             tokio::join!(
                 async {
-                    let mut state = Worker::default();
+                    let mut state = Worker {
+                        lost_rooms,
+                        ..Worker::default()
+                    };
                     loop {
                         tokio::select! {_=stopped.changed()=>break,_=tokio::time::sleep(Duration::from_millis(300))=>{}}
                         if let Err(e) = state.round(&worker).await {
@@ -304,7 +314,12 @@ impl Inner {
                 let prior = p.allocations().values().find(|a| {
                     a.phase == Phase::Finished && a.tickets.iter().any(|t| t.id == i.ticket)
                 });
-                if let Some(room) = prior {
+                if let Some(room) = prior.filter(|room| {
+                    !room
+                        .result
+                        .as_ref()
+                        .is_some_and(|value| value["reason"] == "host_restarted")
+                }) {
                     self.project(i, "finished", Some(room.id), None, room.result.clone())
                         .await
                 } else {
@@ -356,6 +371,7 @@ impl Address for Endpoint {
 }
 #[derive(Default)]
 struct Worker {
+    lost_rooms: BTreeSet<Uuid>,
     revision: Option<u64>,
     pool: Arc<Pool>,
     anchors: BTreeMap<Uuid, Instant>,
@@ -458,8 +474,17 @@ impl Worker {
                 }
             }
             Phase::Ready => {
-                // Lost rooms require explicit operational isolation/termination. A
-                // restarted host cannot recreate a second world for a committed game.
+                if self.lost_rooms.contains(&a.id) && !s.rooms.contains(a.id) {
+                    // Only the assigned host can sign this terminal outcome. The
+                    // normal outbox retries it across quorum loss or restart.
+                    ensure!(
+                        s.journal
+                            .finish(a.id, &serde_json::json!({"reason":"host_restarted"}))?,
+                        "missing recorded hosted room"
+                    );
+                    self.lost_rooms.remove(&a.id);
+                    return Ok(());
+                }
                 if !self.active.contains(&a.id) && s.rooms.detail(a.id).is_some() {
                     s.rooms.activate(a.id)?;
                     self.active.insert(a.id);
@@ -467,6 +492,9 @@ impl Worker {
             }
             Phase::Aborted => {
                 s.rooms.discard(a.id)?;
+                if self.lost_rooms.remove(&a.id) || self.preparing.contains_key(&a.id) {
+                    s.journal.discard_preparation(a.id)?;
+                }
                 self.active.remove(&a.id);
             }
             Phase::Finished => {

@@ -85,6 +85,20 @@ impl Journal {
         self.0.lock().unwrap().execute("insert into hosted(id,address) values(?,?) on conflict(id) do update set address=excluded.address where result is null",params![id.to_string(),address])?;
         Ok(())
     }
+    pub fn unsettled_rooms(&self) -> anyhow::Result<Vec<Uuid>> {
+        let db = self.0.lock().unwrap();
+        let mut query = db.prepare("SELECT id FROM hosted WHERE result IS NULL")?;
+        let ids = query.query_map([], |r| r.get::<_, String>(0))?;
+        ids.map(|id| Ok(id?.parse()?)).collect()
+    }
+
+    pub fn discard_preparation(&self, room: Uuid) -> anyhow::Result<()> {
+        self.0.lock().unwrap().execute(
+            "DELETE FROM hosted WHERE id=? AND result IS NULL",
+            [room.to_string()],
+        )?;
+        Ok(())
+    }
     pub fn finish(&self, id: Uuid, result: &Value) -> anyhow::Result<bool> {
         let mut db = self.0.lock().unwrap();
         let tx = db.transaction()?;
