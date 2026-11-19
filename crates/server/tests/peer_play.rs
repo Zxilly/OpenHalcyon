@@ -167,7 +167,12 @@ async fn two_ce_homes_share_a_third_hosts_game_and_settle() {
             ]),
         )
         .await;
-        let session = rpc(r, "startSessionForPlayer", json!([guest["returnValue"]["playerUUID"]])).await;
+        let session = rpc(
+            r,
+            "startSessionForPlayer",
+            json!([guest["returnValue"]["playerUUID"]]),
+        )
+        .await;
         let token = session["sessionToken"].clone();
         players.push(
             session["returnValue"]["playerUUID"]
