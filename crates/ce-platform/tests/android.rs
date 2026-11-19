@@ -75,7 +75,7 @@ async fn android_guest_lobby_notifications_and_recovery() {
     .await;
     assert_eq!(guest["code"], 0);
     let recovery = &guest["returnValue"]["playerUUID"];
-    assert_eq!(guest["sessionToken"],"");
+    assert_eq!(guest["sessionToken"], "");
     let session = rpc(&r, "startSessionForPlayer", json!([recovery])).await;
     assert_eq!(session["returnValue"]["state"], "menus");
     let token = &session["sessionToken"];
@@ -110,8 +110,13 @@ async fn android_guest_lobby_notifications_and_recovery() {
     assert_eq!(playing["returnValue"]["state"], "playing");
     assert_eq!(playing["returnValue"]["port"], 7123);
     let restored = rpc(&r, "getPlayerForGuestAccount", json!([recovery])).await;
-    assert_eq!(restored["sessionToken"],"");
-    let resumed=rpc(&r,"startSessionForPlayer",json!([restored["returnValue"]["playerUUID"]])).await;
+    assert_eq!(restored["sessionToken"], "");
+    let resumed = rpc(
+        &r,
+        "startSessionForPlayer",
+        json!([restored["returnValue"]["playerUUID"]]),
+    )
+    .await;
     assert_eq!(
         resumed["returnValue"]["playerUUID"],
         session["returnValue"]["playerUUID"]

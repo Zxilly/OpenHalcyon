@@ -1,5 +1,6 @@
 //! Compatibility layer for the Android Community Edition platform protocol.
 mod auth;
+mod community;
 mod meta;
 mod notify;
 use auth::{Scope, Tokens};
@@ -13,8 +14,9 @@ use halcyon_platform::{AppState, Guest, PlatformError, PlayerProfile};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
+    collections::HashMap,
     path::Path as FsPath,
-    sync::Arc,
+    sync::{Arc, Mutex},
     time::{SystemTime, UNIX_EPOCH},
 };
 use thiserror::Error;
@@ -28,6 +30,8 @@ pub enum Error {
     Unauthorized,
     #[error("unsupported method")]
     Unsupported,
+    #[error(transparent)]
+    Community(#[from] halcyon_community::CommunityError),
     #[error("internal platform error")]
     Internal,
     #[error("metadata storage error")]
@@ -54,7 +58,9 @@ pub struct Platform {
     config: Config,
     tokens: Tokens,
     grants: notify::Grants,
+    versions: Mutex<HashMap<Uuid, (Uuid, u64)>>,
     meta: meta::Meta,
+    community: halcyon_community::Community,
     peers: Option<halcyon_peer_play::PeerPlay>,
     talents: Value,
     skins: Value,
@@ -99,7 +105,9 @@ impl Platform {
             config,
             tokens: Tokens::new(secret)?,
             grants: Default::default(),
+            versions: Default::default(),
             meta: meta::Meta::open(database)?,
+            community: halcyon_community::Community::open(database)?,
             peers: None,
             talents: load("official_getTalentsData.json", json!({}))?,
             skins: load("official_getSkinManifest.json", json!("{}"))?,
@@ -177,7 +185,7 @@ async fn rpc(
         Ok(request) if request.method == method => dispatch(&s, &method, &request.params).await,
         _ => Err(Error::Invalid),
     };
-    tracing::debug!(method,success=result.is_ok(),"CE RPC");
+    tracing::debug!(method, success = result.is_ok(), "CE RPC");
     let value = match result {
         Ok((token, rv)) => json!({"code":0,"sessionToken":token,"returnValue":rv}),
         Err(err) => {
@@ -186,10 +194,21 @@ async fn rpc(
                     (-1, "invalid credentials")
                 }
                 Error::Unsupported => (-32601, "method not implemented"),
-                Error::Invalid | Error::Platform(PlatformError::Invalid(_)) => {
+                Error::Invalid
+                | Error::Platform(PlatformError::Invalid(_))
+                | Error::Community(halcyon_community::CommunityError::Invalid(_)) => {
                     (-32602, "invalid parameters")
                 }
-                Error::Platform(PlatformError::Conflict(_)) => (-2, "state conflict"),
+                Error::Platform(PlatformError::Conflict(_))
+                | Error::Community(halcyon_community::CommunityError::Conflict(_)) => {
+                    (-2, "state conflict")
+                }
+                Error::Community(halcyon_community::CommunityError::Missing(_)) => {
+                    (-4, "resource not found")
+                }
+                Error::Community(halcyon_community::CommunityError::Forbidden) => {
+                    (-5, "operation forbidden")
+                }
                 _ => (-3, "service unavailable"),
             };
             tracing::debug!(method,%code,reason,"CE request failed");
@@ -214,7 +233,7 @@ async fn dispatch(s: &Platform, m: &str, params: &[Value]) -> Result<(String, Va
     if m == "getPlayerForGuestAccount" {
         let claims = s.tokens.verify(token, Scope::Guest)?;
         let guest = s.app.resume_guest(claims.credential).await?;
-        return s.guest_response(guest,Some(token));
+        return s.guest_response(guest, Some(token));
     }
     let session = match s.tokens.verify(token, Scope::Session) {
         Ok(claims) => claims.credential,
@@ -226,21 +245,33 @@ async fn dispatch(s: &Platform, m: &str, params: &[Value]) -> Result<(String, Va
     };
     let profile = s.app.profile(&session).await?;
     let id = profile.player_id;
-    let rv = match m {
+    let mut rv = match m {
         "authenticate" | "startSessionForPlayer" => {
+            s.community
+                .observe_player(id, profile.name.clone(), true)
+                .await?;
             let mut rv = s.start_session(&session, &profile)?;
             rv["playerConfig"] = s.meta.prefs(id, "platform_config").await?;
             rv
         }
-        "getPlayerInfo" => player_info(&profile),
+        "getPlayerInfo" => {
+            let mut info = player_info(&profile);
+            if let Some(v) = s.meta.prefs(id, "tutorial").await?.as_i64() {
+                info["tutorialState"] = json!(v);
+            }
+            info
+        }
         "getSkinManifest" => s.skins.clone(),
         "getTalentsData" => s.talents.clone(),
         "update" | "queryPendingMatch" => {
             if let Some(lobby) = &profile.lobby {
                 if lobby.mode == "5v5_bots_solo" && lobby.phase == "offered" {
-                    let snapshot = state(&profile);
+                    let mut snapshot = state(&profile);
                     s.accept(&session, lobby.match_id.ok_or(Error::Internal)?)
                         .await?;
+                    // The local bot host is already allocated; CE polls again at expiry.
+                    snapshot["ttl"] = json!(1);
+                    snapshot["expiry"] = json!(now() + 1);
                     snapshot
                 } else {
                     state(&profile)
@@ -306,28 +337,11 @@ async fn dispatch(s: &Platform, m: &str, params: &[Value]) -> Result<(String, Va
         }
         "renamePlayerHandle" | "setPlayerHandle" => {
             s.app.rename(&session, arg(params, 1)?.to_owned()).await?;
-            player_info(&s.app.profile(&session).await?)
-        }
-        "friendListAll" | "friendsListUpdate" => s.meta.friends(id).await?,
-        "friendRequestIssueByHandle" => {
-            s.meta
-                .friendship(id, arg(params, 1)?.into(), "request")
-                .await?
-        }
-        "friendRequestConfirm" => {
-            s.meta
-                .friendship(id, arg(params, 1)?.into(), "confirm")
-                .await?
-        }
-        "friendRequestReject" => {
-            s.meta
-                .friendship(id, arg(params, 1)?.into(), "reject")
-                .await?
-        }
-        "friendDelete" => {
-            s.meta
-                .friendship(id, arg(params, 1)?.into(), "delete")
-                .await?
+            let updated = s.app.profile(&session).await?;
+            s.community
+                .observe_player(id, updated.name.clone(), true)
+                .await?;
+            player_info(&updated)
         }
         "updatePlatformPlayerConfig" => {
             let field = params.get(1).ok_or(Error::Invalid)?;
@@ -365,6 +379,9 @@ async fn dispatch(s: &Platform, m: &str, params: &[Value]) -> Result<(String, Va
         "getLiveEventData" => json!({"events":[]}),
         "endSession" => {
             s.app.end_session(&session).await?;
+            s.community
+                .observe_player(id, profile.name.clone(), false)
+                .await?;
             return Ok((
                 String::new(),
                 state(&PlayerProfile {
@@ -373,8 +390,43 @@ async fn dispatch(s: &Platform, m: &str, params: &[Value]) -> Result<(String, Va
                 }),
             ));
         }
-        _ => return Err(Error::Unsupported),
+        _ => {
+            let patch = community::dispatch(&s.community, &profile, m, params).await?;
+            if matches!(
+                m,
+                "partyLobbyEnter"
+                    | "partyLobbyExit"
+                    | "quintPartyLobbyEnter"
+                    | "getInventoryGroups"
+                    | "getEquipmentSlotInfo"
+                    | "setPresenceInvisibility"
+            ) {
+                let mut rv = s.start_session(&session, &profile)?;
+                if let Some(fields) = patch.as_object() {
+                    rv.as_object_mut()
+                        .expect("session envelope")
+                        .extend(fields.clone())
+                }
+                rv
+            } else {
+                patch
+            }
+        }
     };
+    if rv.get("version").is_some() {
+        let mut versions = s.versions.lock().map_err(|_| Error::Internal)?;
+        let current = now();
+        if versions.len() >= 8192 {
+            versions.retain(|_, (_, expiry)| *expiry > current);
+        }
+        let version = Uuid::new_v4();
+        let previous = versions
+            .insert(id, (version, current + 3600))
+            .map(|p| p.0)
+            .unwrap_or_default();
+        rv["version"] = json!(version);
+        rv["lastVersion"] = json!(previous);
+    }
     Ok((s.tokens.sign(id, &session, Scope::Session)?, rv))
 }
 
@@ -390,7 +442,7 @@ fn player_info(p: &PlayerProfile) -> Value {
 fn state(p: &PlayerProfile) -> Value {
     let l = p.lobby.as_ref();
     let (name, ttl) = match l.map(|l| l.phase.as_str()) {
-        Some("queued") => ("pending_auto", 10),
+        Some("queued" | "pending") => ("pending_auto", 10),
         Some("offered") => ("match_pending", 59),
         Some("playing") => ("playing", 100),
         Some("finished" | "post_match") => ("post_match", 100),
@@ -398,16 +450,16 @@ fn state(p: &PlayerProfile) -> Value {
     };
     let mut v = json!({"state":name,"ttl":ttl,"expiry":now()+ttl,"version":Uuid::new_v4(),
         "lastVersion":Uuid::nil(),"numPlayers":1,"notify":matches!(name,"pending_auto"|"match_pending")});
-    if let Some(l) = l {
-        if name == "playing" {
-            v["matchId"] = json!(l.match_id);
-            if let Some((host, port)) = l.address.as_deref().and_then(|a| a.rsplit_once(':')) {
-                v["host"] = json!(host);
-                v["port"] = json!(port.parse::<u16>().ok());
-            }
-            v["site"] = json!("");
-            v["timestamp"] = json!(now());
+    if let Some(l) = l
+        && name == "playing"
+    {
+        v["matchId"] = json!(l.match_id);
+        if let Some((host, port)) = l.address.as_deref().and_then(|a| a.rsplit_once(':')) {
+            v["host"] = json!(host);
+            v["port"] = json!(port.parse::<u16>().ok());
         }
+        v["site"] = json!("");
+        v["timestamp"] = json!(chrono::Utc::now().format("%m/%d/%y %H:%M:%S").to_string());
     }
     v
 }
@@ -420,7 +472,7 @@ impl Platform {
         let ws = format!("ws://{}/ws/{grant}", self.config.notify_authority);
         let extras = json!({"playerUUID":p.player_id,"playerInfo":player_info(p),"handle":p.name,
             "platformUrl":format!("https://{}",self.config.authority),"region":"na","country":"US",
-            "platformTime":now(),"enableStateUpdates":true,"missedStateUpdateMessagesThreshold":-1,
+            "platformTime":now(),"enableStateUpdates":false,"missedStateUpdateMessagesThreshold":-1,
             "notifyUrl":ws,"notifyFallbackUrl":http,"chatUrl":format!("ws://{}/chat/{grant}",self.config.notify_authority),"chatPass":grant,
             "pingHostPortInfo":[],"constants":{},"playerConfig":null,"pendingTeamInvites":false,
             "pendingGuildInvites":false,"pendingPartyInvites":false,"pendingMessages":false});

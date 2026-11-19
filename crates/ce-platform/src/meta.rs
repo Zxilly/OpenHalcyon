@@ -17,9 +17,6 @@ impl Meta {
         db.execute_batch("PRAGMA journal_mode=WAL;
             CREATE TABLE IF NOT EXISTS ce_preferences(player TEXT NOT NULL, category TEXT NOT NULL, data TEXT NOT NULL,
                 PRIMARY KEY(player,category));
-            CREATE TABLE IF NOT EXISTS ce_friends(sender TEXT NOT NULL,recipient TEXT NOT NULL,confirmed INTEGER NOT NULL DEFAULT 0,
-                PRIMARY KEY(sender,recipient),CHECK(sender<>recipient));
-            CREATE INDEX IF NOT EXISTS ce_friends_recipient ON ce_friends(recipient);
             CREATE TABLE IF NOT EXISTS ce_metrics(player TEXT NOT NULL,match_id TEXT NOT NULL,data TEXT NOT NULL,
                 PRIMARY KEY(player,match_id));")?;
         Ok(Self(Arc::new(Mutex::new(db))))
@@ -66,45 +63,6 @@ impl Meta {
         self.transaction(move|tx|{
             tx.execute("INSERT INTO ce_metrics VALUES(?,?,?) ON CONFLICT(player,match_id) DO UPDATE SET data=excluded.data",
                 params![id.to_string(),room.to_string(),Value::Array(fields).to_string()])?;Ok(())
-        }).await
-    }
-    pub async fn friends(&self, id: Uuid) -> Result<Value, Error> {
-        self.transaction(move|tx|{
-            let me=id.to_string();
-            let mut q=tx.prepare("SELECT CASE WHEN sender=?1 THEN recipient ELSE sender END,confirmed FROM ce_friends
-                WHERE sender=?1 OR recipient=?1 ORDER BY 1")?;
-            let mut confirmed=Vec::new();let mut pending=Vec::new();
-            for row in q.query_map([&me],|r|Ok((r.get::<_,String>(0)?,r.get::<_,bool>(1)?)))?{
-                let (player,accepted)=row?;
-                let value=json!({"playerUUID":player});
-                if accepted{confirmed.push(value)}else{pending.push(value)}
-            }
-            Ok(json!({"confirmed":confirmed,"pending":pending,"numOffline":0}))
-        }).await
-    }
-    pub async fn friendship(
-        &self,
-        id: Uuid,
-        target: String,
-        method: &'static str,
-    ) -> Result<Value, Error> {
-        self.transaction(move|tx|{
-            let me=id.to_string();
-            let mut query=tx.prepare("SELECT id FROM players WHERE id=? OR name=? LIMIT 2")?;
-            let ids=query.query_map(params![target,target],|r|r.get::<_,String>(0))?.collect::<Result<Vec<_>,_>>()?;
-            let [other]=ids.as_slice() else{return Err(Error::Invalid)};
-            if *other==me{return Err(Error::Invalid)}
-            match method{
-                "request"=>{
-                    let reverse=tx.execute("UPDATE ce_friends SET confirmed=1 WHERE sender=? AND recipient=?",params![other,me])?;
-                    if reverse==0{tx.execute("INSERT OR IGNORE INTO ce_friends(sender,recipient) VALUES(?,?)",params![me,other])?;}
-                }
-                "confirm"=>{if tx.execute("UPDATE ce_friends SET confirmed=1 WHERE sender=? AND recipient=?",params![other,me])?==0{return Err(Error::Invalid)}}
-                "reject"=>{tx.execute("DELETE FROM ce_friends WHERE sender=? AND recipient=? AND confirmed=0",params![other,me])?;}
-                "delete"=>{tx.execute("DELETE FROM ce_friends WHERE (sender=?1 AND recipient=?2) OR (sender=?2 AND recipient=?1)",params![me,other])?;}
-                _=>return Err(Error::Unsupported),
-            }
-            Ok(json!({"success":true}))
         }).await
     }
     pub async fn ranking(&self) -> Result<Value, Error> {

@@ -6,7 +6,9 @@ license.workspace = true
 
 [dependencies]
 axum.workspace = true
+chrono = "0.4"
 halcyon-platform = { path = "../platform" }
+halcyon-community = { path = "../community" }
 halcyon-peer-play = { path = "../peer-play" }
 jsonwebtoken = { version = "10", default-features = false, features = ["rust_crypto"] }
 rusqlite = {version="0.37",features=["bundled"]}
