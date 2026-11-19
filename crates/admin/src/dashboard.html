@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>OpenHalcyon Operations</title>
+  <link rel="stylesheet" href="/admin/assets/control.css">
+  <script type="module" src="/admin/assets/control.js"></script>
+</head>
+<body>
+  <header class="site-header">
+    <a href="/admin">OpenHalcyon</a>
+    <span>Operations</span>
+    <button type="button" id="sign-out" hidden>Sign out</button>
+  </header>
+  <main>
+    <p class="notice" id="notice" role="status" hidden></p>
+    <section class="panel sign-in" id="sign-in" hidden>
+      <h1>Sign in</h1>
+      <form id="login">
+        <label>Username <input name="username" autocomplete="username" required maxlength="128"></label>
+        <label>Password <input name="password" autocomplete="current-password" type="password" required maxlength="1024"></label>
+        <button type="submit" class="primary">Sign in</button>
+      </form>
+    </section>
+    <div id="console" hidden>
+      <section aria-labelledby="overview-heading">
+        <div class="section-head">
+          <div><h1 id="overview-heading">Server overview</h1><p id="server-version" class="muted"></p></div>
+          <button type="button" id="refresh">Refresh</button>
+        </div>
+        <dl class="metrics">
+          <div class="panel"><dt>Online players</dt><dd id="online-players"></dd></div>
+          <div class="panel"><dt>Queued players</dt><dd id="queued-players"></dd></div>
+          <div class="panel"><dt>Active matches</dt><dd id="active-matches"></dd></div>
+        </dl>
+      </section>
+      <section class="panel" aria-labelledby="matches-heading">
+        <div class="section-head">
+          <h2 id="matches-heading">Matches</h2>
+          <label>Phase
+            <select id="match-phase">
+              <option value="">All</option>
+              <option value="allocated">Allocated</option>
+              <option value="hero_select">Hero select</option>
+              <option value="loading">Loading</option>
+              <option value="running">Running</option>
+              <option value="ending">Ending</option>
+              <option value="ended">Ended</option>
+            </select>
+          </label>
+        </div>
+        <div class="table-wrap"><table>
+          <thead><tr><th scope="col">ID</th><th scope="col">Queue</th><th scope="col">Phase</th><th scope="col">Players</th><th scope="col">Created</th></tr></thead>
+          <tbody id="match-rows"></tbody>
+        </table></div>
+        <div class="pages"><button id="matches-prev" type="button">Previous</button><button id="matches-next" type="button">Next</button></div>
+      </section>
+      <section class="panel" id="detail" aria-labelledby="detail-heading" hidden>
+        <div class="section-head">
+          <div><h2 id="detail-heading">Match details</h2><p class="muted" id="match-identity"></p></div>
+          <button type="button" id="close-detail">Close</button>
+        </div>
+        <div class="table-wrap"><table>
+          <thead><tr><th scope="col">Slot</th><th scope="col">Name</th><th scope="col">Hero</th><th scope="col">Locked</th><th scope="col">Control</th><th scope="col">Game</th></tr></thead>
+          <tbody id="participants"></tbody>
+        </table></div>
+        <h3>Diagnostics</h3>
+        <ol id="timeline"></ol>
+        <form id="termination" hidden>
+          <label>Termination reason <input name="reason" maxlength="256" required></label>
+          <button type="submit" class="danger">Terminate match</button>
+        </form>
+      </section>
+      <section class="panel" aria-labelledby="players-heading">
+        <div class="section-head">
+          <h2 id="players-heading">Players</h2>
+          <label>Presence
+            <select id="player-presence">
+              <option value="">All</option><option value="true">Online</option><option value="false">Offline</option>
+            </select>
+          </label>
+        </div>
+        <div class="table-wrap"><table>
+          <thead><tr><th scope="col">Name</th><th scope="col">ID</th><th scope="col">State</th><th scope="col">Match</th><th scope="col">Last seen</th></tr></thead>
+          <tbody id="player-rows"></tbody>
+        </table></div>
+        <p id="player-detail" class="muted" aria-live="polite" hidden></p>
+        <div class="pages"><button id="players-prev" type="button">Previous</button><button id="players-next" type="button">Next</button></div>
+      </section>
+      <section class="panel" aria-labelledby="pools-heading">
+        <h2 id="pools-heading">Federation pools</h2>
+        <div class="table-wrap"><table>
+          <thead><tr><th scope="col">Pool</th><th scope="col">State</th><th scope="col">Local role</th><th scope="col">Voters</th><th scope="col">Eligible hosts</th><th scope="col">Local tickets</th></tr></thead>
+          <tbody id="pool-rows"></tbody>
+        </table></div>
+      </section>
+    </div>
+  </main>
+</body>
+</html>
