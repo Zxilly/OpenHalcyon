@@ -134,7 +134,9 @@ fn sanitize(m: &mut Message) -> bool {
                 )) || super::aral_spawn::recordable(&m.body)) => {}
         0x3f8 if m.body.len() == 9 && (14..=23).contains(&m.body[0]) => {}
         // Only the authored hero-slot and target combinations have verified wire meanings.
-        0x43a if matches!(m.body.as_slice(), [0, 0, 5, 220..=229, 0, 0, 0, 0..=3]) => {}
+        0x43a
+            if matches!(m.body.as_slice(), [0, 0, 5, 220..=229, 0, 0, 0, operand]
+            if halcyon_sim::known_native_learn_operand(*operand)) => {}
         0x415
             if matches!(
                 m.body.as_slice(),
@@ -248,6 +250,7 @@ mod tests {
             Message::new(0x03f8, move_to),
             Message::new(0x0424, [0, 0, 5, 221, 0, 0]),
             Message::ability_learned(1501, 3),
+            Message::ability_learned(1501, 4),
             Message::ability_point_used(1501, [-40.5, -0.0, 1.], 3),
             Message::new(0x0415, [0, 0, 5, 220, 0, 0, 5, 221, 2]),
             Message::new(0x0481, [0, 0, 5, 220, 255, 0]),
@@ -268,6 +271,7 @@ mod tests {
             0
         )));
         assert!(!sanitize(&mut Message::ability_learned(1550, 3)));
+        assert!(!sanitize(&mut Message::ability_learned(1501, 5)));
         for control in [0x03f5, 0x0411, 0x0412, 0x0436, 0x0484, 0x0485] {
             assert!(!sanitize(&mut Message::new(control, [0; 6])));
         }

@@ -1,5 +1,30 @@
 # Native ability requests, grants and releases
 
+## Native learning
+
+In 24 captured 0x0436 requests, the first nearby 0x043A from the same
+actor followed after 22–124 ms, with a median of 82 ms. The table gives
+the grant operand and the number of observations for each request index.
+
+| Hero template | Index 0 (A) | Index 1 (B) | Index 2 (C) |
+| --- | --- | --- | --- |
+| 254 Hero009 | 0 (3) | 1 (2) | No sample |
+| 439 Yates | 0 (2) | 2 (2) | 3 (1) |
+| 273 Idris | 0 (2) | 3 (4) | 4 (1) |
+| 409 Lorelai | 0 (2) | 1 (4) | 2 (1) |
+
+A valid request on a registered native seat spends one skill point and
+increments the requested rank before the server emits the original input echo
+and the 0x043A grant. Normal level and rank limits apply. The first successful
+request per simulation tick is the only one that spends a point. A rejected
+request consumes no point and a later eligible request can succeed.
+
+Learning can persist a rank even where the active spell is unimplemented.
+The native cast handlers still cover Idris B and Lorelai A/B/C. Bots spend
+points only on abilities whose combat behavior the simulator implements.
+The recorded timing describes the captures, without a server-side delay
+requirement.
+
 ## Idris B
 
 The Android catalog identifies Idris as template 273. In the played ARAL
@@ -31,9 +56,8 @@ spends an available skill point before confirming. Repeated learning in
 the same simulation tick receives no additional grant. Point casting uses
 the simulator's target, range, resource and cooldown checks. Only an
 authoritative release emits 0x0416 to the originating connection.
-Canceled windups and rejected inputs do not emit it. The capture does not
-establish other heroes' ability-slot mappings or the exact native stamina,
-collision or damage rules.
+Canceled windups and rejected inputs do not emit it. The capture does not establish the exact native stamina, collision or
+damage rules.
 
 ## Lorelai
 

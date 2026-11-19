@@ -202,7 +202,8 @@ impl World {
             1 + 2 * rank
         };
         e.skill_points > 0
-            && skill(e.type_id, slot).is_some()
+            && (skill(e.type_id, slot).is_some()
+                || (!e.bot && native_learn_operand(e.type_id, slot).is_some()))
             && rank < if slot == AbilitySlot::C { 3 } else { 5 }
             && e.level >= needed
     }

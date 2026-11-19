@@ -1,4 +1,7 @@
-use halcyon_sim::{AbilitySlot, CastTarget, Command, Event, Kind, Position};
+use halcyon_sim::{
+    AbilitySlot, CastTarget, Command, Event, Kind, Position, native_learn_operand,
+    native_learn_request,
+};
 
 use super::{Batch, Message, Room, messages::wire_id, transport::Delivery};
 
@@ -30,7 +33,6 @@ pub(super) fn receive(room: &mut Room, seat: usize, channel: usize, m: Message) 
         || !connection.world_actor_written
         || actor.kind != Kind::Hero
         || actor.bot
-        || !matches!(actor.type_id, IDRIS | LORELAI)
     {
         return Vec::new();
     }
@@ -40,12 +42,8 @@ pub(super) fn receive(room: &mut Room, seat: usize, channel: usize, m: Message) 
     let state = &mut room.seats[seat].native_abilities;
     match m.opcode {
         0x0436 if m.body.len() == 6 && m.body[1..] == [0; 5] => {
-            let (slot, selector) = match (hero, m.body[0]) {
-                (IDRIS, 1) => (AbilitySlot::B, SELECTOR),
-                (LORELAI, 0) => (AbilitySlot::A, 0),
-                (LORELAI, 1) => (AbilitySlot::B, 1),
-                (LORELAI, 2) => (AbilitySlot::C, 2),
-                _ => return Vec::new(),
+            let Some((slot, operand)) = native_learn_request(hero, m.body[0]) else {
+                return Vec::new();
             };
             if state.learned_at == Some(room.world.tick)
                 || room.world.command(id, Command::Learn(slot)).is_err()
@@ -53,7 +51,7 @@ pub(super) fn receive(room: &mut Room, seat: usize, channel: usize, m: Message) 
                 return Vec::new();
             }
             state.learned_at = Some(room.world.tick);
-            let grant = Message::ability_learned(u32::from(wire_id(id)), u32::from(selector));
+            let grant = Message::ability_learned(u32::from(wire_id(id)), u32::from(operand));
             witness(room, id, None, &grant);
             vec![m, grant]
         }
@@ -124,7 +122,7 @@ pub(super) fn receive(room: &mut Room, seat: usize, channel: usize, m: Message) 
     }
 }
 
-fn selector(hero: u16, slot: AbilitySlot) -> Option<u8> {
+fn cast_selector(hero: u16, slot: AbilitySlot) -> Option<u8> {
     match (hero, slot) {
         (IDRIS, AbilitySlot::B) => Some(SELECTOR),
         (LORELAI, AbilitySlot::A) => Some(0),
@@ -174,17 +172,20 @@ pub(super) fn publish(room: &mut Room, events: &[Event]) {
         else {
             continue;
         };
-        let Some(selector) = selector(actor.type_id, slot) else {
-            continue;
-        };
+        let hero = actor.type_id;
         let actor_wire = u32::from(wire_id(source));
         let Event::Cast { target, .. } = *event else {
-            witness(
-                room,
-                source,
-                None,
-                &Message::ability_learned(actor_wire, selector.into()),
-            );
+            if let Some(operand) = native_learn_operand(hero, slot) {
+                witness(
+                    room,
+                    source,
+                    None,
+                    &Message::ability_learned(actor_wire, operand.into()),
+                );
+            }
+            continue;
+        };
+        let Some(selector) = cast_selector(hero, slot) else {
             continue;
         };
         let (mut message, target_id) = match (actor.type_id, slot, target) {
@@ -495,6 +496,83 @@ mod tests {
             bot_view.try_recv().unwrap().into_records(),
             [Message::ability_learned(u32::from(wire_id(bot_id)), 3)]
         );
+    }
+
+    #[tokio::test]
+    async fn progression_only_grants_use_rank_gates_and_allow_a_later_retry() {
+        let rooms = Rooms::new("127.0.0.1".parse().unwrap(), "127.0.0.1".into(), 1, None);
+        let match_id = Uuid::new_v4();
+        rooms
+            .reserve(Reservation {
+                match_id,
+                players: (0..6).map(|_| Uuid::new_v4()).collect(),
+                teams: vec![],
+                mode: "casual_aral".into(),
+                difficulty: None,
+            })
+            .unwrap();
+        let shared = rooms.room(match_id).unwrap();
+        let mut room = shared.lock().unwrap();
+        let mut witnesses = Vec::new();
+        for (index, seat) in room.seats.iter_mut().enumerate().take(2) {
+            let (tx, rx) = mpsc::channel(16);
+            seat.peers[0] = Some(Peer {
+                generation: (index + 1) as u64,
+                tx,
+                stalled: watch::channel(false).0,
+            });
+            let actor = 1500 + index as u32;
+            for (op, body) in [
+                (0x046e, [0; 6]),
+                (0x0471, [0, 0, 5, 220 + index as u8, 1, 0]),
+                (0x046d, [0; 6]),
+            ] {
+                seat.preamble.observe(&Message::new(op, body), actor);
+            }
+            seat.world_actor_written = true;
+            witnesses.push(rx);
+        }
+        room.phase("running");
+        room.world.entities[0].type_id = IDRIS;
+        room.world.entities[0].level = 5;
+        room.world.entities[0].skill_points = 2;
+
+        let learn = |index| Message::new(0x0436, [index, 0, 0, 0, 0, 0]);
+        assert!(room.receive(0, 0, learn(2)).unwrap().is_empty());
+        assert_eq!(room.world.entities[0].skill_points, 2);
+        room.world.tick += 1;
+        room.world.entities[0].level = 6;
+        room.visible[1].insert(1);
+        assert_eq!(
+            room.receive(0, 0, learn(2)).unwrap(),
+            [learn(2), Message::ability_learned(1500, 4)]
+        );
+        assert!(room.receive(0, 0, learn(2)).unwrap().is_empty());
+        assert!(room.receive(0, 0, learn(0)).unwrap().is_empty());
+        assert_eq!(room.world.entities[0].skill_points, 1);
+        assert!(witnesses[0].try_recv().is_err());
+        assert_eq!(
+            witnesses[1].try_recv().unwrap().into_records(),
+            [Message::ability_learned(1500, 4)]
+        );
+        assert!(witnesses[1].try_recv().is_err());
+
+        let mut unsupported_cast = [0; 14];
+        unsupported_cast[12] = 4;
+        assert!(
+            room.receive(0, 0, Message::new(0x0412, unsupported_cast))
+                .unwrap()
+                .is_empty()
+        );
+        room.world.tick += 1;
+        room.visible[1].clear();
+        assert_eq!(
+            room.receive(0, 0, learn(0)).unwrap(),
+            [learn(0), Message::ability_learned(1500, 0)]
+        );
+        assert!(witnesses[1].try_recv().is_err());
+        assert_eq!(room.world.entities[0].skill_points, 0);
+        assert_eq!(room.world.entities[0].ability_ranks, [1, 0, 1]);
     }
 
     fn drain(receiver: &mut mpsc::Receiver<Delivery>) -> Vec<Message> {

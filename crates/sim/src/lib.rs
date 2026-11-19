@@ -6,6 +6,7 @@ mod chakram;
 mod combat;
 mod layout;
 mod lorelai;
+mod native_learn;
 mod nav;
 use layout::Layout;
 mod progression;
@@ -14,6 +15,7 @@ mod shop;
 use combat::{AbilityBook, Cast, SpellEffect, Status};
 pub use combat::{AbilitySlot, CastTarget};
 use halcyon_data::{GameData, Unit};
+pub use native_learn::{known_native_learn_operand, native_learn_operand, native_learn_request};
 use score::DamageSchool;
 pub use score::{PlayerScore, TeamScore};
 use serde::{Deserialize, Serialize};
@@ -28,6 +30,7 @@ pub fn rules_digest(data: Option<&GameData>) -> String {
         include_str!("combat.rs"),
         include_str!("chakram.rs"),
         include_str!("lorelai.rs"),
+        include_str!("native_learn.rs"),
         include_str!("progression.rs"),
         include_str!("ai.rs"),
         include_str!("aral.rs"),
