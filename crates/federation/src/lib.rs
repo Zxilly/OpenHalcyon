@@ -4,7 +4,9 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::{collections::BTreeMap, net::SocketAddr, path::PathBuf};
 use uuid::Uuid;
 mod capacity;
+mod membership;
 pub use capacity::Capacity;
+pub use membership::{MemberChange, Members, PoolAdmin};
 mod net;
 mod service;
 mod store;
@@ -25,6 +27,19 @@ pub struct Config {
 pub struct Peer {
     pub address: String,
     pub cert: PathBuf,
+}
+impl Config {
+    pub fn read(path: &std::path::Path) -> anyhow::Result<Self> {
+        let mut cfg: Self = serde_json::from_reader(std::fs::File::open(path)?)?;
+        let base = path.parent().unwrap_or(std::path::Path::new("."));
+        for dest in [&mut cfg.database, &mut cfg.ca, &mut cfg.cert, &mut cfg.key]
+            .into_iter()
+            .chain(cfg.peers.values_mut().map(|p| &mut p.cert))
+        {
+            *dest = base.join(&*dest);
+        }
+        Ok(cfg)
+    }
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Proposal {
@@ -63,7 +78,7 @@ mod tests {
     use super::*;
     use crate::Federation;
     use halcyon_matchmaking::{Endpoint, Phase, Queue, Ticket, TicketRef};
-    use std::time::Duration;
+    use std::{collections::BTreeSet, time::Duration};
     use tokio::time::{sleep, timeout};
     async fn elected(nodes: &[Option<Federation>]) -> usize {
         timeout(Duration::from_secs(20), async {
@@ -87,6 +102,65 @@ mod tests {
         })
         .await
         .expect("majority elects a leader")
+    }
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn voter_can_discover_and_change_committed_membership() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = configs(dir.path());
+        let mut nodes = Vec::new();
+        for c in &cfg {
+            nodes.push(Some(Federation::start(c.clone()).await.unwrap()));
+        }
+        let leader = elected(&nodes).await;
+        let caller = (leader + 1) % 3;
+        let removed = (leader + 2) % 3;
+        let admin = PoolAdmin::new(cfg[caller].clone()).unwrap();
+        let members = admin.members().await.unwrap();
+        let all = members.configurations[0].clone();
+        assert_eq!(all.len(), 3);
+        let mut two = all.clone();
+        two.remove(&cfg[removed].node_id);
+        assert!(
+            admin
+                .change(&MemberChange {
+                    expected: BTreeSet::new(),
+                    voters: two.clone()
+                })
+                .await
+                .is_err()
+        );
+        admin
+            .change(&MemberChange {
+                expected: all.clone(),
+                voters: two.clone(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            admin.members().await.unwrap().configurations,
+            vec![two.clone()]
+        );
+        let outsider = PoolAdmin::new(cfg[removed].clone()).unwrap();
+        assert!(
+            outsider
+                .change(&MemberChange {
+                    expected: two.clone(),
+                    voters: all.clone()
+                })
+                .await
+                .is_err()
+        );
+        admin
+            .change(&MemberChange {
+                expected: two,
+                voters: all.clone(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(admin.members().await.unwrap().configurations, vec![all]);
+        for node in nodes.into_iter().flatten() {
+            node.shutdown().await.unwrap();
+        }
     }
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn three_tls_nodes_failover_restart_and_minority() {

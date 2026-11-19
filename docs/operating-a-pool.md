@@ -71,6 +71,29 @@ WAL files. Only one process should own a given instance identity. Starting with 
 new Raft database or a second copy of a live voter changes the recovery problem.
 Use the existing surviving majority when recovering a failed member.
 
+## Change membership
+
+Run `openhalcyon pool --config runtime/server.toml members` on any member. The
+CLI tries its configured peers, discovers the elected leader, and reads the
+committed voter sets and addresses. A peer with a pinned certificate can also
+read `GET /federation/v1/membership` on the peer listener using mTLS and the
+`x-halcyon-pool` header.
+
+To admit a new operator, distribute its public certificate and address to
+the existing members' `peers` maps, then roll the instances one at a time.
+Start the new node with the same pool identity, the complete trust list and
+`bootstrap = false`. A voting operator can submit the expected old voter set
+and the desired set as comma-separated UUIDs:
+
+```sh
+openhalcyon pool --config runtime/server.toml set-voters --expect "$OLD_VOTERS" --voters "$NEW_VOTERS"
+```
+
+The leader first catches up new learners, then commits the membership change
+through Raft. Use the same command to remove a voter. Changes compare the
+expected membership against committed state. If leadership changes during a
+request, read the membership again to determine the outcome before retrying.
+
 The integration test starts three independently authenticated TLS peers, exercises
 elections, and the server test drives cross-instance admission through CE calls.
 

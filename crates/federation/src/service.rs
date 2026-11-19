@@ -16,20 +16,18 @@ use openraft::{
     storage::Adaptor,
 };
 use std::{collections::BTreeSet, convert::Infallible, sync::Arc, time::Duration};
-use tokio::{
-    net::TcpListener,
-    sync::{Semaphore, watch},
-    time::timeout,
-};
+use tokio::{net::TcpListener, sync::watch, time::timeout};
 
 const DEADLINE: Duration = Duration::from_secs(4);
 #[derive(Clone)]
 pub struct Federation {
-    raft: Raft,
-    store: Store,
+    pub(crate) raft: Raft,
+    pub(crate) store: Store,
+    pub(crate) membership_lock: Arc<tokio::sync::Mutex<()>>,
     pub(crate) net: Transport,
     pub(crate) offers: crate::capacity::Offers,
     stop: watch::Sender<bool>,
+    listener_closed: watch::Receiver<bool>,
 }
 impl Federation {
     pub async fn start(cfg: Config) -> anyhow::Result<Self> {
@@ -58,34 +56,40 @@ impl Federation {
             raft.initialize(members).await?;
         }
         let (stop, mut stopped) = watch::channel(false);
+        let (listener_done, listener_closed) = watch::channel(false);
         let fed = Self {
+            membership_lock: Default::default(),
             raft,
             store,
             net,
             offers: Default::default(),
             stop,
+            listener_closed,
         };
         let server = fed.clone();
         tokio::spawn(async move {
-            let slots = Arc::new(Semaphore::new(128));
+            let mut connections = tokio::task::JoinSet::new();
             loop {
-                let socket = tokio::select! {
+                tokio::select! {
                     _=stopped.changed()=>break,
-                    result=listener.accept()=>match result {Ok((socket,_))=>socket,Err(_)=>break}
-                };
-                let Ok(slot) = slots.clone().try_acquire_owned() else {
-                    continue;
-                };
-                let f = server.clone();
-                let mut closing = stopped.clone();
-                tokio::spawn(async move {
-                    let _slot = slot;
-                    tokio::select! {
-                        _ = closing.changed() => {},
-                        _ = f.serve_peer(socket) => {},
+                    Some(_)=connections.join_next(), if !connections.is_empty()=>{},
+                    result=listener.accept()=> {
+                        let Ok((socket,_))=result else { break; };
+                        if connections.len() >= 128 { continue; }
+                        let f = server.clone();
+                        let mut closing = stopped.clone();
+                        connections.spawn(async move {
+                            tokio::select! {
+                                _ = closing.changed() => {},
+                                _ = f.serve_peer(socket) => {},
+                            }
+                        });
                     }
-                });
+                }
             }
+            drop(listener);
+            connections.shutdown().await;
+            listener_done.send_replace(true);
         });
         Ok(fed)
     }
@@ -95,10 +99,12 @@ impl Federation {
         let peer = self.net.identity(tls.get_ref().1.peer_certificates())?;
         let service =
             hyper::service::service_fn(|request: Request<hyper::body::Incoming>| async move {
-                let response = match timeout(
-                    Duration::from_secs(12),
-                    self.route(peer, request.map(Body::new)),
-                )
+                let limit = if request.uri().path() == "/internal/reconfigure" {
+                    crate::membership::CHANGE_REQUEST
+                } else {
+                    Duration::from_secs(12)
+                };
+                let response = match timeout(limit, self.route(peer, request.map(Body::new)))
                 .await
                 {
                     Ok(Ok(response)) => response,
@@ -137,9 +143,17 @@ impl Federation {
     pub fn metrics(&self) -> RaftMetrics<Uuid, BasicNode> {
         self.raft.metrics().borrow().clone()
     }
+    /// Keep a voter from timing out into candidacy in deterministic integration tests.
+    #[cfg(feature = "test-hooks")]
+    #[doc(hidden)]
+    pub fn suppress_test_nomination(&self) {
+        self.raft.runtime_config().elect(false);
+    }
     pub async fn shutdown(&self) -> anyhow::Result<()> {
         self.stop.send_replace(true);
         self.raft.shutdown().await?;
+        let mut closed = self.listener_closed.clone();
+        closed.wait_for(|done| *done).await?;
         Ok(())
     }
     pub async fn submit(&self, request_id: Uuid, command: Command) -> anyhow::Result<Outcome> {
@@ -260,6 +274,12 @@ impl Federation {
                 _ => {}
             }
         }
+        if path == "/internal/members" && parts.method == Method::POST {
+            return cbor(&self.members().await?);
+        }
+        if path == "/federation/v1/membership" && parts.method == Method::GET {
+            return Ok(axum::Json(self.members().await?).into_response());
+        }
         if !self.voter(peer) {
             return Ok(StatusCode::FORBIDDEN.into_response());
         }
@@ -277,6 +297,7 @@ impl Federation {
                     return cbor(&());
                 }
                 "/internal/read" => return cbor(&self.read_here().await?),
+                "/internal/reconfigure" => return cbor(&self.reconfigure(decode(&body)?).await),
                 "/internal/changes" => return cbor(&self.changes_here(decode(&body)?).await?),
                 _ => {}
             }
