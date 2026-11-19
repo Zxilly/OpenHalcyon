@@ -241,6 +241,17 @@ mod tests {
         assert_eq!(count, events.len());
         for (e, old) in w.entities[..10].iter().zip(before) {
             let delta = e.gold - old;
+            let income = w.player_score(e.id).unwrap().gold_income;
+            assert_eq!(income.starting_balance, old);
+            assert_eq!(income.passive_awards, 0);
+            assert_eq!(
+                income.last_hit_bounties,
+                if e.id == 1 { u64::from(delta) } else { 0 }
+            );
+            assert_eq!(
+                income.lane_proximity_awards,
+                if e.id != 1 { u64::from(delta) } else { 0 }
+            );
             let awards: Vec<_> = events
                 .iter()
                 .filter_map(|event| match event {

@@ -56,11 +56,30 @@ impl World {
         school: DamageSchool,
         events: &mut Vec<Event>,
     ) {
-        let t = &mut self.entities[i];
+        let t = &self.entities[i];
         if t.hp <= 0. || n <= 0. {
             return;
         }
         let amount = n.min(t.hp);
+        if team != t.team && matches!(t.kind, Kind::Tower | Kind::Crystal) {
+            // Only hero basic attacks and spells can outlive their origin actor's turn.
+            // Hero and structure entities persist through death; minions attack immediately.
+            let minion = self
+                .index(src)
+                .is_some_and(|j| self.entities[j].kind == Kind::Minion);
+            let damage = &mut self.team_scores[usize::from(team)].structure_damage;
+            let bucket = if t.kind == Kind::Tower {
+                &mut damage.towers
+            } else {
+                &mut damage.crystals
+            };
+            if minion {
+                bucket.minions += f64::from(amount);
+            } else {
+                bucket.others += f64::from(amount);
+            }
+        }
+        let t = &mut self.entities[i];
         t.hp -= amount;
         let id = t.id;
         if team != t.team
@@ -81,6 +100,19 @@ impl World {
         }
         let pos = t.position;
         let kind = t.kind;
+        if t.team != team {
+            let scoring = &mut self.team_scores[usize::from(team)];
+            match kind {
+                Kind::Tower => {
+                    scoring.structure_kills.towers += 1;
+                    scoring
+                        .first_enemy_outer_tower_kill_seconds
+                        .get_or_insert(self.tick as f64 / TICK_HZ as f64);
+                }
+                Kind::Crystal => scoring.structure_kills.crystals += 1,
+                _ => {}
+            }
+        }
         let (bounty, xp) = match kind {
             Kind::Hero => (250 + if self.first_blood { 0 } else { 125 }, 90.),
             Kind::Tower => (300, 60.),
@@ -109,9 +141,19 @@ impl World {
         }
         // Ten stable hero seats. A death awards its killer even if the projectile
         // travelled beyond the project assist radius after release.
-        let hero_kill = self
-            .index(src)
-            .is_some_and(|j| self.entities[j].kind == Kind::Hero);
+        let killer_kind = self.index(src).map(|j| self.entities[j].kind);
+        let hero_kill = killer_kind == Some(Kind::Hero);
+        if kind == Kind::Hero && self.entities[i].team != team {
+            let scoring_team = &mut self.team_scores[usize::from(team)];
+            match killer_kind {
+                Some(Kind::Hero) => scoring_team.hero_kills += 1,
+                Some(Kind::Tower) => {
+                    scoring_team.turret_hero_kills += 1;
+                    self.scores[(id - 1) as usize].turret_deaths += 1;
+                }
+                _ => {}
+            }
+        }
         let mut allies = [0usize; 10];
         let mut count = 0;
         for (j, a) in self.entities.iter_mut().take(10).enumerate() {
@@ -132,6 +174,12 @@ impl World {
             };
             if amount > 0 {
                 a.gold += amount;
+                let income = &mut self.scores[(a.id - 1) as usize].gold_income;
+                if a.id == src {
+                    income.last_hit_bounties += u64::from(amount);
+                } else {
+                    income.lane_proximity_awards += u64::from(amount);
+                }
                 events.push(Event::GoldAward { id: a.id, amount });
             }
             if !nearby {

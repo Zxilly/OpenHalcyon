@@ -10,7 +10,7 @@ use combat::{AbilityBook, Cast, SpellEffect, Status};
 pub use combat::{AbilitySlot, CastTarget};
 use halcyon_data::{GameData, Unit};
 use score::DamageSchool;
-pub use score::PlayerScore;
+pub use score::{PlayerScore, TeamScore};
 use serde::{Deserialize, Serialize};
 pub use shop::{BasicItem, HeldItem, Purchase};
 
@@ -273,6 +273,7 @@ pub struct World {
     nav_budget: u8,
     first_blood: bool,
     scores: [PlayerScore; 10],
+    team_scores: [TeamScore; 2],
     rally: [Option<Position>; 2],
 }
 impl Entity {
@@ -312,7 +313,7 @@ impl World {
                 &self.abilities,
                 &self.shop,
                 self.first_blood,
-                &self.scores,
+                (&self.scores, &self.team_scores),
                 self.rally,
                 self.nav_budget,
                 &self.effects,
@@ -509,6 +510,7 @@ impl World {
             nav_budget: 0,
             first_blood: false,
             scores: Default::default(),
+            team_scores: Default::default(),
             rally: [None; 2],
         };
         for seat in 0..10 {
@@ -538,6 +540,10 @@ impl World {
         let s = self.stats[slot];
         let id = self.next_id;
         self.next_id += 1;
+        let starting_gold = 0;
+        if kind == Kind::Hero {
+            self.scores[(id - 1) as usize].gold_income.starting_balance = starting_gold;
+        }
         self.entities.push(Entity {
             id,
             team,
@@ -546,7 +552,7 @@ impl World {
             position,
             hp: s.hp,
             max_hp: s.hp,
-            gold: 0,
+            gold: starting_gold,
             bot,
             inventory: Vec::new(),
             bonus_hp: 0.,
@@ -652,6 +658,10 @@ impl World {
             })
         }
     }
+    pub fn team_scores(&self) -> &[TeamScore; 2] {
+        &self.team_scores
+    }
+
     pub fn step(&mut self) -> Vec<Event> {
         let mut events = Vec::new();
         if self.winner.is_some() {
@@ -660,7 +670,9 @@ impl World {
         self.tick += 1;
         self.step_tick(&mut events);
         if self.tick == 300 * TICK_HZ {
-            self.record_five_minutes();
+            self.record_milestone(true);
+        } else if self.tick == 600 * TICK_HZ {
+            self.record_milestone(false);
         }
         events
     }

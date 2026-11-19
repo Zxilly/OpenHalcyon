@@ -9,7 +9,64 @@ pub(super) enum DamageSchool {
 
 #[derive(Clone, Copy, Debug, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct GoldIncome {
+    pub starting_balance: u32,
+    pub last_hit_bounties: u64,
+    pub lane_proximity_awards: u64,
+    pub passive_awards: u64,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StructureKills {
+    pub towers: u32,
+    pub crystals: u32,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize)]
+pub struct SourceDamage {
+    pub minions: f64,
+    pub others: f64,
+}
+
+#[derive(Clone, Copy, Debug, Default, Serialize)]
+pub struct StructureDamage {
+    pub towers: SourceDamage,
+    pub crystals: SourceDamage,
+}
+
+#[derive(Clone, Copy, Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TeamMilestone {
+    pub average_net_worth: f64,
+    pub average_level: f64,
+    pub hero_kills: u32,
+}
+
+#[derive(Clone, Copy, Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TeamScore {
+    pub structure_damage: StructureDamage,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub first_enemy_outer_tower_kill_seconds: Option<f64>,
+    pub hero_kills: u32,
+    pub turret_hero_kills: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub at_five: Option<TeamMilestone>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub at_ten: Option<TeamMilestone>,
+    pub structure_kills: StructureKills,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub structure_kills_at_five: Option<StructureKills>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub structure_kills_at_ten: Option<StructureKills>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct PlayerScore {
+    pub gold_income: GoldIncome,
+    pub turret_deaths: u32,
     pub damage_to_heroes: f64,
     pub damage_to_structures: f64,
     pub weapon_damage_to_heroes: f64,
@@ -48,16 +105,38 @@ impl World {
             .and_then(|_| self.scores.get(actor.checked_sub(1)? as usize))
     }
 
-    pub(super) fn record_five_minutes(&mut self) {
+    pub(super) fn record_milestone(&mut self, five: bool) {
+        let mut totals = [(0u32, 0u64, 0u32); 2];
         for hero in self.entities.iter().take_while(|e| e.kind == Kind::Hero) {
             let equipment: u64 = hero
                 .inventory
                 .iter()
                 .map(|i| self.acquisition_value(i.kind))
                 .sum();
-            let score = &mut self.scores[(hero.id - 1) as usize];
-            score.lane_last_hits_at_five = Some(score.lane_last_hits);
-            score.net_worth_at_five = Some(u64::from(hero.gold) + equipment);
+            let worth = u64::from(hero.gold) + equipment;
+            let (count, net_worth, levels) = &mut totals[usize::from(hero.team)];
+            *count += 1;
+            *net_worth += worth;
+            *levels += u32::from(hero.level);
+            if five {
+                let score = &mut self.scores[(hero.id - 1) as usize];
+                score.lane_last_hits_at_five = Some(score.lane_last_hits);
+                score.net_worth_at_five = Some(worth);
+            }
+        }
+        for (score, (count, net_worth, levels)) in self.team_scores.iter_mut().zip(totals) {
+            let snapshot = TeamMilestone {
+                average_net_worth: net_worth as f64 / f64::from(count),
+                average_level: f64::from(levels) / f64::from(count),
+                hero_kills: score.hero_kills,
+            };
+            if five {
+                score.at_five = Some(snapshot);
+                score.structure_kills_at_five = Some(score.structure_kills);
+            } else {
+                score.at_ten = Some(snapshot);
+                score.structure_kills_at_ten = Some(score.structure_kills);
+            }
         }
     }
 }
@@ -113,6 +192,137 @@ mod tests {
         );
         assert_eq!(world.player_score(1).unwrap().lane_last_hits, 0);
         assert!(world.player_score(minion).is_none());
+    }
+
+    #[test]
+    fn team_milestones_use_actual_roster_and_count_the_terminal_impact() {
+        for seats in [6, 10] {
+            let mut w = World::new(1, seats);
+            if seats == 6 {
+                w.use_six_human_roster().unwrap();
+            }
+            w.entities[0].gold = 1001;
+            w.entities[0].level = 3;
+            w.purchase(1, BasicItem::SixSins).unwrap();
+            let other_tower = w
+                .entities
+                .iter()
+                .find(|e| e.kind == Kind::Tower && e.team == 1)
+                .unwrap()
+                .id;
+            let own_tower = w
+                .entities
+                .iter()
+                .position(|e| e.kind == Kind::Tower && e.team == 0)
+                .unwrap();
+            let crystal = w
+                .entities
+                .iter()
+                .find(|e| e.kind == Kind::Crystal && e.team == 0)
+                .unwrap()
+                .id;
+            let mut events = vec![];
+            w.hurt(other_tower, 1, 0, 10000., DamageSchool::Weapon, &mut events);
+            w.hurt(2, 1, 2, 10000., DamageSchool::Weapon, &mut events);
+            w.tick = 300 * TICK_HZ - 1;
+            w.step();
+            let denom = f64::from(seats / 2);
+            let sample = w.team_scores()[0].at_five.unwrap();
+            assert_eq!(sample.average_net_worth, 1001. / denom);
+            assert_eq!(sample.average_level, (denom + 2.) / denom);
+            assert_eq!(w.team_scores()[1].at_five.unwrap().hero_kills, 1);
+            assert_eq!(w.team_scores()[1].turret_hero_kills, 1);
+            assert_eq!(w.player_score(1).unwrap().turret_deaths, 1);
+            assert!(w.team_scores()[1].at_ten.is_none());
+            let minion = w.spawn(1, Kind::Minion, 4, base(1), false);
+            w.hurt(
+                minion,
+                1,
+                own_tower,
+                100000.,
+                DamageSchool::Weapon,
+                &mut events,
+            );
+            w.tick = 600 * TICK_HZ - 1;
+            w.effects.push(SpellEffect::impact(
+                w.tick + 1,
+                2,
+                1,
+                crystal,
+                100000.,
+                DamageSchool::Weapon,
+            ));
+            w.step();
+            assert_eq!(w.winner, Some(1));
+            let team = &w.team_scores()[1];
+            assert_eq!(
+                team.structure_kills_at_five.unwrap(),
+                StructureKills::default()
+            );
+            assert_eq!(
+                team.structure_kills_at_ten.unwrap(),
+                StructureKills {
+                    towers: 1,
+                    crystals: 1
+                }
+            );
+            assert_eq!(team.at_ten.unwrap().hero_kills, 1);
+        }
+    }
+
+    #[test]
+    fn structure_damage_splits_sources_and_targets_and_keeps_first_kill_time() {
+        let mut w = World::new(1, 10);
+        let minion = w.spawn(0, Kind::Minion, 4, base(1), false);
+        let tower = w
+            .entities
+            .iter()
+            .position(|e| e.kind == Kind::Tower && e.team == 1)
+            .unwrap();
+        let crystal = w
+            .entities
+            .iter()
+            .position(|e| e.kind == Kind::Crystal && e.team == 1)
+            .unwrap();
+        let mut events = vec![];
+        w.entities[tower].hp = 12.;
+        w.entities[crystal].hp = 10.;
+        w.tick = 121;
+        w.hurt(minion, 0, tower, 5., DamageSchool::Weapon, &mut events);
+        assert!(
+            w.team_scores()[0]
+                .first_enemy_outer_tower_kill_seconds
+                .is_none()
+        );
+        w.hurt(1, 0, tower, 40., DamageSchool::Weapon, &mut events);
+        w.tick = 140;
+        let second = w.spawn(1, Kind::Tower, 1, base(1), false);
+        let index = w.index(second).unwrap();
+        w.entities[index].hp = 1.;
+        w.hurt(minion, 0, index, 20., DamageSchool::Weapon, &mut events);
+        w.hurt(1, 0, crystal, 2., DamageSchool::Weapon, &mut events);
+        w.hurt(minion, 0, crystal, 35., DamageSchool::Weapon, &mut events);
+        w.hurt(minion, 0, crystal, 35., DamageSchool::Weapon, &mut events);
+        let score = &w.team_scores()[0];
+        assert_eq!(score.first_enemy_outer_tower_kill_seconds, Some(6.05));
+        assert_eq!(
+            score.structure_damage.towers,
+            SourceDamage {
+                minions: 6.,
+                others: 7.
+            }
+        );
+        assert_eq!(
+            score.structure_damage.crystals,
+            SourceDamage {
+                minions: 8.,
+                others: 2.
+            }
+        );
+        assert_eq!(
+            w.team_scores()[1].structure_damage.towers,
+            SourceDamage::default()
+        );
     }
 
     #[test]

@@ -340,6 +340,16 @@ impl Rooms {
                         ),
                         ("hero".into(), json!(r.picks[seat].name)),
                         ("gold".into(), json!(actor.gold)),
+                        (
+                            "itemTemplates".into(),
+                            json!(
+                                actor
+                                    .inventory
+                                    .iter()
+                                    .map(|held| held.kind.template())
+                                    .collect::<Vec<_>>()
+                            ),
+                        ),
                         ("level".into(), json!(actor.level)),
                         ("xp".into(), json!(actor.xp)),
                         ("kills".into(), json!(combat.kills)),
@@ -352,7 +362,7 @@ impl Rooms {
                 .collect();
             (
                 r.id,
-                json!({"reason":end,"winner":r.world.winner,"ticks":r.world.tick,"players":players}),
+                json!({"reason":end,"winner":r.world.winner,"ticks":r.world.tick,"players":players,"teams":r.world.team_scores()}),
             )
         };
         if let Some(f) = self.0.finish.lock().unwrap().clone() {
