@@ -105,3 +105,20 @@ available, the simulator keeps the actor alive and replication defers its
 declaration and related updates until it can assign a slot. The allocator
 does not wrap. This emission requires the native Solo scene transport.
 Compact minion rendering on the original Android client remains unverified.
+
+## Full hero declarations
+
+The ten heroes at the start of the Solo recording and all 42 heroes in the
+seven played live ARAL openings used eight bytes of value 1 at +713 and a
+second eight-byte array at +721 with value 15 at the wire team's index. The
+other entries were zero. The Solo implementation applies this team profile at
+tick zero. Later Solo checkpoints contain different byte arrays.
+
+Word +709 reaches the same actor selector setter at 0xc5cb88 as compact
+field +120. Across all 140 Solo declarations, the human used 0xffffffff,
+and the nine bots used their zero-based team. The 42 human ARAL declarations
+also used 0xffffffff. Word +741 resolves an optional actor reference at
+0xc5daec. All 182 declarations carried 0xffffffff there. These words are
+separate from the network actor ID at +8 and registration slot at +745.
+The observed selector values alone do not establish authentication or input
+permissions.

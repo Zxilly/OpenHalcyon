@@ -64,6 +64,9 @@ impl ActorSlots {
         let slot = fixed(entity)?;
         Some(compact::structure(tick, entity).unwrap_or_else(|| {
             let mut message = messages::spawn(entity, picks, data);
+            if entity.kind == Kind::Hero {
+                messages::solo_hero_profile(&mut message, entity, tick);
+            }
             set_full(&mut message, slot);
             message
         }))
@@ -145,6 +148,34 @@ mod tests {
         assert_eq!(snapshot.body[36..40], living.hp.to_be_bytes());
         assert_eq!(snapshot.body[40..44], living.max_hp.to_be_bytes());
         assert_eq!(slots.minion(4000), Some(*released));
+    }
+
+    #[test]
+    fn solo_hero_declarations_keep_identity_separate_from_initial_team_flags() {
+        let world = halcyon_sim::World::new(7, 1);
+        let mut slots = ActorSlots::default();
+        for actor in world.entities.iter().filter(|e| e.kind == Kind::Hero) {
+            let first = slots.declaration(0, actor, &[], None).unwrap();
+            let late = slots.declaration(90, actor, &[], None).unwrap();
+            for m in [&first, &late] {
+                let selector = u32::from_be_bytes(m.body[709..713].try_into().unwrap());
+                assert_eq!(
+                    selector,
+                    if actor.id == 1 {
+                        u32::MAX
+                    } else {
+                        u32::from(actor.team)
+                    }
+                );
+                assert_eq!(&m.body[741..745], &[255; 4]);
+                assert_eq!(m.body[745], 13 + actor.id as u8);
+            }
+            assert_eq!(&first.body[713..721], &[1; 8]);
+            let mut flags = [0; 8];
+            flags[1 + actor.team as usize] = 15;
+            assert_eq!(&first.body[721..729], &flags);
+            assert_eq!(&late.body[713..729], &[0; 16]);
+        }
     }
 
     #[tokio::test]
