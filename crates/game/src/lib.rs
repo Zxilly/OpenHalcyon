@@ -1427,6 +1427,16 @@ impl Room {
                     current.insert(e.id);
                 }
             }
+            if control_stream && !out.is_empty() {
+                for (i, (seat, actor)) in self.seats.iter().zip(&self.world.entities).enumerate() {
+                    if usize::from(actor.team) == team
+                        && seat.peers[1].is_none()
+                        && seat.preamble.confirmed()
+                    {
+                        self.tower_views[i].declarations(&out);
+                    }
+                }
+            }
             for ev in events {
                 result_frames::append_postgame(&mut out, ev, postgame);
                 if hero_progress::append(&self.world, &mut out, ev, |id| {
@@ -1508,16 +1518,6 @@ impl Room {
                 }
             } else if self.world.tick.is_multiple_of(20) {
                 out.push(snapshot(&self.world, &self.players, &self.picks));
-            }
-            if control_stream {
-                for (i, (seat, actor)) in self.seats.iter().zip(&self.world.entities).enumerate() {
-                    if usize::from(actor.team) == team
-                        && seat.peers[1].is_none()
-                        && seat.preamble.confirmed()
-                    {
-                        self.tower_views[i].declarations(&out);
-                    }
-                }
             }
             if out.is_empty() {
                 continue;
