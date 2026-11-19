@@ -52,7 +52,9 @@ pub(super) fn begin_loading(room: &Room) -> Batch {
 pub(super) fn solo_table(room: &Room) -> Message {
     let mut body = [0u8; 96];
     for (row, actor) in body
-        .chunks_exact_mut(6)
+        .as_chunks_mut::<6>()
+        .0
+        .iter_mut()
         .zip(room.world.entities.iter().take(room.picks.len()))
     {
         row[..4].copy_from_slice(&u32::from(messages::wire_id(actor.id)).to_be_bytes());
