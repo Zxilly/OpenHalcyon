@@ -123,6 +123,9 @@ pub(super) fn opening(room: &mut Room, team: Option<u8>) -> Batch {
     batch.extend(map_objects);
     batch.extend(lane_minions);
     batch.extend(room.recommended_paths(team));
+    if let Some(team) = team {
+        batch.extend(room.surrender_snapshot(team));
+    }
     batch
 }
 
@@ -285,6 +288,15 @@ mod tests {
 
     #[tokio::test]
     async fn six_authenticated_aral_streams_cross_into_game_without_reconnect() {
+        play_six_seats(false).await;
+    }
+
+    #[tokio::test]
+    async fn six_authenticated_seats_receive_one_result_after_a_team_surrenders() {
+        play_six_seats(true).await;
+    }
+
+    async fn play_six_seats(surrender: bool) {
         let room_id = Uuid::new_v4();
         let rooms = Rooms::new(Ipv4Addr::LOCALHOST.into(), "127.0.0.1".into(), 1, None);
         let players: Vec<_> = (0..SEATS).map(|_| Uuid::new_v4()).collect();
@@ -517,7 +529,35 @@ mod tests {
         assert_eq!(until(&mut returned, &cipher, 0x03f8).await.body[0], 19);
         clients[3] = returned;
 
-        {
+        if surrender {
+            let yes = cipher.encode(&Message::new(0x0472, [1])).unwrap();
+            for (votes, seat) in [1, 3, 5].into_iter().enumerate() {
+                clients[seat].write_all(&yes).await.unwrap();
+                for teammate in [1, 3, 5] {
+                    let board = until(&mut clients[teammate], &cipher, 0x0473).await;
+                    assert_eq!(board.body[148..151], [2, if votes == 2 { 2 } else { 1 }, 3]);
+                    assert_eq!(
+                        board.body[68..71].iter().filter(|v| **v == 1).count(),
+                        votes + 1
+                    );
+                }
+            }
+            let mut room = room.lock().unwrap();
+            assert_eq!(room.phase, "ending");
+            assert!(
+                room.world
+                    .entities
+                    .iter()
+                    .filter(|e| e.kind == Kind::Crystal)
+                    .all(|e| e.hp > 0.)
+            );
+            room.phase_start = Instant::now() - Duration::from_secs(14);
+            room.tick();
+            assert!(!*room.stop.borrow());
+            room.phase_start = Instant::now() - Duration::from_secs(15);
+            room.tick();
+            assert!(*room.stop.borrow());
+        } else {
             let mut room = room.lock().unwrap();
             let crystal = room
                 .world
@@ -542,14 +582,24 @@ mod tests {
             assert!(*room.stop.borrow());
         }
         for socket in &mut clients {
-            let postgame = until(socket, &cipher, 0x0452).await;
-            assert_eq!(postgame.body, [0; 6]);
-            let death = until(socket, &cipher, 0x0430).await;
-            assert_eq!(
-                u32::from_be_bytes(death.body[..4].try_into().unwrap()),
-                2009
-            );
-            let message = until(socket, &cipher, 0x048d).await;
+            let message = if surrender {
+                loop {
+                    let message = next(socket, &cipher).await;
+                    assert!(!matches!(message.opcode, 0x0452 | 0x0473));
+                    if message.opcode == 0x048d {
+                        break message;
+                    }
+                }
+            } else {
+                let postgame = until(socket, &cipher, 0x0452).await;
+                assert_eq!(postgame.body, [0; 6]);
+                let death = until(socket, &cipher, 0x0430).await;
+                assert_eq!(
+                    u32::from_be_bytes(death.body[..4].try_into().unwrap()),
+                    2009
+                );
+                until(socket, &cipher, 0x048d).await
+            };
             let Fields::MatchStatistics(report) = message.fields().unwrap() else {
                 panic!("expected a native statistics report");
             };
@@ -562,7 +612,7 @@ mod tests {
             let victory = next(socket, &cipher).await;
             assert_eq!(
                 (victory.opcode, victory.body.as_slice()),
-                (0x03f1, &[0, 0, 0, 1, 0, 0][..])
+                (0x03f1, &[0, 0, 0, 1, if surrender { 2 } else { 0 }, 0][..])
             );
         }
     }

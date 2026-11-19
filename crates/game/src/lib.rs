@@ -13,6 +13,7 @@ mod point_move;
 mod recording;
 mod result_frames;
 mod scene;
+mod surrender;
 mod transport;
 use chrono::{DateTime, Utc};
 use halcyon_data::GameData;
@@ -136,6 +137,7 @@ struct Combat {
 struct Room {
     solo_slots: actor_slots::ActorSlots,
     aral_slots: aral_spawn::WaveSlots,
+    surrender: [surrender::Ballot; 2],
     visible: [HashSet<u32>; 2],
     next_visible: [HashSet<u32>; 2],
     replay_bytes: Arc<AtomicU64>,
@@ -371,7 +373,7 @@ impl Rooms {
                 .collect();
             (
                 r.id,
-                json!({"reason":end,"winner":r.world.winner,"ticks":r.world.tick,"players":players,"teams":r.world.team_scores()}),
+                json!({"reason":end,"surrenderedTeam":r.surrender.iter().position(surrender::Ballot::passed),"winner":r.world.winner,"ticks":r.world.tick,"players":players,"teams":r.world.team_scores()}),
             )
         };
         if let Some(f) = self.0.finish.lock().unwrap().clone() {
@@ -555,6 +557,7 @@ impl Rooms {
         let mut room = Room {
             solo_slots: actor_slots::ActorSlots::from_roster(&world.entities),
             aral_slots: Default::default(),
+            surrender: Default::default(),
             visible: Default::default(),
             next_visible: Default::default(),
             replay_bytes: Arc::default(),
@@ -1021,6 +1024,16 @@ impl Room {
             ) if game => {
                 out = native_abilities::receive(self, i, ch, m);
             }
+            Fields::Live(halcyon_protocol::LiveFields::SurrenderRequest(vote))
+                if legacy
+                    && game
+                    && ch == 0
+                    && self.seats[i].world_actor_written
+                    && m.body.len() == 6
+                    && m.body[1..] == [0; 5] =>
+            {
+                self.vote_surrender(i, vote);
+            }
             Fields::Live(request) if game => {
                 if let Some(command) = commands::from_live(request) {
                     let aral_target = legacy && ch == 0 && matches!(command, Command::Attack(_));
@@ -1154,8 +1167,12 @@ impl Room {
             return;
         }
         if self.phase == "ending" && self.reason == Some("completed") {
-            // Five live ARAL crystal defeats report their winner about six seconds later.
-            if self.phase_start.elapsed() >= std::time::Duration::from_secs(6) {
+            let delay = if self.surrender.iter().any(surrender::Ballot::passed) {
+                15
+            } else {
+                6
+            };
+            if self.phase_start.elapsed() >= std::time::Duration::from_secs(delay) {
                 self.finish_world();
             }
             return;
@@ -1221,6 +1238,9 @@ impl Room {
         }
         self.replicate(&events);
         native_abilities::publish(self, &events);
+        if legacy && self.world.winner.is_none() {
+            self.advance_ballots();
+        }
         if self.world.winner.is_some() {
             self.reason = Some("completed");
             self.phase("ending");
@@ -1233,7 +1253,11 @@ impl Room {
         if *self.stop.borrow() {
             return;
         }
-        if let Some(result) = result_frames::crystal_end(&self.queue, &self.world) {
+        let result = match self.surrender.iter().position(surrender::Ballot::passed) {
+            Some(loser) => Message::aral_surrender_result(2 - loser as u8).ok(),
+            None => result_frames::crystal_end(&self.queue, &self.world),
+        };
+        if let Some(result) = result {
             let mut final_batch = Vec::with_capacity(2);
             match result_frames::statistics_snapshot(&self.world) {
                 Ok(report) => final_batch.push(report),

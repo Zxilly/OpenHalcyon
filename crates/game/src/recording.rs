@@ -161,10 +161,30 @@ fn sanitize(m: &mut Message) -> bool {
         0x434 if m.body.len() == 14 && m.body[4..] == [0, 0, 0, 1, 0, 0, 0, 0, 0, 0] => {}
         0x432 if m.body.len() == 22 && m.body[16..] == [0; 6] => {}
         0x430 if m.body.len() == 14 && m.body[8..] == [0; 6] => {}
-        // Our end report contains numeric in-match actors and counters only.
+        // A recorded vote contains only the authored three-seat view of this team.
+        0x473 if m.body.len() == 155 => {
+            let Ok(halcyon_protocol::Fields::Live(
+                halcyon_protocol::LiveFields::AralSurrenderBoard(b),
+            )) = m.fields()
+            else {
+                return false;
+            };
+            if !Message::aral_surrender_board(
+                b.wire_team,
+                b.phase,
+                b.deadline,
+                b.actors,
+                b.votes,
+                b.cooldowns,
+            )
+            .is_ok_and(|canonical| canonical.body == m.body)
+            {
+                return false;
+            }
+        }
         0x452 if m.body.is_empty() => {}
         0x48d if m.body.len() == 1612 => {}
-        0x3f1 if matches!(m.body.as_slice(), [0, 0, 0, 1 | 2, 0, 0]) => {}
+        0x3f1 if matches!(m.body.as_slice(), [0, 0, 0, 1 | 2, 0 | 2, 0]) => {}
         0x3e9 | 0x3f3 | 0x41c | 0x41d | 0x42e | 0x439 | 0x43d | 0x44b | 0x451 | 0x46c | 0x46f
         | 0x470 => {}
         _ => return false,
@@ -272,7 +292,13 @@ mod tests {
         )));
         assert!(!sanitize(&mut Message::ability_learned(1550, 3)));
         assert!(!sanitize(&mut Message::ability_learned(1501, 5)));
-        for control in [0x03f5, 0x0411, 0x0412, 0x0436, 0x0484, 0x0485] {
+        let mut board =
+            Message::aral_surrender_board(1, 1, 30., [1500, 1502, 1504], [1, 0, 0], [120.; 3])
+                .unwrap();
+        assert!(sanitize(&mut board));
+        board.body[55] = 42;
+        assert!(!sanitize(&mut board));
+        for control in [0x0472, 0x03f5, 0x0411, 0x0412, 0x0436, 0x0484, 0x0485] {
             assert!(!sanitize(&mut Message::new(control, [0; 6])));
         }
     }
