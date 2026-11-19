@@ -8,7 +8,11 @@ use md5::{Digest, Md5};
 use std::io::{self, Read};
 
 mod metadata;
+mod opcode;
+mod skin;
 pub use metadata::READ_SIZES;
+pub use opcode::Opcode;
+pub use skin::skin_hash;
 pub const MAX_PAYLOAD: usize = 0x2800 - 2;
 pub const ACK_FRAME: [u8; 5] = [0, 3, 0, 6, 0];
 

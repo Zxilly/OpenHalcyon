@@ -185,6 +185,40 @@ impl World {
             timing("interval_s")?,
         ))
     }
+    /// Select the catalog hero for a zero-based roster seat during draft.
+    pub fn select_hero(&mut self, seat: usize, name: &str, data: &GameData) -> Result<(), String> {
+        if self.tick != 0 {
+            return Err("draft has ended".into());
+        }
+        let hero = self
+            .entities
+            .get_mut(seat)
+            .filter(|e| e.kind == Kind::Hero)
+            .ok_or("invalid roster seat")?;
+        if !(data.hero_names.iter().any(|h| h == name)
+            || (data.hero_names.is_empty() && name == "Ringo"))
+        {
+            return Err(format!("unknown hero {name}"));
+        }
+        let unit = data
+            .unit(name)
+            .ok_or_else(|| format!("missing unit {name}"))?;
+        let id = data
+            .type_id(name)
+            .ok_or_else(|| format!("missing manifest entry {name}"))?;
+        hero.stats = Stats::new(
+            id,
+            unit.hp,
+            unit.weapon,
+            unit.armor,
+            unit.range,
+            unit.move_speed,
+        );
+        hero.type_id = id;
+        hero.max_hp = unit.hp;
+        hero.hp = unit.hp;
+        Ok(())
+    }
     fn build(
         seed: u64,
         human_seats: u8,

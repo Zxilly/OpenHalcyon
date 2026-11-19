@@ -38,6 +38,9 @@ impl Drop for Connected {
     }
 }
 async fn connection(mut sock: TcpStream, room: Shared, manager: Rooms) -> io::Result<()> {
+    if !room.lock().unwrap().admitted {
+        return Err(bad("reservation pending"));
+    }
     sock.set_nodelay(true)?;
     let cipher = MatchCipher::new(&room.lock().unwrap().id.to_string());
     let uuid = timeout(Duration::from_secs(10), async {

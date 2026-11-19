@@ -1,4 +1,5 @@
 //! CE server messages. Unidentified fields use zero defaults.
+use super::Pick;
 use halcyon_protocol::Message;
 use halcyon_sim::{Entity, World};
 use uuid::Uuid;
@@ -16,6 +17,7 @@ pub fn setup(
     catalog: &[String],
     seat: usize,
     mode: &str,
+    picks: &[Pick],
 ) -> Vec<Message> {
     let game_mode = if mode.contains("aral") {
         "*GameMode_Aral_Casual*"
@@ -36,13 +38,14 @@ pub fn setup(
         put_text(&mut b, name);
         out.push(Message::new(0x453, b));
     }
-    out.push(snapshot(world, players));
+    out.push(snapshot(world, players, picks));
     out.push(Message::new(0x3f1, [0, 0, 0, 0, 8, 0]));
     out
 }
-pub fn snapshot(world: &World, players: &[Uuid]) -> Message {
+pub fn snapshot(world: &World, players: &[Uuid], picks: &[Pick]) -> Message {
     let mut body = vec![0; 2590];
-    body[..4].copy_from_slice(&((world.tick as f32) / 20.).to_be_bytes());
+    body[..4].copy_from_slice(&(300.0 - world.tick as f32 / 20.).max(0.).to_be_bytes());
+    body[4..8].copy_from_slice(&300f32.to_be_bytes());
     for idx in 0..16 {
         let r = &mut body[idx * 161..][..161];
         r[9] = idx as u8;
@@ -50,6 +53,13 @@ pub fn snapshot(world: &World, players: &[Uuid]) -> Message {
         r[17..21].fill(0xff);
         if let Some(e) = world.entities.iter().take(10).nth(idx) {
             r[8] = 1;
+            let pick = &picks[idx];
+            if pick.selected {
+                r[10] = 1;
+                r[11] = u8::from(pick.locked);
+                r[17..19].copy_from_slice(&e.type_id.to_be_bytes());
+                r[21..25].copy_from_slice(&pick.skin.to_be_bytes());
+            }
             r[16] = e.team + 1;
             r[19..21].copy_from_slice(&wire_id(e.id).to_be_bytes());
             if let Some(uuid) = players.get(idx) {
@@ -63,13 +73,106 @@ pub fn snapshot(world: &World, players: &[Uuid]) -> Message {
     }
     Message::new(0x459, body)
 }
-pub fn spawn(e: &Entity) -> Message {
+pub fn spawn(e: &Entity, picks: &[Pick], data: Option<&halcyon_data::GameData>) -> Message {
     let mut b = vec![0; 750];
     b[2..4].copy_from_slice(&e.type_id.to_be_bytes());
+    let hero = if e.kind == halcyon_sim::Kind::Hero {
+        picks.get(e.id as usize - 1)
+    } else {
+        None
+    };
+    if let Some(p) = hero {
+        b[4..8].copy_from_slice(&p.skin.to_be_bytes());
+    }
     b[10..12].copy_from_slice(&wire_id(e.id).to_be_bytes());
     b[12..16].copy_from_slice(&(u32::from(e.team) + 1).to_be_bytes());
     b[16..18].fill(0xff);
     b[18..22].copy_from_slice(&e.position.x.to_be_bytes());
-    b[22..26].copy_from_slice(&e.position.y.to_be_bytes());
+    b[26..30].copy_from_slice(&e.position.y.to_be_bytes());
+    b[30..34].copy_from_slice(&1f32.to_be_bytes());
+    b[42..46].copy_from_slice(&e.hp.to_be_bytes());
+    b[46..50].copy_from_slice(&e.max_hp.to_be_bytes());
+    let unit = data.and_then(|d| hero.and_then(|p| d.unit(&p.name)));
+    if let Some(unit) = unit {
+        for (offset, value) in [
+            (74, unit.move_speed),
+            (98, unit.attack_speed),
+            (122, unit.energy),
+            (126, unit.energy),
+            (190, unit.armor),
+            (202, unit.shield),
+            (214, unit.weapon),
+            (226, unit.range),
+        ] {
+            b[offset..offset + 4].copy_from_slice(&value.to_be_bytes());
+        }
+    }
     Message::new(0x3f3, b)
+}
+
+/// Replay chunks contain both roster forms before the first world spawn.
+pub(super) fn world_header(
+    world: &World,
+    players: &[Uuid],
+    picks: &[Pick],
+    mode: &str,
+    seat: usize,
+) -> Vec<Message> {
+    fn info(world: &World, players: &[Uuid], picks: &[Pick], i: usize, full: bool) -> Message {
+        let e = &world.entities[i];
+        let p = &picks[i];
+        let mut b = vec![0; if full { 222 } else { 216 }];
+        let bot = i >= players.len();
+        let name = if bot && full {
+            format!("{} Bot", p.name)
+        } else if bot {
+            p.name.clone()
+        } else {
+            "Guest".into()
+        };
+        put_text(&mut b[..64], &name);
+        if full {
+            let uuid = players
+                .get(i)
+                .map(ToString::to_string)
+                .unwrap_or_else(|| "__Kindred_Player_Bot__".to_owned());
+            put_text(&mut b[64..128], &uuid);
+            for chunk in b[176..204].chunks_exact_mut(4) {
+                chunk.copy_from_slice(&0x811c9dc5u32.to_be_bytes());
+            }
+            b[204..208].fill(0xff);
+            if !bot {
+                b[206] = 0;
+            }
+        }
+        b[160..164].copy_from_slice(&u32::from(wire_id(e.id)).to_be_bytes());
+        b[164..168].copy_from_slice(&u32::from(e.type_id).to_be_bytes());
+        b[168..172].copy_from_slice(&p.skin.to_be_bytes());
+        b[172..176].copy_from_slice(&0x9241f10eu32.to_be_bytes());
+        b[209] = 2;
+        b[210] = e.team + 1;
+        b[212] = u8::from(bot);
+        b[215] = u8::from(!bot);
+        Message::new(0x3ee, b)
+    }
+    let mut out: Vec<_> = (0..10)
+        .map(|i| info(world, players, picks, i, false))
+        .collect();
+    out.push(setup(world, players, &[], seat, mode, picks).remove(0));
+    let mut mode_name = vec![0; 69];
+    put_text(
+        &mut mode_name[..64],
+        if mode.contains("aral") {
+            "*GameMode_Aral_Casual*"
+        } else {
+            "*GameMode_5v5_SoloBots*"
+        },
+    );
+    mode_name[68] = 1;
+    out.push(Message::new(0x46c, [0]));
+    out.push(Message::new(0x46f, mode_name));
+    out.push(Message::new(0x470, [0]));
+    out.extend((0..10).map(|i| info(world, players, picks, i, true)));
+    out.push(Message::new(0x451, [0; 4]));
+    out
 }

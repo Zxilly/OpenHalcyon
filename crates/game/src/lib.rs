@@ -6,7 +6,7 @@ use halcyon_data::GameData;
 use halcyon_platform::{HostedMatch, MatchHost, PlatformError, Reservation};
 use halcyon_protocol::{Fields, Message};
 use halcyon_sim::{Command, Event, Position, World};
-use messages::{setup, snapshot, spawn, wire_id};
+use messages::{setup, snapshot, spawn, wire_id, world_header};
 use serde_json::{Value, json};
 use std::{
     collections::{HashMap, HashSet},
@@ -47,13 +47,30 @@ struct Peer {
     visible: HashSet<u32>,
     stalled: watch::Sender<bool>,
 }
+impl Peer {
+    fn send(&self, batch: Batch) {
+        if self.tx.try_send(batch).is_err() {
+            self.stalled.send_replace(true);
+        }
+    }
+}
 #[derive(Default)]
 struct Seat {
     locked: bool,
     peers: [Option<Peer>; 2],
     last: Option<DateTime<Utc>>,
+    seen: [HashSet<u16>; 2],
+}
+struct Pick {
+    name: String,
+    skin: u32,
+    selected: bool,
+    locked: bool,
 }
 struct Room {
+    admitted: bool,
+    data: Option<Arc<GameData>>,
+    picks: Vec<Pick>,
     id: Uuid,
     address: String,
     queue: String,
@@ -71,6 +88,8 @@ struct Room {
     stop: watch::Sender<bool>,
     generation: u64,
     last_active: Instant,
+    phase_start: Instant,
+    last_roster: Instant,
 }
 impl Rooms {
     pub fn new(
@@ -91,6 +110,39 @@ impl Rooms {
     }
     pub fn set_finish_handler(&self, handler: Finish) {
         *self.0.finish.lock().unwrap() = Some(handler);
+    }
+    /// Active rooms, admitted human and bot seats, and all staged seats.
+    pub fn hosting_counts(&self) -> (usize, usize, usize, usize) {
+        let rooms = self.0.rooms.lock().unwrap();
+        rooms
+            .values()
+            .fold((0, 0, 0, 0), |(active, human, bots, prepared), room| {
+                let room = room.lock().unwrap();
+                if room.ended.is_some() {
+                    (active, human, bots, prepared)
+                } else if room.admitted {
+                    (
+                        active + 1,
+                        human + room.players.len(),
+                        bots + 10 - room.players.len(),
+                        prepared,
+                    )
+                } else {
+                    (active + 1, human, bots, prepared + 10)
+                }
+            })
+    }
+    pub fn capacity(&self) -> usize {
+        self.0.capacity
+    }
+    pub fn active_rooms(&self) -> usize {
+        self.0
+            .rooms
+            .lock()
+            .unwrap()
+            .values()
+            .filter(|r| r.lock().unwrap().ended.is_none())
+            .count()
     }
     pub fn outbound_bytes(&self) -> u64 {
         self.0.bytes.load(Ordering::Relaxed)
@@ -155,10 +207,14 @@ impl Rooms {
     fn finished(&self, room: &Shared) {
         let (id, result) = {
             let mut r = room.lock().unwrap();
+
             let end = r.reason.unwrap_or("error");
             r.reason = Some(end);
             r.ended = Some(Utc::now());
             r.phase("ended");
+            if !r.admitted {
+                return;
+            }
             (r.id, json!({"reason":end,"winner":r.world.winner}))
         };
         if let Some(f) = self.0.finish.lock().unwrap().clone() {
@@ -171,6 +227,39 @@ fn now() -> String {
 }
 impl MatchHost for Rooms {
     fn reserve(&self, req: Reservation) -> Result<HostedMatch, PlatformError> {
+        self.allocate(req, true)
+    }
+}
+impl Rooms {
+    pub fn prepare(&self, req: Reservation) -> Result<HostedMatch, PlatformError> {
+        self.allocate(req, false)
+    }
+    pub fn activate(&self, id: Uuid) -> Result<(), PlatformError> {
+        let rooms = self.0.rooms.lock().unwrap();
+        let mut room = rooms
+            .get(&id)
+            .ok_or(PlatformError::HostUnavailable)?
+            .lock()
+            .unwrap();
+        if matches!(room.phase, "ending" | "ended") {
+            return Err(PlatformError::Conflict("closed reservation"));
+        }
+        room.admitted = true;
+        Ok(())
+    }
+    pub fn discard(&self, id: Uuid) -> Result<(), PlatformError> {
+        let mut rooms = self.0.rooms.lock().unwrap();
+        if let Some(room) = rooms.get(&id) {
+            let room = room.lock().unwrap();
+            if room.admitted {
+                return Err(PlatformError::Conflict("already active"));
+            }
+            room.stop.send_replace(true);
+        }
+        rooms.remove(&id);
+        Ok(())
+    }
+    fn allocate(&self, req: Reservation, admitted: bool) -> Result<HostedMatch, PlatformError> {
         let mut rooms = self.0.rooms.lock().unwrap();
         rooms.retain(|_, room| {
             room.lock()
@@ -180,7 +269,11 @@ impl MatchHost for Rooms {
         });
         if let Some(r) = rooms.get(&req.match_id) {
             let r = r.lock().unwrap();
-            if r.queue != req.mode || r.players != req.players || r.ended.is_some() {
+            if r.queue != req.mode
+                || r.players != req.players
+                || r.ended.is_some()
+                || (admitted && !r.admitted)
+            {
                 return Err(PlatformError::Conflict("reservation conflict"));
             }
             return Ok(HostedMatch {
@@ -239,6 +332,16 @@ impl MatchHost for Rooms {
         let (stop, stopped) = watch::channel(false);
         let t = Utc::now();
         let mut room = Room {
+            admitted,
+            data: self.0.data.clone(),
+            picks: (0..10)
+                .map(|i| Pick {
+                    name: "Ringo".into(),
+                    skin: halcyon_protocol::skin_hash("Ringo_DefaultSkin"),
+                    selected: i >= usize::from(n),
+                    locked: i >= usize::from(n),
+                })
+                .collect(),
             id: req.match_id,
             address: address.clone(),
             queue: req.mode,
@@ -256,6 +359,8 @@ impl MatchHost for Rooms {
             stop,
             generation: 0,
             last_active: Instant::now(),
+            phase_start: Instant::now(),
+            last_roster: Instant::now(),
         };
         room.event("phase_changed", "allocated", json!({}));
         let room = Arc::new(Mutex::new(room));
@@ -280,6 +385,7 @@ impl Room {
     fn phase(&mut self, phase: &'static str) {
         if self.phase != phase {
             self.phase = phase;
+            self.phase_start = Instant::now();
             self.since = Utc::now();
             self.event("phase_changed", phase, json!({}));
         }
@@ -289,7 +395,7 @@ impl Room {
         "endedAt":self.ended.map(|x|x.to_rfc3339()),"endReason":self.reason,"humanPlayers":self.players.len(),"botPlayers":10-self.players.len(),"poolId":null});
         if detail {
             v["participants"]=Value::Array((0..10).map(|i|{let s=self.seats.get(i);
-            json!({"slot":i,"playerId":self.players.get(i),"homeInstanceId":null,"botProfile":if s.is_none(){Some("lane-v1")}else{None},"displayName":if s.is_some(){"Guest".into()}else{format!("Ringo Bot {}",i+1)},"hero":"Ringo","locked":s.is_none_or(|s|s.locked),"controlConnected":s.is_some_and(|s|s.peers[0].is_some()),"gameConnected":s.is_some_and(|s|s.peers[1].is_some()),"lastEventAt":s.and_then(|s|s.last).map(|x|x.to_rfc3339())})
+            json!({"slot":i,"playerId":self.players.get(i),"homeInstanceId":null,"botProfile":if s.is_none(){Some("lane-v1")}else{None},"displayName":if s.is_some(){"Guest".into()}else{format!("Ringo Bot {}",i+1)},"hero":self.picks[i].name,"locked":s.is_none_or(|s|s.locked),"controlConnected":s.is_some_and(|s|s.peers[0].is_some()),"gameConnected":s.is_some_and(|s|s.peers[1].is_some()),"lastEventAt":s.and_then(|s|s.last).map(|x|x.to_rfc3339())})
         }).collect());
         }
         v
@@ -336,14 +442,25 @@ impl Room {
             "Authenticated",
             json!({"playerId":uuid,"channel":if game{"game"}else{"control"}}),
         );
-        let mut batch = setup(&self.world, &self.players, &self.catalog, idx, &self.queue);
+        let mut batch = if game {
+            world_header(&self.world, &self.players, &self.picks, &self.queue, idx)
+        } else {
+            setup(
+                &self.world,
+                &self.players,
+                &self.catalog,
+                idx,
+                &self.queue,
+                &self.picks,
+            )
+        };
         if game {
             batch.extend(
                 self.world
                     .entities
                     .iter()
                     .filter(|e| self.world.visible((idx % 2) as u8, e))
-                    .map(spawn),
+                    .map(|e| spawn(e, &self.picks, self.data.as_deref())),
             );
             if self.seats.iter().all(|s| s.peers[1].is_some()) {
                 self.phase("running");
@@ -365,25 +482,112 @@ impl Room {
             );
         }
     }
+    fn roster_update(&self, except: Option<usize>) -> Message {
+        let mut roster = snapshot(&self.world, &self.players, &self.picks);
+        if self.phase == "hero_select" {
+            roster.body[..4].copy_from_slice(
+                &(300. - self.phase_start.elapsed().as_secs_f32())
+                    .max(0.)
+                    .to_be_bytes(),
+            );
+        }
+        for (i, s) in self.seats.iter().enumerate() {
+            if except != Some(i)
+                && let Some(p) = &s.peers[0]
+            {
+                p.send(vec![roster.clone()]);
+            }
+        }
+        roster
+    }
     fn receive(&mut self, i: usize, ch: usize, m: Message) -> std::io::Result<Batch> {
         self.last_active = Instant::now();
+        let seen = &mut self.seats[i].seen[ch];
+        if m.opcode != 0x455 && seen.len() < 32 && seen.insert(m.opcode) {
+            self.event("protocol","First client message of this type",json!({"playerId":self.players[i],"channel":if ch==0{"control"}else{"game"},"opcode":format!("0x{:04X}",m.opcode)}));
+        }
         let mut out = vec![];
         match m.fields()? {
-            Fields::Movement { x, y } if ch == 1 && self.phase == "running" => {
+            Fields::Movement { x, y }
+                if (ch == 1 || self.seats[i].peers[1].is_none()) && self.phase == "running" =>
+            {
                 let _ = self
                     .world
                     .command(i as u32 + 1, Command::MoveTo(Position { x, y }));
             }
             Fields::HeroLock if ch == 0 => {
+                out.push(m);
                 if !self.seats[i].locked {
                     self.seats[i].locked = true;
+                    self.picks[i].selected = true;
+                    self.picks[i].locked = true;
                     self.event(
                         "protocol",
                         "Hero locked",
                         json!({"playerId":self.players[i],"opcode":"0x0455"}),
                     );
+                    out.push(self.roster_update(Some(i)));
                     if self.seats.iter().all(|s| s.locked) {
                         self.phase("loading");
+                        // Some CE builds continue on control. A separate game socket
+                        // will receive the same world header at its own attach time.
+                        for j in 0..self.seats.len() {
+                            if self.seats[j].peers[1].is_some() {
+                                continue;
+                            }
+                            let mut header = world_header(
+                                &self.world,
+                                &self.players,
+                                &self.picks,
+                                &self.queue,
+                                j,
+                            );
+                            header.extend(
+                                self.world
+                                    .entities
+                                    .iter()
+                                    .filter(|e| self.world.visible((j % 2) as u8, e))
+                                    .map(|e| spawn(e, &self.picks, self.data.as_deref())),
+                            );
+                            if j == i {
+                                out.extend(header);
+                            } else if let Some(peer) = &self.seats[j].peers[0] {
+                                peer.send(header);
+                            }
+                        }
+                    }
+                }
+            }
+            _ if m.opcode == 0x45e && ch == 0 && !self.seats[i].locked && m.body.len() >= 8 => {
+                let template = u32::from_be_bytes(m.body[..4].try_into().unwrap());
+                let skin = u32::from_be_bytes(m.body[4..8].try_into().unwrap());
+                let name = if template == 243 {
+                    Some("Ringo".to_owned())
+                } else {
+                    self.data.as_ref().and_then(|d| {
+                        d.manifest
+                            .iter()
+                            .find(|e| {
+                                u32::from(e.entity_type_id) == template
+                                    && e.path.starts_with("build://Characters/")
+                            })
+                            .map(|e| e.name.trim_matches('*').to_owned())
+                    })
+                };
+                if let Some(name) = name {
+                    let valid = if let Some(d) = &self.data {
+                        self.world.select_hero(i, &name, d).is_ok()
+                    } else {
+                        name == "Ringo"
+                    };
+                    if valid {
+                        self.picks[i] = Pick {
+                            name,
+                            skin,
+                            selected: true,
+                            locked: false,
+                        };
+                        out.push(self.roster_update(Some(i)));
                     }
                 }
                 out.push(m);
@@ -397,6 +601,9 @@ impl Room {
         Ok(out)
     }
     fn tick(&mut self) {
+        if !self.admitted {
+            return;
+        }
         if self.last_active.elapsed().as_secs() > 300
             && self
                 .seats
@@ -407,6 +614,13 @@ impl Room {
             self.phase("ending");
             self.stop.send_replace(true);
             return;
+        }
+        if self.phase == "hero_select" && self.last_roster.elapsed().as_secs() >= 1 {
+            self.last_roster = Instant::now();
+            self.roster_update(None);
+        }
+        if self.phase == "loading" && self.phase_start.elapsed().as_secs() >= 2 {
+            self.phase("running");
         }
         if self.phase != "running" {
             return;
@@ -422,7 +636,8 @@ impl Room {
                 .collect()
         });
         for (i, seat) in self.seats.iter_mut().enumerate() {
-            let Some(peer) = &mut seat.peers[1] else {
+            let channel = usize::from(seat.peers[1].is_some());
+            let Some(peer) = &mut seat.peers[channel] else {
                 continue;
             };
             let mut out = vec![];
@@ -430,7 +645,7 @@ impl Room {
             let current = &visible[team];
             for e in &self.world.entities {
                 if current.contains(&e.id) && !peer.visible.contains(&e.id) {
-                    out.push(spawn(e));
+                    out.push(spawn(e, &self.picks, self.data.as_deref()));
                 }
             }
 
@@ -453,15 +668,13 @@ impl Room {
             }
             peer.visible.clone_from(current);
             if self.world.tick.is_multiple_of(20) {
-                out.push(snapshot(&self.world, &self.players));
+                out.push(snapshot(&self.world, &self.players, &self.picks));
             }
             if self.world.winner.is_some() {
                 out.push(Message::new(0x485, [0; 6]));
             }
             if !out.is_empty() {
-                if peer.tx.try_send(out).is_err() {
-                    peer.stalled.send_replace(true);
-                }
+                peer.send(out);
             }
         }
         if self.world.winner.is_some() {

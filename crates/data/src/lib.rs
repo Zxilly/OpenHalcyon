@@ -47,6 +47,8 @@ pub struct GameData {
     pub abilities: Vec<Value>,
     pub combat_constants: Value,
     pub content_digest: String,
+    pub hero_names: Vec<String>,
+    pub skin_names: Vec<String>,
 }
 impl GameData {
     pub fn load(dir: impl AsRef<Path>) -> io::Result<Self> {
@@ -66,7 +68,10 @@ impl GameData {
                 )
             })
         }
+        let (hero_names, skin_names) = read_catalog(dir, &mut hash)?;
         Ok(Self {
+            hero_names,
+            skin_names,
             units: read(dir, "units.json", &mut hash)?,
             items: read(dir, "items.json", &mut hash)?,
             manifest: read(dir, "entity_manifest.json", &mut hash)?,
@@ -86,4 +91,48 @@ impl GameData {
             .find(|v| v.name.trim_matches('*') == name)
             .map(|v| v.entity_type_id)
     }
+}
+
+/// Only retain public server-to-client catalog names from the optional reference trace.
+fn read_catalog(dir: &Path, hash: &mut Sha256) -> io::Result<(Vec<String>, Vec<String>)> {
+    use std::io::{BufRead, BufReader};
+    let trace = dir.join("../match_decoded.jsonl");
+    let file = match fs::File::open(trace) {
+        Ok(f) => f,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok((vec![], vec![])),
+        Err(e) => return Err(e),
+    };
+    let invalid = || io::Error::new(io::ErrorKind::InvalidData, "invalid 0x0453 catalog name");
+    let mut heroes = Vec::new();
+    let mut skins = Vec::new();
+    for line in BufReader::new(file).lines() {
+        let row: Value = serde_json::from_str(&line?).map_err(io::Error::other)?;
+        if row["dir"] != "S2C" || row["opcode"].as_u64() != Some(0x453) {
+            continue;
+        }
+        let hex = row["payload"].as_str().ok_or_else(invalid)?;
+        if hex.len() != 76 || !hex.is_ascii() {
+            return Err(invalid());
+        }
+        let bytes = hex
+            .as_bytes()
+            .chunks_exact(2)
+            .map(|pair| {
+                u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).map_err(|_| invalid())
+            })
+            .collect::<io::Result<Vec<_>>>()?;
+        let end = bytes.iter().position(|b| *b == 0).unwrap_or(bytes.len());
+        let name = std::str::from_utf8(&bytes[..end]).map_err(|_| invalid())?;
+        if name.is_empty() || !name.bytes().all(|c| c.is_ascii_graphic()) {
+            return Err(invalid());
+        }
+        hash.update([0x04, 0x53, end as u8]);
+        hash.update(name.as_bytes());
+        if let Some(hero) = name.strip_prefix('*').and_then(|s| s.strip_suffix('*')) {
+            heroes.push(hero.to_owned())
+        } else {
+            skins.push(name.to_owned())
+        }
+    }
+    Ok((heroes, skins))
 }
