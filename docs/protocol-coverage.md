@@ -39,6 +39,27 @@ acknowledgements. Uninterpreted payloads remain available to the offline reader.
 The reference checks decoded 43,160 records across 14 VGR chunks and checked
 encrypted messages from three independent sessions.
 
+The [game opcode inventory](ce-game.tsv) contains every entry in the Android
+table and both field-decoding counts for the local replay corpus. The table
+specifies 122 frame sizes, 48 branches ignored by the Android receiver and one
+special clock branch. An ignored receiver branch can still identify a command
+in the opposite direction. The 14 replay chunks contain 56 distinct opcodes.
+A typed count requires at least one decoded variant, including variants that
+only establish a prefix. Zero means that these chunks contain no example of
+that class. Every record with a fixed-size prefix passed its size check.
+Callers retain every byte after the prefix, including bytes of unknown meaning.
+
+To reproduce the inventory for another recording, run
+`cargo run --locked -p halcyon-protocol --example replay_inventory -- <chunk-directory>`.
+It reads local VGR files and writes aggregate counts to standard output.
+
+The separate Android draft exchange includes player identification (0x03E8)
+in the client-to-server direction, setup and mode (0x03E9, 0x0454) from the
+server, 275 server catalog records (0x0453), and two server rosters (0x0459).
+That exchange includes 0x0458, 0x046B, 0x045E and 0x0455 in both directions.
+These counts describe a single recorded exchange. The VGR counts describe
+the in-game timeline and exclude draft traffic.
+
 The Android client selected an actual hero and skin and displayed **LOCKED IN**.
 The local CE capture contains subsequent client hellos, but no matching server
 acknowledgement or initial world snapshot for a successful handoff. Historical

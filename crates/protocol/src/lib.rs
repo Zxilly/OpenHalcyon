@@ -10,7 +10,7 @@ use std::io::{self, Read, Write};
 mod metadata;
 mod opcode;
 mod skin;
-pub use metadata::READ_SIZES;
+pub use metadata::{AndroidLayout, READ_SIZES};
 pub use opcode::Opcode;
 pub use skin::skin_hash;
 pub const MAX_PAYLOAD: usize = 0x2800 - 2;

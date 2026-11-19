@@ -1,5 +1,5 @@
 /// Android CE reader table. Sizes include the two-byte length and opcode, before encryption padding.
-/// None denotes an opcode without a fixed read size. Clock sync is special.
+/// None marks the special clock or an explicitly ignored receiver branch.
 pub const READ_SIZES: &[(u16, Option<usize>)] = &[
     (0x0, None),
     (0x5, Some(136)),
@@ -173,3 +173,41 @@ pub const READ_SIZES: &[(u16, Option<usize>)] = &[
     (0x48f, Some(4)),
     (0x490, Some(12)),
 ];
+
+/// Shape recovered for the Android CE game transport, before cipher padding.
+/// The hello and heartbeat sizes include their special transport handling.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AndroidLayout {
+    Fixed { frame_bytes: usize },
+    Clock,
+    IgnoredByReceiver,
+    Unlisted,
+}
+
+impl AndroidLayout {
+    pub fn for_opcode(opcode: u16) -> Self {
+        match READ_SIZES.binary_search_by_key(&opcode, |&(id, _)| id) {
+            Ok(i) => match READ_SIZES[i].1 {
+                Some(frame_bytes) => Self::Fixed { frame_bytes },
+                None if opcode == 0 => Self::Clock,
+                None => Self::IgnoredByReceiver,
+            },
+            Err(_) => Self::Unlisted,
+        }
+    }
+
+    /// Borrow the known body prefix and the entire uninterpreted suffix.
+    /// Ignored and unlisted records have an empty prefix. The suffix can include
+    /// cipher padding or additional fields specific to a recording or build.
+    pub fn split_body(self, body: &[u8]) -> std::io::Result<(&[u8], &[u8])> {
+        let bytes = match self {
+            Self::Fixed { frame_bytes } => frame_bytes
+                .checked_sub(4)
+                .ok_or_else(|| super::invalid("frame layout is shorter than the header"))?,
+            Self::Clock => 4,
+            Self::IgnoredByReceiver | Self::Unlisted => 0,
+        };
+        body.split_at_checked(bytes)
+            .ok_or_else(|| super::invalid("truncated Android CE body"))
+    }
+}
