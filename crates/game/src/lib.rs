@@ -514,8 +514,7 @@ impl Rooms {
         rooms.insert(req.match_id, room.clone());
         let manager = self.clone();
         rt.spawn(async move {
-            transport::serve(listener, room.clone(), stopped, &manager).await;
-            manager.finished(&room);
+            transport::serve(listener, room, stopped, &manager).await;
         });
         Ok(HostedMatch { address })
     }

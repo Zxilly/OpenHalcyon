@@ -90,6 +90,33 @@ pub(super) async fn write<W: AsyncWrite + Unpin>(
         .fetch_add(bytes.len() as u64, Ordering::Relaxed);
     Ok(())
 }
+/// Natural completion seals the queue after the last tick. A writer already in
+/// write_all finishes that batch before reading the remainder in FIFO order.
+pub(super) async fn next_delivery<T>(
+    rx: &mut mpsc::Receiver<T>,
+    ended: &mut watch::Receiver<bool>,
+) -> Option<T> {
+    if !*ended.borrow() {
+        tokio::select! {
+            biased;
+            _=ended.changed()=>{},
+            value=rx.recv()=>return value,
+        }
+    }
+    rx.close();
+    rx.recv().await
+}
+
+pub(super) async fn close_clients<T: Send + 'static>(tasks: &mut JoinSet<T>, completed: bool) {
+    if completed {
+        let _ = timeout(Duration::from_secs(1), async {
+            while tasks.join_next().await.is_some() {}
+        })
+        .await;
+    }
+    tasks.shutdown().await;
+}
+
 struct Connected(Shared, usize, usize, u64);
 impl Drop for Connected {
     fn drop(&mut self) {
@@ -97,22 +124,34 @@ impl Drop for Connected {
     }
 }
 async fn connection(mut sock: TcpStream, room: Shared, manager: Rooms) -> io::Result<()> {
-    let mut admitted = room.lock().unwrap().admission_ready.subscribe();
-    timeout(Duration::from_secs(10), admitted.wait_for(|ready| *ready))
-        .await?
-        .map_err(|_| bad("reservation closed"))?;
-    sock.set_nodelay(true)?;
-    let cipher = MatchCipher::new(&room.lock().unwrap().id.to_string());
-    let uuid = timeout(Duration::from_secs(10), async {
-        parse_hello(&frame(&mut sock).await?)?;
-        write(&mut sock, &manager.0, &ACK_FRAME).await?;
-        let msg = cipher.decode_owned(frame(&mut sock).await?)?;
-        let Fields::PlayerUuid(s) = msg.fields()? else {
-            return Err(bad("expected roster identification"));
-        };
-        Uuid::parse_str(s).map_err(|_| bad("invalid roster identification"))
-    })
-    .await??;
+    let (mut admitted, mut ended) = {
+        let room = room.lock().unwrap();
+        (room.admission_ready.subscribe(), room.stop.subscribe())
+    };
+    let mut handshake_stop = ended.clone();
+    let handshake = async {
+        timeout(Duration::from_secs(10), admitted.wait_for(|ready| *ready))
+            .await?
+            .map_err(|_| bad("reservation closed"))?;
+        sock.set_nodelay(true)?;
+        let cipher = MatchCipher::new(&room.lock().unwrap().id.to_string());
+        let uuid = timeout(Duration::from_secs(10), async {
+            parse_hello(&frame(&mut sock).await?)?;
+            write(&mut sock, &manager.0, &ACK_FRAME).await?;
+            let msg = cipher.decode_owned(frame(&mut sock).await?)?;
+            let Fields::PlayerUuid(s) = msg.fields()? else {
+                return Err(bad("expected roster identification"));
+            };
+            Uuid::parse_str(s).map_err(|_| bad("invalid roster identification"))
+        })
+        .await??;
+        Ok::<_, io::Error>((cipher, uuid))
+    };
+    let (cipher, uuid) = tokio::select! {
+        biased;
+        _=handshake_stop.wait_for(|done|*done)=>return Ok(()),
+        result=handshake=>result?,
+    };
     let (stalled, mut slow) = watch::channel(false);
     let (tx, mut rx) = mpsc::channel(16);
     let (seat, ch, generation, initial) = room
@@ -152,9 +191,9 @@ async fn connection(mut sock: TcpStream, room: Shared, manager: Rooms) -> io::Re
                     recording = None;
                 }
             }
-            next = rx.recv().await;
+            next = next_delivery(&mut rx, &mut ended).await;
         }
-        Ok(())
+        wr.shutdown().await
     };
     let read_loop = async {
         let mut budget = 0;
@@ -174,14 +213,30 @@ async fn connection(mut sock: TcpStream, room: Shared, manager: Rooms) -> io::Re
                 return Err(bad("input rate exceeded"));
             }
             let m = cipher.decode_owned(raw)?;
-            let out = room.lock().unwrap().receive(seat, ch, m)?;
+            let mut state = room.lock().unwrap();
+            if matches!(state.phase, "ending" | "ended") {
+                continue;
+            }
+            let out = state.receive(seat, ch, m)?;
             if !out.is_empty() {
                 tx.try_send(Delivery::Private(out))
                     .map_err(|_| bad("output queue full"))?;
             }
         }
     };
-    tokio::select! { r=write_loop=>r,r=read_loop=>r, _=slow.changed()=>Err(bad("output queue full")) }
+    tokio::pin!(write_loop);
+    // Stop reading on normal completion so a late input/EOF cannot cancel a partial write.
+    tokio::select! {
+        biased;
+        _=slow.changed()=>return Err(bad("output queue full")),
+        _=handshake_stop.wait_for(|done|*done)=>{},
+        r=&mut write_loop=>return r,
+        r=read_loop=>return r,
+    }
+    if room.lock().unwrap().reason != Some("completed") {
+        return Ok(());
+    }
+    tokio::select! {biased; _=slow.changed()=>Err(bad("output queue full")),r=&mut write_loop=>r}
 }
 pub(super) async fn serve(
     listener: TcpListener,
@@ -213,13 +268,145 @@ pub(super) async fn serve(
         }
     }
     drop(listener);
-    tasks.shutdown().await;
+    let completed = room.lock().unwrap().reason == Some("completed");
+    // Settlement and room capacity are independent of any socket's flush deadline.
+    manager.finished(&room);
+    close_clients(&mut tasks, completed).await;
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use halcyon_sim::Position;
+
+    async fn identified(addr: &str, identity: Uuid, cipher: &MatchCipher) -> TcpStream {
+        let mut sock = TcpStream::connect(addr).await.unwrap();
+        let port = sock.peer_addr().unwrap().port();
+        sock.write_all(&halcyon_protocol::hello_with_port("127.0.0.1", port).unwrap())
+            .await
+            .unwrap();
+        let mut ack = [0; 5];
+        sock.read_exact(&mut ack).await.unwrap();
+        assert_eq!(ack, ACK_FRAME);
+        sock.write_all(
+            &cipher
+                .encode(&Message::new(0x3e8, identity.to_string().as_bytes()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+        // Reading a complete initial frame confirms that this socket is registered.
+        let _ = frame(&mut sock).await.unwrap();
+        sock
+    }
+
+    async fn final_frames(mut stream: TcpStream, cipher: &MatchCipher) -> Vec<u16> {
+        let mut received = Vec::new();
+        let mut bytes = Vec::new();
+        timeout(Duration::from_secs(2), stream.read_to_end(&mut bytes))
+            .await
+            .unwrap()
+            .unwrap();
+        let mut slice = bytes.as_slice();
+        while let Some(body) = halcyon_protocol::read_frame(&mut slice).unwrap() {
+            received.push(cipher.decode(&body).unwrap().opcode);
+        }
+        received
+    }
+
+    #[tokio::test]
+    async fn grants_no_grace_on_forced_close_and_bounds_a_stalled_natural_flush() {
+        let mut tasks = JoinSet::<()>::new();
+        tasks.spawn(std::future::pending());
+        timeout(Duration::from_millis(250), close_clients(&mut tasks, false))
+            .await
+            .unwrap();
+        assert!(tasks.is_empty());
+        tasks.spawn(std::future::pending());
+        timeout(Duration::from_secs(3), close_clients(&mut tasks, true))
+            .await
+            .unwrap();
+        assert!(tasks.is_empty());
+
+        let (tx, _rx) = mpsc::channel(1);
+        let (stalled, slow) = watch::channel(false);
+        let peer = Peer {
+            generation: 1,
+            tx,
+            stalled,
+        };
+        peer.send(Delivery::Private(vec![]));
+        peer.send(Delivery::Private(vec![]));
+        assert!(*slow.borrow());
+    }
+
+    #[tokio::test]
+    async fn natural_crystal_death_is_written_before_player_and_observer_eof() {
+        let rooms = Rooms::new("127.0.0.1".parse().unwrap(), "127.0.0.1".into(), 1, None);
+        let player = Uuid::new_v4();
+        let id = Uuid::new_v4();
+        let hosted = rooms
+            .reserve(Reservation {
+                match_id: id,
+                players: vec![player],
+                teams: vec![0],
+                mode: "5v5".into(),
+            })
+            .unwrap();
+        let room = rooms.room(id).unwrap();
+        let cipher = MatchCipher::new(&id.to_string());
+        let target = {
+            let mut r = room.lock().unwrap();
+            let crystal = r
+                .world
+                .entities
+                .iter()
+                .find(|e| e.kind == halcyon_sim::Kind::Crystal && e.team == 1)
+                .unwrap();
+            let (id, pos) = (crystal.id, crystal.position);
+            r.world.entities[0].position = pos;
+            r.seats[0].locked = true;
+            r.phase("running");
+            id
+        };
+        let data = identified(&hosted.address, player, &cipher).await;
+        let observer = rooms.spectate(id, Uuid::new_v4()).unwrap();
+        let view = identified(&observer.address, observer.spectator_id, &cipher).await;
+        let withdrawn = rooms.spectate(id, Uuid::new_v4()).unwrap();
+        let revoked_view = identified(&withdrawn.address, withdrawn.spectator_id, &cipher).await;
+        {
+            let mut r = room.lock().unwrap();
+            r.world
+                .entities
+                .iter_mut()
+                .find(|e| e.id == target)
+                .unwrap()
+                .hp = 0.1;
+            r.world.tick = 15;
+            r.world
+                .command(1, halcyon_sim::Command::Attack(target))
+                .unwrap();
+            for _ in 0..5 {
+                r.tick();
+            }
+            let reason = r.reason;
+            drop(r);
+            assert_eq!(reason, Some("completed"));
+        }
+        // The final batch is pending for this grant, but revocation takes priority.
+        rooms.stop_spectating(id, withdrawn.spectator_id).unwrap();
+        // The current-thread runtime cannot poll either writer between tick()'s
+        // fanout and stop signal. The final snapshot is the last queued frame.
+        let (player, observer) =
+            tokio::join!(final_frames(data, &cipher), final_frames(view, &cipher));
+        let revoked = final_frames(revoked_view, &cipher).await;
+        assert!(!revoked.contains(&0x430));
+        for stream in [player, observer] {
+            let death = stream.iter().position(|&op| op == 0x430).unwrap();
+            assert!(stream[..death].contains(&0x41e));
+            assert_eq!(stream.last(), Some(&0x459));
+        }
+    }
 
     #[tokio::test]
     async fn teammates_share_ciphertext_while_opponents_and_reconnects_keep_their_view() {

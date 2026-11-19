@@ -73,7 +73,14 @@ impl Rooms {
                     Some(_)=clients.join_next(),if !clients.is_empty()=>{},
                 }
             }
-            clients.shutdown().await;
+            drop(listener);
+            let completed=room.lock().unwrap().reason==Some("completed");
+            tokio::select! {
+                biased;
+                _=revoked.wait_for(|cancel|*cancel)=>{},
+                _=transport::close_clients(&mut clients,completed)=>{},
+            }
+            // Dropping the JoinSet also cancels clients when explicitly revoked.
         });
         Ok((address, grant))
     }
@@ -102,7 +109,9 @@ async fn client(
     grant: Uuid,
 ) -> io::Result<()> {
     let cipher = MatchCipher::new(&room.lock().unwrap().id.to_string());
-    timeout(Duration::from_secs(10), async {
+    let mut ended = room.lock().unwrap().stop.subscribe();
+    let mut handshake_stop = ended.clone();
+    let handshake = timeout(Duration::from_secs(10), async {
         parse_hello(&transport::frame(&mut socket).await?)?;
         transport::write(&mut socket, &manager.0, &ACK_FRAME).await?;
         let m = cipher.decode_owned(transport::frame(&mut socket).await?)?;
@@ -110,10 +119,14 @@ async fn client(
             return Err(io::Error::from(io::ErrorKind::PermissionDenied));
         }
         Ok::<_, io::Error>(())
-    })
-    .await??;
+    });
+    tokio::select! {
+        biased;
+        _=handshake_stop.wait_for(|done|*done)=>return Ok(()),
+        result=handshake=>result??,
+    }
     let (tx, mut rx) = mpsc::channel(16);
-    let initial = {
+    let (initial, mut revoked) = {
         let mut r = room.lock().unwrap();
         if r.phase != "running" {
             return Err(io::ErrorKind::NotConnected.into());
@@ -125,12 +138,13 @@ async fn client(
         if o.live.is_some() {
             return Err(io::ErrorKind::AlreadyExists.into());
         }
+        let revoked = o.stop.subscribe();
         o.live = Some(tx);
         let mut b = vec![r.observer_snapshot()];
         b.extend(r.spawn_view(None));
-        b
+        (b, revoked)
     };
-    let _attached = Attached(room, grant);
+    let _attached = Attached(room.clone(), grant);
     let (mut rd, mut wr) = socket.into_split();
     let outgoing = async {
         let mut next = Some(initial);
@@ -141,7 +155,7 @@ async fn client(
                 cipher.encode_into(&m, &mut bytes)?;
             }
             transport::write(&mut wr, &manager.0, &bytes).await?;
-            next = rx.recv().await;
+            next = transport::next_delivery(&mut rx, &mut ended).await;
         }
         wr.shutdown().await
     };
@@ -165,7 +179,18 @@ async fn client(
             }
         }
     };
-    tokio::select! {r=outgoing=>r,r=incoming=>r}
+    tokio::pin!(outgoing);
+    tokio::select! {
+        biased;
+        _=revoked.wait_for(|cancel|*cancel)=>return Ok(()),
+        _=handshake_stop.wait_for(|done|*done)=>{},
+        r=&mut outgoing=>return r,
+        r=incoming=>return r,
+    }
+    if room.lock().unwrap().reason != Some("completed") {
+        return Ok(());
+    }
+    tokio::select! {biased; _=revoked.wait_for(|cancel|*cancel)=>Ok(()),r=&mut outgoing=>r}
 }
 impl Room {
     fn observer_snapshot(&self) -> Message {
