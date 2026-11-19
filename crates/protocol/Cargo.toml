@@ -1,0 +1,8 @@
+[package]
+name = "halcyon-protocol"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+blowfish = "0.9"
+md-5 = "0.10"
