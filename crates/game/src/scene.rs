@@ -73,6 +73,9 @@ pub(super) fn solo_opening(room: &mut Room, seat: usize) -> Batch {
     out.extend(players(room));
     out.push(super::aral::clock(room.world.tick));
     room.visible[team as usize].clear();
+    if !initial {
+        room.solo_slots.retain_living(&room.world.entities);
+    }
     for e in &room.world.entities {
         if e.hp <= 0. {
             continue;
@@ -81,10 +84,13 @@ pub(super) fn solo_opening(room: &mut Room, seat: usize) -> Batch {
         // The recorded initial scene declares all ten starting heroes. On reconnect
         // live opposing positions are subject to the team's usual visibility.
         if (initial && e.kind == halcyon_sim::Kind::Hero) || (!initial && visible) {
-            out.push(
-                super::compact::structure(room.world.tick, e)
-                    .unwrap_or_else(|| messages::spawn(e, &room.picks, room.data.as_deref())),
-            );
+            let Some(message) =
+                room.solo_slots
+                    .declaration(room.world.tick, e, &room.picks, room.data.as_deref())
+            else {
+                continue;
+            };
+            out.push(message);
             messages::append_inventory(&mut out, e);
             if visible {
                 room.visible[team as usize].insert(e.id);

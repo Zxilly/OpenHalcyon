@@ -56,9 +56,52 @@ All records use the skin word 0xeb39ce55.
 
 The reader exposes the slot at +116, numeric mask at +117, route at +120 and
 wire team at +121. Wire team 1 used routes 0–2 and wire team 2 used routes
-3–5. On the first wave the central route on each side used 1 and 4. Slots
-changed between waves and were reused by later actors. The capture supplies
-neither a general slot allocator nor a mapping from OpenHalcyon's simulated
-formations to the six native routes. The simulation also scales HP at creation.
-The compact reader retains all original bytes for both masks and both known
-record lengths. Live minion replication continues using the existing encoder.
+3–5. On the first wave the central route on each side used 1 and 4. Across 130 minion identities the route and slot stayed constant for every
+subsequent compact declaration of the same actor. Of the 130 initial records,
+25 used the central spawn on each side (Z = 0, routes 1 and 4). Each outer
+spawn (Z = -5 or +5) accounted for 20 per side.
+
+### Shared actor registration
+
+The Android compact receiver at 0x828930 reads +116. The spawn action at
+0xc024f4 copies it to the new actor via 0xc5ba80. Its registration path at
+0xc025c4 passes the same value and an actor handle to 0x7ff4d0. The client
+initializes a table of 200 handle entries at 0x7ff424 and assigns the received
+index at 0x7ff614. The corresponding clear and lookup operations are at
+0x7ff654 and 0x7ff670. The byte at +120 has a separate setter at 0xc5cb88.
+
+The full 0x03F3 receiver reads its registration byte at +745 (0x828d60).
+The full spawn action uses the same actor field and registration table
+(0xc03944, 0xc03b00). All ten hero declarations in each of the 14 Solo
+chunks retained their original indices. Actor 1500 used slot 14 and actors
+1515 through 1523 used slots 15 through 23 respectively.
+
+Lane minions used 64 distinct indices in the range 52–132. Fifty-two indices
+were reused for another minion. Every one of the 66 successive minion
+assignments to an already-used index followed the previous actor's recorded
+0x0430 death. Some indices also served other compact entity templates.
+A host allocator therefore needs one stable mapping for active registered
+actors across both message formats. Fog-of-war disappearance alone provides
+no evidence that a slot can be reassigned. The capture establishes ordering
+after death, but supplies no exact mandatory recycling delay.
+
+## Server emission
+
+The Android Solo scene registers heroes by seat at 14–23 and keeps the four
+supported structures at 6, 7, 9 and 12. Full declarations also carry their
+slot at +745. The simulator's lane minions use routes 1 and 4 and carry
+authoritative X/Z coordinates, current HP and maximum HP. The server emits
+the measured mask-0 shape even on first visibility so the client can use
+the simulator's scaled HP. The fixed facing and height use the observed
+opening presentation values.
+
+The room claims actor slots as entities are first exposed. It fills
+52–132 first and may use 133–199 in the same registration table if needed.
+Opposing actors remain subject to the usual visibility checks. Leaving view
+does not free the actor's slot. The allocator releases a slot after the
+server emits the corresponding death or on a fresh scene when the previous
+actor is dead. Living actor indices survive a reconnect. If no slot is
+available, the simulator keeps the actor alive and replication defers its
+declaration and related updates until it can assign a slot. The allocator
+does not wrap. This emission requires the native Solo scene transport.
+Compact minion rendering on the original Android client remains unverified.

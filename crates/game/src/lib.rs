@@ -1,4 +1,5 @@
 //! In-process room hosting with CE control and game TCP connections.
+mod actor_slots;
 mod admission;
 pub use admission::{AdmissionPolicy, PortRange, ResourceMetrics};
 mod aral;
@@ -127,6 +128,7 @@ struct Combat {
     healing: f64,
 }
 struct Room {
+    solo_slots: actor_slots::ActorSlots,
     visible: [HashSet<u32>; 2],
     next_visible: [HashSet<u32>; 2],
     replay_bytes: Arc<AtomicU64>,
@@ -539,6 +541,7 @@ impl Rooms {
         let (stop, stopped) = watch::channel(false);
         let t = Utc::now();
         let mut room = Room {
+            solo_slots: Default::default(),
             visible: Default::default(),
             next_visible: Default::default(),
             replay_bytes: Arc::default(),
@@ -1149,6 +1152,7 @@ impl Room {
                 peer.send(transport::Delivery::Team(delivery.clone()));
             }
         }
+        self.solo_slots = Default::default();
         self.stop.send_replace(true);
     }
 
@@ -1179,18 +1183,22 @@ impl Room {
             current.clear();
             for e in &self.world.entities {
                 if e.hp > 0. && self.world.visible(team as u8, e) {
-                    current.insert(e.id);
                     if !previous.contains(&e.id) {
-                        let compact = if native_solo {
-                            compact::structure(self.world.tick, e)
+                        let message = if native_solo {
+                            self.solo_slots.declaration(
+                                self.world.tick,
+                                e,
+                                &self.picks,
+                                self.data.as_deref(),
+                            )
                         } else {
-                            None
+                            Some(spawn(e, &self.picks, self.data.as_deref()))
                         };
-                        out.push(
-                            compact.unwrap_or_else(|| spawn(e, &self.picks, self.data.as_deref())),
-                        );
+                        let Some(message) = message else { continue };
+                        out.push(message);
                         messages::append_inventory(&mut out, e);
                     }
+                    current.insert(e.id);
                 }
             }
             for ev in events {
@@ -1218,10 +1226,17 @@ impl Room {
                 {
                     out.push(Message::position(wire_id(*id), position.x, position.y));
                 } else {
+                    let before = out.len();
                     messages::append_combat(&mut out, ev, |actor| {
                         current.contains(&actor)
                             || (fallen.contains(&actor) && previous.contains(&actor))
                     });
+                    if native_solo
+                        && out.len() != before
+                        && let Event::Death { id, .. } = ev
+                    {
+                        self.solo_slots.released(*id);
+                    }
                 }
             }
             std::mem::swap(previous, current);

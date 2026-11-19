@@ -58,6 +58,51 @@ pub(super) fn structure(tick: u64, entity: &Entity) -> Option<Message> {
     Some(Message::new(0x03f2, body))
 }
 
+/// Center-lane snapshot with numeric fields, even at first visibility. Mask 1
+/// would substitute native defaults and lose the simulation's scaled health.
+pub(super) fn minion(entity: &Entity, slot: u8) -> Option<Message> {
+    if entity.kind != Kind::Minion
+        || !matches!(entity.type_id, 335..=338)
+        || entity.team > 1
+        || !(52..200).contains(&slot)
+        || !(1..=u32::from(u16::MAX) - 1500).contains(&entity.id)
+        || !entity.position.x.is_finite()
+        || !entity.position.y.is_finite()
+        || !entity.hp.is_finite()
+        || !entity.max_hp.is_finite()
+        || entity.hp <= 0.0
+        || entity.hp > entity.max_hp
+    {
+        return None;
+    }
+    let mut body = [0; BODY_LEN];
+    put_word(&mut body, 0, u32::from(entity.type_id));
+    put_word(&mut body, 4, 0xeb39ce55);
+    put_word(&mut body, 8, u32::from(wire_id(entity.id)));
+    let forward = if entity.team == 0 { 1.0_f32 } else { -1.0 };
+    for (offset, value) in [
+        (12, entity.position.x),
+        (16, 0.06),
+        (20, entity.position.y),
+        (24, forward),
+        (36, entity.hp),
+        (40, entity.max_hp),
+        (52, 3.5),
+        (64, 1.0),
+        (84, 1.0),
+    ] {
+        put_word(&mut body, offset, value.to_bits());
+    }
+    body[88..96].fill(1);
+    body[97 + usize::from(entity.team)] = 15;
+    put_word(&mut body, 112, u32::MAX);
+    body[116] = slot;
+    body[119] = 1;
+    body[120] = if entity.team == 0 { 1 } else { 4 };
+    body[121] = entity.team + 1;
+    Some(Message::new(0x03f2, body))
+}
+
 fn put_word(body: &mut [u8], offset: usize, value: u32) {
     body[offset..offset + 4].copy_from_slice(&value.to_be_bytes());
 }
