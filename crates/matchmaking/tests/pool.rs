@@ -95,16 +95,50 @@ fn two_homes_one_host_order_independent_readiness() {
         p.apply(a.home, Command::Cancel(key(&a))),
         Err(Error::Conflict)
     );
+    let result = serde_json::json!({"winner":1,"reason":"completed"});
+    let hash = result_digest(&result).unwrap();
+    assert_eq!(
+        p.apply(
+            a.home,
+            Command::Settle {
+                id: room,
+                digest: hash.clone(),
+                result: result.clone()
+            }
+        ),
+        Err(Error::Forbidden)
+    );
+    assert_eq!(
+        p.apply(
+            host,
+            Command::Settle {
+                id: room,
+                digest: "invalid".into(),
+                result: result.clone()
+            }
+        ),
+        Err(Error::Invalid)
+    );
     for _ in 0..2 {
+        p.apply(
+            host,
+            Command::Settle {
+                id: room,
+                digest: hash.clone(),
+                result: result.clone(),
+            },
+        )
+        .unwrap();
         p.apply(
             host,
             Command::Finish {
                 id: room,
-                digest: "result".into(),
+                digest: hash.clone(),
             },
         )
         .unwrap();
     }
+    assert_eq!(p.allocations()[&room].result.as_ref(), Some(&result));
     assert_eq!(p.tickets()[&a.id].phase, TicketPhase::Closed);
     assert_eq!(
         p.apply(
