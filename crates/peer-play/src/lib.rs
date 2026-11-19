@@ -207,26 +207,23 @@ impl PeerPlay {
             .map_err(|_| PlatformError::HostUnavailable)
     }
     pub async fn leave(&self, token: &str) -> halcyon_platform::Result<()> {
-        let i = self.intent(token).await?;
-        if i.phase == "finished" {
-            return self
-                .inner
-                .platform
-                .federated_acknowledge(token, i.ticket)
-                .await;
-        }
-        if i.phase == "playing" {
-            return Err(PlatformError::Conflict("match is already playing"));
-        }
-        let i = self
+        let Some(i) = self
             .inner
             .platform
-            .federated_action_as(token, i.ticket, None, true)
-            .await?;
-        self.inner
-            .cancel(&i)
-            .await
-            .map_err(|_| PlatformError::HostUnavailable)?;
+            .federated_begin_leave(token, self.inner.cfg.pool_id)
+            .await?
+        else {
+            return Ok(());
+        };
+        self.inner.cancel(&i).await.map_err(|error| {
+            if error.downcast_ref::<halcyon_matchmaking::Error>()
+                == Some(&halcyon_matchmaking::Error::Conflict)
+            {
+                PlatformError::Conflict("federated match has already started")
+            } else {
+                PlatformError::HostUnavailable
+            }
+        })?;
         self.inner
             .platform
             .federated_project(i.ticket, "closed", None, None, None)

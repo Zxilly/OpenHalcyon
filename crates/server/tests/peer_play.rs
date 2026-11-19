@@ -1285,11 +1285,11 @@ async fn public_and_ce_players_share_a_pool_and_cross_home_match_chat() {
     let mode = "5v5_pvp_casual";
     rest(
         a,
-        "POST",
+        "DELETE",
         "/api/v1/queue",
-        Some(token(0)),
-        json!({"mode":"cancel_me"}),
-        StatusCode::NO_CONTENT,
+        None,
+        Value::Null,
+        StatusCode::UNAUTHORIZED,
     )
     .await;
     rest(
@@ -1301,6 +1301,27 @@ async fn public_and_ce_players_share_a_pool_and_cross_home_match_chat() {
         StatusCode::NO_CONTENT,
     )
     .await;
+    rest(
+        a,
+        "POST",
+        "/api/v1/queue",
+        Some(token(0)),
+        json!({"mode":"cancel_me"}),
+        StatusCode::NO_CONTENT,
+    )
+    .await;
+    let cancel = || {
+        rest(
+            a,
+            "DELETE",
+            "/api/v1/queue",
+            Some(token(0)),
+            Value::Null,
+            StatusCode::NO_CONTENT,
+        )
+    };
+    tokio::join!(cancel(), cancel());
+    cancel().await;
     timeout(Duration::from_secs(10), async {
         loop {
             if node(&cluster, 0)
@@ -1318,6 +1339,19 @@ async fn public_and_ce_players_share_a_pool_and_cross_home_match_chat() {
     })
     .await
     .unwrap();
+    let events = node(&cluster, 0)
+        .app
+        .events(token(0), 0, false)
+        .await
+        .unwrap();
+    assert_eq!(
+        events
+            .events
+            .iter()
+            .filter(|event| event.body["type"] == "queue_left")
+            .count(),
+        1
+    );
     let ce_guest = rpc(
         b,
         "createGuestPlayer",
@@ -1419,6 +1453,15 @@ async fn public_and_ce_players_share_a_pool_and_cross_home_match_chat() {
     }
     rpc(b, "acceptMatch", json!([ce_token])).await;
     assert_eq!(state(b, ce_token, "playing").await["matchId"], id);
+    rest(
+        b,
+        "DELETE",
+        "/api/v1/queue",
+        Some(token(1)),
+        Value::Null,
+        StatusCode::CONFLICT,
+    )
+    .await;
     let chat = format!("/api/v1/matches/{id}/chat");
     rest(
         a,

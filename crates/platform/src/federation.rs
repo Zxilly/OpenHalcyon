@@ -306,6 +306,39 @@ impl AppState {
         .await
     }
 
+    /// Record a leave request or acknowledge finished results atomically.
+    /// A caller absent from this pool already satisfies the leave request.
+    pub async fn federated_begin_leave(
+        &self,
+        token: &str,
+        pool: Uuid,
+    ) -> Result<Option<FederatedIntent>> {
+        let key = digest(token);
+        self.run(move |state| {
+            state.transaction(|tx| {
+                let id = player(tx, &key)?;
+                let Some(mut intent) =
+                    intent_for_player(tx, &id)?.filter(|intent| intent.pool == pool)
+                else {
+                    return Ok(None);
+                };
+                match intent.phase.as_str() {
+                    "closed" => Ok(None),
+                    "finished" => {
+                        acknowledge(tx, &intent, &id)?;
+                        Ok(None)
+                    }
+                    _ => {
+                        apply_action(tx, &intent, &id, None, true)?;
+                        intent.cancel = true;
+                        Ok(Some(intent))
+                    }
+                }
+            })
+        })
+        .await
+    }
+
     /// Persist the caller's choice. A party becomes accepted after every member confirms.
     pub async fn federated_action_as(
         &self,
