@@ -22,12 +22,13 @@ pub struct FederatedIntent {
     pub match_id: Option<Uuid>,
     pub address: Option<String>,
     pub result: Option<Value>,
+    pub pre_freeze: bool,
 }
 
 const FIELDS: &str =
     "f.ticket, f.player, f.pool, f.mode, f.seats, f.accepted_match, f.cancel, f.phase,
      f.match_id, f.address, f.result,
-     (SELECT json_group_array(player ORDER BY pos) FROM federated_queue_members WHERE ticket=f.ticket)";
+     (SELECT json_group_array(player ORDER BY pos) FROM federated_queue_members WHERE ticket=f.ticket), f.enqueue_schema";
 
 pub(super) fn initialize(tx: &Transaction<'_>) -> Result<()> {
     tx.execute_batch(
@@ -35,7 +36,7 @@ pub(super) fn initialize(tx: &Transaction<'_>) -> Result<()> {
             ticket TEXT PRIMARY KEY, player TEXT NOT NULL REFERENCES players(id),
             pool TEXT NOT NULL, mode TEXT NOT NULL, seats INTEGER NOT NULL,
             accepted_match TEXT, cancel INTEGER NOT NULL DEFAULT 0, phase TEXT NOT NULL DEFAULT 'pending',
-            match_id TEXT, address TEXT, result TEXT
+            match_id TEXT, address TEXT, result TEXT, enqueue_schema INTEGER NOT NULL DEFAULT 0
          );
          CREATE INDEX IF NOT EXISTS federated_queue_by_pool ON federated_queue(pool);
          CREATE TABLE IF NOT EXISTS federated_queue_members (
@@ -47,13 +48,22 @@ pub(super) fn initialize(tx: &Transaction<'_>) -> Result<()> {
          CREATE UNIQUE INDEX IF NOT EXISTS federated_one_active_ticket
          ON federated_queue_members(player) WHERE released=0;",
     )?;
+    let has_schema: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('federated_queue') WHERE name='enqueue_schema')",
+        [], |row| row.get(0),
+    )?;
+    if !has_schema {
+        tx.execute_batch(
+            "ALTER TABLE federated_queue ADD COLUMN enqueue_schema INTEGER NOT NULL DEFAULT 0",
+        )?;
+    }
     let legacy: bool = tx.query_row(
         "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='federated_intents')",
         [], |row| row.get(0),
     )?;
     if legacy {
         tx.execute_batch(
-            "INSERT INTO federated_queue
+            "INSERT INTO federated_queue(ticket,player,pool,mode,seats,accepted_match,cancel,phase,match_id,address,result)
              SELECT ticket, player, pool, mode, seats, accepted_match, cancel, phase, match_id, address, result
              FROM federated_intents;
              INSERT INTO federated_queue_members(ticket, player, pos, accepted_match)
@@ -118,6 +128,7 @@ fn row_intent(row: &Row<'_>) -> rusqlite::Result<FederatedIntent> {
         result: parse(row, 10, |s| serde_json::from_str(s).map_err(Into::into))?,
         players: parse(row, 11, |s| serde_json::from_str(s).map_err(Into::into))?
             .unwrap_or_default(),
+        pre_freeze: row.get::<_, u32>(12)? == 0,
     })
 }
 
@@ -176,7 +187,7 @@ impl AppState {
             let ticket = Uuid::new_v4().to_string();
             roster.claim(tx, &ticket)?;
             tx.execute(
-                "INSERT INTO federated_queue(ticket, player, pool, mode, seats) VALUES(?, ?, ?, ?, ?)",
+                "INSERT INTO federated_queue(ticket, player, pool, mode, seats, enqueue_schema) VALUES(?, ?, ?, ?, ?, 1)",
                 params![ticket, id, pool.to_string(), mode, seats],
             )?;
             for (index, member) in roster.players.iter().enumerate() {

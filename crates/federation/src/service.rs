@@ -285,7 +285,12 @@ impl Federation {
         }
         let (parts, body) = req.into_parts();
         let path = parts.uri.path();
-        let body = to_bytes(body, MAX_BODY).await?;
+        let limit = if path == "/internal/rtt" {
+            16
+        } else {
+            MAX_BODY
+        };
+        let body = to_bytes(body, limit).await?;
         if parts.method == Method::POST {
             match path {
                 "/internal/append" => {
@@ -334,7 +339,15 @@ impl Federation {
                     self.offers.update(peer, decode(&body)?)?;
                     return cbor(&());
                 }
+                "/internal/rtt" if self.voter(self.net.cfg.node_id) => {
+                    decode::<()>(&body)?;
+                    return cbor(&());
+                }
                 "/internal/read" => return cbor(&self.read_here().await?),
+                "/internal/read-index" => {
+                    let (id, _) = timeout(DEADLINE, self.raft.get_read_log_id()).await??;
+                    return cbor(&id.map(|id| id.index));
+                }
                 "/internal/reconfigure" => return cbor(&self.reconfigure(decode(&body)?).await),
                 "/internal/changes" => return cbor(&self.changes_here(decode(&body)?).await?),
                 _ => {}
@@ -344,10 +357,6 @@ impl Federation {
             return Ok(StatusCode::NOT_FOUND.into_response());
         };
         let seg: Vec<_> = resource.split('/').collect();
-                "/internal/read-index" => {
-                    let (id, _) = timeout(DEADLINE, self.raft.get_read_log_id()).await??;
-                    return cbor(&id.map(|id| id.index));
-                }
         if let ["hosts", key, "capacity"] = seg.as_slice()
             && parts.method == Method::PUT
         {

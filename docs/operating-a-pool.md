@@ -15,21 +15,14 @@ a match. Movement and combat stay on the room host.
    If the leaf includes extended key usages, include both client and server authentication.
    Each operator keeps its own leaf private key. Exchange the CA and public leaf
    certificates so that every member can pin the same node identities.
-3. Add the following section to each instance's `server.toml`. The UUIDs below
-   represent three separate instances. Replace them with the IDs from step one.
-   The example latencies are in milliseconds. Configure values for each home
-   instance according to its latency to the candidate hosts.
+3. Add the following section to each instance's `server.toml`. The latency budget
+   is in milliseconds. This example uses automatic measurements.
 
 ```toml
 [federation]
 cluster_file = "pool.json"
 journal = "peer-play.sqlite"
 max_latency_ms = 120
-
-[federation.latency_ms]
-"00000000-0000-4000-8000-000000000001" = 5
-"00000000-0000-4000-8000-000000000002" = 35
-"00000000-0000-4000-8000-000000000003" = 75
 ```
 
 4. Write `pool.json` on each node. The example below belongs to node A. On nodes B
@@ -70,6 +63,36 @@ configuration, keys and all three databases together, including any live SQLite
 WAL files. Only one process should own a given instance identity. Starting with a
 new Raft database or a second copy of a live voter changes the recovery problem.
 Use the existing surviving majority when recovering a failed member.
+
+## Configure host latency
+
+An omitted or empty `[federation.latency_ms]` table enables automatic measurement.
+A home measures small application round trips over its configured mTLS peer
+connections when preparing a ticket. Only current voters are probed. The home
+records itself at 0 ms and skips unreachable peers. Concurrent enqueues share
+the measurements. A complete set is cached for 20 seconds, and a partial set for
+5 seconds. The service sends these probes only when it needs an enqueue snapshot.
+
+This RTT measures the home-to-host service path and can include connection
+establishment. Players connect to the game host directly, so their measured
+network latency can differ. The service does not read native client ping values.
+
+Set a nonempty table for an operator-maintained latency allowlist. The service
+uses the exact supplied values and considers only the named hosts. Replace
+the sample UUIDs with configured voters.
+
+```toml
+[federation.latency_ms]
+"00000000-0000-4000-8000-000000000001" = 0
+"00000000-0000-4000-8000-000000000002" = 35
+"00000000-0000-4000-8000-000000000003" = 75
+```
+
+Each enqueue stores the entire ticket in the home journal before submission.
+Timeout retries, cancellation and restart reuse that payload. An upgrade reads
+an older committed ticket from the pool and saves its original values. To
+evaluate a fresh snapshot, cancel and requeue. A new ticket may still use
+measurements within the cache lifetime.
 
 ## Change membership
 

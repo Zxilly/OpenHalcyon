@@ -10,6 +10,7 @@ pub use membership::{MemberChange, Members, PoolAdmin};
 mod net;
 mod observation;
 pub use observation::{ObserverReply, ObserverRequest};
+mod rtt;
 mod service;
 mod store;
 pub use service::Federation;

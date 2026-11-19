@@ -17,6 +17,7 @@ use std::{
 use tokio::sync::watch;
 use uuid::Uuid;
 mod journal;
+mod latency;
 mod observation;
 use journal::Journal;
 
@@ -26,7 +27,7 @@ pub struct Config {
     pub node_id: Uuid,
     pub database: PathBuf,
     pub rules_digest: String,
-    /// Operator approved RTT estimates in milliseconds, keyed by candidate host.
+    /// An explicit host allowlist of RTT estimates in milliseconds. Empty measures voters on enqueue.
     pub peer_latency_ms: BTreeMap<Uuid, u32>,
     pub max_latency_ms: u32,
 }
@@ -36,6 +37,7 @@ struct Inner {
     rooms: Rooms,
     cfg: Config,
     journal: Journal,
+    rtt: latency::HomeRtt,
 }
 #[derive(Clone)]
 pub struct PeerPlay {
@@ -63,6 +65,7 @@ impl PeerPlay {
             rooms,
             cfg: config,
             journal,
+            rtt: Default::default(),
         });
         let (stop, mut stopped) = watch::channel(false);
         let (done_tx, done) = watch::channel(false);
@@ -121,7 +124,7 @@ impl PeerPlay {
                 .federated_join(token, s.cfg.pool_id, mode, seats)
                 .await?
         };
-        s.enqueue(&intent)
+        s.enqueue(&intent, None)
             .await
             .map_err(|_| PlatformError::HostUnavailable)?;
         Ok(())
@@ -184,8 +187,46 @@ impl PeerPlay {
     }
 }
 impl Inner {
-    fn ticket(&self, i: &FederatedIntent) -> Ticket {
-        Ticket {
+    async fn ticket(
+        &self,
+        i: &FederatedIntent,
+        known_pool: Option<&Pool>,
+    ) -> anyhow::Result<Ticket> {
+        let frozen = self.journal.ticket(i.ticket)?;
+        if i.pre_freeze {
+            let fresh;
+            let pool = if let Some(pool) = known_pool {
+                pool
+            } else {
+                fresh = self.fed.read().await?;
+                &fresh
+            };
+            if let Some(entry) = pool.tickets().get(&i.ticket) {
+                let ticket = &entry.ticket;
+                ensure!(
+                    ticket.home == self.cfg.node_id
+                        && ticket.id == i.ticket
+                        && ticket.generation == 1
+                        && ticket.players == i.players
+                        && ticket.queue.name == i.mode
+                        && ticket.queue.seats == i.seats,
+                    "legacy committed ticket does not match the durable home intent",
+                );
+                if frozen.as_ref() != Some(ticket) {
+                    self.journal.adopt_legacy_ticket(ticket)?;
+                }
+                return Ok(ticket.clone());
+            }
+        }
+        if let Some(ticket) = frozen {
+            return Ok(ticket);
+        }
+        let latency_ms = if self.cfg.peer_latency_ms.is_empty() {
+            self.rtt.sample(&self.fed).await?
+        } else {
+            self.cfg.peer_latency_ms.clone()
+        };
+        self.journal.freeze_ticket(Ticket {
             id: i.ticket,
             generation: 1,
             home: self.cfg.node_id,
@@ -196,23 +237,24 @@ impl Inner {
                 rules_digest: self.cfg.rules_digest.clone(),
                 seats: i.seats,
             },
-            latency_ms: self.cfg.peer_latency_ms.clone(),
+            latency_ms,
             max_latency_ms: self.cfg.max_latency_ms,
-        }
+        })
     }
     async fn commit(&self, key: Uuid, tag: &str, cmd: Command) -> anyhow::Result<()> {
         let req = Uuid::new_v5(&key, tag.as_bytes());
         self.fed.submit(req, cmd).await??;
         Ok(())
     }
-    async fn enqueue(&self, i: &FederatedIntent) -> anyhow::Result<()> {
-        self.commit(i.ticket, "enqueue", Command::Enqueue(self.ticket(i)))
+    async fn enqueue(&self, i: &FederatedIntent, known_pool: Option<&Pool>) -> anyhow::Result<()> {
+        let ticket = self.ticket(i, known_pool).await?;
+        self.commit(i.ticket, "enqueue", Command::Enqueue(ticket))
             .await
     }
     async fn cancel(&self, i: &FederatedIntent) -> anyhow::Result<()> {
         // An enqueue whose response timed out may still be committed later. Serialize
         // cancellation after that same durable intent before releasing the home claim.
-        self.enqueue(i).await?;
+        self.enqueue(i, None).await?;
         self.commit(
             i.ticket,
             "cancel",
@@ -252,7 +294,7 @@ impl Inner {
     }
     async fn sync_home(&self, p: &Pool, i: &FederatedIntent) -> anyhow::Result<()> {
         let Some(entry) = p.tickets().get(&i.ticket) else {
-            return self.enqueue(i).await;
+            return self.enqueue(i, Some(p)).await;
         };
         if i.phase == "finished" {
             return Ok(());

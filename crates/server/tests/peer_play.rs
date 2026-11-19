@@ -8,7 +8,7 @@ use axum::{
 use halcyon_ce_platform::{Config as CeConfig, Platform};
 use halcyon_federation::{Config as FederationConfig, Federation, ObserverRequest};
 use halcyon_game::Rooms;
-use halcyon_matchmaking::{Phase, Pool};
+use halcyon_matchmaking::{Phase, Pool, Ticket, TicketPhase};
 use halcyon_peer_play::{Config, PeerPlay};
 use halcyon_platform::{AppState, PlatformConfig};
 use halcyon_protocol::{ACK_FRAME, MatchCipher, Message, hello_with_port};
@@ -121,8 +121,8 @@ impl Member {
             node_id: config.node_id,
             database: path.join(format!("host-{index}.sqlite")),
             rules_digest: "validation-v1".into(),
-            peer_latency_ms: BTreeMap::from([(host, 12)]),
-            max_latency_ms: 90,
+            peer_latency_ms: BTreeMap::new(),
+            max_latency_ms: 1200,
         };
         let raft = Federation::start(config).await.unwrap();
         if peer_config.node_id == host {
@@ -353,6 +353,7 @@ async fn party_game_survives_two_home_elections_and_replays_result_once() {
         ));
     }
     let (first_leader, first_term) = elected(&cluster, 1).await;
+    wait_replication(&cluster, first_leader).await;
     let homes = [0, 0, 1];
     let mut tokens = Vec::new();
     let mut players = Vec::new();
@@ -425,6 +426,21 @@ async fn party_game_survives_two_home_elections_and_replays_result_once() {
             json!([tokens[i], {"lobby":"5v5_casual"}, "147219"]),
         )
         .await;
+    }
+    let sampled = wait_pool(node(&cluster, first_leader), |pool| {
+        pool.tickets().len() == 2
+    })
+    .await;
+    for entry in sampled.tickets().values() {
+        let ticket = &entry.ticket;
+        assert_eq!(ticket.latency_ms[&ticket.home], 0);
+        assert_eq!(
+            ticket.latency_ms.len(),
+            3,
+            "unexpected measured voters {:?}",
+            ticket.latency_ms
+        );
+        assert!((1..=ticket.max_latency_ms).contains(&ticket.latency_ms[&host_id]));
     }
     for (home, token) in homes.iter().zip(&tokens) {
         state(&node(&cluster, *home).rpc, token, "match_pending").await;
@@ -816,6 +832,128 @@ async fn party_game_survives_two_home_elections_and_replays_result_once() {
     .expect("outbox delivery was never acknowledged");
     for node in cluster.into_iter().flatten() {
         node.stop().await;
+    }
+}
+
+fn frozen_ticket(journal: &Path, ticket: Uuid) -> Ticket {
+    let body: String = rusqlite::Connection::open(journal)
+        .unwrap()
+        .query_row(
+            "SELECT payload FROM enqueue_payloads WHERE id=?",
+            [ticket.to_string()],
+            |row| row.get(0),
+        )
+        .unwrap();
+    serde_json::from_str(&body).unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 6)]
+async fn enqueue_freezes_before_quorum_and_resumes_with_the_same_payload() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cfg = pool::configs(tmp.path());
+    let host = cfg[2].node_id;
+    let mut cluster = Vec::new();
+    for (i, config) in cfg.iter().enumerate() {
+        cluster.push(Some(
+            Member::start(tmp.path(), i, config.clone(), host).await,
+        ));
+    }
+    let (leader, term) = elected(&cluster, 1).await;
+    wait_replication(&cluster, leader).await;
+
+    let mut home = cluster[0].take().unwrap();
+    home.peer_play.shutdown().await;
+    let explicit = BTreeMap::from([(host, 23)]);
+    home.peer_config.peer_latency_ms = explicit.clone();
+    home.peer_config.max_latency_ms = 75;
+    let home = home.reopen_worker(0);
+    let (other, transient_host) = (cluster[1].take().unwrap(), cluster[2].take().unwrap());
+    tokio::join!(other.stop(), transient_host.stop());
+    assert!(TcpStream::connect(cfg[1].listen).await.is_err());
+    assert!(TcpStream::connect(cfg[2].listen).await.is_err());
+
+    let guest = home.app.create_guest("Queued".into()).await.unwrap();
+    let token = &guest.session_token;
+    let enqueue = timeout(
+        Duration::from_secs(7),
+        home.peer_play.join(token, "probe-test".into(), 3),
+    )
+    .await
+    .expect("enqueue has a bounded deadline");
+    assert!(enqueue.is_err(), "a single voter cannot commit");
+    let intent = home.app.federated_intent(token).await.unwrap().unwrap();
+    let id = intent.ticket;
+    assert!(!intent.pre_freeze);
+    let expected = frozen_ticket(&home.peer_config.database, id);
+    assert_eq!(expected.latency_ms, explicit);
+    assert_eq!(expected.max_latency_ms, 75);
+    assert_eq!(expected.players, [guest.player_id]);
+    assert_eq!(expected.queue.name, "probe-test");
+    home.stop().await;
+
+    // Restore a majority from disk with auto RTT and different local policy.
+    cluster[0] = Some(Member::start(tmp.path(), 0, cfg[0].clone(), host).await);
+    assert!(node(&cluster, 0).peer_config.peer_latency_ms.is_empty());
+    cluster[1] = Some(Member::start(tmp.path(), 1, cfg[1].clone(), host).await);
+    cluster[2] = Some(Member::start(tmp.path(), 2, cfg[2].clone(), host).await);
+    let (leader, _) = elected(&cluster, term).await;
+    let committed = wait_pool(node(&cluster, leader), |pool| {
+        pool.tickets().contains_key(&id)
+    })
+    .await;
+    assert_eq!(committed.tickets().len(), 1);
+    assert_eq!(committed.tickets()[&id].ticket, expected);
+    let home = node(&cluster, 0);
+    wait_pool(home, |pool| pool.tickets().contains_key(&id)).await;
+    home.peer_play
+        .join(token, "probe-test".into(), 3)
+        .await
+        .unwrap();
+    assert_eq!(frozen_ticket(&home.peer_config.database, id), expected);
+
+    // Simulate upgrading a persisted committed intent from before enqueue payload snapshots.
+    let home = cluster[0].take().unwrap();
+    home.peer_play.shutdown().await;
+    rusqlite::Connection::open(&home.path)
+        .unwrap()
+        .execute(
+            "UPDATE federated_queue SET enqueue_schema=0 WHERE ticket=?",
+            [id.to_string()],
+        )
+        .unwrap();
+    rusqlite::Connection::open(&home.peer_config.database)
+        .unwrap()
+        .execute("DELETE FROM enqueue_payloads WHERE id=?", [id.to_string()])
+        .unwrap();
+    cluster[0] = Some(home.reopen_worker(0));
+    let recovered = node(&cluster, 0);
+    assert!(
+        recovered
+            .app
+            .federated_intent(token)
+            .await
+            .unwrap()
+            .unwrap()
+            .pre_freeze
+    );
+    recovered.peer_play.leave(token).await.unwrap();
+    assert!(
+        recovered
+            .app
+            .federated_intent(token)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(frozen_ticket(&recovered.peer_config.database, id), expected);
+    let pool = wait_pool(recovered, |pool| {
+        pool.tickets()[&id].phase == TicketPhase::Closed
+    })
+    .await;
+    assert_eq!(pool.tickets().len(), 1);
+    assert_eq!(pool.tickets()[&id].ticket, expected);
+    for member in cluster.into_iter().flatten() {
+        member.stop().await;
     }
 }
 

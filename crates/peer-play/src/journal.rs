@@ -1,5 +1,6 @@
 //! Durable local host outbox. Admitting a room records its identity before activating the game server.
 use anyhow::ensure;
+use halcyon_matchmaking::Ticket;
 use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::Value;
 use std::{path::Path, sync::Mutex};
@@ -11,7 +12,8 @@ impl Journal {
         let mut c = Connection::open(path)?;
         c.execute_batch("pragma journal_mode=WAL; pragma synchronous=FULL;
             create table if not exists peer_identity(singleton integer primary key check(singleton=1),pool text not null,node text not null,sequence integer not null);
-            create table if not exists hosted(id text primary key, address text not null, result text, delivered integer not null default 0);")?;
+            create table if not exists hosted(id text primary key, address text not null, result text, delivered integer not null default 0);
+            create table if not exists enqueue_payloads(id text primary key, payload text not null);")?;
         let tx = c.transaction()?;
         tx.execute(
             "insert or ignore into peer_identity values(1,?,?,0)",
@@ -32,6 +34,52 @@ impl Journal {
             [],
             |r| r.get(0),
         )?)
+    }
+    pub fn ticket(&self, id: Uuid) -> anyhow::Result<Option<Ticket>> {
+        let payload: Option<String> = self
+            .0
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT payload FROM enqueue_payloads WHERE id=?",
+                [id.to_string()],
+                |row| row.get(0),
+            )
+            .optional()?;
+        payload
+            .map(|body| serde_json::from_str(&body))
+            .transpose()
+            .map_err(Into::into)
+    }
+
+    /// Concurrent enqueues for one intent always return the first durable payload.
+    pub fn freeze_ticket(&self, ticket: Ticket) -> anyhow::Result<Ticket> {
+        let mut connection = self.0.lock().unwrap();
+        let tx = connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let id = ticket.id.to_string();
+        tx.execute(
+            "INSERT INTO enqueue_payloads(id,payload) VALUES(?,?) ON CONFLICT(id) DO NOTHING",
+            params![id, serde_json::to_string(&ticket)?],
+        )?;
+        let payload: String = tx.query_row(
+            "SELECT payload FROM enqueue_payloads WHERE id=?",
+            [&id],
+            |row| row.get(0),
+        )?;
+        let frozen = serde_json::from_str(&payload)?;
+        tx.commit()?;
+        Ok(frozen)
+    }
+
+    /// Upgrade an intent created before payload freezing. The pool's exact
+    /// committed ticket wins over a provisional snapshot made during upgrade.
+    pub fn adopt_legacy_ticket(&self, ticket: &Ticket) -> anyhow::Result<()> {
+        self.0.lock().unwrap().execute(
+            "INSERT INTO enqueue_payloads(id,payload) VALUES(?,?)
+             ON CONFLICT(id) DO UPDATE SET payload=excluded.payload",
+            params![ticket.id.to_string(), serde_json::to_string(ticket)?],
+        )?;
+        Ok(())
     }
     pub fn prepared(&self, id: Uuid, address: &str) -> anyhow::Result<()> {
         self.0.lock().unwrap().execute("insert into hosted(id,address) values(?,?) on conflict(id) do update set address=excluded.address where result is null",params![id.to_string(),address])?;

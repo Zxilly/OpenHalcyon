@@ -43,6 +43,7 @@ pub struct Peers {
     /// JSON configuration for the node identities, mTLS and Raft database.
     pub cluster_file: PathBuf,
     pub journal: PathBuf,
+    #[serde(default)]
     pub latency_ms: std::collections::BTreeMap<Uuid, u32>,
     pub max_latency_ms: u32,
 }
@@ -165,5 +166,24 @@ impl Config {
             provider.public_key_pem = base.join(&provider.public_key_pem);
         }
         Ok(c)
+    }
+}
+
+#[cfg(test)]
+mod latency_config_tests {
+    use super::Peers;
+
+    #[test]
+    fn omitted_and_empty_rtt_maps_deserialize_to_auto_mode() {
+        let base = "cluster_file = 'pool.json'\njournal = 'host.sqlite'\nmax_latency_ms = 90\n";
+        let omitted: Peers = toml::from_str(base).unwrap();
+        assert!(omitted.latency_ms.is_empty());
+        let empty: Peers = toml::from_str(&format!("{base}[latency_ms]\n")).unwrap();
+        assert!(empty.latency_ms.is_empty());
+        let explicit: Peers = toml::from_str(&format!(
+            "{base}[latency_ms]\n'00000000-0000-0000-0000-000000000001' = 27\n"
+        ))
+        .unwrap();
+        assert_eq!(explicit.latency_ms[&uuid::Uuid::from_u128(1)], 27);
     }
 }
