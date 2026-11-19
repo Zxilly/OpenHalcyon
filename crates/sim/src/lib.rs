@@ -394,23 +394,47 @@ impl World {
         world.shop = shop::Shop::load(data)?;
         Ok(world)
     }
+    /// Remove the synthetic hero slots from a full six-human roster. Stable
+    /// actor IDs for the humans and structures remain unchanged.
+    pub fn use_six_human_roster(&mut self) -> Result<(), String> {
+        if self.tick != 0
+            || self
+                .entities
+                .iter()
+                .filter(|actor| actor.kind == Kind::Hero && !actor.bot)
+                .count()
+                != 6
+        {
+            return Err("six-human roster required before simulation".into());
+        }
+        self.entities
+            .retain(|actor| actor.kind != Kind::Hero || !actor.bot);
+        Ok(())
+    }
+
     /// Apply team slots from the reserved roster before the first simulation step.
     pub fn assign_teams(&mut self, human_teams: &[u8]) -> Result<(), String> {
         if self.tick != 0 {
             return Err("draft has ended".into());
         }
-        let humans = self.entities.iter().take(10).filter(|e| !e.bot).count();
+        let heroes = self
+            .entities
+            .iter()
+            .take_while(|e| e.kind == Kind::Hero)
+            .count();
+        let humans = self.entities.iter().take(heroes).filter(|e| !e.bot).count();
+        let team_capacity = heroes / 2;
         let mut teams = [0u8; 10];
         let mut counts = [0usize; 2];
         if !human_teams.is_empty() && human_teams.len() != humans {
             return Err("incorrect human team count".into());
         }
-        for (i, team) in teams.iter_mut().enumerate() {
+        for (i, team) in teams.iter_mut().take(heroes).enumerate() {
             let requested = human_teams.get(i).copied().unwrap_or((i % 2) as u8);
             if requested > 1 {
                 return Err("unknown team".into());
             }
-            let selected = if counts[requested as usize] < 5 {
+            let selected = if counts[requested as usize] < team_capacity {
                 requested
             } else if i >= humans {
                 1 - requested
@@ -420,7 +444,7 @@ impl World {
             *team = selected;
             counts[selected as usize] += 1;
         }
-        for (e, team) in self.entities.iter_mut().take(10).zip(teams) {
+        for (e, team) in self.entities.iter_mut().take(heroes).zip(teams) {
             e.team = team;
             e.position.x = base(team).x;
         }

@@ -1,5 +1,5 @@
 use halcyon_community::{CommunityError, queue as community_queue};
-use halcyon_data::BotDifficulty;
+use halcyon_data::{BotDifficulty, LEGACY_ARAL_QUEUE, LEGACY_ARAL_SEATS};
 use rusqlite::{Transaction, params};
 use serde_json::json;
 use uuid::Uuid;
@@ -40,6 +40,11 @@ pub(super) fn validate_mode(mode: &str, seats: usize) -> Result<()> {
     if !(1..=64).contains(&seats) {
         return Err(PlatformError::Invalid(
             "seat count must be between 1 and 64",
+        ));
+    }
+    if mode == LEGACY_ARAL_QUEUE && seats != LEGACY_ARAL_SEATS {
+        return Err(PlatformError::Invalid(
+            "legacy ARAL requires six human seats",
         ));
     }
     if mode.is_empty()
@@ -293,6 +298,7 @@ fn find_group(
 pub(super) fn match_players(
     tx: &Transaction<'_>,
     match_id: &str,
+    mode: &str,
 ) -> Result<(Vec<Uuid>, Vec<u8>, bool)> {
     let mut query =
         tx.prepare("SELECT player, batch, accepted FROM tickets WHERE match_id=? ORDER BY serial")?;
@@ -321,7 +327,7 @@ pub(super) fn match_players(
         players.push(super::parse_id(&player)?);
         confirmed &= accepted;
     }
-    Ok((players, plan_teams(&sizes), confirmed))
+    Ok((players, plan_teams_for_mode(mode, &sizes), confirmed))
 }
 
 /// Return a stable side for each human in contiguous party rosters.
@@ -329,29 +335,41 @@ pub(super) fn match_players(
 /// minimize split parties first and then minimize the difference in human counts.
 /// Solo-only rooms retain their existing alternating seat assignment.
 pub fn plan_teams(party_sizes: &[usize]) -> Vec<u8> {
-    const SIDE_CAPACITY: usize = 5;
+    plan_sides(party_sizes, 5)
+}
+
+pub fn plan_teams_for_mode(mode: &str, party_sizes: &[usize]) -> Vec<u8> {
+    let side_capacity = if mode == LEGACY_ARAL_QUEUE {
+        LEGACY_ARAL_SEATS / 2
+    } else {
+        5
+    };
+    plan_sides(party_sizes, side_capacity)
+}
+
+fn plan_sides(party_sizes: &[usize], side_capacity: usize) -> Vec<u8> {
     if party_sizes.iter().all(|&size| size == 1)
         || party_sizes
             .iter()
-            .any(|&size| size == 0 || size > 2 * SIDE_CAPACITY)
-        || party_sizes.iter().sum::<usize>() > 2 * SIDE_CAPACITY
+            .any(|&size| size == 0 || size > 2 * side_capacity)
+        || party_sizes.iter().sum::<usize>() > 2 * side_capacity
     {
         return Vec::new();
     }
     let mut placed = 0;
     type Layout = (usize, Vec<u8>);
-    let mut routes: [Option<Layout>; SIDE_CAPACITY + 1] = Default::default();
+    let mut routes: [Option<Layout>; 6] = Default::default();
     routes[0] = Some((0, Vec::new()));
     for &size in party_sizes {
-        let mut next: [Option<Layout>; SIDE_CAPACITY + 1] = Default::default();
+        let mut next: [Option<Layout>; 6] = Default::default();
         for (left, entry) in routes.iter().enumerate().rev() {
             let Some((cost, assignments)) = entry else {
                 continue;
             };
             let right = placed - left;
-            for add_left in (0..=size.min(SIDE_CAPACITY - left)).rev() {
+            for add_left in (0..=size.min(side_capacity - left)).rev() {
                 let add_right = size - add_left;
-                if right + add_right > SIDE_CAPACITY {
+                if right + add_right > side_capacity {
                     continue;
                 }
                 let new_cost = cost + usize::from(add_left > 0 && add_right > 0);

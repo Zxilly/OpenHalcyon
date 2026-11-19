@@ -48,7 +48,7 @@ impl<'a> AralRoster<'a> {
 
     /// The raw 36-byte identity field. Unoccupied rows carry an empty identity.
     pub fn identity(&self, index: usize) -> Option<&'a [u8]> {
-        Some(self.raw_slot(index)?[105..141].split(|&v| v == 0).next()?)
+        self.raw_slot(index)?[105..141].split(|&v| v == 0).next()
     }
 
     /// Eight original bytes at the end of the structural roster.

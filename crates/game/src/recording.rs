@@ -115,6 +115,7 @@ fn sanitize(m: &mut Message) -> bool {
             }
         }
         // Audited outbound gameplay opcodes only. Unknown and control messages stay out.
+        0x3ef if m.body == [0; 6] => {}
         0x41e if m.body.len() == 22 && m.body[16..] == [0; 6] => {}
         0x430 if m.body.len() == 14 && m.body[8..] == [0; 6] => {}
         0x3f1 if matches!(m.body.as_slice(), [0, 0, 0, 1 | 2, 0, 0]) => {}

@@ -22,7 +22,10 @@ use axum::{
     extract::{DefaultBodyLimit, Path, State},
     routing::{get, post},
 };
-use halcyon_platform::{AppState, BotDifficulty, Guest, PlatformError, PlayerProfile};
+use halcyon_platform::{
+    AppState, BotDifficulty, Guest, LEGACY_ARAL_QUEUE, LEGACY_ARAL_SEATS, PlatformError,
+    PlayerProfile,
+};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
@@ -400,10 +403,10 @@ async fn dispatch(s: &Platform, m: &str, params: &[Value]) -> Result<(String, Va
                 ),
                 _ => None,
             };
-            let seats = if mode == "5v5_bots_solo" {
-                1
-            } else {
-                s.app.seats_per_match()
+            let seats = match mode {
+                "5v5_bots_solo" => 1,
+                LEGACY_ARAL_QUEUE => LEGACY_ARAL_SEATS,
+                _ => s.app.seats_per_match(),
             };
             if let Some(peers) = &s.peers {
                 peers

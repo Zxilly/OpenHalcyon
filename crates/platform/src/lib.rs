@@ -1,4 +1,4 @@
-pub use halcyon_data::BotDifficulty;
+pub use halcyon_data::{BotDifficulty, LEGACY_ARAL_QUEUE, LEGACY_ARAL_SEATS};
 mod accounts;
 mod chat;
 mod federation;
@@ -10,7 +10,7 @@ mod queue;
 mod recovery;
 mod spectator;
 pub use federation::FederatedIntent;
-pub use queue::plan_teams;
+pub use queue::{plan_teams, plan_teams_for_mode};
 pub use spectator::HostedSpectator;
 
 use std::{
@@ -284,7 +284,7 @@ impl AppState {
                 .collect::<rusqlite::Result<Vec<_>>>()?;
             rows.into_iter()
                 .map(|(match_id, mode, difficulty)| {
-                    let (players, teams, _) = queue::match_players(tx, &match_id)?;
+                    let (players, teams, _) = queue::match_players(tx, &match_id, &mode)?;
                     Ok(Reservation {
                         match_id: parse_id(&match_id)?,
                         players,
@@ -799,8 +799,12 @@ async fn queue(
 }
 impl AppState {
     pub async fn join(&self, session_token: &str, mode: String) -> Result<()> {
-        self.join_with_seats(session_token, mode, self.config.seats_per_match)
-            .await
+        let seats = if mode == LEGACY_ARAL_QUEUE {
+            LEGACY_ARAL_SEATS
+        } else {
+            self.config.seats_per_match
+        };
+        self.join_with_seats(session_token, mode, seats).await
     }
 }
 
@@ -896,7 +900,7 @@ impl AppState {
                 _ => return Err(PlatformError::Conflict("match is already starting")),
             }
             tx.execute("UPDATE tickets SET accepted=1 WHERE player=?", [&id])?;
-            let (players, teams, confirmed) = queue::match_players(tx, &match_id)?;
+            let (players, teams, confirmed) = queue::match_players(tx, &match_id, &mode)?;
             if !confirmed {
                 return Ok(None);
             }

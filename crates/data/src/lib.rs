@@ -2,6 +2,10 @@
 mod difficulty;
 pub use difficulty::BotDifficulty;
 
+/// Matchmaking ID observed in the iOS-era ARAL requests.
+pub const LEGACY_ARAL_QUEUE: &str = "casual_aral";
+pub const LEGACY_ARAL_SEATS: usize = 6;
+
 use serde::{Deserialize, de::DeserializeOwned};
 use serde_json::Value;
 use sha2::{Digest, Sha256};

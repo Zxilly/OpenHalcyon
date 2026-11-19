@@ -6,7 +6,7 @@ use halcyon_matchmaking::{
     result_digest,
 };
 use halcyon_platform::{
-    AppState, BotDifficulty, FederatedIntent, PlatformError, Reservation, plan_teams,
+    AppState, BotDifficulty, FederatedIntent, PlatformError, Reservation, plan_teams_for_mode,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -549,7 +549,7 @@ impl Worker {
                 let prepared = s.rooms.prepare(Reservation {
                     match_id: a.id,
                     players,
-                    teams: plan_teams(&sizes),
+                    teams: plan_teams_for_mode(&queue.name, &sizes),
                     mode: queue.name.clone(),
                     difficulty,
                 });

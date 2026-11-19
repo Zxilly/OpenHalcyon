@@ -194,6 +194,9 @@ async fn client(
 }
 impl Room {
     fn observer_snapshot(&self) -> Message {
+        if self.legacy_aral() {
+            return super::aral::roster(self, 0., true);
+        }
         // Observer rosters must not disclose the UUIDs used by player admission.
         let mut m = snapshot(&self.world, &self.players, &self.picks);
         for i in 0..self.players.len() {

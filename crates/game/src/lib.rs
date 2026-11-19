@@ -1,6 +1,7 @@
 //! In-process room hosting with CE control and game TCP connections.
 mod admission;
 pub use admission::{AdmissionPolicy, PortRange, ResourceMetrics};
+mod aral;
 mod messages;
 mod observer;
 mod recording;
@@ -66,9 +67,21 @@ impl Peer {
 struct Seat {
     locked: bool,
     draft_sync_sent: bool,
+    aral_preamble: aral::Preamble,
     peers: [Option<Peer>; 2],
     last: Option<DateTime<Utc>>,
     seen: [HashSet<u16>; 2],
+}
+impl Seat {
+    fn gameplay_peer(&self, legacy_aral: bool) -> Option<&Peer> {
+        if legacy_aral {
+            self.peers[0]
+                .as_ref()
+                .filter(|_| self.aral_preamble.confirmed())
+        } else {
+            self.peers[1].as_ref()
+        }
+    }
 }
 struct Pick {
     name: String,
@@ -206,11 +219,11 @@ impl Rooms {
                     (
                         active + 1,
                         human + room.players.len(),
-                        bots + 10 - room.players.len(),
+                        bots + room.picks.len() - room.players.len(),
                         prepared,
                     )
                 } else {
-                    (active + 1, human, bots, prepared + 10)
+                    (active + 1, human, bots, prepared + room.picks.len())
                 }
             })
     }
@@ -404,6 +417,11 @@ impl Rooms {
         {
             return Err(PlatformError::Invalid("invalid roster"));
         }
+        let legacy_aral = aral::legacy_queue(&req.mode);
+        if legacy_aral && req.players.len() != aral::SEATS {
+            return Err(PlatformError::Invalid("ARAL requires six human players"));
+        }
+        let hero_seats = if legacy_aral { aral::SEATS } else { 10 };
         let occupied = rooms
             .values()
             .filter(|r| r.lock().unwrap().ended.is_none())
@@ -441,15 +459,20 @@ impl Rooms {
         {
             return Err(PlatformError::Invalid("invalid human teams"));
         }
+        if legacy_aral {
+            world
+                .use_six_human_roster()
+                .map_err(|_| PlatformError::Invalid("invalid ARAL roster"))?;
+        }
         world
             .assign_teams(&req.teams)
             .map_err(|_| PlatformError::Invalid("invalid human teams"))?;
         world.set_bot_difficulty(req.difficulty);
-        let mut picks = Vec::with_capacity(10);
-        for i in 0..10 {
+        let mut picks = Vec::with_capacity(hero_seats);
+        for i in 0..hero_seats {
             let bot = i >= usize::from(n);
             let mut name = "Ringo";
-            if bot
+            if (bot || legacy_aral)
                 && let Some(d) = &self.0.data
                 && !d.hero_names.is_empty()
             {
@@ -542,18 +565,60 @@ impl Room {
     }
     fn view(&self, detail: bool) -> Value {
         let mut v = json!({"id":self.id,"queue":self.queue,"phase":self.phase,"createdAt":self.created.to_rfc3339(),"phaseSince":self.since.to_rfc3339(),
-        "endedAt":self.ended.map(|x|x.to_rfc3339()),"endReason":self.reason,"humanPlayers":self.players.len(),"botPlayers":10-self.players.len(),"poolId":null});
+        "endedAt":self.ended.map(|x|x.to_rfc3339()),"endReason":self.reason,"humanPlayers":self.players.len(),"botPlayers":self.picks.len()-self.players.len(),"poolId":null});
         v["tickLatency"] = self.latency.report();
         if let Some(difficulty) = self.difficulty {
             v["difficulty"] = json!(difficulty);
         }
         if detail {
-            v["participants"]=Value::Array((0..10).map(|i|{let s=self.seats.get(i);
-            json!({"slot":i,"team":self.world.entities[i].team,"playerId":self.players.get(i),"homeInstanceId":null,"botProfile":if s.is_none(){Some("lane-v1")}else{None},"displayName":if s.is_some(){"Guest".into()}else{format!("{} Bot",self.picks[i].name)},"hero":self.picks[i].name,"locked":s.is_none_or(|s|s.locked),"controlConnected":s.is_some_and(|s|s.peers[0].is_some()),"gameConnected":s.is_some_and(|s|s.peers[1].is_some()),"lastEventAt":s.and_then(|s|s.last).map(|x|x.to_rfc3339())})
+            v["participants"]=Value::Array((0..self.picks.len()).map(|i|{let s=self.seats.get(i);
+            json!({"slot":i,"team":self.world.entities[i].team,"playerId":self.players.get(i),"homeInstanceId":null,"botProfile":if s.is_none(){Some("lane-v1")}else{None},"displayName":if s.is_some(){"Guest".into()}else{format!("{} Bot",self.picks[i].name)},"hero":self.picks[i].name,"locked":s.is_none_or(|s|s.locked),"controlConnected":s.is_some_and(|s|s.peers[0].is_some()),"gameConnected":(!self.legacy_aral() || self.phase=="running") && s.is_some_and(|s|s.gameplay_peer(self.legacy_aral()).is_some()),"lastEventAt":s.and_then(|s|s.last).map(|x|x.to_rfc3339())})
         }).collect());
         }
         v
     }
+    fn legacy_aral(&self) -> bool {
+        aral::legacy_queue(&self.queue)
+    }
+
+    fn aral_remaining(&self) -> f32 {
+        (aral::DRAFT_SECONDS - self.phase_start.elapsed().as_secs_f32()).max(0.)
+    }
+
+    fn aral_progress(&mut self) {
+        if !self.seats.iter().all(|seat| seat.peers[0].is_some()) {
+            return;
+        }
+        match self.phase {
+            "hero_select" if self.aral_remaining() <= 0. => {
+                for (seat, pick) in self.seats.iter_mut().zip(&mut self.picks) {
+                    seat.locked = true;
+                    pick.selected = true;
+                    pick.locked = true;
+                }
+                let mut opening = vec![aral::roster(self, 0., false)];
+                opening.extend(aral::begin_loading(self));
+                let opening = transport::TeamBatch::new(opening);
+                for peer in self.seats.iter().filter_map(|seat| seat.peers[0].as_ref()) {
+                    peer.send(transport::Delivery::Team(opening.clone()));
+                }
+                self.phase("loading");
+            }
+            "loading" if self.seats.iter().all(|seat| seat.aral_preamble.confirmed()) => {
+                let marker = transport::TeamBatch::new(vec![Message::new(0x03ef, [])]);
+                for peer in self
+                    .seats
+                    .iter()
+                    .filter_map(|seat| seat.gameplay_peer(true))
+                {
+                    peer.send(transport::Delivery::Team(marker.clone()));
+                }
+                self.phase("running");
+            }
+            _ => {}
+        }
+    }
+
     fn attach(
         &mut self,
         uuid: Uuid,
@@ -565,7 +630,9 @@ impl Room {
             return None;
         }
         // A locked seat can open its data connection while other humans are still selecting.
-        let game = self.seats[idx].locked
+        let legacy_aral = self.legacy_aral();
+        let game = !legacy_aral
+            && self.seats[idx].locked
             && self.seats[idx].peers[1].is_none()
             && (self.seats[idx].peers[0].is_some() || self.phase == "running");
         let ch = usize::from(game);
@@ -588,6 +655,7 @@ impl Room {
             );
         } else {
             self.seats[idx].draft_sync_sent = false;
+            self.seats[idx].aral_preamble = Default::default();
         }
         self.seats[idx].peers[ch] = Some(Peer {
             generation: self.generation,
@@ -603,7 +671,17 @@ impl Room {
             "Authenticated",
             json!({"playerId":uuid,"channel":if game{"game"}else{"control"}}),
         );
-        let mut batch = if game {
+        let mut batch = if legacy_aral {
+            aral::setup(
+                self,
+                idx,
+                if self.phase == "running" {
+                    0.
+                } else {
+                    self.aral_remaining()
+                },
+            )
+        } else if game {
             world_header(&self.world, &self.players, &self.picks, &self.queue, idx)
         } else {
             setup(
@@ -615,6 +693,9 @@ impl Room {
                 &self.picks,
             )
         };
+        if legacy_aral && matches!(self.phase, "loading" | "running") {
+            batch.extend(aral::begin_loading(self));
+        }
         if game {
             batch.extend(self.spawn_view(Some(self.world.entities[idx].team)));
             if self.seats.iter().all(|s| s.peers[1].is_some()) {
@@ -649,15 +730,20 @@ impl Room {
         }
     }
     fn roster_update(&self, except: Option<usize>) -> Message {
-        let mut roster = snapshot(&self.world, &self.players, &self.picks);
-        if self.phase == "hero_select" {
+        let legacy = self.legacy_aral();
+        let mut roster = if legacy {
+            aral::roster(self, self.aral_remaining(), false)
+        } else {
+            snapshot(&self.world, &self.players, &self.picks)
+        };
+        if !legacy && self.phase == "hero_select" {
             roster.body[..4].copy_from_slice(
                 &(300. - self.phase_start.elapsed().as_secs_f32())
                     .max(0.)
                     .to_be_bytes(),
             );
         }
-        if self.phase == "loading" {
+        if !legacy && self.phase == "loading" {
             roster.body[..4].copy_from_slice(
                 &(7. - self.phase_start.elapsed().as_secs_f32())
                     .max(0.)
@@ -700,13 +786,14 @@ impl Room {
             [actor.to_be_bytes(), item.to_be_bytes()].concat(),
         )];
         messages::append_purchase(&mut ack, &self.world, &receipt, true);
+        let legacy = self.legacy_aral();
         for (j, seat) in self.seats.iter().enumerate() {
             if j != i
                 && self.visible[self.world.entities[j].team as usize].contains(&receipt.actor)
                 && self
                     .world
                     .visible(self.world.entities[j].team, &self.world.entities[i])
-                && let Some(peer) = &seat.peers[1]
+                && let Some(peer) = seat.gameplay_peer(legacy)
             {
                 peer.send(transport::Delivery::Private(ack.clone()));
             }
@@ -716,26 +803,41 @@ impl Room {
     }
     fn receive(&mut self, i: usize, ch: usize, m: Message) -> std::io::Result<Batch> {
         self.last_active = Instant::now();
-        let sync_after_pick = ch == 0 && m.opcode == 0x45e && !self.seats[i].draft_sync_sent;
+        let legacy = self.legacy_aral();
+        let mut aral_scene_requested = false;
+        let mut aral_ready = false;
+        if legacy
+            && ch == 0
+            && matches!(self.phase, "loading" | "running")
+            && !self.seats[i].aral_preamble.confirmed()
+        {
+            let preamble = &mut self.seats[i].aral_preamble;
+            let requested = preamble.scene_requested();
+            preamble.observe(&m, u32::from(wire_id(self.world.entities[i].id)));
+            aral_scene_requested = preamble.scene_requested() && !requested;
+            aral_ready = preamble.confirmed();
+        }
+        let game = self.phase == "running"
+            && (ch == 1 || (legacy && self.seats[i].aral_preamble.confirmed()));
+        let sync_after_pick =
+            !legacy && ch == 0 && m.opcode == 0x45e && !self.seats[i].draft_sync_sent;
         let seen = &mut self.seats[i].seen[ch];
         if m.opcode != 0x455 && seen.len() < 32 && seen.insert(m.opcode) {
             self.event("protocol","First client message of this type",json!({"playerId":self.players[i],"channel":if ch==0{"control"}else{"game"},"opcode":format!("0x{:04X}",m.opcode)}));
         }
         let mut out = vec![];
         match m.fields()? {
-            Fields::Movement { x, y } if ch == 1 && self.phase == "running" => {
+            Fields::Movement { x, y } if game => {
                 let _ = self
                     .world
                     .command(i as u32 + 1, Command::MoveTo(Position { x, y }));
             }
             Fields::ShopRequest { actor, item }
-                if ch == 1
-                    && self.phase == "running"
-                    && actor == u32::from(wire_id(i as u32 + 1)) =>
+                if game && actor == u32::from(wire_id(i as u32 + 1)) =>
             {
                 out = self.buy(i, actor, item);
             }
-            Fields::HeroLock if ch == 0 => {
+            Fields::HeroLock if ch == 0 && !legacy => {
                 let op = m.opcode;
                 out.push(m);
                 if !self.seats[i].locked {
@@ -753,7 +855,9 @@ impl Room {
                     }
                 }
             }
-            Fields::HeroSelection { template, skin } if ch == 0 && !self.seats[i].locked => {
+            Fields::HeroSelection { template, skin }
+                if ch == 0 && !legacy && !self.seats[i].locked =>
+            {
                 let name = if template == 243 {
                     Some("Ringo".to_owned())
                 } else {
@@ -786,12 +890,22 @@ impl Room {
                 }
                 out.push(m);
             }
-            Fields::SkinSelection(skin) if ch == 0 => {
+            Fields::SkinSelection(skin) if ch == 0 && (!legacy || self.phase == "hero_select") => {
                 self.picks[i].skin = self.validated_skin(&self.picks[i].name, skin);
                 out.push(self.roster_update(Some(i)));
                 out.push(m);
             }
             Fields::Clock(_) | Fields::Heartbeat => out.push(m),
+            _ if legacy && matches!(m.opcode, 0x046e | 0x0471 | 0x046d) => {
+                if aral_ready {
+                    out.push(m);
+                } else if aral_scene_requested {
+                    let team = (self.phase == "running").then_some(self.world.entities[i].team);
+                    out = aral::opening(self, team);
+                    out.push(Message::new(0x046e, [0; 6]));
+                    out.push(m);
+                }
+            }
             _ if [0x458, 0x45e, 0x46b, 0x45f, 0x46e, 0x471, 0x46d].contains(&m.opcode) => {
                 out.push(m)
             }
@@ -826,11 +940,22 @@ impl Room {
             self.stop.send_replace(true);
             return;
         }
-        if matches!(self.phase, "hero_select" | "loading")
-            && self.last_roster.elapsed().as_secs() >= 1
+        let legacy = self.legacy_aral();
+        let roster_interval = if legacy {
+            std::time::Duration::from_millis(100)
+        } else {
+            std::time::Duration::from_secs(1)
+        };
+        if (self.phase == "hero_select" || !legacy && self.phase == "loading")
+            && self.last_roster.elapsed() >= roster_interval
         {
             self.last_roster = Instant::now();
             self.roster_update(None);
+        }
+
+        if legacy && matches!(self.phase, "hero_select" | "loading") {
+            self.aral_progress();
+            return;
         }
 
         // Native CE control admissions stay in loading until a data channel authenticates.
@@ -873,7 +998,8 @@ impl Room {
         if let Some(result) = result_frames::crystal_end(&self.queue, &self.world) {
             self.publish_observers(std::slice::from_ref(&result));
             let delivery = transport::TeamBatch::new(vec![result]);
-            for peer in self.seats.iter().filter_map(|s| s.peers[1].as_ref()) {
+            let legacy = self.legacy_aral();
+            for peer in self.seats.iter().filter_map(|s| s.gameplay_peer(legacy)) {
                 peer.send(transport::Delivery::Team(delivery.clone()));
             }
         }
@@ -888,13 +1014,14 @@ impl Room {
                 _ => None,
             })
             .collect();
+        let legacy = self.legacy_aral();
         for team in 0..2 {
             let mut peers = self
                 .seats
                 .iter()
                 .zip(&self.world.entities)
                 .filter(|(_, actor)| usize::from(actor.team) == team)
-                .filter_map(|(seat, _)| seat.peers[1].as_ref())
+                .filter_map(|(seat, _)| seat.gameplay_peer(legacy))
                 .peekable();
             let Some(first) = peers.next() else {
                 continue;
@@ -944,7 +1071,11 @@ impl Room {
                 }
             }
             std::mem::swap(previous, current);
-            if self.world.tick.is_multiple_of(20) {
+            if legacy {
+                if self.world.tick.is_multiple_of(10 * halcyon_sim::TICK_HZ) {
+                    out.push(aral::clock(self.world.tick));
+                }
+            } else if self.world.tick.is_multiple_of(20) {
                 out.push(snapshot(&self.world, &self.players, &self.picks));
             }
             if out.is_empty() {

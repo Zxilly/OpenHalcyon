@@ -537,6 +537,9 @@ fn team_layout_keeps_parties_together_when_possible() {
             .count(),
         1
     );
+    let aral = halcyon_platform::plan_teams_for_mode("casual_aral", &[2, 2, 2]);
+    assert_eq!(aral.iter().filter(|team| **team == 0).count(), 3);
+    assert_eq!(aral.iter().filter(|team| **team == 1).count(), 3);
     assert!(halcyon_platform::plan_teams(&[1, 1]).is_empty());
 }
 
