@@ -55,6 +55,7 @@ pub struct Platform {
     tokens: Tokens,
     grants: notify::Grants,
     meta: meta::Meta,
+    peers: Option<halcyon_peer_play::PeerPlay>,
     talents: Value,
     skins: Value,
 }
@@ -99,11 +100,33 @@ impl Platform {
             tokens: Tokens::new(secret)?,
             grants: Default::default(),
             meta: meta::Meta::open(database)?,
+            peers: None,
             talents: load("official_getTalentsData.json", json!({}))?,
             skins: load("official_getSkinManifest.json", json!("{}"))?,
         }))
     }
 
+    pub fn with_peers(
+        app: AppState,
+        config: Config,
+        secret: &[u8],
+        database: &FsPath,
+        manifests: Option<&FsPath>,
+        peers: halcyon_peer_play::PeerPlay,
+    ) -> Result<Arc<Self>, Error> {
+        let mut platform = Self::new(app, config, secret, database, manifests)?;
+        Arc::get_mut(&mut platform)
+            .expect("new platform has one owner")
+            .peers = Some(peers);
+        Ok(platform)
+    }
+    async fn accept(&self, session: &str, id: Uuid) -> Result<(), Error> {
+        match &self.peers {
+            Some(peers) => peers.accept(session, id).await?,
+            None => self.app.accept(session, id).await?,
+        }
+        Ok(())
+    }
     pub fn bootstrap(self: &Arc<Self>) -> Router {
         Router::new()
             .route(
@@ -128,15 +151,12 @@ impl Platform {
         guest: Guest,
         recovery: Option<&str>,
     ) -> Result<(String, Value), Error> {
-        let session = self
-            .tokens
-            .sign(guest.player_id, &guest.session_token, Scope::Session)?;
         let token = match guest.recovery_token.as_deref() {
             Some(key) => self.tokens.sign(guest.player_id, key, Scope::Guest)?,
             None => recovery.ok_or(Error::Unauthorized)?.to_string(),
         };
         Ok((
-            session,
+            String::new(),
             json!({"playerUUID":token,"startSessionUrl":format!("https://{}", self.config.authority)}),
         ))
     }
@@ -157,6 +177,7 @@ async fn rpc(
         Ok(request) if request.method == method => dispatch(&s, &method, &request.params).await,
         _ => Err(Error::Invalid),
     };
+    tracing::debug!(method,success=result.is_ok(),"CE RPC");
     let value = match result {
         Ok((token, rv)) => json!({"code":0,"sessionToken":token,"returnValue":rv}),
         Err(err) => {
@@ -172,7 +193,7 @@ async fn rpc(
                 _ => (-3, "service unavailable"),
             };
             tracing::debug!(method,%code,reason,"CE request failed");
-            json!({"code":code,"returnValue":null,"reason":reason})
+            json!({"code":code,"sessionToken":"","returnValue":null,"reason":reason})
         }
     };
     Json(value)
@@ -193,12 +214,7 @@ async fn dispatch(s: &Platform, m: &str, params: &[Value]) -> Result<(String, Va
     if m == "getPlayerForGuestAccount" {
         let claims = s.tokens.verify(token, Scope::Guest)?;
         let guest = s.app.resume_guest(claims.credential).await?;
-        let profile = s.app.profile(&guest.session_token).await?;
-        return Ok((
-            s.tokens
-                .sign(guest.player_id, &guest.session_token, Scope::Session)?,
-            player_info(&profile),
-        ));
+        return s.guest_response(guest,Some(token));
     }
     let session = match s.tokens.verify(token, Scope::Session) {
         Ok(claims) => claims.credential,
@@ -223,8 +239,7 @@ async fn dispatch(s: &Platform, m: &str, params: &[Value]) -> Result<(String, Va
             if let Some(lobby) = &profile.lobby {
                 if lobby.mode == "5v5_bots_solo" && lobby.phase == "offered" {
                     let snapshot = state(&profile);
-                    s.app
-                        .accept(&session, lobby.match_id.ok_or(Error::Internal)?)
+                    s.accept(&session, lobby.match_id.ok_or(Error::Internal)?)
                         .await?;
                     snapshot
                 } else {
@@ -247,10 +262,23 @@ async fn dispatch(s: &Platform, m: &str, params: &[Value]) -> Result<(String, Va
                 .get("lobby")
                 .and_then(Value::as_str)
                 .ok_or(Error::Invalid)?;
-            if mode == "5v5_bots_solo" {
-                s.app.join_with_seats(&session, mode.to_owned(), 1).await?;
+            let seats = if mode == "5v5_bots_solo" {
+                1
             } else {
-                s.app.join(&session, mode.to_owned()).await?;
+                s.app.seats_per_match()
+            };
+            if let Some(peers) = &s.peers {
+                peers
+                    .join(
+                        &session,
+                        mode.to_owned(),
+                        u8::try_from(seats).map_err(|_| Error::Invalid)?,
+                    )
+                    .await?;
+            } else {
+                s.app
+                    .join_with_seats(&session, mode.to_owned(), seats)
+                    .await?;
             }
             json!({"success":true,"ttl":100})
         }
@@ -260,12 +288,15 @@ async fn dispatch(s: &Platform, m: &str, params: &[Value]) -> Result<(String, Va
                 .as_ref()
                 .and_then(|l| l.match_id)
                 .ok_or(Error::Invalid)?;
-            s.app.accept(&session, room).await?;
+            s.accept(&session, room).await?;
             s.start_session(&session, &s.app.profile(&session).await?)?
         }
         "exitLobby" | "rejectMatch" | "notifyExitPostMatch" => {
             if profile.lobby.is_some() {
-                s.app.leave(&session).await?;
+                match &s.peers {
+                    Some(peers) => peers.leave(&session).await?,
+                    None => s.app.leave(&session).await?,
+                }
             }
             if m == "notifyExitPostMatch" {
                 json!({"success":true})
@@ -348,7 +379,7 @@ async fn dispatch(s: &Platform, m: &str, params: &[Value]) -> Result<(String, Va
 }
 
 fn player_info(p: &PlayerProfile) -> Value {
-    json!({"playerUUID":p.player_id,"handle":p.name,"playerHandle":p.name,"level":1,"xp":0,
+    json!({"handle":p.name,"playerHandle":p.name,"level":1,"xp":0,
         "karmaLevel":0,"skillTier":0,"skillTierBronzeLine":0,"skillTierSilverLine":0,"skillTierGoldLine":0,"mmrBucket":0,
         "wins":0,"completed":0,"completed_non_tutorial":0,"canUseAllHeroes":true,
         "freeunlocks":[],"playerChests":[],"trophyCase":[],"pendingPartyInvites":false,"pendingMessages":false,
