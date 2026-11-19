@@ -323,9 +323,33 @@ impl Rooms {
             if !r.admitted {
                 return;
             }
-            let players:serde_json::Map<_,_>=r.players.iter().enumerate().map(|(i,id)|{
-                let e=&r.world.entities[i];(id.to_string(),json!({"team":e.team,"victory":r.world.winner.map(|w|e.team==w),"hero":r.picks[i].name,"gold":e.gold,"level":e.level,"xp":e.xp,"kills":r.combat[i].kills,"deaths":r.combat[i].deaths,"damage":r.combat[i].damage,"healing":r.combat[i].healing}))
-            }).collect();
+            let players: serde_json::Map<_, _> = r
+                .players
+                .iter()
+                .enumerate()
+                .map(|(seat, id)| {
+                    let actor = &r.world.entities[seat];
+                    let combat = &r.combat[(actor.id - 1) as usize];
+                    let score = r.world.player_score(actor.id).expect("reserved hero actor");
+                    let mut row = json!(score);
+                    row.as_object_mut().unwrap().extend([
+                        ("team".into(), json!(actor.team)),
+                        (
+                            "victory".into(),
+                            json!(r.world.winner.map(|w| actor.team == w)),
+                        ),
+                        ("hero".into(), json!(r.picks[seat].name)),
+                        ("gold".into(), json!(actor.gold)),
+                        ("level".into(), json!(actor.level)),
+                        ("xp".into(), json!(actor.xp)),
+                        ("kills".into(), json!(combat.kills)),
+                        ("deaths".into(), json!(combat.deaths)),
+                        ("damage".into(), json!(combat.damage)),
+                        ("healing".into(), json!(combat.healing)),
+                    ]);
+                    (id.to_string(), row)
+                })
+                .collect();
             (
                 r.id,
                 json!({"reason":end,"winner":r.world.winner,"ticks":r.world.tick,"players":players}),

@@ -107,6 +107,14 @@ impl Shop {
     }
 }
 impl World {
+    pub(super) fn acquisition_value(&self, item: BasicItem) -> u64 {
+        let price = u64::from(self.shop.0[item as usize].price);
+        if matches!(item, BasicItem::HeavySteel | BasicItem::SixSins) {
+            price + u64::from(self.shop.0[BasicItem::WeaponBlade as usize].price)
+        } else {
+            price
+        }
+    }
     pub fn item_bonus(&self, item: BasicItem) -> (u8, f32) {
         (item.descriptor().1 as u8, self.shop.0[item as usize].bonus)
     }
@@ -225,11 +233,11 @@ mod tests {
         w.entities[2].position = pos;
         let before: Vec<_> = w.entities[..10].iter().map(|e| e.gold).collect();
         let mut events = vec![];
-        w.hurt(1, 0, idx, 1., &mut events);
+        w.hurt(1, 0, idx, 1., DamageSchool::Weapon, &mut events);
         assert!(!events.iter().any(|e| matches!(e, Event::GoldAward { .. })));
-        w.hurt(1, 0, idx, 100000., &mut events);
+        w.hurt(1, 0, idx, 100000., DamageSchool::Weapon, &mut events);
         let count = events.len();
-        w.hurt(1, 0, idx, 100000., &mut events);
+        w.hurt(1, 0, idx, 100000., DamageSchool::Weapon, &mut events);
         assert_eq!(count, events.len());
         for (e, old) in w.entities[..10].iter().zip(before) {
             let delta = e.gold - old;

@@ -287,7 +287,7 @@ impl World {
                 self.entities[j].status.slow_until = self.tick + 30;
                 self.entities[j].status.slow_factor = 0.7;
                 let dmg = (65. + r as f32 * 30.) * 100. / (100. + self.entities[j].stats.shield);
-                self.hurt(src, team, j, dmg, events);
+                self.hurt(src, team, j, dmg, DamageSchool::Crystal, events);
             }
             Skill::Twirl => {
                 let e = &mut self.entities[i];
@@ -305,6 +305,7 @@ impl World {
                     team,
                     id,
                     damage,
+                    DamageSchool::True,
                 ));
                 for n in 1..=3 {
                     self.effects.push(SpellEffect::impact(
@@ -313,6 +314,7 @@ impl World {
                         team,
                         id,
                         damage * 0.16,
+                        DamageSchool::True,
                     ));
                 }
             }
@@ -382,7 +384,7 @@ impl World {
 }
 #[derive(Clone, Copy, Debug, Serialize)]
 enum Area {
-    Target(u32),
+    Target(u32, DamageSchool),
     Circle(Position, f32),
     Line(Position, Position, f32),
 }
@@ -397,12 +399,19 @@ pub(super) struct SpellEffect {
     channel: u64,
 }
 impl SpellEffect {
-    pub fn impact(due: u64, src: u32, team: u8, id: u32, damage: f32) -> Self {
+    pub fn impact(
+        due: u64,
+        src: u32,
+        team: u8,
+        id: u32,
+        damage: f32,
+        school: DamageSchool,
+    ) -> Self {
         Self {
             due,
             src,
             team,
-            area: Area::Target(id),
+            area: Area::Target(id, school),
             damage,
             heal: 0.,
             channel: 0,
@@ -427,7 +436,7 @@ impl World {
         let incoming: f32 = self
             .effects
             .iter()
-            .filter(|v| v.due <= at && matches!(v.area,Area::Target(id) if id==e.id))
+            .filter(|v| v.due <= at && matches!(v.area,Area::Target(id, _) if id==e.id))
             .map(|v| v.damage)
             .sum();
         (e.hp - incoming).max(0.)
@@ -448,9 +457,9 @@ impl World {
             {
                 return false;
             }
-            if let Area::Target(id) = v.area {
+            if let Area::Target(id, school) = v.area {
                 if let Some(i) = self.index(id) {
-                    self.hurt(v.src, v.team, i, v.damage, events)
+                    self.hurt(v.src, v.team, i, v.damage, school, events)
                 }
                 return false;
             }
@@ -462,7 +471,7 @@ impl World {
                 let hit = match v.area {
                     Area::Circle(p, r) => p.dist(e.position) <= r,
                     Area::Line(a, b, r) => line_distance(e.position, a, b) <= r,
-                    Area::Target(_) => unreachable!(),
+                    Area::Target(..) => unreachable!(),
                 };
                 if !hit {
                     continue;
@@ -473,7 +482,7 @@ impl World {
                     }
                 } else {
                     let dmg = v.damage * 100. / (100. + e.stats.shield);
-                    self.hurt(v.src, v.team, i, dmg, events)
+                    self.hurt(v.src, v.team, i, dmg, DamageSchool::Crystal, events)
                 }
             }
             false

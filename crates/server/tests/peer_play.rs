@@ -817,6 +817,16 @@ async fn party_game_survives_two_home_elections_and_replays_result_once() {
         rpc(&member.rpc, "notifyExitPostMatch", json!([tokens[p]])).await;
         state(&member.rpc, &tokens[p], "menus").await;
         let db = rusqlite::Connection::open(&member.path).unwrap();
+        let recorded: String = db.query_row(
+            "SELECT json_extract(body,'$.result') FROM events WHERE player=?1 AND json_extract(body,'$.type')='match_finished' AND json_extract(body,'$.matchId')=?2",
+            [players[p].to_string(), id.to_string()], |row| row.get(0),
+        ).unwrap();
+        let recorded: Value = serde_json::from_str(&recorded).unwrap();
+        assert_eq!(recorded, outbox);
+        let row = &recorded["players"][players[p].to_string()];
+        assert_eq!(row["team"], side(players[p]));
+        assert!(row["damageToHeroes"].is_number() && row["laneLastHits"].is_number());
+        assert!(row.get("netWorthAtFive").is_none());
         let applied: u64=db.query_row(
             "SELECT count(*) FROM events WHERE player=?1 AND json_extract(body,'$.type')='match_finished'
                AND json_extract(body,'$.matchId')=?2",

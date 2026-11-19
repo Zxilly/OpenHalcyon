@@ -135,7 +135,16 @@ On authoritative crystal defeat the game host sends the winning team's number (1
 
 **Final statistics coverage.** All seven archived ARAL endings and the Android Solo ending contain one 1,614-byte report body immediately before 0x03F1. The native reader consumes the first 1,612 bytes. Across these eight reports the 52 occupied player slots have team 1 or 2 and byte 255 at +0x50 plus the slot index. The 76 unused slots have player ID 0xffffffff, team 255 and byte zero in that column. Both report team IDs at +0x62c are present in all eight. The reader also exposes the four BE32 float bit patterns beginning at +0x63c. These feed minion damage ratios in the published Windows consumer. Their exact numerator and denominator assignments are unresolved. [Consumer analysis](https://github.com/TurnaboutHero/vainglory-replay-decoder/blob/f4743be743564e3aadef1566499fe25d9d0f9ffc/vg/docs/evidence/2026-09-08-endgame/native-static-analysis.md)
 
-Every report has 18–31 nonzero bytes in the additional player columns at +0x240 through +0x2ff and 25–67 nonzero bytes in +0x580 through +0x64b. The host lacks five-minute per-player farm and net-worth snapshots, the complete damage-type breakdown, and several team objective counters used by the native statistics consumer. Generating this report from the final roster or ordinary kills/deaths totals would lose these measurements.
+Every report has 18–31 nonzero bytes in the additional player columns at +0x240 through +0x2ff and 25–67 nonzero bytes in +0x580 through +0x64b. Completed CE results on each home include the following fields under each human player's UUID. The simulation credits the source hero, including delayed impacts, and caps each hit at the enemy target's remaining HP.
+
+| Result field | Meaning in the hosted simulation |
+| --- | --- |
+| `damageToHeroes`, `damageToStructures` | Enemy hero damage and damage to enemy towers or crystals, respectively. The existing `damage` total also includes damage to minions. |
+| `weaponDamageToHeroes`, `crystalDamageToHeroes`, `trueDamageToHeroes` | Hero HP removed by armor-mitigated attacks, shield-mitigated abilities, and unmitigated Hellfire impacts or burns, respectively. These classifications describe the modeled damage paths. |
+| `laneLastHits` | Enemy lane minions killed by that hero. Nearby heroes can receive gold or XP independently. |
+| `laneLastHitsAtFive`, `netWorthAtFive` | Captured once at the end of tick 6,000 (20 Hz), including actions on that tick. Both fields are omitted for shorter games. Net worth adds carried gold to the full acquisition value of equipped items. A tier-two item includes its component price exactly once whether purchased directly or upgraded from an equipped Weapon Blade. |
+
+The native report still contains unmodeled jungle farm, ambient gold inputs, team objectives and unidentified columns. The game host keeps 0x048D offline until those data and their encodings are established.
 The protocol library can edit a caller-supplied, complete report through
 `MatchStatisticsMut`. Its checked setters update a selected occupied slot,
 team IDs or raw ratio inputs. Re-encoding retains unused slots, unidentified

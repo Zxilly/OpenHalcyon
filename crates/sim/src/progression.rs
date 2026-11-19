@@ -47,7 +47,15 @@ impl World {
             })
         }
     }
-    pub(super) fn hurt(&mut self, src: u32, team: u8, i: usize, n: f32, events: &mut Vec<Event>) {
+    pub(super) fn hurt(
+        &mut self,
+        src: u32,
+        team: u8,
+        i: usize,
+        n: f32,
+        school: DamageSchool,
+        events: &mut Vec<Event>,
+    ) {
         let t = &mut self.entities[i];
         if t.hp <= 0. || n <= 0. {
             return;
@@ -55,6 +63,13 @@ impl World {
         let amount = n.min(t.hp);
         t.hp -= amount;
         let id = t.id;
+        if team != t.team
+            && let Some(score) = src
+                .checked_sub(1)
+                .and_then(|seat| self.scores.get_mut(seat as usize))
+        {
+            score.hit(t.kind, amount, school, t.hp == 0.);
+        }
         events.push(Event::Damage {
             source: src,
             target: id,

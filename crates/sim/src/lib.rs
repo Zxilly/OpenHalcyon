@@ -4,10 +4,13 @@ mod ai;
 mod combat;
 mod nav;
 mod progression;
+mod score;
 mod shop;
 use combat::{AbilityBook, Cast, SpellEffect, Status};
 pub use combat::{AbilitySlot, CastTarget};
 use halcyon_data::{GameData, Unit};
+use score::DamageSchool;
+pub use score::PlayerScore;
 use serde::{Deserialize, Serialize};
 pub use shop::{BasicItem, HeldItem, Purchase};
 
@@ -22,6 +25,7 @@ pub fn rules_digest(data: Option<&GameData>) -> String {
         include_str!("ai.rs"),
         include_str!("nav.rs"),
         include_str!("shop.rs"),
+        include_str!("score.rs"),
     ] {
         let normalized = source.replace("\r\n", "\n");
         h.update((normalized.len() as u64).to_be_bytes());
@@ -268,6 +272,7 @@ pub struct World {
     effects: Vec<SpellEffect>,
     nav_budget: u8,
     first_blood: bool,
+    scores: [PlayerScore; 10],
     rally: [Option<Position>; 2],
 }
 impl Entity {
@@ -307,6 +312,7 @@ impl World {
                 &self.abilities,
                 &self.shop,
                 self.first_blood,
+                &self.scores,
                 self.rally,
                 self.nav_budget,
                 &self.effects,
@@ -502,6 +508,7 @@ impl World {
             effects: Vec::new(),
             nav_budget: 0,
             first_blood: false,
+            scores: Default::default(),
             rally: [None; 2],
         };
         for seat in 0..10 {
@@ -651,10 +658,18 @@ impl World {
             return events;
         }
         self.tick += 1;
+        self.step_tick(&mut events);
+        if self.tick == 300 * TICK_HZ {
+            self.record_five_minutes();
+        }
+        events
+    }
+
+    fn step_tick(&mut self, events: &mut Vec<Event>) {
         self.nav_budget = 6;
-        self.advance_effects(&mut events);
+        self.advance_effects(events);
         if self.winner.is_some() {
-            return events;
+            return;
         }
         if self.tick >= self.first_wave
             && (self.tick - self.first_wave).is_multiple_of(self.wave_interval)
@@ -713,7 +728,7 @@ impl World {
                     })
                 .min(e.max_energy);
                 if self.tick >= 35 * TICK_HZ && self.tick.is_multiple_of(TICK_HZ) {
-                    self.award_xp(i, 0.45, &mut events);
+                    self.award_xp(i, 0.45, events);
                 }
             }
             let hero = &self.entities[i];
@@ -729,7 +744,7 @@ impl World {
                 continue;
             }
             if self.entities[i].cast.is_some() {
-                self.advance_cast(i, &mut events);
+                self.advance_cast(i, events);
                 continue;
             }
             let e = &self.entities[i];
@@ -770,7 +785,7 @@ impl World {
             }
             match self.entities[i].order {
                 Command::Stop | Command::Buy(_) | Command::Learn(_) | Command::Cast { .. } => {}
-                Command::MoveTo(p) => self.walk(i, p, &mut events),
+                Command::MoveTo(p) => self.walk(i, p, events),
                 Command::Attack(id) => {
                     let Some(j) = self.index(id) else {
                         self.entities[i].winding = None;
@@ -789,7 +804,7 @@ impl World {
                     {
                         let p = t.position;
                         self.entities[i].winding = None;
-                        self.walk(i, p, &mut events);
+                        self.walk(i, p, events);
                         continue;
                     }
                     if self.tick < e.next_attack {
@@ -834,9 +849,21 @@ impl World {
                             team,
                             id,
                             damage,
+                            DamageSchool::Weapon,
                         ));
                     } else {
-                        self.hurt(source, team, j, damage, &mut events);
+                        self.hurt(
+                            source,
+                            team,
+                            j,
+                            damage,
+                            if crystal {
+                                DamageSchool::True
+                            } else {
+                                DamageSchool::Weapon
+                            },
+                            events,
+                        );
                     }
                     if self.winner.is_some() {
                         break;
@@ -846,7 +873,6 @@ impl World {
         }
         self.entities
             .retain(|e| e.kind != Kind::Minion || e.hp > 0.);
-        events
     }
 }
 
