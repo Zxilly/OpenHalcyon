@@ -586,7 +586,7 @@ impl Rooms {
 }
 impl Room {
     fn event(&mut self, kind: &str, message: &str, mut extra: Value) {
-        tracing::debug!(room=%self.id,kind,message,opcode=extra["opcode"].as_str(),channel=extra["channel"].as_str(),"room event");
+        tracing::debug!(room=%self.id,kind,message,opcode=extra["opcode"].as_str(),channel=extra["channel"].as_str(),generation=extra["generation"].as_u64(),"room event");
         let o = extra.as_object_mut().unwrap();
         o.insert("seq".into(), json!(self.events.len() + 1));
         o.insert("kind".into(), json!(kind));
@@ -722,6 +722,7 @@ impl Room {
             self.seats[idx].draft_sync_sent = false;
             self.seats[idx].preamble = Default::default();
         }
+        self.seats[idx].seen[ch].clear();
         self.seats[idx].peers[ch] = Some(Peer {
             generation: self.generation,
             tx,
@@ -734,7 +735,7 @@ impl Room {
         self.event(
             "connection",
             "Authenticated",
-            json!({"playerId":uuid,"channel":if game{"game"}else{"control"}}),
+            json!({"playerId":uuid,"channel":if game{"game"}else{"control"},"generation":self.generation}),
         );
         let solo_rejoin = !game && self.solo_scene() && self.seats[idx].control_world;
         let mut batch = if solo_rejoin {
@@ -799,7 +800,7 @@ impl Room {
             self.event(
                 "connection",
                 "Disconnected",
-                json!({"playerId":self.players[i],"channel":if ch==0{"control"}else{"game"}}),
+                json!({"playerId":self.players[i],"channel":if ch==0{"control"}else{"game"},"generation":generation}),
             );
         }
     }
@@ -909,7 +910,12 @@ impl Room {
             !legacy && ch == 0 && m.opcode == 0x45e && !self.seats[i].draft_sync_sent;
         let seen = &mut self.seats[i].seen[ch];
         if m.opcode != 0x455 && seen.len() < 32 && seen.insert(m.opcode) {
-            self.event("protocol","First client message of this type",json!({"playerId":self.players[i],"channel":if ch==0{"control"}else{"game"},"opcode":format!("0x{:04X}",m.opcode)}));
+            let generation = self.seats[i].peers[ch].as_ref().map(|peer| peer.generation);
+            self.event(
+                "protocol",
+                "First client message of this type",
+                json!({"playerId":self.players[i],"channel":if ch==0{"control"}else{"game"},"generation":generation,"opcode":format!("0x{:04X}",m.opcode)}),
+            );
         }
         let mut out = vec![];
         match m.fields()? {
@@ -1264,6 +1270,40 @@ impl Room {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn returning_socket_records_its_own_first_message() {
+        let rooms = Rooms::new("127.0.0.1".parse().unwrap(), "127.0.0.1".into(), 1, None);
+        let id = Uuid::new_v4();
+        let player = Uuid::new_v4();
+        rooms
+            .reserve(Reservation {
+                match_id: id,
+                players: vec![player],
+                teams: vec![0],
+                mode: "solo".into(),
+                difficulty: None,
+            })
+            .unwrap();
+        let shared = rooms.room(id).unwrap();
+        let mut room = shared.lock().unwrap();
+        for _ in 0..2 {
+            let (tx, _rx) = mpsc::channel(16);
+            let (seat, ch, generation, _) =
+                room.attach(player, tx, watch::channel(false).0).unwrap();
+            for _ in 0..2 {
+                room.receive(seat, ch, Message::new(0x46e, [0; 6])).unwrap();
+            }
+            room.detach(seat, ch, generation);
+        }
+        let events: Vec<_> = room
+            .events
+            .iter()
+            .filter(|event| event["opcode"] == "0x046E")
+            .collect();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0]["generation"], 1);
+        assert_eq!(events[1]["generation"], 2);
+    }
     #[tokio::test]
     async fn shop_uses_authenticated_seat_and_authoritative_gold() {
         let rooms = Rooms::new("127.0.0.1".parse().unwrap(), "127.0.0.1".into(), 1, None);
