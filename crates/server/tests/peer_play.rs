@@ -74,20 +74,29 @@ async fn login(addr: &str, id: Uuid, c: &MatchCipher) -> TcpStream {
         .unwrap();
     s
 }
-async fn until(s: &mut TcpStream, c: &MatchCipher, op: u16) {
+async fn until(s: &mut TcpStream, c: &MatchCipher, op: u16) -> Message {
     timeout(Duration::from_secs(4), async {
         loop {
             let len = s.read_u16().await.unwrap();
             let mut b = vec![0; len as usize];
             s.read_exact(&mut b).await.unwrap();
-            if c.decode(&b).unwrap().opcode == op {
-                return;
+            let message = c.decode(&b).unwrap();
+            if message.opcode == op {
+                return message;
             }
         }
     })
     .await
     .unwrap()
 }
+
+fn assert_casual_mode(message: &Message, offset: usize) {
+    let field = &message.body[offset..offset + 64];
+    let expected = b"*GameMode_5v5_Casual*";
+    assert_eq!(&field[..expected.len()], expected);
+    assert!(field[expected.len()..].iter().all(|&byte| byte == 0));
+}
+
 struct Member {
     raft: Federation,
     peer_play: PeerPlay,
@@ -393,7 +402,7 @@ async fn party_game_survives_two_home_elections_and_replays_result_once() {
     let party = rpc(
         &node(&cluster, homes[0]).rpc,
         "createParty",
-        json!([tokens[0], {"partyQueueMode":"5v5_casual"}]),
+        json!([tokens[0], {"partyQueueMode":"5v5_pvp_casual"}]),
     )
     .await;
     let party_id = party["returnValue"]["partyUUID"].clone();
@@ -423,7 +432,7 @@ async fn party_game_survives_two_home_elections_and_replays_result_once() {
         rpc(
             &node(&cluster, homes[i]).rpc,
             "joinLobby",
-            json!([tokens[i], {"lobby":"5v5_casual"}, "147219"]),
+            json!([tokens[i], {"lobby":"5v5_pvp_casual"}, "147219"]),
         )
         .await;
     }
@@ -433,6 +442,7 @@ async fn party_game_survives_two_home_elections_and_replays_result_once() {
     .await;
     for entry in sampled.tickets().values() {
         let ticket = &entry.ticket;
+        assert_eq!(ticket.queue.name, "5v5_pvp_casual");
         assert_eq!(ticket.latency_ms[&ticket.home], 0);
         assert_eq!(
             ticket.latency_ms.len(),
@@ -544,6 +554,8 @@ async fn party_game_survives_two_home_elections_and_replays_result_once() {
     let mut controls = Vec::new();
     for player in &players {
         let mut c = login(&addr, *player, &cipher).await;
+        assert_casual_mode(&until(&mut c, &cipher, 0x3e9).await, 32);
+        assert_casual_mode(&until(&mut c, &cipher, 0x454).await, 4);
         until(&mut c, &cipher, 0x459).await;
         c.write_all(&cipher.encode(&Message::new(0x455, [0; 6])).unwrap())
             .await
@@ -554,6 +566,8 @@ async fn party_game_survives_two_home_elections_and_replays_result_once() {
     let mut games = Vec::new();
     for player in &players {
         let mut g = login(&addr, *player, &cipher).await;
+        assert_casual_mode(&until(&mut g, &cipher, 0x3e9).await, 32);
+        assert_casual_mode(&until(&mut g, &cipher, 0x46f).await, 0);
         until(&mut g, &cipher, 0x3f3).await;
         games.push(g);
     }

@@ -11,11 +11,19 @@ fn put_text(buf: &mut [u8], s: &str) {
     let n = s.len().min(buf.len());
     buf[..n].copy_from_slice(&s.as_bytes()[..n]);
 }
-fn mode_name(mode: &str) -> &'static str {
-    if mode.contains("aral") {
-        "*GameMode_Aral_Casual*"
-    } else {
-        "*GameMode_5v5_SoloBots*"
+fn mode_name(queue: &str) -> &'static str {
+    match queue {
+        "5v5_pvp_ranked" | "5v5_ranked" | "ranked_5v5" => "*GameMode_5v5_Ranked*",
+        "5v5_bots_solo" | "solo" => "*GameMode_5v5_SoloBots*",
+        "5v5_bots_coop" | "5v5_coop" => "*GameMode_5v5_CoopBots*",
+        "5v5_private" | "5v5_pvp_private" => "*GameMode_5v5_Private*",
+        "5v5_private_draft" => "*GameMode_5v5_PrivateDraft*",
+        "5v5_private_bots" => "*GameMode_5v5_PrivateBots*",
+        "5v5_practice" => "*GameMode_5v5_Practice*",
+        "aral_casual" | "aral" => "*GameMode_Aral_Casual*",
+        // Includes Android's 5v5_pvp_casual and operator-defined queues.
+        // Only the wire label is resolved here; the queue ID remains intact.
+        _ => "*GameMode_5v5_Casual*",
     }
 }
 fn settings(seat: usize, mode: &str, draft: bool) -> Message {
@@ -169,8 +177,8 @@ pub(super) fn world_header(
     let mut out: Vec<_> = (0..10)
         .map(|i| info(world, players, picks, i, false))
         .collect();
-    out.push(settings(seat, mode_name(mode), false));
     let game_mode = mode_name(mode);
+    out.push(settings(seat, game_mode, false));
     let mut mode_name = vec![0; 69];
     put_text(&mut mode_name[..64], game_mode);
     mode_name[68] = 1;
@@ -329,5 +337,34 @@ mod combat_tests {
                 remaining: &[0; 6]
             }
         );
+    }
+}
+
+#[cfg(test)]
+mod mode_tests {
+    use super::mode_name;
+
+    #[test]
+    fn maps_queue_names_to_manifest_labels() {
+        for (queue, name) in [
+            ("5v5_pvp_casual", "*GameMode_5v5_Casual*"),
+            ("5v5_casual", "*GameMode_5v5_Casual*"),
+            ("casual_5v5", "*GameMode_5v5_Casual*"),
+            ("5v5_pvp_ranked", "*GameMode_5v5_Ranked*"),
+            ("5v5_ranked", "*GameMode_5v5_Ranked*"),
+            ("ranked_5v5", "*GameMode_5v5_Ranked*"),
+            ("5v5_bots_solo", "*GameMode_5v5_SoloBots*"),
+            ("solo", "*GameMode_5v5_SoloBots*"),
+            ("5v5_bots_coop", "*GameMode_5v5_CoopBots*"),
+            ("5v5_private", "*GameMode_5v5_Private*"),
+            ("5v5_private_draft", "*GameMode_5v5_PrivateDraft*"),
+            ("5v5_private_bots", "*GameMode_5v5_PrivateBots*"),
+            ("5v5_practice", "*GameMode_5v5_Practice*"),
+            ("aral_casual", "*GameMode_Aral_Casual*"),
+            ("custom_pool", "*GameMode_5v5_Casual*"),
+            ("3v3_standard", "*GameMode_5v5_Casual*"),
+        ] {
+            assert_eq!(mode_name(queue), name, "{queue}");
+        }
     }
 }

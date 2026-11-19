@@ -75,3 +75,19 @@ In the original Android 147219 arm64 library, the 0x03E9 dispatcher at image add
 The +4 consumer at `0x8292E4` passes the zero test to `0x81A3DC`. On one state-dependent path, nonzero selects state 1 and zero selects state 2. Other current states take different branches. The transition routine at `0x819C84` can dispatch a registered entry callback. The captures establish the values during draft and world initialization. They do not identify which entry callback opens the next game connection.
 
 The 0x0459 receiver at `0x8E07C4` forwards to a registered listener. One resolved virtual target, `0xA7D890`, returns immediately. Another, `0x8E1018`, walks up to 16 records with a 161-byte stride and checks the occupied flag and entity reference. For the matching record it saves team and slot, and caches the hero template when the lock flag is set. It then notifies subscribers. This callback does not read either leading timer or directly open a socket. The existing Android log establishes lock confirmation and a later connection attempt. Identifying the dial trigger requires the active subscriber or state-entry binding and its call order during a successful transition.
+
+## Queue IDs and game mode labels
+
+The room uses the same mode label in 0x03E9 on both sockets, 0x0454 on the control socket and 0x046F on the game socket. The original queue ID continues to identify the matchmaking pool.
+
+| Queue ID or local alias | Wire label | Local evidence |
+| --- | --- | --- |
+| `5v5_bots_solo`, alias `solo` | `*GameMode_5v5_SoloBots*` | Android 147219 `joinLobby` and control capture, plus the VGR game setup. |
+| `5v5_pvp_casual`, aliases `5v5_casual`, `casual_5v5` | `*GameMode_5v5_Casual*` | Android binary queue string and game manifest. A local server test follows the queue ID from CE RPC through the three wire messages. |
+| `5v5_pvp_ranked`, aliases `5v5_ranked`, `ranked_5v5` | `*GameMode_5v5_Ranked*` | Android binary string and game manifest. The iOS parser also uses the native ID for ranked profile data. |
+| `5v5_practice` | `*GameMode_5v5_Practice*` | Android binary string and game manifest. |
+| `5v5_bots_coop`, `5v5_coop` | `*GameMode_5v5_CoopBots*` | Manifest label. The accepted queue spellings are local aliases. |
+| `5v5_private`, `5v5_pvp_private`, `5v5_private_draft`, `5v5_private_bots` | `*GameMode_5v5_Private*`, `*GameMode_5v5_PrivateDraft*`, `*GameMode_5v5_PrivateBots*` | Manifest labels and local queue aliases. The first two aliases select the same private label. |
+| `aral_casual`, alias `aral` | `*GameMode_Aral_Casual*` | Android binary string, game manifest and mode name in three archived ARAL game streams. |
+
+An unrecognized queue ID uses the 5v5 Casual label. This mapping only changes the label. The existing queue roster and seat policy determine which seats contain humans. Separate 3v3 gameplay and the trailing 0x045A roster bytes remain unverified.
