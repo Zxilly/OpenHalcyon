@@ -449,7 +449,12 @@ async fn match_acceptance_is_bound_to_the_supplied_offer() {
     for handle in ["North", "South", "West"] {
         let player = guest(&api, handle).await;
         let token = player["sessionToken"].clone();
-        rpc(&api, "joinLobby", json!([token, {"lobby":"5v5_pvp_casual"}])).await;
+        rpc(
+            &api,
+            "joinLobby",
+            json!([token, {"lobby":"5v5_pvp_casual"}]),
+        )
+        .await;
         tokens.push(token);
     }
     let db = rusqlite::Connection::open(database).unwrap();
