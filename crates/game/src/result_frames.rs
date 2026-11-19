@@ -13,6 +13,8 @@ pub(super) fn crystal_end(queue: &str, world: &World) -> Option<Message> {
             | "5v5_pvp_casual"
             | "5v5_casual"
             | "casual_5v5"
+            | "5v5_bots_solo"
+            | "solo"
             | "5v5_pvp_ranked"
             | "5v5_ranked"
             | "ranked_5v5"
@@ -51,7 +53,8 @@ mod tests {
                 .find(|e| e.kind == Kind::Crystal && e.team == 1 - winner)
                 .unwrap();
             crystal.hp = 0.;
-            assert!(crystal_end("5v5_bots_solo", &w).is_none());
+            assert!(crystal_end("5v5_bots_solo", &w).is_some());
+            assert!(crystal_end("5v5_practice", &w).is_none());
             assert!(crystal_end("5v5_pvp_casual", &w).is_some());
             assert!(crystal_end("5v5_pvp_ranked", &w).is_some());
             let message = crystal_end("casual_aral", &w).unwrap();
