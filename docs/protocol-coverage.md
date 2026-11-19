@@ -70,6 +70,22 @@ The client opened Choose a Build and rendered the battlefield after selection.
 A touchscreen joystick swipe produced 0x03F4 and 0x03F5 on the same socket.
 The host also supports a separately authenticated data connection.
 
+A second Android run selected Ardan from a ten-hero local catalog and rendered
+the allied crystal, hero and HUD. The server-side VGR placed actor 1500 at
+(0.0000, -1.5000) in the opening spawn. After a touchscreen swipe, its first
+position update arrived at game time 9.45 seconds at (0.1689, -1.4025).
+There were 26 authoritative updates through 10.70 seconds. The last recorded
+position was (3.788, 0.687). This client disconnected at 28.9 seconds and
+authenticated again. The room eventually aborted and the client returned to the
+main menu. This run did not display the native victory or reward screens.
+
+The fresh-connection path also sends the seated actor and mode in a world-form
+0x03E9 before 0x046C. A loopback socket test resumes the room and checks the
+view against team visibility. In a separate Android run a normal app restart
+from the rendered battlefield recovered the guest and authenticated fresh
+control sockets. No second world session or rendered battlefield followed on
+the device. Native reentry and a complete native victory screen remain open.
+
 The nine historical TCP archives supply full-sized encrypted frames, including
 seven ARAL matches. Their decoded text previews only preserve prefixes. The
 offline inventory validated 1,824 client frames and 398,293 server frames after
