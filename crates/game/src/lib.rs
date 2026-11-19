@@ -1,6 +1,7 @@
 //! In-process room hosting with CE control and game TCP connections.
 mod actor_slots;
 mod admission;
+mod tower_aggro;
 pub use admission::{AdmissionPolicy, PortRange, ResourceMetrics};
 mod aral;
 mod aral_death;
@@ -139,6 +140,7 @@ struct Combat {
     healing: f64,
 }
 struct Room {
+    tower_views: Vec<tower_aggro::View>,
     solo_slots: actor_slots::ActorSlots,
     aral_slots: aral_spawn::WaveSlots,
     dead_actors: Vec<aral_death::Pending>,
@@ -569,6 +571,7 @@ impl Rooms {
         let (stop, stopped) = watch::channel(false);
         let t = Utc::now();
         let mut room = Room {
+            tower_views: (0..req.players.len()).map(|_| Default::default()).collect(),
             solo_slots: actor_slots::ActorSlots::from_roster(&world.entities),
             aral_slots: Default::default(),
             dead_actors: Vec::new(),
@@ -761,6 +764,7 @@ impl Room {
             self.seats[idx].loading_roster_sent = false;
             self.seats[idx].scene_written = false;
             self.seats[idx].world_actor_written = false;
+            self.tower_views[idx] = Default::default();
             self.seats[idx].draft_sync_sent = false;
             self.seats[idx].preamble = Default::default();
         }
@@ -1206,6 +1210,9 @@ impl Room {
             out.push(Message::new(0x3f1, [0, 0, 0, 0, 8, 0]));
             self.seats[i].draft_sync_sent = true;
         }
+        if ch == 0 && scene_requested {
+            self.tower_views[i].declarations(&out);
+        }
         Ok(out)
     }
     fn tick(&mut self) {
@@ -1293,6 +1300,28 @@ impl Room {
             }
         }
         self.replicate(&events);
+        if legacy || self.solo_scene() {
+            for (i, (seat, actor)) in self.seats.iter().zip(&self.world.entities).enumerate() {
+                if !seat.world_actor_written
+                    || !seat.preamble.confirmed()
+                    || seat.peers[1].is_some()
+                {
+                    continue;
+                }
+                if let Some(peer) = &seat.peers[0] {
+                    let mut output = Vec::new();
+                    let visible = &self.visible[usize::from(actor.team)];
+                    self.tower_views[i].append(
+                        &self.world,
+                        |id| visible.contains(&id),
+                        &mut output,
+                    );
+                    if !output.is_empty() {
+                        peer.send(transport::Delivery::Private(output));
+                    }
+                }
+            }
+        }
         native_abilities::publish(self, &events);
         if legacy && self.world.winner.is_none() {
             self.advance_ballots();
@@ -1479,6 +1508,16 @@ impl Room {
                 }
             } else if self.world.tick.is_multiple_of(20) {
                 out.push(snapshot(&self.world, &self.players, &self.picks));
+            }
+            if control_stream {
+                for (i, (seat, actor)) in self.seats.iter().zip(&self.world.entities).enumerate() {
+                    if usize::from(actor.team) == team
+                        && seat.peers[1].is_none()
+                        && seat.preamble.confirmed()
+                    {
+                        self.tower_views[i].declarations(&out);
+                    }
+                }
             }
             if out.is_empty() {
                 continue;

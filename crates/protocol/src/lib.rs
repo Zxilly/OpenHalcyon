@@ -7,6 +7,8 @@ use blowfish::{
 use md5::{Digest, Md5};
 use std::io::{self, Read, Write};
 
+mod tower_aggro;
+pub use tower_aggro::TowerAggro;
 mod surrender;
 pub use surrender::AralSurrenderBoard;
 mod talent;

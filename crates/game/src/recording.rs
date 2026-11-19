@@ -152,6 +152,11 @@ fn sanitize(m: &mut Message) -> bool {
                     .iter()
                     .all(|v| f32::from_be_bytes(*v).is_finite())
                 && f32::from_be_bytes(m.body[8..12].try_into().unwrap()) == 0.0 => {}
+        0x48c
+            if halcyon_protocol::TowerAggro::decode(m).is_some_and(|state| {
+                matches!(state.tower_slot, 3..=7 | 9 | 11..=15)
+                    && matches!(state.target_slot, None | Some(14..=199))
+            }) => {}
         0x424 if matches!(m.body.as_slice(), [_, _, _, _, 0, 0]) => {}
         0x481
             if matches!(
@@ -268,6 +273,15 @@ mod tests {
         let mut death = Message::actor_death(1510, 1511);
         let mut impact = Message::health_impact(1510, 1511, -7., 5, 0, 0);
         assert!(sanitize(&mut death) && sanitize(&mut impact));
+        let mut tower = halcyon_protocol::TowerAggro {
+            tower_slot: 7,
+            target_slot: Some(17),
+        }
+        .message()
+        .unwrap();
+        assert!(sanitize(&mut tower));
+        tower.body[7] = 1;
+        assert!(!sanitize(&mut tower));
         death.body.push(0);
         impact.body[16] = 1;
         assert!(!sanitize(&mut death) && !sanitize(&mut impact));

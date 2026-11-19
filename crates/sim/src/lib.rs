@@ -307,6 +307,13 @@ pub struct World {
     rally: [Option<Position>; 2],
 }
 impl Entity {
+    pub fn attack_target(&self) -> Option<u32> {
+        match self.order {
+            Command::Attack(target) if self.hp > 0. => Some(target),
+            _ => None,
+        }
+    }
+
     pub fn weapon_power(&self) -> f32 {
         self.stats.weapon
     }

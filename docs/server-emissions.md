@@ -108,7 +108,7 @@ The host paths are in [room dispatch](../crates/game/src/lib.rs), [transport](..
 | `0485` | 40 | E | ActionRequestRecommendedBuildPath · Accepted recommended build choice |
 | `0488` | 40 | A | ActionSetRecommendedBuildPath · Actor's applied recommended build choice |
 | `048A` | 322 | R | ActionSyncCooldown_Client |
-| `048C` | 738 | R | ActionSendAggroState_Client |
+| `048C` | 738 | A | ActionSendAggroState_Client · Visible registered native tower target or clear, in ARAL and Solo |
 | `048D` | 7 | A | End-of-match statistics from supported room outcomes |
 | `048F` | 1 | R | ActionRejectBuyItem_Client |
 

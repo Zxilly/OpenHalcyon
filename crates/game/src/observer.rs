@@ -8,6 +8,8 @@ use tokio::{
 };
 
 pub(super) struct Observer {
+    view: tower_aggro::View,
+    scene: Option<tower_aggro::ObserverScene>,
     viewer: Uuid,
     address: String,
     stop: watch::Sender<bool>,
@@ -50,6 +52,8 @@ impl Rooms {
         r.observers.insert(
             grant,
             Observer {
+                view: Default::default(),
+                scene: None,
                 viewer,
                 address: address.clone(),
                 stop,
@@ -142,6 +146,14 @@ async fn client(
         o.live = Some(tx);
         let mut b = vec![r.observer_snapshot()];
         b.extend(r.spawn_view(None));
+        let mut scene = tower_aggro::ObserverScene::new(&r);
+        let mut view = tower_aggro::View::default();
+        if let Some(scene) = &mut scene {
+            scene.prepare(&r.world, &r.picks, r.data.as_deref(), &mut view, &mut b);
+        }
+        let o = r.observers.get_mut(&grant).unwrap();
+        o.scene = scene;
+        o.view = view;
         (b, revoked)
     };
     let _attached = Attached(room.clone(), grant);
@@ -269,10 +281,24 @@ impl Room {
         if self.world.tick.is_multiple_of(20) {
             out.push(self.observer_snapshot());
         }
-        if out.is_empty() {
-            return;
-        }
-        self.publish_observers(&out);
+        self.observers.retain(|_, o| {
+            let Some(tx) = &o.live else { return true };
+            let mut batch = out.clone();
+            if let Some(scene) = &mut o.scene {
+                scene.prepare(
+                    &self.world,
+                    &self.picks,
+                    self.data.as_deref(),
+                    &mut o.view,
+                    &mut batch,
+                );
+            }
+            if !batch.is_empty() && tx.try_send(batch).is_err() {
+                o.stop.send_replace(true);
+                return false;
+            }
+            true
+        });
     }
     pub(super) fn death_observers(&self) -> Vec<mpsc::WeakSender<Batch>> {
         self.observers
@@ -290,10 +316,14 @@ impl Room {
                 && observed
                     .iter()
                     .any(|prior| prior.upgrade().is_some_and(|old| old.same_channel(tx)))
-                && tx.try_send(out.to_vec()).is_err()
             {
-                o.stop.send_replace(true);
-                return false;
+                if tx.try_send(out.to_vec()).is_err() {
+                    o.stop.send_replace(true);
+                    return false;
+                }
+                if let Some(scene) = &mut o.scene {
+                    scene.release(out);
+                }
             }
             true
         });
