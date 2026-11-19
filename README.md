@@ -2,7 +2,32 @@
 
 OpenHalcyon is an independent Rust server project for the Vainglory Community Edition Android client (build 147219). Operators run their own instances. The design supports single-host games and matchmaking between trusted peers.
 
-The workspace targets stable Rust. The MIT license covers the project's original implementation. Supply any client-derived data locally. The repository contains no client distribution or account credentials.
+The workspace targets stable Rust. The MIT license covers the project's original implementation. Supply any client-derived data locally.
+
+## Run an instance
+
+```sh
+cargo build --locked --release -p openhalcyon
+target/release/openhalcyon init --dir runtime --host localhost
+target/release/openhalcyon serve --config runtime/server.toml
+```
+
+On Windows the executable is `target\release\openhalcyon.exe`. Set `--host` to a name or IPv4 address that the client can reach. An Android emulator on the same workstation can use `10.0.2.2`. Initialization writes a local TLS certificate, signing key and one-time copy of the generated admin password into the instance directory. Set file permissions for the service account. For a public installation, configure a certificate trusted by your clients, the advertised host, and the dashboard's exact HTTPS origin.
+
+The bootstrap endpoint is `http://HOST:8080/kindred/live/147219-status-redirect`. It advertises the HTTPS platform on port 8443. Notifications use port 2112. The dashboard is served at `https://HOST:8443/admin`; sign in as `admin` using `initial-admin-password`. Game rooms advertise their own TCP ports. Public hosts must make their advertised ports reachable.
+
+Paths in `server.toml` are relative to that file. For a local research installation set `data_dir` to the directory containing `units.json`, `items.json` and `entity_manifest.json`, and `manifests_dir` to the directory containing the archived talents and skin manifest responses. Place these top-level keys before any TOML section. Only manifest payloads are consumed from those two responses. Keep private captures outside the checkout. With no external data the simulation uses the built-in validation lane.
+
+## Development
+
+```sh
+cargo fmt --all -- --check
+cargo clippy --locked --workspace --all-targets -- -D warnings
+cargo test --locked --workspace --all-targets
+cargo run --release -p halcyon-sim --example lane_bench -- /path/to/delivery
+```
+
+The TCP codec and replay parser live in `crates/protocol`, the CE JSON-RPC and notification handlers in `crates/ce-platform`, and guest persistence in `crates/platform`. Game connections deliver commands to `crates/sim` through `crates/game`. Match allocation, replicated state and federation integration live in `crates/matchmaking`, `crates/federation` and `crates/peer-play`. The administrative router and dashboard are in `crates/admin`.
 
 - [Runtime, bots and peer matchmaking](docs/runtime-and-federation.md)
 - [Management API](docs/admin-api.v1.yaml)
