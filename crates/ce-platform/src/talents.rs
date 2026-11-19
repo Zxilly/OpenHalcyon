@@ -290,12 +290,15 @@ mod tests {
         let host = Arc::new(Host::default());
         let app = AppState::open(config.clone(), host.clone()).unwrap();
         let inventory = Community::open(&config.database_path).unwrap();
-        let rows: Map<_, _> = ["rare", "epic", "legendary"].into_iter()
-            .zip(["PathOfTheSeeker", "ChaChaChakram", "ShimmerHeal"])
-            .map(|(tier, name)| {
-                let id = format!("idris_{tier}");
-                (id.clone(), json!({"id": id, "hero": "*Idris*", "def": format!("*Talent_Idris_{name}*"), "level":74, "maxLevel": false, "levelRequirements": {}}))
-            }).collect();
+        let rows: Map<_, _> = [
+            ("Caine", "caine", ["TalentA", "TalentB", "TalentC"]),
+            ("Ringo", "ringo", ["LongShot", "BulletSplit", "SpikedBrew"]),
+        ].into_iter().flat_map(|(hero, family, definitions)| {
+            ["rare", "epic", "legendary"].into_iter().zip(definitions).map(move |(tier, name)| {
+                let id = format!("{family}_{tier}");
+                (id.clone(), json!({"id": id, "hero": format!("*{hero}*"), "def": format!("*Talent_{hero}_{name}*"), "level":74, "maxLevel": false, "levelRequirements": {}}))
+            })
+        }).collect();
         let mut catalog = Catalog::parse(Value::Object(rows)).unwrap();
         for id in catalog.definitions.keys() {
             for item in [id.clone(), format!("{id}_fragments")] {
@@ -358,9 +361,14 @@ mod tests {
         {
             let reserved = host.0.lock().unwrap();
             let reserved = reserved.as_ref().unwrap();
+            assert_eq!(reserved.players.len(), reserved.talent_levels.len());
             for (id, grant) in reserved.players.iter().zip(&reserved.talent_levels) {
+                assert!(
+                    !grant.contains_key(&243),
+                    "Ringo's extra asset leaves the triplet ambiguous"
+                );
                 assert_eq!(
-                    grant.get(&273).map(|level| level.get()),
+                    grant.get(&915).map(|level| level.get()),
                     (*id == guests[0].player_id).then_some(7)
                 );
             }
@@ -374,13 +382,13 @@ mod tests {
             .unwrap()
             .ticket;
         inventory
-            .award_item(Uuid::new_v4(), voter.player_id, "idris_rare".into(), 1)
+            .award_item(Uuid::new_v4(), voter.player_id, "caine_rare".into(), 1)
             .await
             .unwrap();
         drop(app);
         let reopened = AppState::open(config, host).unwrap();
         let frozen = reopened.pooled_talent_levels(pool, ticket).await.unwrap();
-        assert_eq!(frozen[0][&273].get(), 7);
+        assert_eq!(frozen[0][&915].get(), 7);
         assert!(
             reopened
                 .pooled_talent_levels(Uuid::new_v4(), ticket)
