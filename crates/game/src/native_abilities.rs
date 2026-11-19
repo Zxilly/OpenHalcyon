@@ -338,6 +338,16 @@ mod tests {
             tx,
             stalled: watch::channel(false).0,
         });
+        for (op, body) in [
+            (0x046e, [0; 6]),
+            (0x0471, [0, 0, 5, 220, 1, 0]),
+            (0x046d, [0; 6]),
+        ] {
+            room.seats[0]
+                .preamble
+                .observe(&Message::new(op, body), 1500);
+        }
+        room.phase("running");
         room.seats[0].world_actor_written = true;
         room.world.entities[0].type_id = LORELAI;
         room.world.entities[0].level = 10;
@@ -358,7 +368,7 @@ mod tests {
         for selector in 0..3 {
             let request = Message::new(0x0436, [selector, 0, 0, 0, 0, 0]);
             assert_eq!(
-                receive(&mut room, 0, 0, request.clone()),
+                room.receive(0, 0, request.clone()).unwrap(),
                 [request, Message::ability_learned(1500, selector.into())]
             );
             room.world.tick += 1;
@@ -373,7 +383,7 @@ mod tests {
                 body[4] = 2;
                 Message::new(0x0411, body)
             };
-            receive(&mut room, 0, 0, packet);
+            room.receive(0, 0, packet).unwrap();
             assert!(
                 room.seats[0].native_abilities.cast.is_some(),
                 "selector {selector}"

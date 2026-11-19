@@ -1021,7 +1021,8 @@ impl Room {
                 if ch == 0 && (legacy || solo_scene) => {}
             Fields::Live(
                 halcyon_protocol::LiveFields::LearnSelection(_)
-                | halcyon_protocol::LiveFields::AbilityPoint { .. },
+                | halcyon_protocol::LiveFields::AbilityPoint { .. }
+                | halcyon_protocol::LiveFields::AbilityTarget { .. },
             ) if game => {
                 out = native_abilities::receive(self, i, ch, m);
             }
