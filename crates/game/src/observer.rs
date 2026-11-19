@@ -217,7 +217,9 @@ impl Room {
             return;
         }
         let mut out = vec![];
+        let postgame = crate::result_frames::aral_lost_crystal(self.legacy_aral(), &self.world);
         for ev in events {
+            crate::result_frames::append_postgame(&mut out, ev, postgame);
             match *ev {
                 Event::Move { id, position } => {
                     out.push(Message::position(wire_id(id), position.x, position.y))

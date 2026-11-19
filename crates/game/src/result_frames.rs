@@ -7,6 +7,31 @@ pub(super) fn statistics_snapshot(world: &World) -> std::io::Result<Message> {
     statistics::snapshot(world)
 }
 
+/// Five archived ARAL crystal defeats announce postgame at the crystal's death.
+pub(super) fn aral_lost_crystal(legacy_aral: bool, world: &World) -> Option<u32> {
+    let winner = world.winner?;
+    if !legacy_aral || winner > 1 {
+        return None;
+    }
+    world
+        .entities
+        .iter()
+        .find(|entity| entity.kind == Kind::Crystal && entity.team == 1 - winner && entity.hp <= 0.)
+        .map(|crystal| crystal.id)
+}
+
+pub(super) fn append_postgame(
+    out: &mut Vec<Message>,
+    ev: &halcyon_sim::Event,
+    crystal: Option<u32>,
+) {
+    if let halcyon_sim::Event::Death { id, .. } = ev
+        && Some(*id) == crystal
+    {
+        out.push(Message::new(0x0452, []));
+    }
+}
+
 /// Builds the observed reason-zero request only for an authoritative crystal loss.
 /// The local ARAL captures place the statistics report and this request about six seconds after death.
 pub(super) fn crystal_end(queue: &str, world: &World) -> Option<Message> {

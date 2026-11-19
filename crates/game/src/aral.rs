@@ -314,6 +314,13 @@ mod tests {
             assert!(*room.stop.borrow());
         }
         for socket in &mut clients {
+            let postgame = until(socket, &cipher, 0x0452).await;
+            assert_eq!(postgame.body, [0; 6]);
+            let death = until(socket, &cipher, 0x0430).await;
+            assert_eq!(
+                u32::from_be_bytes(death.body[..4].try_into().unwrap()),
+                1512
+            );
             let message = until(socket, &cipher, 0x048d).await;
             let Fields::MatchStatistics(report) = message.fields().unwrap() else {
                 panic!("expected a native statistics report");

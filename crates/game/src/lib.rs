@@ -1203,6 +1203,7 @@ impl Room {
             })
             .collect();
         let native_solo = self.solo_scene() && self.seats[0].control_world;
+        let postgame = result_frames::aral_lost_crystal(self.legacy_aral(), &self.world);
         let control_stream = self.legacy_aral() || native_solo;
         for team in 0..2 {
             let mut peers = self
@@ -1240,6 +1241,7 @@ impl Room {
                 }
             }
             for ev in events {
+                result_frames::append_postgame(&mut out, ev, postgame);
                 if let Event::Purchase(receipt) = ev {
                     if current.contains(&receipt.actor)
                         || fallen.contains(&receipt.actor) && previous.contains(&receipt.actor)
