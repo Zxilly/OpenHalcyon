@@ -33,6 +33,7 @@ struct Counts {
 #[derive(Default)]
 struct Stream {
     pending: Vec<u8>,
+    reencoded: Vec<u8>,
     hello: bool,
 }
 fn invalid(msg: &'static str) -> io::Error {
@@ -68,6 +69,11 @@ impl Stream {
                 self.hello = true;
             } else {
                 let m = cipher.decode_owned(frame)?;
+                self.reencoded.clear();
+                cipher.encode_into(&m, &mut self.reencoded)?;
+                if self.reencoded != left[..n + 2] {
+                    return Err(invalid("encrypted frame did not reproduce its input bytes"));
+                }
                 let e = ops.entry(m.opcode).or_default();
                 e.min = if e.frames == 0 {
                     m.body.len()

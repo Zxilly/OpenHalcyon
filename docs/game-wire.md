@@ -2,6 +2,13 @@
 
 The Android reader table supplies 171 opcode entries. Fixed sizes in that table include the length and opcode and precede encryption padding. Some entries have variable sizes, and recorded server messages can have multiple forms. A reader entry establishes that the client recognizes a frame shape. The typed decoder extracts the fields listed below and preserves opaque bodies for other opcodes. [Reader table](../crates/protocol/src/metadata.rs) · [Typed decoder](../crates/protocol/src/lib.rs)
 
+The inventory tools verify byte-level round trips on every complete input. The
+live audit reproduced the encrypted length prefix and ciphertext for all 1,824
+client frames and 398,293 server frames in the nine recorded sessions. The VGR
+audit reproduced the timestamp, length, opcode and body of all 43,160 records in
+14 chunks. Unknown operands and padding pass through intact. Gameplay support
+for individual actions is listed below.
+
 | Opcodes | Message | Implemented behavior and evidence |
 | --- | --- | --- |
 | 0x0005, 0x03E8 | Hello and player UUID | Control and game sockets are associated with the reserved player. The native client connected for the draft. |

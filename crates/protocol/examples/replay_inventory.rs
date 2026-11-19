@@ -1,9 +1,9 @@
 //! Print aggregate coverage for a directory containing private VGR chunks.
-use halcyon_protocol::{AndroidLayout, Fields, READ_SIZES, ReplayReader};
+use halcyon_protocol::{AndroidLayout, Fields, READ_SIZES, ReplayReader, ReplayWriter};
 use std::{
     collections::BTreeMap,
     env, fs,
-    io::{self, BufReader, BufWriter, Write},
+    io::{self, BufRead, BufReader, BufWriter, Read, Write},
     path::Path,
 };
 
@@ -15,6 +15,9 @@ struct Counts {
 
 fn inspect(path: &Path, inventory: &mut BTreeMap<u16, Counts>) -> io::Result<()> {
     let mut reader = ReplayReader::new(BufReader::new(fs::File::open(path)?));
+    let mut original = BufReader::new(fs::File::open(path)?);
+    let mut encoded = Vec::new();
+    let mut reference = Vec::new();
     let mut index = 0;
     loop {
         let record = reader.next_record().map_err(|error| {
@@ -23,7 +26,21 @@ fn inspect(path: &Path, inventory: &mut BTreeMap<u16, Counts>) -> io::Result<()>
                 format!("{} record {index}: {error}", path.display()),
             )
         })?;
-        let Some(record) = record else { return Ok(()) };
+        let Some(record) = record else {
+            if !original.fill_buf()?.is_empty() {
+                return Err(io::Error::other("replay writer omitted trailing bytes"));
+            }
+            return Ok(());
+        };
+        encoded.clear();
+        ReplayWriter::new(&mut encoded).write_record(record.time, &record.message)?;
+        reference.resize(encoded.len(), 0);
+        original.read_exact(&mut reference)?;
+        if encoded != reference {
+            return Err(io::Error::other(format!(
+                "replay round-trip mismatch at record {index}"
+            )));
+        }
         let message = record.message;
         let counts = inventory.entry(message.opcode).or_default();
         let context = |error: io::Error| {
