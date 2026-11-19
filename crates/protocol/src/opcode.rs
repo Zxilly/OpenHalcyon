@@ -47,6 +47,7 @@ opcodes! {
     EntityStat = 0x041d,
     HealthImpact = 0x041e,
     CooldownValue = 0x0428,
+    ModifyAbilityCharges = 0x0429,
     EntityState = 0x042b,
     CampVisibility = 0x042c,
     Position = 0x042e,

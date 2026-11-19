@@ -84,6 +84,15 @@ impl Message {
             &bytes[2..],
         ))
     }
+    /// The charge operand is an unsigned wire word; its interpretation depends on the mode.
+    pub fn modify_ability_charges(owner: u32, ability_slot: u32, operand: u32, mode: u8) -> Self {
+        let mut body = [0; 14];
+        body[..4].copy_from_slice(&owner.to_be_bytes());
+        body[4..8].copy_from_slice(&ability_slot.to_be_bytes());
+        body[8..12].copy_from_slice(&operand.to_be_bytes());
+        body[12] = mode;
+        Self::new(Opcode::ModifyAbilityCharges as u16, body)
+    }
     pub fn clock(time: f32) -> Self {
         Self::new(0, time.to_be_bytes())
     }
@@ -273,6 +282,13 @@ impl Message {
                 owner: number(0)?,
                 key: number(4)?,
                 value: float(8)?,
+                mode: b[12],
+                remaining: &b[13..],
+            },
+            0x429 if b.len() == 14 => Fields::AbilityCharges {
+                owner: number(0)?,
+                ability_slot: number(4)?,
+                operand: number(8)?,
                 mode: b[12],
                 remaining: &b[13..],
             },
@@ -606,6 +622,13 @@ pub enum Fields<'a> {
         owner: u32,
         key: u32,
         value: f32,
+        mode: u8,
+        remaining: &'a [u8],
+    },
+    AbilityCharges {
+        owner: u32,
+        ability_slot: u32,
+        operand: u32,
         mode: u8,
         remaining: &'a [u8],
     },
@@ -1131,6 +1154,28 @@ mod tests {
                 remaining: &aggro[6..]
             }
         );
+    }
+    #[test]
+    fn ability_charge_messages_preserve_integer_operands_and_padding() {
+        let h5810 = Message::modify_ability_charges(1504, 0, 4, 1);
+        assert_eq!(h5810.body, [0, 0, 5, 224, 0, 0, 0, 0, 0, 0, 0, 4, 1, 0]);
+        let mut synthetic = Message::modify_ability_charges(1505, 2, u32::MAX, 0);
+        synthetic.body[13] = 7;
+        assert_eq!(
+            synthetic.fields().unwrap(),
+            Fields::AbilityCharges {
+                owner: 1505,
+                ability_slot: 2,
+                operand: u32::MAX,
+                mode: 0,
+                remaining: &[7],
+            }
+        );
+        synthetic.body.pop();
+        assert!(!matches!(
+            synthetic.fields(),
+            Ok(Fields::AbilityCharges { .. })
+        ));
     }
     #[test]
     fn ability_projectile_and_cooldown_prefixes_remain_distinct() {

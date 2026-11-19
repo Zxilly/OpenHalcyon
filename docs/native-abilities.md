@@ -90,3 +90,13 @@ the full view. The requesting control generation receives one confirmation
 with the original point bytes. A replacement socket for that seat receives
 no confirmation of the former connection's input. Skill-point expenditure
 produces the public grant. Only the requesting seat receives its input echo.
+
+## Ability charges
+
+The independent H5810 replay audit observed 109 `0x0429` actions with the same
+owner, ability slot 0, unsigned operand 4 and mode 1. The protocol crate reads
+and writes its 14-byte recorded body and retains the trailing byte when decoding
+a recording. The slot is an ability index. The neighboring `0x0428` timer action
+uses a separate lookup key and a floating-point operand. The local Solo and ARAL
+corpora contain no `0x0429` samples. The hosted abilities currently have no
+verified charge-change trigger. [Replay field evidence](https://github.com/TurnaboutHero/vainglory-replay-decoder/blob/f4743be743564e3aadef1566499fe25d9d0f9ffc/vg/docs/COOLDOWN_EVENT_FIELDS_2026-10-14.md)
