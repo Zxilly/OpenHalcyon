@@ -233,8 +233,18 @@ async fn serve(c: Config) -> Result<()> {
     let notify = TcpListener::bind(c.notify_listen)
         .await
         .context("binding notifications")?;
+    let player_router = ce.public_api().layer(axum::middleware::map_response(
+        |mut response: axum::response::Response| async move {
+            response.headers_mut().insert(
+                axum::http::header::CACHE_CONTROL,
+                axum::http::HeaderValue::from_static("no-store"),
+            );
+            response
+        },
+    ));
     let mut router = ce
         .rpc()
+        .merge(player_router)
         .merge(Router::new().route("/health", get(|| async { "ok\n" })));
     if let Some(admin) = c.admin {
         router = router.merge(halcyon_admin::router(

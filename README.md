@@ -62,6 +62,7 @@ cargo run --release -p halcyon-sim --example lane_bench -- /path/to/delivery
 The TCP codec and replay parser live in `crates/protocol`, the CE JSON-RPC and notification handlers in `crates/ce-platform`, and guest persistence in `crates/platform`. Game connections deliver commands to `crates/sim` through `crates/game`. Match allocation, replicated state and federation integration live in `crates/matchmaking`, `crates/federation` and `crates/peer-play`. The administrative router and dashboard are in `crates/admin`.
 
 - [Runtime, bots and peer matchmaking](docs/runtime-and-federation.md)
+- [Player REST, long polling and WebSocket events](docs/player-api.yaml)
 - [Management API](docs/admin-api.v1.yaml)
 - [Run a three-node pool](docs/operating-a-pool.md)
 - [Configure inventory and game currency](docs/local-content.md)

@@ -1,0 +1,368 @@
+openapi: 3.1.0
+info:
+  title: OpenHalcyon Player API
+  version: 1.0.0-draft.1
+  description: |
+    Player REST interface on the public platform HTTPS listener. Responses
+    include Cache-Control: no-store. The native CE bootstrap, CE JSONRpc,
+    native notifications and game TCP use separate protocols.
+
+    Guest identities, sessions and event cursors belong to the home platform
+    database. The authenticated player can read their own profile and events,
+    act on their own ticket, and send chat when they have a seat authorized
+    for that match. Management credentials do not apply here. On a federated
+    node, matchmaking and match chat use its configured pool. Clients still
+    make requests to their own home using their home session token.
+servers:
+  - url: /
+security:
+  - playerSession: []
+paths:
+  /bootstrap:
+    get:
+      operationId: getBootstrap
+      summary: Read the configured public address
+      description: Plain address followed by a newline. The separate CE bootstrap listener serves the native status redirect.
+      security: []
+      responses:
+        '200':
+          description: Configured public address
+          content:
+            text/plain:
+              schema: {type: string}
+  /api/v1/guests:
+    post:
+      operationId: createGuest
+      summary: Create a guest and issue credentials
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name:
+                  type: string
+                  description: Trimmed on input. The trimmed name must be 1–32 Unicode scalar values without control characters.
+      responses:
+        '200':
+          description: New guest with a recovery credential and current session
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/NewGuest'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '413': {$ref: '#/components/responses/PayloadTooLarge'}
+        '415': {$ref: '#/components/responses/UnsupportedMedia'}
+        '422': {$ref: '#/components/responses/InvalidJsonData'}
+        '500': {$ref: '#/components/responses/Unavailable'}
+  /api/v1/sessions:
+    post:
+      operationId: resumeGuest
+      summary: Recover a guest
+      description: Issues a fresh session token and replaces the previous token for this player. Keep the original recovery token.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [recoveryToken]
+              properties:
+                recoveryToken: {$ref: '#/components/schemas/Token'}
+      responses:
+        '200':
+          description: Recovered guest and its new session
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Session'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '413': {$ref: '#/components/responses/PayloadTooLarge'}
+        '415': {$ref: '#/components/responses/UnsupportedMedia'}
+        '422': {$ref: '#/components/responses/InvalidJsonData'}
+        '500': {$ref: '#/components/responses/Unavailable'}
+  /api/v1/me:
+    get:
+      operationId: getProfile
+      summary: Read the authenticated player's profile
+      responses:
+        '200':
+          description: Player profile and current lobby if present
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Profile'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '500': {$ref: '#/components/responses/Unavailable'}
+  /api/v1/queue:
+    post:
+      operationId: enterQueue
+      summary: Enter matchmaking
+      description: |
+        A valid queue identifier uses 1–32 ASCII letters, digits, underscores
+        or hyphens. An explicit difficulty is accepted only on 5v5_bots_solo,
+        solo, 5v5_bots_coop, 5v5_coop or 5v5_private_bots. The solo queues
+        use one human seat when a difficulty is supplied. In a pool,
+        5v5_bots_solo uses one seat even without that field. The casual_aral
+        queue uses six seats. Other requests use the configured seat count.
+        Federated queue entry considers party membership. The REST request
+        has no client ping-site report.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [mode]
+              properties:
+                mode: {$ref: '#/components/schemas/Mode'}
+                difficulty:
+                  type: [string, 'null']
+                  enum: [very_easy, easy, medium, hard, very_hard, null]
+      responses:
+        '204': {description: Queue request recorded}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '413': {$ref: '#/components/responses/PayloadTooLarge'}
+        '415': {$ref: '#/components/responses/UnsupportedMedia'}
+        '422': {$ref: '#/components/responses/InvalidJsonData'}
+        '500': {$ref: '#/components/responses/Unavailable'}
+        '503': {$ref: '#/components/responses/HostUnavailable'}
+    delete:
+      operationId: leaveQueue
+      summary: Leave a queue, offer or post-match lobby
+      description: Leaving can cancel an outstanding offer for its seats. With no ticket the request succeeds without a change.
+      responses:
+        '204': {description: Leave request processed}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '500': {$ref: '#/components/responses/Unavailable'}
+        '503': {$ref: '#/components/responses/HostUnavailable'}
+  /api/v1/matches/{id}/accept:
+    parameters:
+      - $ref: '#/components/parameters/MatchId'
+    post:
+      operationId: acceptMatch
+      summary: Accept a match offer
+      description: |
+        The player must have a matching ticket. Standalone offers expire
+        after 30 seconds. Acceptance lets host reservation proceed once
+        all seats confirm. Read events or the profile for the game address.
+      responses:
+        '204': {description: Acceptance processed}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '500': {$ref: '#/components/responses/Unavailable'}
+        '503': {$ref: '#/components/responses/HostUnavailable'}
+  /api/v1/matches/{id}/chat:
+    parameters:
+      - $ref: '#/components/parameters/MatchId'
+    post:
+      operationId: sendMatchChat
+      summary: Send a message to match participants
+      description: Publishes chat to participants with authorized seats, including the sender.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [text]
+              properties:
+                text:
+                  type: string
+                  description: After trimming, must be nonempty, at most 512 UTF-8 bytes, and free of control characters.
+      responses:
+        '204': {description: Message published}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '413': {$ref: '#/components/responses/PayloadTooLarge'}
+        '415': {$ref: '#/components/responses/UnsupportedMedia'}
+        '422': {$ref: '#/components/responses/InvalidJsonData'}
+        '500': {$ref: '#/components/responses/Unavailable'}
+        '503': {$ref: '#/components/responses/HostUnavailable'}
+  /api/v1/events:
+    get:
+      operationId: pollEvents
+      summary: Long-poll personal events
+      description: Returns available events in cursor order or waits up to about 25 seconds for new events. A timeout returns an empty JSON batch with the supplied cursor.
+      parameters:
+        - $ref: '#/components/parameters/After'
+      responses:
+        '200':
+          description: JSON event batch
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/EventBatch'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '500': {$ref: '#/components/responses/Unavailable'}
+  /api/v1/events/ws:
+    get:
+      operationId: streamEvents
+      summary: Upgrade to the personal event WebSocket
+      description: |
+        Supply Authorization in the HTTP upgrade request. The server sends each
+        nonempty batch as a JSON text frame, using the same cursor as long
+        polling. Reconnect with the last processed cursor. When idle, the server
+        sends WebSocket ping control frames. Application messages from clients
+        close the stream. This router does not expose Server-Sent Events.
+      parameters:
+        - $ref: '#/components/parameters/After'
+      responses:
+        '101':
+          description: WebSocket upgraded. Text frames match EventBatch.
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '426':
+          description: The transport did not provide HTTP upgrade state.
+          content:
+            text/plain:
+              schema: {type: string}
+        '500': {$ref: '#/components/responses/Unavailable'}
+      x-websocket-message-schema:
+        $ref: '#/components/schemas/EventBatch'
+components:
+  securitySchemes:
+    playerSession:
+      type: http
+      scheme: bearer
+      description: Opaque platform session token from guest creation or recovery.
+  parameters:
+    After:
+      name: after
+      in: query
+      description: Exclusive cursor. Feed the returned cursor into the next request. Cursor values can have gaps.
+      schema: {type: integer, format: int64, minimum: 0, default: 0}
+    MatchId:
+      name: id
+      in: path
+      required: true
+      schema: {type: string, format: uuid}
+  responses:
+    BadRequest:
+      description: Invalid input. Handler errors are JSON. Extractor errors use plain text.
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Error'}
+        text/plain:
+          schema: {type: string}
+    Unauthorized:
+      description: Missing or invalid platform token, or an invalid credential supplied for recovery.
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Error'}
+    Conflict:
+      description: The operation conflicts with the player's queue, seat or match state.
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Error'}
+    PayloadTooLarge:
+      description: JSON request exceeds the extractor's body limit.
+      content:
+        text/plain:
+          schema: {type: string}
+    UnsupportedMedia:
+      description: JSON content type required.
+      content:
+        text/plain:
+          schema: {type: string}
+    InvalidJsonData:
+      description: JSON does not match the operation's request fields.
+      content:
+        text/plain:
+          schema: {type: string}
+    Unavailable:
+      description: Platform storage or worker failed.
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Error'}
+    HostUnavailable:
+      description: The match host or configured pool is unavailable.
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Error'}
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error: {type: string}
+    Token:
+      type: string
+      pattern: '^[a-f0-9]{64}$'
+      format: password
+    Session:
+      type: object
+      required: [playerId, sessionToken]
+      properties:
+        playerId: {type: string, format: uuid}
+        sessionToken: {$ref: '#/components/schemas/Token'}
+    NewGuest:
+      allOf:
+        - $ref: '#/components/schemas/Session'
+        - type: object
+          required: [recoveryToken]
+          properties:
+            recoveryToken: {$ref: '#/components/schemas/Token'}
+    Mode:
+      type: string
+      pattern: '^[A-Za-z0-9_-]{1,32}$'
+    Profile:
+      type: object
+      required: [playerId, name, lobby]
+      properties:
+        playerId: {type: string, format: uuid}
+        name: {type: string}
+        lobby:
+          anyOf:
+            - $ref: '#/components/schemas/Lobby'
+            - type: 'null'
+    Lobby:
+      type: object
+      required: [mode, matchId, phase, address, result]
+      properties:
+        mode: {$ref: '#/components/schemas/Mode'}
+        matchId: {type: [string, 'null'], format: uuid}
+        phase:
+          type: string
+          examples: [pending, queued, offered, reserving, playing, finished, spectating]
+        address:
+          type: [string, 'null']
+          description: Game endpoint when available.
+        result:
+          description: Match result stored by the platform, or null.
+    EventBatch:
+      type: object
+      required: [cursor, events]
+      properties:
+        cursor: {type: integer, format: int64, minimum: 0}
+        events:
+          type: array
+          maxItems: 128
+          items: {$ref: '#/components/schemas/Event'}
+    Event:
+      type: object
+      required: [cursor, body]
+      properties:
+        cursor: {type: integer, format: int64, minimum: 1}
+        body:
+          type: object
+          required: [type]
+          description: Additional fields vary by event. Other platform integrations can add event types.
+          properties:
+            type:
+              type: string
+              examples: [queued, queue_left, match_offered, match_playing, match_aborted, match_finished, post_match_left, chat]
+            matchId: {type: [string, 'null'], format: uuid}
+            mode: {$ref: '#/components/schemas/Mode'}
+            address: {type: [string, 'null']}
+            playerId: {type: string, format: uuid}
+            text: {type: string}
+            reason: {type: string}
+            result: {}
