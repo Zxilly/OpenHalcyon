@@ -973,6 +973,11 @@ impl Room {
                     .world
                     .command(i as u32 + 1, Command::MoveTo(Position { x, y }));
             }
+            Fields::Live(halcyon_protocol::LiveFields::TalentSelection(selection)) => {
+                out.extend(aral::talent_response(self, i, ch, selection));
+            }
+            Fields::Live(halcyon_protocol::LiveFields::MovePoint { .. })
+                if ch == 0 && (legacy || solo_scene) => {}
             Fields::Live(request) if game => {
                 if let Some(command) = commands::from_live(request) {
                     let _ = self.world.command(i as u32 + 1, command);

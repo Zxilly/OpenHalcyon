@@ -7,6 +7,8 @@ use blowfish::{
 use md5::{Digest, Md5};
 use std::io::{self, Read, Write};
 
+mod talent;
+pub use talent::{EquippedTalent, TalentSelection};
 mod statistics;
 pub use statistics::{
     MatchStatistics, MatchStatisticsMut, PlayerStatistics, StatisticsReport, TeamStatistics,

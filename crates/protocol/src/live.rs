@@ -1,5 +1,5 @@
 //! Fixed layouts from Android 147219 dispatch conversions and live or replay body sizes.
-use super::{ActionWords, Fields};
+use super::{ActionWords, EquippedTalent, Fields, TalentSelection};
 
 #[derive(Debug, PartialEq)]
 pub enum LiveFields<'a> {
@@ -20,9 +20,8 @@ pub enum LiveFields<'a> {
         x: f32,
         y: f32,
     },
-    RecommendedBuild {
-        value: u8,
-    },
+    TalentSelection(TalentSelection),
+    TalentEquipped(EquippedTalent),
     Motion {
         reference: u32,
         values: [f32; 2],
@@ -84,8 +83,17 @@ pub(super) fn fields(op: u16, b: &[u8]) -> Option<Fields<'_>> {
                 y: f32::from_bits(word(4)),
             }));
         }
-        0x484 if expected(4) && b[1..4] == [0; 3] => {
-            return Some(Fields::Live(LiveFields::RecommendedBuild { value: b[0] }));
+        0x481 if expected(6) => {
+            return Some(Fields::Live(LiveFields::TalentEquipped(EquippedTalent {
+                actor: word(0),
+                selection: TalentSelection::from_wire(b[4])?,
+                level: b[5],
+            })));
+        }
+        0x484 if expected(4) && b[1..].iter().all(|&v| v == 0) => {
+            return Some(Fields::Live(LiveFields::TalentSelection(
+                TalentSelection::from_wire(b[0])?,
+            )));
         }
         0x456 | 0x461 | 0x462 | 0x46b | 0x472 | 0x485 if expected(1) => {
             return Some(Fields::ControlByte {
@@ -163,7 +171,6 @@ pub(super) fn fields(op: u16, b: &[u8]) -> Option<Fields<'_>> {
         0x443 | 0x447 => (3, false, 0),
         0x44e => (5, false, 2),
         0x478 => (2, false, 1),
-        0x481 => (1, false, 2),
         0x488 => (1, false, 1),
         _ => return None,
     };

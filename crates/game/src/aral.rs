@@ -9,6 +9,33 @@ pub(super) fn legacy_queue(name: &str) -> bool {
     name == halcyon_data::LEGACY_ARAL_QUEUE
 }
 
+/// The room has no talent grants; it can confirm an explicit no-talent selection.
+pub(super) fn talent_response(
+    room: &Room,
+    seat: usize,
+    channel: usize,
+    selection: halcyon_protocol::TalentSelection,
+) -> Option<Message> {
+    use halcyon_protocol::{EquippedTalent, TalentSelection};
+    let session = room.seats.get(seat)?;
+    if selection != TalentSelection::NoTalent
+        || !room.legacy_aral()
+        || channel != 0
+        || session.peers[0].is_none()
+        || !session.preamble.confirmed()
+        || room.phase != "running"
+    {
+        return None;
+    }
+    EquippedTalent {
+        actor: u32::from(messages::wire_id(room.world.entities.get(seat)?.id)),
+        selection,
+        level: 0,
+    }
+    .message()
+    .ok()
+}
+
 pub(super) fn roster(room: &Room, remaining: f32, private: bool) -> Message {
     use halcyon_protocol::AralRoster;
     let mut body = vec![0; AralRoster::BODY_BYTES];
@@ -281,6 +308,28 @@ mod tests {
         for socket in &mut clients {
             assert_eq!(until(socket, &cipher, 0x03ef).await.body, [0; 6]);
         }
+        // A paid/earned slot request has no trusted level in this room.
+        // The next authoritative response must be for the explicit NoTalent request.
+        for selection in [
+            halcyon_protocol::TalentSelection::Slot2,
+            halcyon_protocol::TalentSelection::NoTalent,
+        ] {
+            clients[3]
+                .write_all(&cipher.encode(&selection.request()).unwrap())
+                .await
+                .unwrap();
+        }
+        let talent = until(&mut clients[3], &cipher, 0x0481).await;
+        assert_eq!(
+            talent.fields().unwrap(),
+            Fields::Live(halcyon_protocol::LiveFields::TalentEquipped(
+                halcyon_protocol::EquippedTalent {
+                    actor: 1503,
+                    selection: halcyon_protocol::TalentSelection::NoTalent,
+                    level: 0
+                }
+            ))
+        );
         assert_eq!(rooms.detail(room_id).unwrap()["botPlayers"], 0);
         clients[0]
             .write_all(&cipher.encode(&Message::movement(4., 0.)).unwrap())
