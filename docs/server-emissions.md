@@ -77,8 +77,8 @@ The host paths are in [room dispatch](../crates/game/src/lib.rs), [transport](..
 | `044B` | 150 | A | ActionConsumeItem · Consumed recipe component instance |
 | `044C` | 218 | R | ActionItemActivated |
 | `044D` | 4 | R | ActionSellItem |
-| `044E` | 84 | R | ActionPing |
-| `044F` | 48 | R | ActionHUDQuickMessage |
+| `044E` | 84 | R | [ActionPing](native-pings.md) · Actor, optional target, map position and two numeric selectors |
+| `044F` | 48 | R | [ActionHUDQuickMessage](native-pings.md) · Actor, message selector, optional target, float and operand |
 | `0451` | 248 | H | Opening world clock |
 | `0452` | 5 | A | Crystal ending on supported result path |
 | `0453` | 4,125 | H | Catalog entries on setup or supported refresh |

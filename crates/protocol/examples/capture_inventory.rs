@@ -90,6 +90,18 @@ impl Stream {
                     e.short_android += 1;
                 }
                 match m.fields() {
+                    Ok(Fields::Live(halcyon_protocol::LiveFields::MapPing(p))) => {
+                        if p.message() != m {
+                            return Err(invalid("ping fields did not reproduce the frame"));
+                        }
+                        e.typed += 1;
+                    }
+                    Ok(Fields::Live(halcyon_protocol::LiveFields::HudQuickMessage(q))) => {
+                        if q.message() != m {
+                            return Err(invalid("HUD fields did not reproduce the frame"));
+                        }
+                        e.typed += 1;
+                    }
                     Ok(Fields::Opaque(_)) => e.opaque += 1,
                     Ok(_) => e.typed += 1,
                     Err(_) => e.errors += 1,

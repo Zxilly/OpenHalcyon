@@ -22,6 +22,8 @@ pub use aral::AralRoster;
 mod abilities;
 mod buff_actions;
 pub use buff_actions::{BuffApplication, BuffExtras, BuffPrefix};
+mod hud;
+pub use hud::{HudQuickMessage, MapPing};
 mod gold;
 mod item_actions;
 pub use item_actions::ItemAction;

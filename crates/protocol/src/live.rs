@@ -35,11 +35,8 @@ pub enum LiveFields<'a> {
         half: u16,
         last: u32,
     },
-    WordByteWords {
-        first: u32,
-        byte: u8,
-        words: [u32; 3],
-    },
+    MapPing(super::MapPing),
+    HudQuickMessage(super::HudQuickMessage),
     TwoTables {
         first: u32,
         left: &'a [[u8; 4]; 16],
@@ -132,12 +129,10 @@ pub(super) fn fields(op: u16, b: &[u8]) -> Option<Fields<'_>> {
                 last: word(6),
             }));
         }
-        0x44f if expected(17) => {
-            return Some(Fields::Live(LiveFields::WordByteWords {
-                first: word(0),
-                byte: b[4],
-                words: [word(5), word(9), word(13)],
-            }));
+        0x44e => return super::MapPing::decode(b).map(|v| Fields::Live(LiveFields::MapPing(v))),
+        0x44f => {
+            return super::HudQuickMessage::decode(b)
+                .map(|v| Fields::Live(LiveFields::HudQuickMessage(v)));
         }
         0x473 if expected(151) || b.len() == 155 => {
             if let Some(board) = super::AralSurrenderBoard::read(b) {
@@ -176,7 +171,6 @@ pub(super) fn fields(op: u16, b: &[u8]) -> Option<Fields<'_>> {
         0x421 => (6, false, 1),
         0x41f | 0x446 => (2, false, 0),
         0x443 | 0x447 => (3, false, 0),
-        0x44e => (5, false, 2),
         0x478 => (2, false, 1),
         0x488 => (1, false, 1),
         _ => return None,
@@ -245,14 +239,6 @@ mod tests {
                 first: 0x10203,
                 half: 0x405,
                 last: 0x6070809
-            }))
-        ));
-        assert!(matches!(
-            fields(0x44f, &b[..22]),
-            Some(Fields::Live(LiveFields::WordByteWords {
-                byte: 4,
-                words: [0x05060708, 0x090a0b0c, 0x0d0e0f10],
-                ..
             }))
         ));
         let Some(Fields::Live(LiveFields::TwoTables { left, right, .. })) = fields(0x473, &b)
