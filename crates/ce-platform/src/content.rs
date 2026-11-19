@@ -15,6 +15,8 @@ use std::{
 #[derive(Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct File {
+    #[serde(rename = "talentProgress")]
+    talent_progress: BTreeMap<String, super::talents::Binding>,
     items: Vec<ItemDefinition>,
     quests: Vec<QuestDefinition>,
     views: BTreeMap<String, Value>,
@@ -123,6 +125,7 @@ impl Platform {
         }
         let this = Arc::get_mut(&mut self)
             .ok_or(Error::Config("content must be installed before serving"))?;
+        this.talents.configure(data.talent_progress, &ids)?;
         for item in data.items {
             this.community.define_item(item).await?;
         }
@@ -195,13 +198,24 @@ impl Platform {
         let recipe = offers
             .get(sku)
             .ok_or(Error::Unavailable("offer unavailable"))?;
-        let receipt = Sha256::digest(serde_json::to_vec(&(m, params))?).into();
+        let original_receipt = Sha256::digest(serde_json::to_vec(&(m, params))?).into();
+        let (receipt, previous) = if m == "upgradeTalent" {
+            // Each RPC response renews the bearer token. Replay identity belongs to the
+            // authenticated player and operation arguments, independently of token rotation.
+            (
+                Sha256::digest(serde_json::to_vec(&(m, &params[1..]))?).into(),
+                Some(original_receipt),
+            )
+        } else {
+            (original_receipt, None)
+        };
         self.community
-            .redeem(
+            .redeem_with_previous_key(
                 profile.player_id,
                 m.into(),
                 sku.into(),
                 receipt,
+                previous,
                 recipe.clone(),
             )
             .await?;

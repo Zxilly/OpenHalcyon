@@ -39,3 +39,9 @@ game. The `win_match` category advances for the winning seats. Retrying the same
 settlement credits each player once, including games hosted on a pool peer. An
 optional `views` object maps supported manifest or offer RPC names to public
 response fields. Use original content or data supplied by the operator.
+
+## Talent progression
+
+`getTalentsData` exposes each talent's `id`, `def` and `hero` from the configured manifest. Every new local account starts with zero levels and fragments. An archived row's `maxLevel` and `levelRequirements` apply only when the local player's level matches that specific observed level. At unobserved levels the instance reports `false` and an empty requirement object. These fields describe the observed client display. Actual grants and costs require an operator-defined recipe.
+
+To use local inventory as talent progress, define two distinct inventory items per talent, then map their IDs in the same content file. For example, `"talentProgress":{"adagio_rare":{"levelItem":"adagio_levels","fragmentItem":"adagio_fragments"}}` maps their owned quantities to the two account fields. The talent ID must exist in the installed manifest; the mapped inventory items must exist in the content file. Existing rewards can grant fragments, and an `upgradeTalent` recipe can spend them and grant levels in one transaction. A retry with the same operation arguments and a renewed session token reuses the receipt. Distinct upgrades need distinguishable request arguments, for example separate operator-defined SKUs. Installing the manifest alone grants no items and configures no upgrade prices.

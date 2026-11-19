@@ -493,3 +493,132 @@ async fn match_acceptance_is_bound_to_the_supplied_offer() {
     );
     assert_eq!(accepted(), 2);
 }
+
+#[tokio::test]
+async fn talent_catalog_preserves_public_fields_and_projects_only_the_callers_inventory() {
+    use std::{fs, path::Path};
+    let temp = tempfile::tempdir().unwrap();
+    let dir = temp.path();
+    let database = dir.join("talents.sqlite");
+    let talent = dir.join("official_getTalentsData.json");
+    let write =
+        |path: &Path, value: Value| fs::write(path, serde_json::to_vec(&value).unwrap()).unwrap();
+    write(
+        &dir.join("official_getSkinManifest.json"),
+        json!({"returnValue":"{}"}),
+    );
+    let public = json!({"id":"example_rare","def":"*Talent_Example_A*","hero":"*Example*","maxLevel":false,
+                      "levelRequirements":{"[fragments]":90,"silver":1300}});
+    let mut archived = public.clone();
+    archived["level"] = json!(10);
+    archived["fragments"] = json!(44);
+    archived["privateField"] = json!("discard");
+    let open = || {
+        let app = AppState::open(
+            PlatformConfig {
+                database_path: database.clone(),
+                public_address: "localhost:8443".into(),
+                seats_per_match: 1,
+            },
+            Arc::new(Host),
+        )
+        .unwrap();
+        Platform::new(
+            app,
+            Config {
+                authority: "localhost:8443".into(),
+                notify_authority: "localhost:8080".into(),
+            },
+            &[94; 32],
+            &database,
+            Some(dir),
+        )
+    };
+    for bad in [json!([]), json!({"example_rare":{"id":"bad"}}), {
+        let mut bad = archived.clone();
+        bad["levelRequirements"] = json!([]);
+        json!({"example_rare":bad})
+    }] {
+        write(&talent, json!({"returnValue":bad}));
+        assert!(open().is_err());
+    }
+    write(
+        &talent,
+        json!({"sessionToken":"discard", "returnValue":{"example_rare":archived}}),
+    );
+    let content = dir.join("content.json");
+    write(
+        &content,
+        json!({
+            "items":[{"id":"exampleLevel","slot":"progress","name":"Example Level"},
+                     {"id":"examplePieces","slot":"progress","name":"Example Pieces"}],
+            "talentProgress":{"example_rare":{"levelItem":"exampleLevel","fragmentItem":"examplePieces"}},
+            "exchanges":{"openRewardChest":{"welcome":{"limit":1,"reward":{"examplePieces":5}}},
+                         "upgradeTalent":{"example_rare":{"cost":{"examplePieces":2},"reward":{"exampleLevel":1}}}}
+        }),
+    );
+    let platform = open().unwrap().with_content(&content).await.unwrap();
+    let api = platform.rpc();
+    let a = guest(&api, "Amber").await;
+    let b = guest(&api, "Slate").await;
+    let stat = |level, fragments| {
+        let mut v = public.clone();
+        v["levelRequirements"] = json!({});
+        v["level"] = json!(level);
+        v["fragments"] = json!(fragments);
+        json!({"example_rare":v})
+    };
+    let read = |token: Value| rpc(&api, "getTalentsData", json!([token]));
+    let ta = &a["sessionToken"];
+    let tb = &b["sessionToken"];
+    assert_eq!(read(ta.clone()).await["returnValue"], stat(0, 0));
+    assert_eq!(read(tb.clone()).await["returnValue"], stat(0, 0));
+    assert_ne!(
+        rpc_response(&api, "upgradeTalent", json!([tb, "example_rare"])).await["code"],
+        0
+    );
+    rpc(&api, "openRewardChest", json!([ta, "welcome"])).await;
+    let upgraded = rpc(&api, "upgradeTalent", json!([ta, "example_rare"])).await;
+    assert_ne!(upgraded["sessionToken"], *ta);
+    // Simulate an exact receipt committed before bearer-independent upgrade keys.
+    use sha2::{Digest, Sha256};
+    let previous = Sha256::digest(
+        serde_json::to_vec(&("upgradeTalent", json!([ta, "example_rare"]))).unwrap(),
+    );
+    let db = rusqlite::Connection::open(&database).unwrap();
+    assert_eq!(
+        db.execute(
+            "UPDATE community_redemptions SET request=? WHERE operation='upgradeTalent'",
+            [previous.as_slice()]
+        )
+        .unwrap(),
+        1
+    );
+    rpc(&api, "upgradeTalent", json!([ta, "example_rare"])).await;
+    rpc(
+        &api,
+        "upgradeTalent",
+        json!([upgraded["sessionToken"], "example_rare"]),
+    )
+    .await;
+    assert_eq!(read(ta.clone()).await["returnValue"], stat(1, 3));
+    assert_eq!(read(tb.clone()).await["returnValue"], stat(0, 0));
+    let reopened = open().unwrap().with_content(&content).await.unwrap();
+    let a_id = Uuid::parse_str(a["returnValue"]["playerUUID"].as_str().unwrap()).unwrap();
+    assert_eq!(
+        reopened
+            .talent_progress(a_id, "example_rare")
+            .await
+            .unwrap()
+            .unwrap()
+            .level,
+        1
+    );
+    assert!(
+        reopened
+            .talent_progress(a_id, "absent")
+            .await
+            .unwrap()
+            .is_none()
+    );
+}

@@ -52,6 +52,20 @@ impl Community {
         request: [u8; 32],
         recipe: Recipe,
     ) -> Result<()> {
+        self.redeem_with_previous_key(player, operation, sku, request, None, recipe)
+            .await
+    }
+
+    /// Recognize an exact request already committed under an older receipt key.
+    pub async fn redeem_with_previous_key(
+        &self,
+        player: Uuid,
+        operation: String,
+        sku: String,
+        request: [u8; 32],
+        previous: Option<[u8; 32]>,
+        recipe: Recipe,
+    ) -> Result<()> {
         recipe.validate()?;
         if operation == "guildCollectJoinBonus" && recipe.limit != Some(1) {
             return Err(CommunityError::Invalid(
@@ -70,11 +84,19 @@ impl Community {
                     return Err(CommunityError::Forbidden);
                 }
             }
-            let prior: Option<(String,String)> = tx.query_row(
-                "SELECT operation,sku FROM community_redemptions WHERE player=? AND request=?",
-                params![player,request], |r| Ok((r.get(0)?,r.get(1)?))).optional()?;
-            if let Some(prior) = prior {
-                return if prior == (operation,sku) { Ok(()) } else { Err(CommunityError::Conflict("receipt already used")) };
+            let prior: Option<(bool, String, String)> = tx.query_row(
+                "SELECT request=?1, operation, sku FROM community_redemptions
+                 WHERE player=?2 AND request IN (?1,?3) ORDER BY (request=?1) DESC LIMIT 1",
+                params![request, player, previous], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).optional()?;
+            if let Some((current, old_operation, old_sku)) = prior {
+                if old_operation != operation || old_sku != sku {
+                    return Err(CommunityError::Conflict("receipt already used"));
+                }
+                if !current {
+                    tx.execute("UPDATE community_redemptions SET request=? WHERE player=? AND request=?",
+                        params![request, player, previous])?;
+                }
+                return Ok(());
             }
             if operation == "guildCollectJoinBonus" && tx.query_row(
                 "SELECT EXISTS(SELECT 1 FROM community_redemptions WHERE player=? AND operation=?)",

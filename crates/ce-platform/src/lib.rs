@@ -15,6 +15,8 @@ mod provider;
 pub use provider::{ProviderConfig, ProviderProduct};
 mod public_api;
 mod spectator;
+mod talents;
+pub use talents::TalentProgress;
 mod xmpp;
 use auth::{Scope, Tokens};
 use axum::{
@@ -84,7 +86,7 @@ pub struct Platform {
     community: halcyon_community::Community,
     content: content::Content,
     peers: Option<halcyon_peer_play::PeerPlay>,
-    talents: Value,
+    talents: talents::Catalog,
     skins: Value,
 }
 
@@ -144,7 +146,7 @@ impl Platform {
             provider: None,
             content: Default::default(),
             peers: None,
-            talents: load("official_getTalentsData.json", json!({}))?,
+            talents: talents::Catalog::parse(load("official_getTalentsData.json", json!({}))?)?,
             skins: load("official_getSkinManifest.json", json!("{}"))?,
         }))
     }
@@ -360,7 +362,7 @@ async fn dispatch(s: &Platform, m: &str, params: &[Value]) -> Result<(String, Va
             player_info(&profile)
         }
         "getSkinManifest" => s.skins.clone(),
-        "getTalentsData" => s.talents.clone(),
+        "getTalentsData" => s.talents_for(id).await?,
         "update" | "queryPendingMatch" => {
             if let Some(lobby) = &profile.lobby {
                 if lobby.mode == "5v5_bots_solo" && lobby.phase == "offered" {
