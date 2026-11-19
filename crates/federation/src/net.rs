@@ -161,6 +161,7 @@ impl RaftNetworkFactory<Types> for Transport {
     }
 }
 impl Link {
+    #[allow(clippy::result_large_err, reason = "OpenRaft fixes the RPC error type")]
     async fn call<
         I: Serialize + Sync,
         O: DeserializeOwned,

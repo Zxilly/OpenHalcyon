@@ -192,6 +192,24 @@ impl Federation {
         timeout(DEADLINE, self.raft.ensure_linearizable()).await??;
         Ok(self.store.machine()?.pool)
     }
+    /// A linearizable read that sends the pool only when the applied index changed.
+    pub async fn changes(&self, known: Option<u64>) -> anyhow::Result<(u64, Option<Pool>)> {
+        let id = self
+            .raft
+            .current_leader()
+            .await
+            .context("no elected leader")?;
+        if id == self.net.cfg.node_id {
+            return self.changes_here(known).await;
+        }
+        self.net
+            .post(id, "/internal/changes", &known, DEADLINE)
+            .await
+    }
+    async fn changes_here(&self, known: Option<u64>) -> anyhow::Result<(u64, Option<Pool>)> {
+        timeout(DEADLINE, self.raft.ensure_linearizable()).await??;
+        Ok(self.store.pool_changes(known)?)
+    }
     /// Run on the elected leader. All transports must already pin each proposed member.
     pub async fn change_membership(&self, voters: BTreeSet<Uuid>) -> anyhow::Result<()> {
         ensure!(!voters.is_empty(), "empty voter set");
@@ -259,6 +277,7 @@ impl Federation {
                     return cbor(&());
                 }
                 "/internal/read" => return cbor(&self.read_here().await?),
+                "/internal/changes" => return cbor(&self.changes_here(decode(&body)?).await?),
                 _ => {}
             }
         }

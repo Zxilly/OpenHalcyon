@@ -70,6 +70,18 @@ impl Store {
     pub fn machine(&self) -> Result<Machine, E> {
         self.read(|c| Ok(get(c, "machine")?.unwrap_or_default()))
     }
+    pub fn pool_changes(&self, known: Option<u64>) -> Result<(u64, Option<Pool>), E> {
+        self.read(|c| {
+            if let Some(index) = get::<u64>(c, "pool_revision")?
+                && known == Some(index)
+            {
+                return Ok((index, None));
+            }
+            let machine: Machine = get(c, "machine")?.unwrap_or_default();
+            let index = machine.applied.map_or(0, |id| id.index);
+            Ok((index, Some(machine.pool)))
+        })
+    }
 }
 impl RaftLogReader<Types> for Store {
     async fn try_get_log_entries<R: RangeBounds<u64> + Clone + Debug + Send>(
@@ -217,6 +229,7 @@ impl RaftStorage<Types> for Store {
                 m.applied = Some(e.log_id);
             }
             put(c, "machine", &m)?;
+            put(c, "pool_revision", &m.applied.map_or(0, |id| id.index))?;
             Ok(out)
         })
     }
@@ -239,6 +252,7 @@ impl RaftStorage<Types> for Store {
                 "snapshot metadata mismatch"
             );
             put(c, "machine", &m)?;
+            put(c, "pool_revision", &m.applied.map_or(0, |id| id.index))?;
             put(c, "snapshot", &(meta, b))
         })
     }
