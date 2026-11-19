@@ -7,6 +7,8 @@ use blowfish::{
 use md5::{Digest, Md5};
 use std::io::{self, Read, Write};
 
+mod aral;
+pub use aral::AralRoster;
 mod metadata;
 mod opcode;
 mod skin;
@@ -384,6 +386,7 @@ impl Message {
                 entity: number(8)?,
                 remaining: &b[12..],
             },
+            0x45a if b.len() >= AralRoster::BODY_BYTES => Fields::AralRoster(AralRoster::new(b)?),
             0x45a => Fields::AralRosterHeader {
                 remaining_seconds: float(0)?,
                 allotted_seconds: float(4)?,
@@ -696,6 +699,7 @@ pub enum Fields<'a> {
         remaining: &'a [u8],
     },
     DraftRoster(DraftRoster<'a>),
+    AralRoster(AralRoster<'a>),
     StatModifier {
         actor: u32,
         source: u32,
