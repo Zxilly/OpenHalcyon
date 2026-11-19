@@ -40,6 +40,9 @@ struct Args {
     /// Delay each game frame for the last human seat in each room (zero for normal reading).
     #[arg(long, default_value_t = 0)]
     slow_reader_ms: u64,
+    /// Play one native Solo control stream with nine server bots per room.
+    #[arg(long)]
+    native_solo: bool,
     /// The operator is deliberately terminating rooms via the admin API.
     #[arg(long)]
     allow_admin_rotation: bool,
@@ -191,13 +194,16 @@ impl Socket {
         Ok(msg)
     }
     async fn until(&mut self, op: u16) -> Result<()> {
-        timeout(Duration::from_secs(8), async {
-            loop {
-                if self.read().await?.opcode == op {
-                    return Ok(());
+        timeout(
+            Duration::from_secs(if op == 0x046c { 15 } else { 8 }),
+            async {
+                loop {
+                    if self.read().await?.opcode == op {
+                        return Ok(());
+                    }
                 }
-            }
-        })
+            },
+        )
         .await?
     }
     async fn play(
@@ -237,7 +243,7 @@ impl Socket {
                 if !delay.is_zero() {
                     sleep(delay).await;
                 }
-                if m.opcode == 0x485 {
+                if m.opcode == 0x03f1 && matches!(m.body.as_slice(), [0, 0, 0, 1 | 2, 0 | 2, 0]) {
                     stats.end_frames.fetch_add(1, Ordering::Relaxed);
                     return Ok(true);
                 }
@@ -271,7 +277,7 @@ async fn setup(
     players: &[Player],
     mode: &str,
     stats: &Arc<Stats>,
-) -> Result<(String, Vec<(Socket, Socket)>)> {
+) -> Result<(String, Vec<(Option<Socket>, Socket)>)> {
     for p in players {
         api.rpc("joinLobby", json!([p.token,{"lobby":mode},"147219"]))
             .await?;
@@ -306,34 +312,55 @@ async fn setup(
     for p in players {
         let mut s = Socket::connect(&addr, &room, p.id, stats.clone()).await?;
         s.until(0x459).await?;
-        s.write(Message::new(0x455, [0; 6])).await?;
-        s.until(0x455).await?;
+        let lock = if mode == "5v5_bots_solo" {
+            0x0463
+        } else {
+            0x0455
+        };
+        s.write(Message::new(lock, [0; 6])).await?;
+        s.until(lock).await?;
         controls.push(s);
     }
     let mut sockets = Vec::new();
-    for (p, c) in players.iter().zip(controls) {
+    for (p, mut c) in players.iter().zip(controls) {
+        if mode == "5v5_bots_solo" {
+            c.until(0x046c).await?;
+            c.write(Message::new(0x046e, [0; 6])).await?;
+            c.write(Message::new(0x0471, [0, 0, 5, 220, 1, 0])).await?;
+            c.until(0x045c).await?;
+            c.write(Message::new(0x046d, [0; 6])).await?;
+            c.until(0x03ef).await?;
+            sockets.push((None, c));
+            continue;
+        }
         let mut game = Socket::connect(&addr, &room, p.id, stats.clone()).await?;
         game.until(0x3f3).await?;
-        sockets.push((c, game));
+        sockets.push((Some(c), game));
     }
     stats.opened.fetch_add(1, Ordering::Relaxed);
     Ok((room, sockets))
 }
+enum Workload {
+    Validation(usize),
+    NativeSolo,
+}
 async fn room(
     api: Api,
-    human_count: usize,
+    workload: Workload,
     slow_reader_ms: u64,
     allow_admin_rotation: bool,
     number: usize,
     stats: Arc<Stats>,
     stop: watch::Receiver<bool>,
 ) -> Result<()> {
+    let (human_count, mode) = match workload {
+        Workload::NativeSolo => (1, "5v5_bots_solo".to_owned()),
+        Workload::Validation(n) => (n, format!("bench_{number}")),
+    };
     let mut players = Vec::new();
     for _ in 0..human_count {
         players.push(api.guest().await?)
     }
-    // Each benchmark room uses its own queue name so simultaneous rounds never mix rosters.
-    let mode = format!("bench_{number}");
     let mut round = 0u64;
     loop {
         if *stop.borrow() {
@@ -346,15 +373,17 @@ async fn room(
         }
         let mut peers = JoinSet::new();
         for (seat, (ctrl, game)) in sockets.into_iter().enumerate() {
-            let ctrl_stop = stop.clone();
-            peers.spawn(async move {
-                (
-                    seat,
-                    false,
-                    false,
-                    ctrl.play(seat, false, Duration::ZERO, ctrl_stop).await,
-                )
-            });
+            if let Some(ctrl) = ctrl {
+                let ctrl_stop = stop.clone();
+                peers.spawn(async move {
+                    (
+                        seat,
+                        false,
+                        false,
+                        ctrl.play(seat, false, Duration::ZERO, ctrl_stop).await,
+                    )
+                });
+            }
             let slow = slow_reader_ms > 0 && seat + 1 == human_count;
             let delay = if slow {
                 Duration::from_millis(slow_reader_ms)
@@ -415,6 +444,7 @@ async fn main() -> Result<()> {
     ensure!(
         a.platform.starts_with("https://")
             && (1..=10).contains(&a.humans)
+            && (!a.native_solo || a.humans == 1)
             && a.rooms > 0
             && a.seconds > 0,
         "invalid benchmark parameters"
@@ -433,7 +463,11 @@ async fn main() -> Result<()> {
     for i in 0..a.rooms {
         let worker = room(
             api.clone(),
-            a.humans,
+            if a.native_solo {
+                Workload::NativeSolo
+            } else {
+                Workload::Validation(a.humans)
+            },
             a.slow_reader_ms,
             a.allow_admin_rotation,
             i,
