@@ -122,3 +122,5 @@ also used 0xffffffff. Word +741 resolves an optional actor reference at
 separate from the network actor ID at +8 and registration slot at +745.
 The observed selector values alone do not establish authentication or input
 permissions.
+
+In the Solo opening, slots 14–18 belong to wire team 1 and slots 19–23 to wire team 2. The allocator groups the reserved heroes by team and preserves roster order within each team. Simulation entity IDs can alternate teams.

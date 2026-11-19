@@ -8,28 +8,9 @@ const ACTOR_SLOTS: u8 = 200;
 const FULL_SLOT_OFFSET: usize = 745;
 
 pub(super) struct ActorSlots {
+    heroes: [Option<u8>; 10],
     minions: [Option<u32>; (ACTOR_SLOTS - FIRST_MINION_SLOT) as usize],
     reported_full: bool,
-}
-
-impl Default for ActorSlots {
-    fn default() -> Self {
-        Self {
-            minions: [None; (ACTOR_SLOTS - FIRST_MINION_SLOT) as usize],
-            reported_full: false,
-        }
-    }
-}
-
-pub(super) fn fixed(entity: &Entity) -> Option<u8> {
-    match (entity.kind, entity.type_id, entity.team) {
-        (Kind::Hero, _, _) if (1..=10).contains(&entity.id) => Some(13 + entity.id as u8),
-        (Kind::Crystal, 295, 0) => Some(6),
-        (Kind::Crystal, 296, 1) => Some(7),
-        (Kind::Tower, 340, 0) => Some(9),
-        (Kind::Tower, 340, 1) => Some(12),
-        _ => None,
-    }
 }
 
 fn set_full(message: &mut Message, slot: u8) {
@@ -38,6 +19,36 @@ fn set_full(message: &mut Message, slot: u8) {
 }
 
 impl ActorSlots {
+    pub fn from_roster(entities: &[Entity]) -> Self {
+        let mut heroes = [None; 10];
+        let mut next_slot = [14, 19];
+        for hero in entities.iter().filter(|entity| entity.kind == Kind::Hero) {
+            let team = usize::from(hero.team);
+            if (1..=10).contains(&hero.id) && team < 2 && next_slot[team] < [19, 24][team] {
+                heroes[(hero.id - 1) as usize] = Some(next_slot[team]);
+                next_slot[team] += 1;
+            }
+        }
+        Self {
+            heroes,
+            minions: [None; (ACTOR_SLOTS - FIRST_MINION_SLOT) as usize],
+            reported_full: false,
+        }
+    }
+
+    fn fixed(&self, entity: &Entity) -> Option<u8> {
+        match (entity.kind, entity.type_id, entity.team) {
+            (Kind::Hero, _, _) if (1..=10).contains(&entity.id) => {
+                self.heroes[(entity.id - 1) as usize]
+            }
+            (Kind::Crystal, 295, 0) => Some(6),
+            (Kind::Crystal, 296, 1) => Some(7),
+            (Kind::Tower, 340, 0) => Some(9),
+            (Kind::Tower, 340, 1) => Some(12),
+            _ => None,
+        }
+    }
+
     pub fn declaration(
         &mut self,
         tick: u64,
@@ -61,7 +72,7 @@ impl ActorSlots {
             }
             return None;
         }
-        let slot = fixed(entity)?;
+        let slot = self.fixed(entity)?;
         Some(compact::structure(tick, entity).unwrap_or_else(|| {
             let mut message = messages::spawn(entity, picks, data);
             if entity.kind == Kind::Hero {
@@ -105,11 +116,12 @@ mod tests {
     #[test]
     fn declaration_preserves_hero_and_live_minion_indices_across_scenes() {
         let mut world = halcyon_sim::World::new(7, 1);
-        let mut slots = ActorSlots::default();
+        let mut slots = ActorSlots::from_roster(&world.entities);
         for entity in &world.entities[..10] {
             let hero = slots.declaration(0, entity, &[], None).unwrap();
             assert_eq!(hero.opcode, 0x03f3);
-            assert_eq!(hero.body[745], 13 + entity.id as u8);
+            let expected = [14, 19, 15, 20, 16, 21, 17, 22, 18, 23];
+            assert_eq!(hero.body[745], expected[(entity.id - 1) as usize]);
         }
         while world.tick < 900 {
             world.step();
@@ -153,7 +165,7 @@ mod tests {
     #[test]
     fn solo_hero_declarations_keep_identity_separate_from_initial_team_flags() {
         let world = halcyon_sim::World::new(7, 1);
-        let mut slots = ActorSlots::default();
+        let mut slots = ActorSlots::from_roster(&world.entities);
         for actor in world.entities.iter().filter(|e| e.kind == Kind::Hero) {
             let first = slots.declaration(0, actor, &[], None).unwrap();
             let late = slots.declaration(90, actor, &[], None).unwrap();
@@ -252,7 +264,7 @@ mod tests {
 
     #[test]
     fn stable_indices_and_explicit_exhaustion() {
-        let mut slots = ActorSlots::default();
+        let mut slots = ActorSlots::from_roster(&[]);
         for slot in FIRST_MINION_SLOT..ACTOR_SLOTS {
             assert_eq!(slots.minion(u32::from(slot) + 1000), Some(slot));
         }

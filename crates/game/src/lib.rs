@@ -541,7 +541,7 @@ impl Rooms {
         let (stop, stopped) = watch::channel(false);
         let t = Utc::now();
         let mut room = Room {
-            solo_slots: Default::default(),
+            solo_slots: actor_slots::ActorSlots::from_roster(&world.entities),
             visible: Default::default(),
             next_visible: Default::default(),
             replay_bytes: Arc::default(),
@@ -1158,7 +1158,6 @@ impl Room {
                 peer.send(transport::Delivery::Team(delivery.clone()));
             }
         }
-        self.solo_slots = Default::default();
         self.stop.send_replace(true);
     }
 
