@@ -13,6 +13,13 @@ pub trait Directory: Send + Sync + 'static {
     async fn authenticate(&self, user: Uuid, pass: &str) -> Option<String>;
     /// None signals an invalid session. Only authorized contacts belong here.
     async fn contacts(&self, session: &str) -> Option<Vec<Contact>>;
+    /// Revalidated when delivering presence, including initial presence and disconnect.
+    async fn presence_allowed(&self, _session: &str) -> bool {
+        true
+    }
+    async fn receives_presence(&self, _session: &str) -> bool {
+        true
+    }
 }
 
 fn invalid() -> io::Error {

@@ -186,3 +186,18 @@ pub fn may_spectate(db: &rusqlite::Connection, viewer: &str, friend: &str) -> Re
     )
     .map_err(Into::into)
 }
+
+impl Community {
+    /// Presence visibility is independent from a player's direct-message permissions.
+    pub async fn presence_preferences(&self, player: Uuid) -> Result<(bool, bool)> {
+        self.run(move |tx| {
+            tx.query_row(
+                "SELECT NOT invisible, receive_presence FROM community_players WHERE id=?",
+                [player.to_string()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .map_err(Into::into)
+        })
+        .await
+    }
+}

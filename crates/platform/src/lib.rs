@@ -1,6 +1,7 @@
 mod accounts;
 mod chat;
 mod federation;
+mod notification;
 mod queue;
 mod recovery;
 mod spectator;
@@ -215,6 +216,7 @@ impl AppState {
             }
             halcyon_community::queue::initialize(&tx).map_err(queue::community_error)?;
             federation::initialize(&tx)?;
+            notification::initialize(&tx)?;
             spectator::initialize(&tx)?;
             tx.commit()?;
         }

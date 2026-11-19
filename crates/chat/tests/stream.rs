@@ -12,11 +12,22 @@ use tokio_rustls::{TlsConnector, client::TlsStream};
 use uuid::Uuid;
 
 const OPEN: &str = "<stream:stream xmlns='jabber:client' xmlns:stream='http://etherx.jabber.org/streams' to='localhost' version='1.0'>";
-struct People;
+use std::sync::atomic::{AtomicBool, Ordering};
+#[derive(Default)]
+struct People {
+    hidden: AtomicBool,
+    muted: AtomicBool,
+}
 #[async_trait]
 impl Directory for People {
     async fn authenticate(&self, user: Uuid, pass: &str) -> Option<String> {
         (pass == "test-grant").then(|| user.to_string())
+    }
+    async fn presence_allowed(&self, _session: &str) -> bool {
+        !self.hidden.load(Ordering::Relaxed)
+    }
+    async fn receives_presence(&self, _session: &str) -> bool {
+        !self.muted.load(Ordering::Relaxed)
     }
     async fn contacts(&self, session: &str) -> Option<Vec<Contact>> {
         let other = match Uuid::parse_str(session).ok()?.as_u128() {
@@ -108,8 +119,9 @@ async fn two_encrypted_streams_route_authorized_stanzas() {
     ));
     let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = l.local_addr().unwrap();
+    let directory = Arc::new(People::default());
     let task = tokio::spawn(
-        Server::new("localhost".into(), Arc::new(People), Arc::new(tls))
+        Server::new("localhost".into(), directory.clone(), Arc::new(tls))
             .unwrap()
             .serve(l),
     );
@@ -141,6 +153,21 @@ async fn two_encrypted_streams_route_authorized_stanzas() {
             .await
             .contains("service-unavailable")
     );
+    for flag in [&directory.hidden, &directory.muted] {
+        flag.store(true, Ordering::Relaxed);
+        b.write_all(
+            format!(
+                "<presence/><message to='{}@localhost'><body>still delivered</body></message>",
+                Uuid::from_u128(1)
+            )
+            .as_bytes(),
+        )
+        .await
+        .unwrap();
+        let received = until(&mut a, "</message>").await;
+        assert!(received.contains("still delivered") && !received.contains("<presence"));
+        flag.store(false, Ordering::Relaxed);
+    }
     b.write_all(b"</stream:stream>").await.unwrap();
     assert!(until(&mut a, "/>").await.contains("unavailable"));
     task.abort();

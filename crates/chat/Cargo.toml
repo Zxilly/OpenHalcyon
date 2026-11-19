@@ -12,6 +12,7 @@ quick-xml = { version = "0.38", features = ["async-tokio"] }
 roxmltree = "0.20"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 tokio.workspace = true
+tracing.workspace = true
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
 uuid.workspace = true
 

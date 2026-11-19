@@ -20,8 +20,23 @@ use uuid::Uuid;
 struct Resource {
     user: Uuid,
     available: bool,
+    session: String,
     peers: HashSet<Uuid>,
-    tx: mpsc::Sender<(Uuid, String)>,
+    tx: mpsc::Sender<Delivery>,
+}
+struct Delivery {
+    from: Uuid,
+    body: String,
+    presence_session: Option<String>,
+}
+impl Delivery {
+    fn presence(from: Uuid, body: String, session: &str) -> Self {
+        Self {
+            from,
+            body,
+            presence_session: Some(session.to_owned()),
+        }
+    }
 }
 type Hub = Arc<Mutex<BTreeMap<String, Resource>>>;
 #[derive(Clone)]
@@ -51,7 +66,10 @@ impl Drop for Bound {
                 .values()
                 .filter(|e| old.peers.contains(&e.user) && e.available)
             {
-                let _ = entry.tx.try_send((self.user, stanza.clone()));
+                let _ =
+                    entry
+                        .tx
+                        .try_send(Delivery::presence(self.user, stanza.clone(), &self.session));
             }
         }
     }
@@ -122,12 +140,14 @@ impl Server {
     }
     async fn connection(&self, sock: TcpStream) -> io::Result<()> {
         let (mut input,mut w,mut rx,bound)=timeout(Duration::from_secs(30),async{
+            tracing::debug!("XMPP TCP connection accepted");
             let mut plain=Input::new(sock);plain.open(&self.domain).await?;
             send(plain.raw(),&self.features(&format!("<starttls xmlns='{STARTTLS}'><required/></starttls>"))).await?;
             let frame=plain.stanza().await?.ok_or_else(invalid)?;
             if !root(&parse(&frame)?)?.has_tag_name((STARTTLS,"starttls")){return Err(invalid())}
             send(plain.raw(),&format!("<proceed xmlns='{STARTTLS}'/>")).await?;
             let tls=self.tls.accept(plain.into_buffer()).await?;
+            tracing::debug!("XMPP STARTTLS negotiated");
             let (r,mut w)=tokio::io::split(tls);let mut input=Input::new(r);
             input.open(&self.domain).await?;
             send(&mut w,&self.features(&format!("<mechanisms xmlns='{SASL}'><mechanism>PLAIN</mechanism></mechanisms>"))).await?;
@@ -152,9 +172,10 @@ impl Server {
             if resource.is_empty()||resource.len()>128||resource.chars().any(char::is_control){return Err(invalid())}
             let jid=format!("{id}@{}/{resource}",self.domain);let (tx,rx)=mpsc::channel(32);
             {let mut hub=self.hub.lock().unwrap();if hub.contains_key(&jid)||hub.values().filter(|e|e.user==id).count()>=8{return Err(invalid())}
-            hub.insert(jid.clone(),Resource{user:id,available:false,peers:HashSet::new(),tx});}
+            hub.insert(jid.clone(),Resource{user:id,session:session.clone(),available:false,peers:HashSet::new(),tx});}
             let bound=Bound{user:id,jid,session,hub:self.hub.clone()};
             send(&mut w,&format!("<iq type='result' id='{tag}'><bind xmlns='{BIND}'><jid>{}</jid></bind></iq>",escape(&bound.jid))).await?;
+            tracing::debug!("XMPP resource bound");
             Ok((input,w,rx,bound))
         }).await??;
         let mut start = Instant::now();
@@ -164,7 +185,9 @@ impl Server {
             tokio::pin!(frame);
             let frame=timeout(Duration::from_secs(600),async{loop{tokio::select!{
                 f=&mut frame=>break f,
-                delivery=rx.recv()=>{let (from,body)=delivery.ok_or_else(invalid)?;if self.contacts(&bound.session).await?.iter().any(|c|c.id==from){send(&mut w,&body).await?;}}
+                delivery=rx.recv()=>{let delivery=delivery.ok_or_else(invalid)?;
+                    let visible=match delivery.presence_session { Some(session)=>timeout(Duration::from_secs(5),async {self.directory.presence_allowed(&session).await && self.directory.receives_presence(&bound.session).await}).await.unwrap_or(false),None=>true };
+                    if visible && self.contacts(&bound.session).await?.iter().any(|c|c.id==delivery.from){send(&mut w,&delivery.body).await?;}}
             }}}).await??;
             let Some(frame) = frame else {
                 send(&mut w, "</stream:stream>").await?;
@@ -238,9 +261,14 @@ impl Server {
                 .iter()
                 .filter(|(_, r)| r.available && peers.contains(&r.user))
             {
-                let _ = r.tx.try_send((b.user, stanza.clone()));
+                let _ =
+                    r.tx.try_send(Delivery::presence(b.user, stanza.clone(), &b.session));
                 if initial {
-                    let _ = tx.try_send((r.user, format!("<presence from='{}'/>", escape(jid))));
+                    let _ = tx.try_send(Delivery::presence(
+                        r.user,
+                        format!("<presence from='{}'/>", escape(jid)),
+                        &r.session,
+                    ));
                 }
             }
         } else if n.has_tag_name((CLIENT, "message"))
@@ -275,7 +303,14 @@ impl Server {
                         escape(jid),
                         escape(body)
                     );
-                    if r.tx.try_send((b.user, stanza)).is_ok() {
+                    if r.tx
+                        .try_send(Delivery {
+                            from: b.user,
+                            body: stanza,
+                            presence_session: None,
+                        })
+                        .is_ok()
+                    {
                         return Ok(None);
                     }
                 }
