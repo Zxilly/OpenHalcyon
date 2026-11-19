@@ -20,6 +20,7 @@ use tokio::net::TcpStream;
 use tokio_rustls::{TlsAcceptor, TlsConnector};
 
 pub(crate) const MAX_BODY: usize = 16 * 1024 * 1024;
+type Sender = hyper::client::conn::http1::SendRequest<Full<Bytes>>;
 type Rpc<T, E = openraft::error::Infallible> =
     Result<T, RPCError<Uuid, BasicNode, RaftError<Uuid, E>>>;
 fn certs(path: &Path) -> anyhow::Result<Vec<CertificateDer<'static>>> {
@@ -42,6 +43,9 @@ pub(crate) struct Transport {
     pub accept: TlsAcceptor,
     connect: TlsConnector,
     pins: Arc<BTreeMap<Vec<u8>, Uuid>>,
+    // One idle HTTP connection per peer. Concurrent votes and capacity reads
+    // may use separate sockets instead of waiting for a snapshot to complete.
+    idle: Arc<std::sync::Mutex<BTreeMap<Uuid, Sender>>>,
 }
 impl Transport {
     pub fn new(cfg: Config) -> anyhow::Result<Self> {
@@ -77,6 +81,7 @@ impl Transport {
             connect: TlsConnector::from(Arc::new(client)),
             accept: TlsAcceptor::from(Arc::new(server)),
             pins: Arc::new(pins),
+            idle: Default::default(),
         })
     }
     pub fn identity(&self, chain: Option<&[CertificateDer]>) -> anyhow::Result<Uuid> {
@@ -85,6 +90,25 @@ impl Transport {
             .and_then(|c| self.pins.get(c.as_ref()))
             .copied()
             .context("unrecognized peer")
+    }
+    async fn sender(&self, id: Uuid, addr: &str) -> anyhow::Result<Sender> {
+        if let Some(sender) = self.idle.lock().unwrap().remove(&id)
+            && !sender.is_closed()
+        {
+            return Ok(sender);
+        }
+        let authority: hyper::http::uri::Authority = addr.parse()?;
+        let name = ServerName::try_from(authority.host().trim_matches(['[', ']']).to_owned())?;
+        let socket = TcpStream::connect(addr).await?;
+        socket.set_nodelay(true)?;
+        let tls = self.connect.connect(name, socket).await?;
+        ensure!(
+            self.identity(tls.get_ref().1.peer_certificates())? == id,
+            "peer certificate mismatch"
+        );
+        let (sender, conn) = hyper::client::conn::http1::handshake(TokioIo::new(tls)).await?;
+        tokio::spawn(conn);
+        Ok(sender)
     }
     pub async fn post<I: Serialize + Sync, O: DeserializeOwned>(
         &self,
@@ -100,17 +124,7 @@ impl Transport {
                 .get(&id)
                 .context("unconfigured peer")?
                 .address;
-            let authority: hyper::http::uri::Authority = addr.parse()?;
-            let name = ServerName::try_from(authority.host().trim_matches(['[', ']']).to_owned())?;
-            let socket = TcpStream::connect(addr).await?;
-            let tls = self.connect.connect(name, socket).await?;
-            ensure!(
-                self.identity(tls.get_ref().1.peer_certificates())? == id,
-                "peer certificate mismatch"
-            );
-            let (mut sender, conn) =
-                hyper::client::conn::http1::handshake(TokioIo::new(tls)).await?;
-            tokio::spawn(conn);
+            let mut sender = self.sender(id, addr).await?;
             let req = Request::post(path)
                 .header("host", addr)
                 .header("x-halcyon-pool", self.cfg.pool_id.to_string())
@@ -127,6 +141,7 @@ impl Transport {
                 .await
                 .map_err(|e| anyhow::anyhow!("{e}"))?
                 .to_bytes();
+            self.idle.lock().unwrap().entry(id).or_insert(sender);
             decode(&b)
         })
         .await?

@@ -77,30 +77,43 @@ impl Federation {
                     continue;
                 };
                 let f = server.clone();
+                let mut closing = stopped.clone();
                 tokio::spawn(async move {
                     let _slot = slot;
-                    let _ = timeout(Duration::from_secs(12), f.serve_peer(socket)).await;
+                    tokio::select! {
+                        _ = closing.changed() => {},
+                        _ = f.serve_peer(socket) => {},
+                    }
                 });
             }
         });
         Ok(fed)
     }
     async fn serve_peer(&self, socket: tokio::net::TcpStream) -> anyhow::Result<()> {
-        let tls = self.net.accept.accept(socket).await?;
+        socket.set_nodelay(true)?;
+        let tls = timeout(Duration::from_secs(5), self.net.accept.accept(socket)).await??;
         let peer = self.net.identity(tls.get_ref().1.peer_certificates())?;
         let service =
             hyper::service::service_fn(|request: Request<hyper::body::Incoming>| async move {
-                let response = self
-                    .route(peer, request.map(Body::new))
-                    .await
-                    .unwrap_or_else(|e| {
+                let response = match timeout(
+                    Duration::from_secs(12),
+                    self.route(peer, request.map(Body::new)),
+                )
+                .await
+                {
+                    Ok(Ok(response)) => response,
+                    Ok(Err(e)) => {
                         tracing::debug!(%e,"peer request failed");
                         StatusCode::SERVICE_UNAVAILABLE.into_response()
-                    });
+                    }
+                    Err(_) => StatusCode::REQUEST_TIMEOUT.into_response(),
+                };
                 Ok::<_, Infallible>(response)
             });
         hyper::server::conn::http1::Builder::new()
-            .keep_alive(false)
+            .timer(hyper_util::rt::TokioTimer::new())
+            .header_read_timeout(Duration::from_secs(12))
+            .keep_alive(true)
             .serve_connection(TokioIo::new(tls), service)
             .await?;
         Ok(())
