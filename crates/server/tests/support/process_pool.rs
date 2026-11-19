@@ -392,11 +392,15 @@ async fn subprocess_match_finishes_on_both_homes() {
         assert_eq!(result["reason"], "completed");
         assert!(result["winner"].as_u64().is_some_and(|team| team <= 1));
         assert!(result["ticks"].as_u64().is_some_and(|ticks| ticks > 0));
-        assert!(
-            identities
-                .iter()
-                .all(|(p, _)| result["players"].get(p.to_string()).is_some())
-        );
+        let reached_five_minutes = result["ticks"].as_u64().unwrap() >= 300 * halcyon_sim::TICK_HZ;
+        for (id, _) in &identities {
+            let player = &result["players"][id.to_string()];
+            assert!(player["damageToHeroes"].is_number());
+            assert!(player["damageToStructures"].is_number());
+            assert!(player["laneLastHits"].is_u64());
+            assert_eq!(player["netWorthAtFive"].is_u64(), reached_five_minutes);
+            assert_eq!(player["laneLastHitsAtFive"].is_u64(), reached_five_minutes);
+        }
         if let Some(prior) = &first_result {
             assert_eq!(prior, &result);
         } else {
