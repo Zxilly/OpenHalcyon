@@ -395,6 +395,30 @@ impl AppState {
         accept: Option<Uuid>,
         cancel: bool,
     ) -> Result<FederatedIntent> {
+        self.federated_action_with_deadline(token, ticket, accept, cancel, None)
+            .await
+    }
+
+    /// Record an individual confirmation only within the committed offer window.
+    pub async fn federated_accept_in_window(
+        &self,
+        token: &str,
+        ticket: Uuid,
+        room: Uuid,
+        deadline: i64,
+    ) -> Result<FederatedIntent> {
+        self.federated_action_with_deadline(token, ticket, Some(room), false, Some(deadline))
+            .await
+    }
+
+    async fn federated_action_with_deadline(
+        &self,
+        token: &str,
+        ticket: Uuid,
+        accept: Option<Uuid>,
+        cancel: bool,
+        deadline: Option<i64>,
+    ) -> Result<FederatedIntent> {
         let key = digest(token);
         let ticket = ticket.to_string();
         self.run(move |state| {
@@ -405,6 +429,13 @@ impl AppState {
                     .ok_or(PlatformError::Conflict(
                         "federated ticket does not belong to player",
                     ))?;
+                if let Some(deadline) = deadline
+                    && !tx.query_row("SELECT unixepoch() < ?", [deadline], |row| {
+                        row.get::<_, bool>(0)
+                    })?
+                {
+                    return Err(PlatformError::Conflict("federated offer has expired"));
+                }
                 apply_action(tx, &intent, &id, accept, cancel)?;
                 intent_by_ticket(tx, &ticket)?.ok_or(PlatformError::WorkerUnavailable)
             })

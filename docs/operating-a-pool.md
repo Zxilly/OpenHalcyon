@@ -58,6 +58,19 @@ max_latency_ms = 120
    instances using the same client build, queue and simulation data. A compatible
    host must advertise enough capacity and meet each ticket's latency budget.
 
+Preparing allocations have a 35-second confirmation window. The leader
+writes its timestamp into the committed allocation command. The absolute
+deadline survives leader changes and restarts, and is displayed by the
+native offer endpoints. New confirmations and host readiness cannot advance
+a preparing room after the deadline. Expiry releases the preparation and
+keeps remaining tickets' queue priority. Previously persisted preparations
+without a deadline get one 35-second grace window on their first timed
+operation. Existing ready and finished rooms keep their state.
+
+Keep voter and home clocks synchronized. Upgrade voting members together
+before serving new timed offers. Older binaries can read the historical
+format but do not enforce the new expiry command and timestamp.
+
 To back up or move an instance, stop its process and preserve the instance
 configuration, keys and all three databases together, including any live SQLite
 WAL files. Only one process should own a given instance identity. Starting with a

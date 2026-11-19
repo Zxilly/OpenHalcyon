@@ -68,7 +68,7 @@ pub(super) fn advance(m: &mut Machine, e: &Entry<Types>) -> Outcome {
                 }
             }
             std::collections::btree_map::Entry::Vacant(slot) => {
-                let outcome = m.pool.apply(p.caller, p.command.clone());
+                let outcome = m.pool.apply_at(p.caller, p.command.clone(), p.epoch);
                 slot.insert((p.command.clone(), outcome));
                 outcome
             }

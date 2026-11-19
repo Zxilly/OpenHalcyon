@@ -11,6 +11,7 @@ fn entry(index: u64, request: Uuid, command: Command) -> Entry<Types> {
             caller: HOME,
             request_id: request,
             command,
+            epoch: None,
         }),
     }
 }
@@ -292,4 +293,100 @@ async fn store_write_amplification() {
             );
         }
     }
+}
+
+#[tokio::test]
+async fn a_preparing_deadline_and_replayed_acceptance_survive_storage_restart() {
+    use halcyon_matchmaking::{OFFER_WINDOW_SECS, TicketPhase};
+
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("offers.db");
+    let id = Uuid::from_u128(80);
+    let ticket = Ticket {
+        id: Uuid::from_u128(81),
+        generation: 1,
+        home: HOME,
+        players: vec![Uuid::from_u128(82)],
+        queue: Queue {
+            name: "casual".into(),
+            build: 147219,
+            rules_digest: "test-rules".into(),
+            seats: 1,
+        },
+        latency_ms: BTreeMap::from([(HOME, 1)]),
+        max_latency_ms: 50,
+    };
+    let reference = TicketRef {
+        id: ticket.id,
+        generation: 1,
+    };
+    let timed = |index: u64, request: u128, epoch, command| {
+        let mut entry = entry(index, Uuid::from_u128(request), command);
+        if let EntryPayload::Normal(proposal) = &mut entry.payload {
+            proposal.epoch = Some(epoch);
+        }
+        entry
+    };
+    let deadline = 100 + OFFER_WINDOW_SECS;
+    let accept = Command::Accept {
+        id,
+        ticket: reference,
+    };
+    let mut store = Store::open(&path, POOL, HOME).unwrap();
+    assert_eq!(
+        store
+            .apply_to_state_machine(&[
+                entry(1, Uuid::from_u128(86), Command::Enqueue(ticket)),
+                timed(
+                    2,
+                    87,
+                    100,
+                    Command::Allocate {
+                        id,
+                        host: HOME,
+                        tickets: vec![reference]
+                    }
+                ),
+                timed(3, 88, deadline - 1, accept.clone()),
+            ])
+            .await
+            .unwrap(),
+        [Ok(()); 3]
+    );
+    store.build_snapshot().await.unwrap();
+    drop(store);
+
+    let mut reopened = Store::open(&path, POOL, HOME).unwrap();
+    let saved = reopened.machine().unwrap();
+    assert_eq!(saved.pool.allocations()[&id].expires_at, Some(deadline));
+    assert_eq!(saved.pool.allocations()[&id].phase, Phase::Preparing);
+    assert_eq!(
+        reopened
+            .apply_to_state_machine(&[
+                timed(4, 88, deadline, accept), // same request and outcome, no new deadline
+                timed(
+                    5,
+                    89,
+                    deadline,
+                    Command::HostReady {
+                        id,
+                        endpoint: Endpoint {
+                            host: "test.example".into(),
+                            port: 7
+                        },
+                    }
+                ),
+                timed(6, 90, deadline, Command::Expire { id }),
+            ])
+            .await
+            .unwrap(),
+        [Ok(()), Err(ApplyError::Conflict), Ok(())]
+    );
+    let expired = reopened.machine().unwrap();
+    assert_eq!(expired.pool.allocations()[&id].expires_at, Some(deadline));
+    assert_eq!(expired.pool.allocations()[&id].phase, Phase::Aborted);
+    assert_eq!(
+        expired.pool.tickets()[&reference.id].phase,
+        TicketPhase::Queued
+    );
 }

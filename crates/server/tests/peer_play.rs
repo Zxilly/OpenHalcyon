@@ -1453,7 +1453,15 @@ async fn public_and_ce_players_share_a_pool_and_cross_home_match_chat() {
     let home = &node(&cluster, 0).peer_play;
     let first = home.native_offer(token(0)).await.unwrap().unwrap();
     assert_eq!(first.entries, 2);
-    assert!(first.expires.is_none());
+    let expiry = first
+        .expires
+        .expect("federation publishes a committed deadline");
+    let projected = state(b, ce_token, "match_pending").await;
+    assert_eq!(projected["expiry"], expiry);
+    let ttl = projected["ttl"].as_i64().unwrap();
+    assert!((1..=halcyon_matchmaking::OFFER_WINDOW_SECS).contains(&ttl));
+    assert!(initial["ttl"].as_i64().unwrap() >= ttl);
+
     for (seat, row) in first.seats.iter().zip(responses) {
         assert_eq!(row["playerUUID"], seat.player.to_string());
         assert!(!seat.accepted);

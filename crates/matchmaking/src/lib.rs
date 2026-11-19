@@ -69,6 +69,8 @@ pub struct Endpoint {
     pub port: u16,
 }
 
+pub const OFFER_WINDOW_SECS: i64 = 35;
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Allocation {
     pub id: Uuid,
@@ -77,6 +79,8 @@ pub struct Allocation {
     pub phase: Phase,
     pub accepted: BTreeSet<Uuid>,
     pub endpoint: Option<Endpoint>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<i64>,
     pub result_digest: Option<String>,
     #[serde(default)]
     pub result: Option<serde_json::Value>,
@@ -100,6 +104,9 @@ pub enum Command {
         endpoint: Endpoint,
     },
     Abort {
+        id: Uuid,
+    },
+    Expire {
         id: Uuid,
     },
     Settle {
@@ -133,6 +140,8 @@ pub struct Pool {
     /// A wire UUID can appear at different homes, but only once per roster.
     owners: BTreeMap<(Uuid, Uuid), Uuid>,
     sequence: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    offer_epoch: Option<i64>,
     #[serde(skip)]
     active_tickets: BTreeSet<Uuid>,
     #[serde(skip)]
@@ -152,12 +161,30 @@ impl Pool {
         self.owners.get(&(home, player)).copied()
     }
 
-    /// The transport authenticates the caller as a member before submission.
+    /// Apply a pre-deadline historical entry or a direct standalone model command.
     pub fn apply(&mut self, caller: Uuid, command: Command) -> Result<(), Error> {
+        self.apply_at(caller, command, None)
+    }
+
+    /// The transport supplies time from the proposing leader's committed entry.
+    /// No replica reads its own wall clock while applying a command.
+    pub fn apply_at(
+        &mut self,
+        caller: Uuid,
+        command: Command,
+        epoch: Option<i64>,
+    ) -> Result<(), Error> {
+        let epoch = epoch.map(|epoch| {
+            let fenced = self
+                .offer_epoch
+                .map_or(epoch, |previous| previous.max(epoch));
+            self.offer_epoch = Some(fenced);
+            fenced
+        });
         match command {
             Command::Enqueue(ticket) => self.enqueue(caller, ticket),
             Command::Cancel(ticket) => self.cancel(caller, ticket),
-            Command::Allocate { id, host, tickets } => self.allocate(id, host, tickets),
+            Command::Allocate { id, host, tickets } => self.allocate(id, host, tickets, epoch),
             Command::Accept { id, ticket } => {
                 let entry = self.owned(caller, ticket)?;
                 if entry.phase != TicketPhase::Assigned(id) {
@@ -170,6 +197,7 @@ impl Pool {
                 if room.phase != Phase::Preparing {
                     return Err(Error::Conflict);
                 }
+                Self::check_window(room, epoch)?;
                 room.accepted.insert(ticket.id);
                 Self::activate(room);
                 Ok(())
@@ -192,11 +220,26 @@ impl Pool {
                 if endpoint.port == 0 || endpoint.host.trim().is_empty() {
                     return Err(Error::Invalid);
                 }
+                Self::check_window(room, epoch)?;
                 room.endpoint = Some(endpoint);
                 Self::activate(room);
                 Ok(())
             }
             Command::Abort { id } => self.abort(id),
+            Command::Expire { id } => {
+                let now = epoch.ok_or(Error::Invalid)?;
+                let room = self.allocations.get_mut(&id).ok_or(Error::Missing)?;
+                if room.phase != Phase::Preparing {
+                    return Ok(());
+                }
+                let deadline = room
+                    .expires_at
+                    .get_or_insert(now.saturating_add(OFFER_WINDOW_SECS));
+                if now < *deadline {
+                    return Ok(());
+                }
+                self.abort(id)
+            }
             Command::Finish { id, digest } => self.finish(caller, id, digest, None),
             Command::Settle { id, digest, result } => {
                 if result_digest(&result).as_deref() != Ok(digest.as_str()) {
@@ -285,7 +328,13 @@ impl Pool {
         Ok(())
     }
 
-    fn allocate(&mut self, id: Uuid, host: Uuid, tickets: Vec<TicketRef>) -> Result<(), Error> {
+    fn allocate(
+        &mut self,
+        id: Uuid,
+        host: Uuid,
+        tickets: Vec<TicketRef>,
+        epoch: Option<i64>,
+    ) -> Result<(), Error> {
         if let Some(old) = self.allocations.get(&id) {
             return if old.host == host && old.tickets == tickets {
                 Ok(())
@@ -331,11 +380,27 @@ impl Pool {
                 tickets,
                 accepted: BTreeSet::new(),
                 endpoint: None,
+                expires_at: epoch.map(|epoch| epoch.saturating_add(OFFER_WINDOW_SECS)),
                 result_digest: None,
                 result: None,
                 phase: Phase::Preparing,
             },
         );
+        Ok(())
+    }
+
+    fn check_window(room: &mut Allocation, epoch: Option<i64>) -> Result<(), Error> {
+        if epoch.is_none() && room.expires_at.is_some() {
+            return Err(Error::Invalid);
+        }
+        if let Some(now) = epoch {
+            let deadline = room
+                .expires_at
+                .get_or_insert(now.saturating_add(OFFER_WINDOW_SECS));
+            if now >= *deadline {
+                return Err(Error::Conflict);
+            }
+        }
         Ok(())
     }
 

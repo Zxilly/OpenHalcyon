@@ -262,3 +262,111 @@ fn working_set_keeps_only_active_and_requested_terminal_entries() {
     assert!(work.finished(key(&newer)).is_none());
     assert!(work.allocations.is_empty());
 }
+
+#[test]
+fn committed_offer_deadline_is_fixed_and_acceptance_ordered() {
+    let mut pool = Pool::default();
+    let a = ticket(1, id(10), &[101, 102]);
+    let b = ticket(2, id(20), &[103, 104]);
+    for t in [&a, &b] {
+        pool.apply(t.home, Command::Enqueue(t.clone())).unwrap();
+    }
+    let room = id(60);
+    let host = id(50);
+    let allocate = Command::Allocate {
+        id: room,
+        host,
+        tickets: vec![key(&a), key(&b)],
+    };
+    let accept_a = Command::Accept {
+        id: room,
+        ticket: key(&a),
+    };
+    let accept_b = Command::Accept {
+        id: room,
+        ticket: key(&b),
+    };
+    let ready = Command::HostReady {
+        id: room,
+        endpoint: Endpoint {
+            host: "test.example".into(),
+            port: 7,
+        },
+    };
+    let expire = Command::Expire { id: room };
+    pool.apply_at(a.home, allocate.clone(), Some(100)).unwrap();
+    let deadline = 100 + OFFER_WINDOW_SECS;
+    assert_eq!(pool.allocations()[&room].expires_at, Some(deadline));
+    pool.apply_at(b.home, allocate, Some(110)).unwrap();
+    assert_eq!(pool.allocations()[&room].expires_at, Some(deadline));
+    let mut late = pool.clone();
+    pool.apply_at(a.home, accept_a.clone(), Some(deadline - 1))
+        .unwrap();
+    pool.apply_at(b.home, accept_b.clone(), Some(deadline - 1))
+        .unwrap();
+    pool.apply_at(host, ready.clone(), Some(deadline - 1))
+        .unwrap();
+    pool.apply_at(host, expire.clone(), Some(deadline)).unwrap();
+    assert_eq!(pool.allocations()[&room].phase, Phase::Ready);
+
+    late.apply_at(a.home, accept_a.clone(), Some(deadline - 1))
+        .unwrap();
+    late.apply_at(host, expire.clone(), Some(deadline - 1))
+        .unwrap();
+    assert_eq!(late.allocations()[&room].phase, Phase::Preparing);
+    assert_eq!(
+        late.apply_at(b.home, accept_b.clone(), Some(deadline)),
+        Err(Error::Conflict)
+    );
+    assert_eq!(
+        late.apply_at(host, ready, Some(deadline - 1)),
+        Err(Error::Conflict)
+    );
+    late.apply_at(a.home, accept_a, Some(deadline)).unwrap(); // replay of accepted choice
+    late.apply_at(host, expire.clone(), Some(deadline)).unwrap();
+    late.apply_at(host, expire, Some(deadline + 1)).unwrap();
+    assert_eq!(late.allocations()[&room].phase, Phase::Aborted);
+    assert_eq!(
+        late.apply_at(b.home, accept_b, Some(deadline + 1)),
+        Err(Error::Conflict)
+    );
+    assert_eq!(late.tickets()[&a.id].phase, TicketPhase::Queued);
+    assert_eq!(late.tickets()[&b.id].phase, TicketPhase::Queued);
+}
+
+#[test]
+fn a_legacy_preparation_gets_one_persisted_grace_window() {
+    let mut pool = Pool::default();
+    let t = ticket(1, id(10), &[101, 102, 103, 104]);
+    let room = id(60);
+    let host = id(50);
+    pool.apply(t.home, Command::Enqueue(t.clone())).unwrap();
+    pool.apply(
+        t.home,
+        Command::Allocate {
+            id: room,
+            host,
+            tickets: vec![key(&t)],
+        },
+    )
+    .unwrap();
+    assert_eq!(pool.allocations()[&room].expires_at, None);
+    let expire = Command::Expire { id: room };
+    pool.apply_at(host, expire.clone(), Some(500)).unwrap();
+    let deadline = 500 + OFFER_WINDOW_SECS;
+    pool.apply_at(t.home, expire.clone(), Some(deadline - 1))
+        .unwrap();
+    assert_eq!(pool.allocations()[&room].expires_at, Some(deadline));
+    assert_eq!(
+        pool.apply(
+            t.home,
+            Command::Accept {
+                id: room,
+                ticket: key(&t)
+            }
+        ),
+        Err(Error::Invalid)
+    );
+    pool.apply_at(host, expire, Some(deadline)).unwrap();
+    assert_eq!(pool.allocations()[&room].phase, Phase::Aborted);
+}

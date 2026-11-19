@@ -51,6 +51,8 @@ pub struct Proposal {
     pub caller: Uuid,
     pub request_id: Uuid,
     pub command: Command,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub epoch: Option<i64>,
 }
 type Outcome = Result<(), ApplyError>;
 openraft::declare_raft_types!(pub Types: D=Proposal,R=Outcome,NodeId=Uuid);
@@ -220,10 +222,17 @@ mod tests {
         .await
         .unwrap()
         .unwrap();
+        let deadline = f.read().await.unwrap().allocations()[&room]
+            .expires_at
+            .unwrap();
         nodes[leader].take().unwrap().shutdown().await.unwrap();
         elected(&nodes).await;
         let f = nodes[home].as_ref().unwrap();
         f.submit(r, enqueue.clone()).await.unwrap().unwrap();
+        assert_eq!(
+            f.read().await.unwrap().allocations()[&room].expires_at,
+            Some(deadline)
+        );
         assert_eq!(
             f.submit(r, Command::Cancel(key)).await.unwrap(),
             Err(ApplyError::Conflict)
@@ -274,10 +283,9 @@ mod tests {
         elected(&nodes).await;
 
         let surviving = nodes.iter().flatten().next().unwrap();
-        assert_eq!(
-            surviving.read().await.unwrap().allocations()[&room].phase,
-            Phase::Ready
-        );
+        let restored = surviving.read().await.unwrap();
+        assert_eq!(restored.allocations()[&room].phase, Phase::Ready);
+        assert_eq!(restored.allocations()[&room].expires_at, Some(deadline));
         let next = nodes.iter().position(Option::is_some).unwrap();
         nodes[next].take().unwrap().shutdown().await.unwrap();
         let alone = nodes.iter().flatten().next().unwrap();

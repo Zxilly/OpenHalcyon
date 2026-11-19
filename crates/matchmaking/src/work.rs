@@ -12,6 +12,8 @@ pub(super) struct PersistedPool {
     allocations: BTreeMap<Uuid, Allocation>,
     owners: BTreeMap<(Uuid, Uuid), Uuid>,
     sequence: u64,
+    #[serde(default)]
+    offer_epoch: Option<i64>,
 }
 
 impl From<PersistedPool> for Pool {
@@ -21,6 +23,7 @@ impl From<PersistedPool> for Pool {
             allocations: source.allocations,
             owners: source.owners,
             sequence: source.sequence,
+            offer_epoch: source.offer_epoch,
             ..Self::default()
         };
         pool.active_tickets.extend(

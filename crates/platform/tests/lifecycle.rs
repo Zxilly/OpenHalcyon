@@ -472,8 +472,23 @@ async fn federated_party_keeps_roster_and_acknowledges_each_player() {
         .federated_project(intent.ticket, "offered", Some(id), None, None)
         .await
         .unwrap();
+    assert!(matches!(
+        state
+            .federated_accept_in_window(captain, intent.ticket, id, 0)
+            .await,
+        Err(PlatformError::Conflict(_))
+    ));
+    assert!(
+        state
+            .federated_offer_binding(captain, pool)
+            .await
+            .unwrap()
+            .unwrap()
+            .accepted
+            .is_empty()
+    );
     let first = state
-        .federated_action_as(captain, intent.ticket, Some(id), false)
+        .federated_accept_in_window(captain, intent.ticket, id, i64::MAX)
         .await
         .unwrap();
     assert!(first.accepted_match.is_none());

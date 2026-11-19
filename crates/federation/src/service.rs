@@ -31,6 +31,12 @@ pub struct Federation {
     stop: watch::Sender<bool>,
     listener_closed: watch::Receiver<bool>,
 }
+fn unix_epoch() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_secs() as i64)
+}
+
 impl Federation {
     pub async fn start(cfg: Config) -> anyhow::Result<Self> {
         let listener = TcpListener::bind(cfg.listen).await?;
@@ -182,6 +188,7 @@ impl Federation {
             caller: self.net.cfg.node_id,
             request_id,
             command,
+            epoch: None,
         })
         .await
     }
@@ -203,13 +210,21 @@ impl Federation {
         }
         self.net.post(id, "/internal/forward", &p, DEADLINE).await
     }
-    async fn write_here(&self, p: Proposal) -> anyhow::Result<Outcome> {
+    async fn write_here(&self, mut p: Proposal) -> anyhow::Result<Outcome> {
         ensure!(self.voter(p.caller), "caller is not a voter");
         if let Command::Allocate { host, .. } = &p.command
             && !self.voter(*host)
         {
             return Ok(Err(ApplyError::Invalid));
         }
+        p.epoch = matches!(
+            p.command,
+            Command::Allocate { .. }
+                | Command::Accept { .. }
+                | Command::HostReady { .. }
+                | Command::Expire { .. }
+        )
+        .then(unix_epoch);
         Ok(timeout(DEADLINE, self.raft.client_write(p)).await??.data)
     }
     /// Read this node's last applied committed state without a quorum round trip.
@@ -481,6 +496,7 @@ impl Federation {
                 caller: peer,
                 request_id: w.request_id,
                 command: w.command,
+                epoch: None,
             })
             .await?;
         Ok(match result {

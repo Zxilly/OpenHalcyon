@@ -226,7 +226,7 @@ impl PeerPlay {
                 id: a.id,
                 seats,
                 entries: a.tickets.len() as u32,
-                expires: None,
+                expires: a.expires_at,
             })
         }))
     }
@@ -236,18 +236,54 @@ impl PeerPlay {
         if i.match_id != Some(room) || !matches!(i.phase.as_str(), "offered" | "playing") {
             return Err(PlatformError::Conflict("no offer for this match"));
         }
+        let bound_room = || async {
+            self.inner
+                .fed
+                .inspect(|pool| {
+                    pool.allocations().get(&room).and_then(|a| {
+                        a.tickets
+                            .iter()
+                            .any(|ticket| ticket.id == i.ticket)
+                            .then_some((
+                                a.phase.clone(),
+                                a.expires_at,
+                                a.accepted.contains(&i.ticket),
+                            ))
+                    })
+                })
+                .await
+                .map_err(|_| PlatformError::HostUnavailable)
+        };
+        let mut binding = bound_room().await?;
+        if matches!(binding, Some((Phase::Preparing, None, false))) {
+            self.inner
+                .expire(room)
+                .await
+                .map_err(|_| PlatformError::HostUnavailable)?;
+            binding = bound_room().await?;
+        }
+        let deadline = match binding {
+            Some((Phase::Ready, _, true) | (Phase::Preparing, _, true)) => return Ok(()),
+            Some((Phase::Preparing, Some(deadline), false)) => deadline,
+            _ => return Err(PlatformError::Conflict("no offer for this match")),
+        };
         let i = self
             .inner
             .platform
-            .federated_action_as(token, i.ticket, Some(room), false)
+            .federated_accept_in_window(token, i.ticket, room, deadline)
             .await?;
         if i.accepted_match != Some(room) || i.phase == "playing" {
             return Ok(());
         }
-        self.inner
-            .accept(&i, room)
-            .await
-            .map_err(|_| PlatformError::HostUnavailable)
+        self.inner.accept(&i, room).await.map_err(|error| {
+            if error.downcast_ref::<halcyon_matchmaking::Error>()
+                == Some(&halcyon_matchmaking::Error::Conflict)
+            {
+                PlatformError::Conflict("federated offer is no longer open")
+            } else {
+                PlatformError::HostUnavailable
+            }
+        })
     }
     pub async fn leave(&self, token: &str) -> halcyon_platform::Result<()> {
         let Some(i) = self
@@ -405,6 +441,13 @@ impl Inner {
         )
         .await
     }
+    async fn expire(&self, id: Uuid) -> anyhow::Result<()> {
+        // An early attempt can race a leader whose clock is behind. The state
+        // machine gates expiry, and the same room can be checked again later.
+        let attempt = format!("expire/{}", unix_epoch());
+        self.commit(id, &attempt, Command::Expire { id }).await?;
+        Ok(())
+    }
     async fn accept(&self, i: &FederatedIntent, id: Uuid) -> anyhow::Result<()> {
         self.commit(
             i.ticket,
@@ -488,6 +531,12 @@ impl Inner {
         }
     }
 }
+fn unix_epoch() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_secs() as i64)
+}
+
 trait Address {
     fn address(&self) -> String;
 }
@@ -505,7 +554,6 @@ struct Worker {
     lost_rooms: BTreeSet<Uuid>,
     hosted: BTreeSet<Uuid>,
     anchors: BTreeMap<Uuid, Instant>,
-    preparing: BTreeMap<Uuid, Instant>,
     active: BTreeSet<Uuid>,
     advertised: BTreeMap<Queue, Instant>,
 }
@@ -532,11 +580,15 @@ impl Worker {
                 .await?;
             s.journal.delivered(id)?;
         }
-        for a in pool
-            .allocations
-            .values()
-            .filter(|room| room.host == s.cfg.node_id)
-        {
+        let now = unix_epoch();
+        for a in pool.allocations.values() {
+            if a.phase == Phase::Preparing && a.expires_at.is_none_or(|deadline| now >= deadline) {
+                s.expire(a.id).await?;
+                continue;
+            }
+            if a.host != s.cfg.node_id {
+                continue;
+            }
             let active = matches!(a.phase, Phase::Preparing | Phase::Ready);
             if active {
                 self.hosted.insert(a.id);
@@ -549,27 +601,6 @@ impl Worker {
                 }
                 Err(e) => tracing::debug!(%e,room=%a.id,"host reconciliation deferred"),
                 _ => {}
-            }
-        }
-        self.preparing.retain(|id, _| {
-            pool.allocations
-                .get(id)
-                .is_some_and(|a| a.phase == Phase::Preparing)
-        });
-        for a in pool
-            .allocations
-            .values()
-            .filter(|a| a.phase == Phase::Preparing)
-        {
-            if self
-                .preparing
-                .entry(a.id)
-                .or_insert_with(Instant::now)
-                .elapsed()
-                > Duration::from_secs(35)
-            {
-                s.commit(a.id, "timeout", Command::Abort { id: a.id })
-                    .await?;
             }
         }
         self.plan(s, &pool).await
