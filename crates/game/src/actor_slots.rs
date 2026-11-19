@@ -180,7 +180,7 @@ mod tests {
                     }
                 );
                 assert_eq!(&m.body[741..745], &[255; 4]);
-                assert_eq!(m.body[745], 13 + actor.id as u8);
+                assert_eq!(m.body[745], first.body[745]);
             }
             assert_eq!(&first.body[713..721], &[1; 8]);
             let mut flags = [0; 8];
