@@ -265,13 +265,17 @@ impl Message {
             },
             0x3e9 => Fields::GameSetup {
                 first_word: number(0)?,
+                state_input: number(4)?,
+                word8: number(8)?,
+                word12: number(12)?,
+                word96: number(96)?,
                 mode: b
                     .get(32..96)
                     .ok_or(invalid("truncated game setup"))?
                     .split(|&v| v == 0)
                     .next()
                     .unwrap_or_default(),
-                remaining: &b[96..],
+                remaining: &b[100..],
             },
             0x3f8 if matches!(b.len(), 9 | 14) => Fields::MoveAction {
                 selector: b[0],
@@ -527,6 +531,11 @@ pub enum Fields<'a> {
     },
     GameSetup {
         first_word: u32,
+        /// Raw wire value. Android can clear this word before testing whether it is zero.
+        state_input: u32,
+        word8: u32,
+        word12: u32,
+        word96: u32,
         mode: &'a [u8],
         remaining: &'a [u8],
     },
@@ -834,6 +843,37 @@ impl<R: Read> ReplayReader<R> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn game_setup_retains_raw_state_input_and_other_converted_words() {
+        for state_input in [0u32, 1, 0x01020304] {
+            let mut b = vec![0; 102];
+            for (offset, value) in [
+                (0, 51u32),
+                (4, state_input),
+                (8, 0x01234567),
+                (12, 0x89abcdef),
+                (96, 0x3f800000),
+            ] {
+                b[offset..offset + 4].copy_from_slice(&value.to_be_bytes());
+            }
+            b[32..36].copy_from_slice(b"mode");
+            b[100..].copy_from_slice(&[7, 8]);
+            assert_eq!(
+                Message::new(0x3e9, b.clone()).fields().unwrap(),
+                Fields::GameSetup {
+                    first_word: 51,
+                    state_input,
+                    word8: 0x01234567,
+                    word12: 0x89abcdef,
+                    word96: 0x3f800000,
+                    mode: b"mode",
+                    remaining: &[7, 8]
+                }
+            );
+            assert!(Message::new(0x3e9, &b[..99]).fields().is_err());
+        }
+    }
+
     #[test]
     fn paired_ability_and_buff_records_share_the_same_key() {
         let b = [0, 1, 0, 0, 0, 0, 0, 7, 0x40, 0, 0, 0, 8, 9];

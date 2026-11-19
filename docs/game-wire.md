@@ -59,3 +59,19 @@ The native receiver's field conversions and the local replay agree on the follow
 | 0x0434, 0x043A | Level and grant-ability records carry an actor and a 32-bit operand. The local level samples alone cannot distinguish an increment from an absolute level. |
 
 Remaining opaque records include less common projectile, scripted movement, buff, effects, match-state and aggregate statistics variants. A native class label and copied byte count alone cannot establish the assignment of application fields. In particular, the cumulative statistics record in the local corpus has only one example.
+
+## Android draft settings and roster consumers
+
+In the original Android 147219 arm64 library, the 0x03E9 dispatcher at image address `0x82B8D8` copies 101 bytes and converts five big-endian words. Offsets are relative to the message body, after the opcode. The Rust decoder exposes the original bits and retains the suffix starting at +100.
+
+| Body offset | Android draft capture (1 record) | VGR world headers (14 records) | Evidence |
+| --- | --- | --- | --- |
+| +0 | 1500 | 1500 | The consumer copies this word into a local structure. |
+| +4 | 1 | 0 | The dispatcher can clear this word depending on the result of a local check at `0x823FDC`. The consumer tests the resulting value for zero. |
+| +8 | 0x0000FFFF | 0 | Converted 32-bit word. Its application meaning is unresolved. |
+| +12 | 0 | 0 | Converted 32-bit word. Its application meaning is unresolved. |
+| +96 | 0x3F800000 | 0 | Converted 32-bit word. The decoder preserves its bits; the consumer evidence does not establish a float unit. |
+
+The +4 consumer at `0x8292E4` passes the zero test to `0x81A3DC`. On one state-dependent path, nonzero selects state 1 and zero selects state 2. Other current states take different branches. The transition routine at `0x819C84` can dispatch a registered entry callback. The captures establish the values during draft and world initialization. They do not identify which entry callback opens the next game connection.
+
+The 0x0459 receiver at `0x8E07C4` forwards to a registered listener. One resolved virtual target, `0xA7D890`, returns immediately. Another, `0x8E1018`, walks up to 16 records with a 161-byte stride and checks the occupied flag and entity reference. For the matching record it saves team and slot, and caches the hero template when the lock flag is set. It then notifies subscribers. This callback does not read either leading timer or directly open a socket. The existing Android log establishes lock confirmation and a later connection attempt. Identifying the dial trigger requires the active subscriber or state-entry binding and its call order during a successful transition.
