@@ -108,7 +108,13 @@ struct Member {
 }
 
 impl Member {
-    async fn start(path: &Path, index: usize, config: FederationConfig, host: Uuid) -> Self {
+    async fn start(
+        path: &Path,
+        index: usize,
+        config: FederationConfig,
+        listener: Option<std::net::TcpListener>,
+        host: Uuid,
+    ) -> Self {
         let rooms = Rooms::new(
             Ipv4Addr::LOCALHOST.into(),
             "127.0.0.1".into(),
@@ -133,7 +139,11 @@ impl Member {
             peer_latency_ms: BTreeMap::new(),
             max_latency_ms: 1200,
         };
-        let raft = Federation::start(config).await.unwrap();
+        let raft = match listener {
+            Some(listener) => Federation::start_prebound(config, listener).await,
+            None => Federation::start(config).await,
+        }
+        .unwrap();
         if peer_config.node_id == host {
             // Both homes contend normally. The third member still casts a real vote.
             raft.suppress_test_nomination();
@@ -303,7 +313,7 @@ async fn recover<'a>(
     sessions: impl Iterator<Item = (&'a Uuid, &'a mut Value)>,
 ) {
     assert!(cluster[index].is_none());
-    let member = Member::start(root, index, config, host).await;
+    let member = Member::start(root, index, config, None, host).await;
     wait_pool(&member, |_| true).await;
     for (player, token) in sessions {
         let resumed = rpc(&member.rpc, "startSessionForPlayer", json!([token])).await;
@@ -353,12 +363,12 @@ async fn echo_clock(socket: &mut TcpStream, cipher: &MatchCipher, value: f32) {
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
 async fn party_game_survives_two_home_elections_and_replays_result_once() {
     let tmp = tempfile::tempdir().unwrap();
-    let cfg = pool::configs(tmp.path());
+    let (cfg, listeners) = pool::configs(tmp.path());
     let host_id = cfg[2].node_id;
     let mut cluster = Vec::new();
-    for (i, config) in cfg.iter().enumerate() {
+    for (i, (config, listener)) in cfg.iter().zip(listeners).enumerate() {
         cluster.push(Some(
-            Member::start(tmp.path(), i, config.clone(), host_id).await,
+            Member::start(tmp.path(), i, config.clone(), Some(listener), host_id).await,
         ));
     }
     let (first_leader, first_term) = elected(&cluster, 1).await;
@@ -864,12 +874,12 @@ fn frozen_ticket(journal: &Path, ticket: Uuid) -> Ticket {
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
 async fn enqueue_freezes_before_quorum_and_resumes_with_the_same_payload() {
     let tmp = tempfile::tempdir().unwrap();
-    let cfg = pool::configs(tmp.path());
+    let (cfg, listeners) = pool::configs(tmp.path());
     let host = cfg[2].node_id;
     let mut cluster = Vec::new();
-    for (i, config) in cfg.iter().enumerate() {
+    for (i, (config, listener)) in cfg.iter().zip(listeners).enumerate() {
         cluster.push(Some(
-            Member::start(tmp.path(), i, config.clone(), host).await,
+            Member::start(tmp.path(), i, config.clone(), Some(listener), host).await,
         ));
     }
     let (leader, term) = elected(&cluster, 1).await;
@@ -925,10 +935,10 @@ async fn enqueue_freezes_before_quorum_and_resumes_with_the_same_payload() {
     home.stop().await;
 
     // Restore a majority from disk with auto RTT and different local policy.
-    cluster[0] = Some(Member::start(tmp.path(), 0, cfg[0].clone(), host).await);
+    cluster[0] = Some(Member::start(tmp.path(), 0, cfg[0].clone(), None, host).await);
     assert!(node(&cluster, 0).peer_config.peer_latency_ms.is_empty());
-    cluster[1] = Some(Member::start(tmp.path(), 1, cfg[1].clone(), host).await);
-    cluster[2] = Some(Member::start(tmp.path(), 2, cfg[2].clone(), host).await);
+    cluster[1] = Some(Member::start(tmp.path(), 1, cfg[1].clone(), None, host).await);
+    cluster[2] = Some(Member::start(tmp.path(), 2, cfg[2].clone(), None, host).await);
     let (leader, _) = elected(&cluster, term).await;
     let committed = wait_pool(node(&cluster, leader), |pool| {
         pool.tickets().contains_key(&id)
@@ -1235,11 +1245,13 @@ async fn public_and_ce_players_share_a_pool_and_cross_home_match_chat() {
     }
 
     let tmp = tempfile::tempdir().unwrap();
-    let cfg = pool::configs(tmp.path());
+    let (cfg, listeners) = pool::configs(tmp.path());
     let host = cfg[2].node_id;
     let mut cluster = Vec::new();
-    for (i, config) in cfg.into_iter().enumerate() {
-        cluster.push(Some(Member::start(tmp.path(), i, config, host).await));
+    for (i, (config, listener)) in cfg.into_iter().zip(listeners).enumerate() {
+        cluster.push(Some(
+            Member::start(tmp.path(), i, config, Some(listener), host).await,
+        ));
     }
     let (leader, _) = elected(&cluster, 1).await;
     wait_replication(&cluster, leader).await;

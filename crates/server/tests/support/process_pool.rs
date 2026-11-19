@@ -160,14 +160,8 @@ fn spawn_nodes(dir: &Path) -> Vec<Node> {
     // Each pool restarts its original executable even if the workspace rebuilds.
     let binary = dir.join(format!("pool-server{}", std::env::consts::EXE_SUFFIX));
     fs::copy(env!("CARGO_BIN_EXE_openhalcyon"), &binary).unwrap();
-    let cfg = pool::configs(dir);
-    let mut sockets = vec![];
-    let mut port = || {
-        let s = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let a = s.local_addr().unwrap();
-        sockets.push(s);
-        a.to_string()
-    };
+    let (cfg, federation_listeners) = pool::configs(dir);
+    let mut public_listeners = Vec::new();
     let hash = Argon2::default()
         .hash_password(
             b"synthetic-test-password",
@@ -187,9 +181,11 @@ fn spawn_nodes(dir: &Path) -> Vec<Node> {
             [*Uuid::new_v4().as_bytes(), *Uuid::new_v4().as_bytes()].concat(),
         )
         .unwrap();
-        let web = port();
+        let listeners = [(); 3].map(|()| std::net::TcpListener::bind("127.0.0.1:0").unwrap());
+        let [bootstrap, web, notify] = listeners.each_ref().map(|sock| sock.local_addr().unwrap());
+        public_listeners.push(listeners);
         let origin = format!("https://{web}");
-        let values = json!({"instance_id":f.node_id,"public_host":"127.0.0.1","bootstrap_listen":port(),"platform_listen":web,"notify_listen":port(),"game_bind":"127.0.0.1","max_rooms":8,"seats_per_match":2,"database":"platform.sqlite","jwt_secret":"secret","certificate":f.cert,"private_key":f.key,"admin":{"origin":origin,"username":"operator","password_hash":hash},"federation":{"cluster_file":"pool.json","journal":"journal.db","latency_ms":BTreeMap::from([(cfg[2].node_id.to_string(),5)]),"max_latency_ms":50}});
+        let values = json!({"instance_id":f.node_id,"public_host":"127.0.0.1","bootstrap_listen":bootstrap,"platform_listen":web,"notify_listen":notify,"game_bind":"127.0.0.1","max_rooms":8,"seats_per_match":2,"database":"platform.sqlite","jwt_secret":"secret","certificate":f.cert,"private_key":f.key,"admin":{"origin":origin,"username":"operator","password_hash":hash},"federation":{"cluster_file":"pool.json","journal":"journal.db","latency_ms":BTreeMap::from([(cfg[2].node_id.to_string(),5)]),"max_latency_ms":50}});
         fs::write(&path, toml::to_string(&values).unwrap()).unwrap();
         nodes.push(Node {
             binary: binary.clone(),
@@ -199,9 +195,15 @@ fn spawn_nodes(dir: &Path) -> Vec<Node> {
             child: None,
         });
     }
-    drop(sockets);
-    for n in &mut nodes {
-        n.start()
+    for ((n, federation_listener), listeners) in nodes
+        .iter_mut()
+        .zip(federation_listeners)
+        .zip(public_listeners)
+    {
+        // The child uses the regular binary and binds its own listeners.
+        // Keep every other node's ports reserved until launching that node.
+        drop((federation_listener, listeners));
+        n.start();
     }
     nodes
 }

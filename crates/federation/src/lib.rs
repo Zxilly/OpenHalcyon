@@ -111,10 +111,14 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn voter_can_discover_and_change_committed_membership() {
         let dir = tempfile::tempdir().unwrap();
-        let cfg = configs(dir.path());
+        let (cfg, listeners) = configs(dir.path());
         let mut nodes = Vec::new();
-        for c in &cfg {
-            nodes.push(Some(Federation::start(c.clone()).await.unwrap()));
+        for (c, listener) in cfg.iter().zip(listeners) {
+            nodes.push(Some(
+                Federation::start_prebound(c.clone(), listener)
+                    .await
+                    .unwrap(),
+            ));
         }
         let leader = elected(&nodes).await;
         let caller = (leader + 1) % 3;
@@ -170,10 +174,14 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn three_tls_nodes_failover_restart_and_minority() {
         let tmp = tempfile::tempdir().unwrap();
-        let cfg = configs(tmp.path());
+        let (cfg, listeners) = configs(tmp.path());
         let mut nodes = Vec::new();
-        for c in &cfg {
-            nodes.push(Some(Federation::start(c.clone()).await.unwrap()));
+        for (c, listener) in cfg.iter().zip(listeners) {
+            nodes.push(Some(
+                Federation::start_prebound(c.clone(), listener)
+                    .await
+                    .unwrap(),
+            ));
         }
         let leader = elected(&nodes).await;
         let home = (leader + 1) % 3;

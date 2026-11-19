@@ -1,8 +1,8 @@
 use halcyon_federation::{Config as FederationConfig, Peer};
 use rcgen::{BasicConstraints, CertificateParams, IsCa, KeyPair};
-use std::{collections::BTreeMap, fs};
+use std::{collections::BTreeMap, fs, net::TcpListener};
 use uuid::Uuid;
-pub fn configs(path: &std::path::Path) -> Vec<FederationConfig> {
+pub fn configs(path: &std::path::Path) -> (Vec<FederationConfig>, Vec<TcpListener>) {
     let ca_key = KeyPair::generate().unwrap();
     let mut par = CertificateParams::new(Vec::new()).unwrap();
     par.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
@@ -24,7 +24,7 @@ pub fn configs(path: &std::path::Path) -> Vec<FederationConfig> {
         let privkey = path.join(format!("{i}.key"));
         fs::write(&cert, leaf.pem()).unwrap();
         fs::write(&privkey, key.serialize_pem()).unwrap();
-        let sock = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let sock = TcpListener::bind("127.0.0.1:0").unwrap();
         let listen = sock.local_addr().unwrap();
         reservations.push(sock);
         peers.insert(
@@ -49,5 +49,5 @@ pub fn configs(path: &std::path::Path) -> Vec<FederationConfig> {
     for c in &mut configs {
         c.peers = peers.clone()
     }
-    configs
+    (configs, reservations)
 }

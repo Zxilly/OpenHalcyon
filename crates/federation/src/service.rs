@@ -34,6 +34,24 @@ pub struct Federation {
 impl Federation {
     pub async fn start(cfg: Config) -> anyhow::Result<Self> {
         let listener = TcpListener::bind(cfg.listen).await?;
+        Self::start_on(cfg, listener).await
+    }
+
+    #[cfg(any(test, feature = "test-hooks"))]
+    #[doc(hidden)]
+    pub async fn start_prebound(
+        cfg: Config,
+        listener: std::net::TcpListener,
+    ) -> anyhow::Result<Self> {
+        anyhow::ensure!(
+            listener.local_addr()? == cfg.listen,
+            "listener address must match configuration"
+        );
+        listener.set_nonblocking(true)?;
+        Self::start_on(cfg, TcpListener::from_std(listener)?).await
+    }
+
+    async fn start_on(cfg: Config, listener: TcpListener) -> anyhow::Result<Self> {
         let net = Transport::new(cfg)?;
         let cfg = &net.cfg;
         let store = Store::open(&cfg.database, cfg.pool_id, cfg.node_id)?;
