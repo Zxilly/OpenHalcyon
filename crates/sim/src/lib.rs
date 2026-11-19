@@ -1,7 +1,35 @@
 //! Deterministic straight-lane validation map. Coordinates are project world units.
 //! Vision, spawn offsets, windup, attack cadence, retreat and respawn are project rules.
-use halcyon_data::GameData;
+mod ai;
+mod combat;
+mod nav;
+mod progression;
+mod shop;
+use combat::{AbilityBook, Cast, SpellEffect, Status};
+pub use combat::{AbilitySlot, CastTarget};
+use halcyon_data::{GameData, Unit};
 use serde::{Deserialize, Serialize};
+pub use shop::BasicItem;
+
+/// Different simulation sources or content packs receive distinct federation queue keys.
+pub fn rules_digest(data: Option<&GameData>) -> String {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    for source in [
+        include_str!("lib.rs"),
+        include_str!("combat.rs"),
+        include_str!("progression.rs"),
+        include_str!("ai.rs"),
+        include_str!("nav.rs"),
+        include_str!("shop.rs"),
+    ] {
+        let normalized = source.replace("\r\n", "\n");
+        h.update((normalized.len() as u64).to_be_bytes());
+        h.update(normalized.as_bytes());
+    }
+    h.update(data.map_or("built-in", |d| &d.content_digest));
+    format!("{:x}", h.finalize())
+}
 
 pub const TICK_HZ: u64 = 20;
 const SIGHT: f32 = 14.;
@@ -39,6 +67,12 @@ pub enum Kind {
 pub enum Command {
     MoveTo(Position),
     Attack(u32),
+    Cast {
+        slot: AbilitySlot,
+        target: CastTarget,
+    },
+    Learn(AbilitySlot),
+    Buy(BasicItem),
     Stop,
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -64,11 +98,26 @@ pub enum Event {
         id: u32,
         killer: u32,
     },
+    Cast {
+        source: u32,
+        slot: AbilitySlot,
+        target: CastTarget,
+    },
+    Heal {
+        source: u32,
+        target: u32,
+        amount: f32,
+        hp: f32,
+    },
+    Level {
+        id: u32,
+        level: u8,
+    },
     End {
         winner: u8,
     },
 }
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Serialize)]
 struct Stats {
     id: u16,
     hp: f32,
@@ -76,6 +125,17 @@ struct Stats {
     armor: f32,
     range: f32,
     speed: f32,
+    energy: f32,
+    shield: f32,
+    growth: Growth,
+}
+#[derive(Clone, Copy, Debug, Default, Serialize)]
+struct Growth {
+    hp: f32,
+    energy: f32,
+    weapon: f32,
+    armor: f32,
+    shield: f32,
 }
 const NAMES: [&str; 8] = [
     "Ringo",
@@ -96,6 +156,53 @@ impl Stats {
             armor,
             range,
             speed,
+            energy: if id == 243 { 163. } else { 0. },
+            shield: if id == 243 { 20. } else { armor },
+            growth: if id == 243 {
+                Growth {
+                    hp: 127.64,
+                    energy: 23.,
+                    weapon: 6.,
+                    armor: 4.546,
+                    shield: 3.182,
+                }
+            } else {
+                let (hp, weapon) = match id {
+                    335 => (30., 5.),
+                    336 => (53., 4.),
+                    337 => (142., 5.),
+                    338 => (169., 5.),
+                    _ => (0., 0.),
+                };
+                Growth {
+                    hp,
+                    energy: 0.,
+                    weapon,
+                    armor: 0.,
+                    shield: 0.,
+                }
+            },
+        }
+    }
+}
+impl Stats {
+    fn load(id: u16, u: &Unit) -> Self {
+        Self {
+            id,
+            hp: u.hp,
+            energy: u.energy,
+            weapon: u.weapon,
+            armor: u.armor,
+            shield: u.shield,
+            range: u.range,
+            speed: u.move_speed,
+            growth: Growth {
+                hp: u.hp_per_level,
+                energy: u.energy_per_level,
+                weapon: u.weapon_per_level,
+                armor: u.armor_per_level,
+                shield: u.shield_per_level,
+            },
         }
     }
 }
@@ -110,6 +217,25 @@ pub struct Entity {
     pub max_hp: f32,
     pub gold: u32,
     pub bot: bool,
+    pub energy: f32,
+    pub max_energy: f32,
+    pub level: u8,
+    pub xp: f32,
+    pub skill_points: u8,
+    pub inventory: Vec<BasicItem>,
+    #[serde(skip)]
+    bonus_hp: f32,
+    pub ability_ranks: [u8; 3],
+    #[serde(skip)]
+    cast: Option<Cast>,
+    #[serde(skip)]
+    cooldown: [u64; 3],
+    #[serde(skip)]
+    status: Status,
+    #[serde(skip)]
+    path: nav::Path,
+    #[serde(skip)]
+    last_seen: Option<(u32, Position, u64)>,
     #[serde(skip)]
     stats: Stats,
     #[serde(skip)]
@@ -130,6 +256,12 @@ pub struct World {
     seed: u64,
     first_wave: u64,
     wave_interval: u64,
+    abilities: AbilityBook,
+    shop: shop::Shop,
+    effects: Vec<SpellEffect>,
+    nav_budget: u8,
+    first_blood: bool,
+    rally: [Option<Position>; 2],
 }
 fn base(team: u8) -> Position {
     Position {
@@ -138,6 +270,51 @@ fn base(team: u8) -> Position {
     }
 }
 impl World {
+    /// Hash both visible and hidden authoritative state for same-build replay checkpoints.
+    pub fn state_digest(&self) -> String {
+        use sha2::{Digest, Sha256};
+        let mut hash = Sha256::new();
+        serde_json::to_writer(
+            &mut hash,
+            &(
+                self.tick,
+                self.winner,
+                self.seed,
+                self.next_id,
+                self.first_wave,
+                self.wave_interval,
+                &self.stats,
+                &self.abilities,
+                &self.shop,
+                self.first_blood,
+                self.rally,
+                self.nav_budget,
+                &self.effects,
+            ),
+        )
+        .expect("finite simulation state");
+        for e in &self.entities {
+            serde_json::to_writer(
+                &mut hash,
+                &(
+                    e,
+                    e.stats,
+                    e.order,
+                    e.next_attack,
+                    e.winding,
+                    e.respawn,
+                    e.cast,
+                    e.cooldown,
+                    e.status,
+                    &e.path,
+                    e.last_seen,
+                    e.bonus_hp,
+                ),
+            )
+            .expect("finite simulation entity");
+        }
+        format!("{:x}", hash.finalize())
+    }
     pub fn new(seed: u64, human_seats: u8) -> Self {
         // Confirmed delivery base numbers, usable without distributing extracted assets.
         let stats = [
@@ -160,14 +337,7 @@ impl World {
             let id = data
                 .type_id(name)
                 .ok_or_else(|| format!("missing manifest entry {name}"))?;
-            Ok::<_, String>(Stats::new(
-                id,
-                unit.hp,
-                unit.weapon,
-                unit.armor,
-                unit.range,
-                unit.move_speed,
-            ))
+            Ok::<_, String>(Stats::load(id, unit))
         });
         let stats: Vec<_> = units.into_iter().collect::<Result<_, _>>()?;
         let timing = |key: &str| {
@@ -177,13 +347,48 @@ impl World {
                 .filter(|n| *n > 0)
                 .ok_or_else(|| format!("invalid wave timing {key}"))
         };
-        Ok(Self::build(
+        let mut world = Self::build(
             seed,
             human_seats,
             stats.try_into().expect("eight unit types"),
             timing("first_spawn_s")?,
             timing("interval_s")?,
-        ))
+        );
+        world.abilities = AbilityBook::from_data(data)?;
+        world.shop = shop::Shop::load(data)?;
+        Ok(world)
+    }
+    /// Apply team slots from the reserved roster before the first simulation step.
+    pub fn assign_teams(&mut self, human_teams: &[u8]) -> Result<(), String> {
+        if self.tick != 0 {
+            return Err("draft has ended".into());
+        }
+        let humans = self.entities.iter().take(10).filter(|e| !e.bot).count();
+        let mut teams = [0u8; 10];
+        let mut counts = [0usize; 2];
+        if !human_teams.is_empty() && human_teams.len() != humans {
+            return Err("incorrect human team count".into());
+        }
+        for (i, team) in teams.iter_mut().enumerate() {
+            let requested = human_teams.get(i).copied().unwrap_or((i % 2) as u8);
+            if requested > 1 {
+                return Err("unknown team".into());
+            }
+            let selected = if counts[requested as usize] < 5 {
+                requested
+            } else if i >= humans {
+                1 - requested
+            } else {
+                return Err("too many players on team".into());
+            };
+            *team = selected;
+            counts[selected as usize] += 1;
+        }
+        for (e, team) in self.entities.iter_mut().take(10).zip(teams) {
+            e.team = team;
+            e.position.x = base(team).x;
+        }
+        Ok(())
     }
     /// Select the catalog hero for a zero-based roster seat during draft.
     pub fn select_hero(&mut self, seat: usize, name: &str, data: &GameData) -> Result<(), String> {
@@ -206,14 +411,9 @@ impl World {
         let id = data
             .type_id(name)
             .ok_or_else(|| format!("missing manifest entry {name}"))?;
-        hero.stats = Stats::new(
-            id,
-            unit.hp,
-            unit.weapon,
-            unit.armor,
-            unit.range,
-            unit.move_speed,
-        );
+        hero.stats = Stats::load(id, unit);
+        hero.energy = unit.energy;
+        hero.max_energy = unit.energy;
         hero.type_id = id;
         hero.max_hp = unit.hp;
         hero.hp = unit.hp;
@@ -235,6 +435,12 @@ impl World {
             seed,
             first_wave,
             wave_interval,
+            abilities: AbilityBook::default(),
+            shop: Default::default(),
+            effects: Vec::new(),
+            nav_budget: 0,
+            first_blood: false,
+            rally: [None; 2],
         };
         for seat in 0..10 {
             let team = seat % 2;
@@ -273,6 +479,19 @@ impl World {
             max_hp: s.hp,
             gold: 0,
             bot,
+            inventory: Vec::new(),
+            bonus_hp: 0.,
+            level: 1,
+            xp: 0.,
+            skill_points: u8::from(kind == Kind::Hero),
+            ability_ranks: [0; 3],
+            energy: s.energy,
+            max_energy: s.energy,
+            cast: None,
+            cooldown: [0; 3],
+            status: Status::default(),
+            last_seen: None,
+            path: Default::default(),
             stats: s,
             order: Command::Stop,
             next_attack: 0,
@@ -287,10 +506,12 @@ impl World {
     pub fn visible(&self, team: u8, e: &Entity) -> bool {
         e.team == team
             || (e.hp > 0.
-                && self
-                    .entities
-                    .iter()
-                    .any(|a| a.team == team && a.hp > 0. && a.position.dist(e.position) <= SIGHT))
+                && self.entities.iter().any(|a| {
+                    a.team == team
+                        && a.hp > 0.
+                        && a.position.dist(e.position) <= SIGHT
+                        && nav::clear(a.position, e.position)
+                }))
     }
     pub fn command(&mut self, id: u32, cmd: Command) -> Result<(), &'static str> {
         if self.winner.is_some() {
@@ -308,9 +529,12 @@ impl World {
             return Err("dead");
         }
         match cmd {
-            Command::MoveTo(p) if !(0.0..=LANE).contains(&p.x) || !(-5.0..=5.0).contains(&p.y) => {
+            Command::MoveTo(p) if !nav::walkable(p) => {
                 return Err("outside lane");
             }
+            Command::Buy(item) => return self.buy(i, item),
+            Command::Learn(slot) => return self.learn(i, slot),
+            Command::Cast { slot, target } => return self.begin_cast(i, slot, target),
             Command::Attack(id) => {
                 let t = self
                     .index(id)
@@ -322,86 +546,35 @@ impl World {
             }
             _ => {}
         }
+        self.entities[i].cast = None;
+        self.entities[i].status.channel = 0;
+        self.entities[i].status.channel_until = 0;
         if self.entities[i].order != cmd {
             self.entities[i].winding = None;
         }
         self.entities[i].order = cmd;
         Ok(())
     }
-    fn decide(&self, i: usize) -> Command {
-        let e = &self.entities[i];
-        let home = base(e.team);
-        let enemy = base(1 - e.team);
-        if e.kind == Kind::Hero && e.hp < e.max_hp * 0.23 {
-            return Command::MoveTo(home);
-        }
-        let sensor = if matches!(e.kind, Kind::Tower | Kind::Crystal) {
-            e.stats.range.min(SIGHT)
-        } else {
-            SIGHT
-        };
-        let mut candidate = None;
-        let mut best = (u8::MAX, f32::MAX, u32::MAX);
-        for t in &self.entities {
-            if t.hp <= 0. || t.team == e.team {
-                continue;
-            }
-            let d = e.position.dist(t.position);
-            if d > sensor {
-                continue;
-            }
-            let priority = match t.kind {
-                Kind::Minion if e.kind == Kind::Hero && t.hp <= e.stats.weapon => 0,
-                Kind::Minion if e.kind == Kind::Tower => 0,
-                Kind::Tower | Kind::Crystal if e.kind == Kind::Minion => 0,
-                Kind::Hero => 1,
-                Kind::Minion => 2,
-                Kind::Tower => 3,
-                Kind::Crystal => 4,
-            };
-            let stick = if e.order == Command::Attack(t.id) {
-                0.6
-            } else {
-                0.
-            };
-            let rank = (priority, d - stick, t.id);
-            if rank < best {
-                best = rank;
-                candidate = Some(t);
-            }
-        }
-        if let Some(t) = candidate {
-            if e.kind == Kind::Hero
-                && t.kind == Kind::Tower
-                && !self.entities.iter().any(|a| {
-                    a.team == e.team
-                        && a.kind == Kind::Minion
-                        && a.hp > 0.
-                        && a.position.dist(t.position) <= t.stats.range
-                })
-            {
-                let mut p = t.position;
-                p.x += (if e.team == 0 { -1. } else { 1. }) * (t.stats.range + 1.);
-                return Command::MoveTo(p);
-            }
-            if e.kind == Kind::Hero
-                && t.kind == Kind::Hero
-                && e.next_attack > self.tick + 4
-                && e.position.dist(t.position) < 4.
-            {
-                return Command::MoveTo(e.position.advance(home, 1.));
-            }
-            return Command::Attack(t.id);
-        }
-        if e.stats.speed > 0. {
-            Command::MoveTo(enemy)
-        } else {
-            Command::Stop
-        }
-    }
     fn walk(&mut self, i: usize, p: Position, events: &mut Vec<Event>) {
         let e = &mut self.entities[i];
-        let pos = e.position.advance(p, e.stats.speed / TICK_HZ as f32);
+        if e.stats.speed <= 0. {
+            return;
+        }
+        let Some(waypoint) = e.path.next(e.position, p, &mut self.nav_budget) else {
+            return;
+        };
+        let pace = if e.status.slow_until > self.tick {
+            e.status.slow_factor
+        } else {
+            1.
+        } * if e.status.haste_until > self.tick {
+            1.25
+        } else {
+            1.
+        };
+        let pos = e
+            .position
+            .advance(waypoint, e.stats.speed * pace / TICK_HZ as f32);
         if pos != e.position {
             e.position = pos;
             events.push(Event::Move {
@@ -416,6 +589,11 @@ impl World {
             return events;
         }
         self.tick += 1;
+        self.nav_budget = 6;
+        self.advance_effects(&mut events);
+        if self.winner.is_some() {
+            return events;
+        }
         if self.tick >= self.first_wave
             && (self.tick - self.first_wave).is_multiple_of(self.wave_interval)
         {
@@ -428,9 +606,21 @@ impl World {
                     let mut p = base(team);
                     p.y = j as f32 - 1.5;
                     let id = self.spawn(team, Kind::Minion, slot, p, false);
+                    let minion = self.entities.last_mut().unwrap();
+                    // Last printed wave level starts at 2, then increases by half a level per minute.
+                    let level = (2 + self.tick.saturating_sub(120 * TICK_HZ) / (120 * TICK_HZ))
+                        .min(12) as u8;
+                    let extra = f32::from(level - 1);
+                    minion.level = level;
+                    minion.max_hp += minion.stats.growth.hp * extra;
+                    minion.hp = minion.max_hp;
+                    minion.stats.weapon += minion.stats.growth.weapon * extra;
                     events.push(Event::Spawn { id });
                 }
             }
+        }
+        if self.tick.is_multiple_of(TICK_HZ) {
+            self.update_rally();
         }
         let n = self.entities.len();
         // Rotate priority when actions coincide. Stable indices and the match seed determine all ties.
@@ -441,6 +631,9 @@ impl World {
             if e.hp <= 0. {
                 if e.kind == Kind::Hero && e.respawn <= self.tick {
                     e.hp = e.max_hp;
+                    e.energy = e.max_energy;
+                    e.status = Default::default();
+                    e.path = Default::default();
                     e.position = base(e.team);
                     events.push(Event::Spawn { id: e.id });
                 }
@@ -449,15 +642,71 @@ impl World {
             if e.kind == Kind::Hero && e.position.dist(base(e.team)) < 3. {
                 e.hp = (e.hp + e.max_hp * 0.003).min(e.max_hp);
             }
+            if e.kind == Kind::Hero {
+                e.energy = (e.energy
+                    + if e.position.dist(base(e.team)) < 3. {
+                        1.2
+                    } else {
+                        0.10
+                    })
+                .min(e.max_energy);
+                if self.tick >= 35 * TICK_HZ && self.tick.is_multiple_of(TICK_HZ) {
+                    self.award_xp(i, 0.45, &mut events);
+                }
+            }
+            let hero = &self.entities[i];
+            if hero.bot
+                && hero.hp < hero.max_hp * 0.14
+                && (hero.cast.is_some()
+                    || hero.winding.is_some()
+                    || hero.status.channel_until >= self.tick)
+            {
+                let _ = self.order(i, Command::MoveTo(base(hero.team)));
+            }
+            if self.entities[i].status.channel_until >= self.tick {
+                continue;
+            }
+            if self.entities[i].cast.is_some() {
+                self.advance_cast(i, &mut events);
+                continue;
+            }
+            let e = &self.entities[i];
             if e.winding.is_none()
                 && (e.bot || e.kind != Kind::Hero)
                 && (self.tick + e.id as u64).is_multiple_of(5)
             {
+                if e.bot {
+                    if e.gold >= 300 && e.inventory.len() < 6 && e.position.dist(base(e.team)) <= 3.
+                    {
+                        let item = if e.inventory.len() == 2 {
+                            BasicItem::LightArmor
+                        } else {
+                            BasicItem::WeaponBlade
+                        };
+                        let _ = self.buy(i, item);
+                    }
+                    for slot in [AbilitySlot::C, AbilitySlot::A, AbilitySlot::B] {
+                        if self.can_learn(i, slot) {
+                            let _ = self.learn(i, slot);
+                            break;
+                        }
+                    }
+                }
                 let order = self.decide(i);
+                if let Command::Attack(id)
+                | Command::Cast {
+                    target: CastTarget::Entity(id),
+                    ..
+                } = order
+                    && let Some(j) = self.index(id)
+                    && self.entities[j].team != self.entities[i].team
+                {
+                    self.entities[i].last_seen = Some((id, self.entities[j].position, self.tick));
+                }
                 let _ = self.order(i, order);
             }
             match self.entities[i].order {
-                Command::Stop => {}
+                Command::Stop | Command::Buy(_) | Command::Learn(_) | Command::Cast { .. } => {}
                 Command::MoveTo(p) => self.walk(i, p, &mut events),
                 Command::Attack(id) => {
                     let Some(j) = self.index(id) else {
@@ -472,7 +721,9 @@ impl World {
                         self.entities[i].winding = None;
                         continue;
                     }
-                    if e.position.dist(t.position) > e.stats.range {
+                    if e.position.dist(t.position) > e.stats.range
+                        || !nav::clear(e.position, t.position)
+                    {
                         let p = t.position;
                         self.entities[i].winding = None;
                         self.walk(i, p, &mut events);
@@ -490,47 +741,42 @@ impl World {
                     }
                     let source = e.id;
                     let team = e.team;
+                    let bonus = if e.status.empowered > 0 {
+                        e.status.empower_damage
+                    } else {
+                        0.
+                    };
                     let damage = if e.kind == Kind::Crystal {
                         t.max_hp * 0.04
                     } else {
-                        e.stats.weapon * 100. / (100. + t.stats.armor)
+                        (e.stats.weapon + bonus) * 100. / (100. + t.stats.armor)
                     };
+                    let haste = e.status.haste_until > self.tick;
+                    let crystal = e.kind == Kind::Crystal;
+                    let ranged = e.kind == Kind::Hero && e.stats.range >= 4.;
+                    let travel = (e.position.dist(t.position) * TICK_HZ as f32 / 18.).ceil() as u64;
                     self.entities[i].winding = None;
-                    self.entities[i].next_attack = self.tick + 17;
-                    let t = &mut self.entities[j];
-                    t.hp = (t.hp - damage).max(0.);
+                    self.entities[i].next_attack = self.tick + if haste { 10 } else { 17 };
+                    self.entities[i].status.empowered =
+                        self.entities[i].status.empowered.saturating_sub(1);
                     events.push(Event::Attack { source, target: id });
-                    events.push(Event::Damage {
-                        source,
-                        target: id,
-                        amount: damage,
-                        hp: t.hp,
-                    });
-                    if t.hp == 0. {
-                        let kind = t.kind;
-                        let bounty = match kind {
-                            Kind::Hero => 250,
-                            Kind::Tower => 300,
-                            Kind::Crystal => 0,
-                            Kind::Minion => match t.type_id {
-                                335 => 25,
-                                337 => 60,
-                                338 => 100,
-                                _ => 35,
-                            },
-                        };
-                        t.order = Command::Stop;
-                        t.winding = None;
-                        t.respawn = self.tick + RESPAWN + (self.tick / 60).min(900);
-                        if self.entities[i].kind == Kind::Hero {
-                            self.entities[i].gold += bounty;
-                        }
-                        events.push(Event::Death { id, killer: source });
-                        if kind == Kind::Crystal {
-                            self.winner = Some(team);
-                            events.push(Event::End { winner: team });
-                            break;
-                        }
+                    if crystal {
+                        self.entities[j].status.slow_until = self.tick + 20;
+                        self.entities[j].status.slow_factor = 0.4;
+                    }
+                    if ranged {
+                        self.effects.push(SpellEffect::impact(
+                            self.tick + travel,
+                            source,
+                            team,
+                            id,
+                            damage,
+                        ));
+                    } else {
+                        self.hurt(source, team, j, damage, &mut events);
+                    }
+                    if self.winner.is_some() {
+                        break;
                     }
                 }
             }
@@ -593,6 +839,9 @@ mod tests {
         for _ in 0..48000 {
             let events = a.step();
             assert_eq!(events, b.step());
+            if a.tick.is_multiple_of(1000) {
+                assert_eq!(a.state_digest(), b.state_digest());
+            }
             if let Some(team) = a.winner {
                 assert_eq!(events.last(), Some(&Event::End { winner: team }));
                 assert!(

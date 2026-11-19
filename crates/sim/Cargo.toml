@@ -6,3 +6,5 @@ version.workspace = true
 [dependencies]
 halcyon-data = { path = "../data" }
 serde = { version = "1", features = ["derive"] }
+serde_json.workspace = true
+sha2="0.10"

@@ -15,6 +15,11 @@ pub struct Unit {
     pub range: f32,
     pub attack_speed: f32,
     pub move_speed: f32,
+    pub hp_per_level: f32,
+    pub energy_per_level: f32,
+    pub weapon_per_level: f32,
+    pub armor_per_level: f32,
+    pub shield_per_level: f32,
     #[serde(flatten)]
     pub other: BTreeMap<String, Value>,
 }
