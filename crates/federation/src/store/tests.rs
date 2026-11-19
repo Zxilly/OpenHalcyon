@@ -29,6 +29,7 @@ fn fixture(rooms: u64) -> Machine {
         let digest = result_digest(&result).unwrap();
         let commands = [
             Command::Enqueue(Ticket {
+                talent_levels: Vec::new(),
                 id: ticket,
                 generation: 1,
                 home: HOME,
@@ -303,6 +304,7 @@ async fn a_preparing_deadline_and_replayed_acceptance_survive_storage_restart() 
     let path = tmp.path().join("offers.db");
     let id = Uuid::from_u128(80);
     let ticket = Ticket {
+        talent_levels: Vec::new(),
         id: Uuid::from_u128(81),
         generation: 1,
         home: HOME,

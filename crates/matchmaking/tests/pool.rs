@@ -7,6 +7,7 @@ fn id(i: u128) -> Uuid {
 }
 fn ticket(i: u128, home: Uuid, players: &[u128]) -> Ticket {
     Ticket {
+        talent_levels: Vec::new(),
         id: id(i),
         generation: 1,
         home,
@@ -421,4 +422,27 @@ fn rejecting_only_affects_the_offered_room_and_the_owners_ticket() {
     assert_eq!(p.allocations()[&next].phase, Phase::Aborted);
     assert_eq!(p.tickets()[&a.id].phase, TicketPhase::Closed);
     assert_eq!(p.tickets()[&b.id].phase, TicketPhase::Queued);
+}
+
+#[test]
+fn numeric_talent_grants_are_scoped_to_the_committed_home_and_roster() {
+    let mut pool = Pool::default();
+    let home = Uuid::from_u128(1);
+    let mut payload = ticket(60, home, &[61]);
+    let old_wire = serde_json::to_value(&payload).unwrap();
+    assert!(old_wire.get("talent_levels").is_none());
+    assert_eq!(serde_json::from_value::<Ticket>(old_wire).unwrap(), payload);
+    payload.queue.name = "casual_aral".into();
+    payload.queue.rules_digest = "aral-talent-levels:test".into();
+    payload.talent_levels = vec![[(273, std::num::NonZeroU8::new(3).unwrap())].into()];
+    assert!(
+        pool.apply(Uuid::from_u128(2), Command::Enqueue(payload.clone()))
+            .is_err()
+    );
+    let mut invalid = payload.clone();
+    invalid.talent_levels.push(Default::default());
+    assert!(pool.apply(home, Command::Enqueue(invalid)).is_err());
+    assert!(pool.apply(home, Command::Enqueue(payload.clone())).is_ok());
+    payload.talent_levels[0].insert(273, std::num::NonZeroU8::new(4).unwrap());
+    assert!(pool.apply(home, Command::Enqueue(payload)).is_err());
 }

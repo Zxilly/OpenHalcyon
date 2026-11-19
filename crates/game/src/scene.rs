@@ -191,6 +191,7 @@ mod tests {
         let cipher = MatchCipher::new(&id.to_string());
         let hosted = rooms
             .reserve(Reservation {
+                talent_levels: Vec::new(),
                 match_id: id,
                 players: vec![player],
                 teams: vec![0],
@@ -416,6 +417,7 @@ mod tests {
             let id = Uuid::new_v4();
             rooms
                 .reserve(Reservation {
+                    talent_levels: Vec::new(),
                     match_id: id,
                     players: vec![player],
                     teams: vec![0],
@@ -485,6 +487,7 @@ mod tests {
         let player = Uuid::new_v4();
         rooms
             .reserve(Reservation {
+                talent_levels: Vec::new(),
                 match_id: id,
                 players: vec![player],
                 teams: vec![0],
@@ -533,6 +536,7 @@ mod tests {
         let player = Uuid::new_v4();
         rooms
             .reserve(Reservation {
+                talent_levels: Vec::new(),
                 match_id: id,
                 players: vec![player],
                 teams: vec![0],

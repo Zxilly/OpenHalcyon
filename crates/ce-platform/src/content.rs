@@ -136,6 +136,7 @@ impl Platform {
             views: data.views,
             exchanges: data.exchanges,
         };
+        this.talents.install_match_authority(&this.app)?;
         Ok(self)
     }
 

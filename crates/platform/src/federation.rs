@@ -259,7 +259,13 @@ impl AppState {
                     params![ticket, member, index],
                 )?;
             }
-            intent_by_ticket(tx, &ticket)?.ok_or(PlatformError::WorkerUnavailable)
+            let intent = intent_by_ticket(tx, &ticket)?.ok_or(PlatformError::WorkerUnavailable)?;
+            let levels = state.resolve_talent_levels(tx, &intent.mode, &intent.players)?;
+            if !levels.is_empty() {
+                let levels = serde_json::to_string(&levels).map_err(|_| PlatformError::WorkerUnavailable)?;
+                tx.execute("INSERT INTO federated_talent_levels(ticket,levels) VALUES(?,?)", params![ticket, levels])?;
+            }
+            Ok(intent)
         })).await
     }
 

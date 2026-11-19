@@ -410,6 +410,7 @@ mod tests {
         let id = Uuid::new_v4();
         let hosted = rooms
             .reserve(Reservation {
+                talent_levels: Vec::new(),
                 match_id: id,
                 players: vec![player],
                 teams: vec![0],
@@ -495,6 +496,7 @@ mod tests {
         let players = [Uuid::new_v4(), Uuid::new_v4()];
         rooms
             .reserve(Reservation {
+                talent_levels: Vec::new(),
                 match_id: id,
                 players: players.to_vec(),
                 teams: vec![0, 1],
@@ -587,6 +589,7 @@ mod tests {
         let players = [Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4()];
         rooms
             .reserve(Reservation {
+                talent_levels: Vec::new(),
                 match_id: id,
                 players: players.to_vec(),
                 teams: vec![0, 0, 1],

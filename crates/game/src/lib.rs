@@ -79,6 +79,7 @@ struct Seat {
     locked: bool,
     draft_sync_sent: bool,
     recommended_path: Option<u8>,
+    equipped_talent: Option<halcyon_protocol::EquippedTalent>,
     preamble: scene::Preamble,
     loading_roster_sent: bool,
     control_world: bool,
@@ -157,6 +158,7 @@ struct Room {
     difficulty: Option<halcyon_data::BotDifficulty>,
     players: Vec<Uuid>,
     requested_teams: Vec<u8>,
+    talent_levels: Vec<halcyon_data::TalentLevels>,
     combat: [Combat; 10],
     catalog: Arc<[[u8; 32]]>,
     seats: Vec<Seat>,
@@ -440,6 +442,14 @@ impl Rooms {
         Ok(())
     }
     fn allocate(&self, req: Reservation, admitted: bool) -> Result<HostedMatch, PlatformError> {
+        if !halcyon_data::valid_talent_levels(&req.mode, req.players.len(), &req.talent_levels) {
+            return Err(PlatformError::Invalid("invalid talent grants for roster"));
+        }
+        let talent_levels = if req.talent_levels.iter().all(|grants| grants.is_empty()) {
+            Vec::new()
+        } else {
+            req.talent_levels
+        };
         self.monitor_resources();
         let mut rooms = self.0.rooms.lock().unwrap();
         rooms.retain(|_, room| {
@@ -451,6 +461,7 @@ impl Rooms {
         if let Some(r) = rooms.get(&req.match_id) {
             let r = r.lock().unwrap();
             if r.requested_teams != req.teams
+                || r.talent_levels != talent_levels
                 || r.queue != req.mode
                 || r.difficulty != req.difficulty
                 || r.players != req.players
@@ -577,6 +588,7 @@ impl Rooms {
             difficulty: req.difficulty,
             players: req.players,
             requested_teams: req.teams,
+            talent_levels,
             combat: [Combat::default(); 10],
             catalog: self.0.catalog.clone(),
             seats: (0..n).map(|_| Seat::default()).collect(),
@@ -825,6 +837,7 @@ impl Room {
             messages::append_inventory(&mut out, &self.world, e);
         }
         out.extend(self.recommended_paths(team));
+        out.extend(aral::talent_snapshot(self));
         out
     }
     fn detach(&mut self, i: usize, ch: usize, generation: u64) {
@@ -1019,7 +1032,7 @@ impl Room {
                     .command(i as u32 + 1, Command::MoveTo(Position { x, y }));
             }
             Fields::Live(halcyon_protocol::LiveFields::TalentSelection(selection)) => {
-                out.extend(aral::talent_response(self, i, ch, selection));
+                out = aral::talent_response(self, i, ch, selection);
             }
             Fields::Live(halcyon_protocol::LiveFields::MovePoint { .. })
                 if ch == 0 && (legacy || solo_scene) => {}
@@ -1490,6 +1503,7 @@ mod tests {
         let player = Uuid::new_v4();
         rooms
             .reserve(Reservation {
+                talent_levels: Vec::new(),
                 match_id: id,
                 players: vec![player],
                 teams: vec![0],
@@ -1528,6 +1542,7 @@ mod tests {
             let players = (0..count).map(|_| Uuid::new_v4()).collect::<Vec<_>>();
             rooms
                 .reserve(Reservation {
+                    talent_levels: Vec::new(),
                     match_id: id,
                     players: players.clone(),
                     teams: vec![],
@@ -1650,6 +1665,7 @@ mod tests {
             assert!(
                 rooms
                     .reserve(Reservation {
+                        talent_levels: Vec::new(),
                         match_id: Uuid::new_v4(),
                         mode: "ranked".into(),
                         players: roster,
@@ -1662,6 +1678,7 @@ mod tests {
         let five = Uuid::new_v4();
         rooms
             .reserve(Reservation {
+                talent_levels: Vec::new(),
                 match_id: five,
                 mode: "ranked_5v5".into(),
                 players,
@@ -1678,6 +1695,7 @@ mod tests {
         let id = Uuid::new_v4();
         rooms
             .reserve(Reservation {
+                talent_levels: Vec::new(),
                 match_id: id,
                 players: vec![Uuid::new_v4()],
                 teams: vec![0],

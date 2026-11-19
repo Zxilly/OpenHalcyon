@@ -9,31 +9,64 @@ pub(super) fn legacy_queue(name: &str) -> bool {
     name == halcyon_data::LEGACY_ARAL_QUEUE
 }
 
-/// The room has no talent grants; it can confirm an explicit no-talent selection.
+/// The level belongs to the reserved seat and selected hero. The client supplies only a slot.
 pub(super) fn talent_response(
-    room: &Room,
+    room: &mut Room,
     seat: usize,
     channel: usize,
     selection: halcyon_protocol::TalentSelection,
-) -> Option<Message> {
+) -> Batch {
     use halcyon_protocol::{EquippedTalent, TalentSelection};
-    let session = room.seats.get(seat)?;
-    if selection != TalentSelection::NoTalent
-        || !room.legacy_aral()
+    let session = &room.seats[seat];
+    if !room.legacy_aral()
         || channel != 0
         || session.peers[0].is_none()
+        || !session.world_actor_written
         || !session.preamble.confirmed()
         || room.phase != "running"
     {
-        return None;
+        return Vec::new();
     }
-    EquippedTalent {
-        actor: u32::from(messages::wire_id(room.world.entities.get(seat)?.id)),
+    let hero = &room.world.entities[seat];
+    let level = if selection == TalentSelection::NoTalent {
+        0
+    } else {
+        let Some(level) = room
+            .talent_levels
+            .get(seat)
+            .and_then(|levels| levels.get(&hero.type_id))
+        else {
+            return Vec::new();
+        };
+        level.get()
+    };
+    let equipped = EquippedTalent {
+        actor: u32::from(messages::wire_id(hero.id)),
         selection,
-        level: 0,
+        level,
+    };
+    let batch = vec![
+        selection.request(),
+        equipped.message().expect("validated numeric equip"),
+    ];
+    if room.seats[seat].equipped_talent.replace(equipped) != Some(equipped) {
+        let shared = super::transport::TeamBatch::new(batch.clone());
+        for (i, other) in room.seats.iter().enumerate() {
+            if i != seat
+                && let Some(peer) = other.gameplay_peer()
+            {
+                peer.send(super::transport::Delivery::Team(shared.clone()));
+            }
+        }
+        room.publish_observers(&batch);
     }
-    .message()
-    .ok()
+    batch
+}
+
+pub(super) fn talent_snapshot(room: &Room) -> impl Iterator<Item = Message> + '_ {
+    room.seats
+        .iter()
+        .filter_map(|s| s.equipped_talent?.message().ok())
 }
 
 pub(super) fn roster(room: &Room, remaining: f32, private: bool) -> Message {
@@ -129,6 +162,7 @@ pub(super) fn opening(room: &mut Room, team: Option<u8>) -> Batch {
     batch.extend(map_objects);
     batch.extend(lane_minions);
     batch.extend(room.recommended_paths(team));
+    batch.extend(talent_snapshot(room));
     if let Some(team) = team {
         batch.extend(room.surrender_snapshot(team));
     }
@@ -221,6 +255,7 @@ mod tests {
         }
         let mut declared = false;
         let mut structures = Vec::new();
+        let mut talents = Vec::new();
         let pads = [
             (-78.18_f32, 0.88_f32),
             (79.66, -0.91),
@@ -233,6 +268,9 @@ mod tests {
             let frame = next(socket, cipher).await;
             if frame.opcode == probe.opcode {
                 break;
+            }
+            if frame.opcode == 0x0481 {
+                talents.push(frame.body.clone());
             }
             if frame.opcode == 0x03f3 {
                 let id = u32::from_be_bytes(frame.body[8..12].try_into().unwrap());
@@ -261,6 +299,14 @@ mod tests {
                 );
                 assert!(crate::aral_spawn::recordable(&frame.body[..122]));
             }
+        }
+        if initial {
+            assert!(talents.is_empty());
+        } else {
+            assert_eq!(
+                talents,
+                [vec![0, 0, 5, 220, 0, 1], vec![0, 0, 5, 223, 255, 0]]
+            );
         }
         assert!(declared, "own actor declaration precedes readiness");
         if initial {
@@ -320,7 +366,10 @@ mod tests {
         let room_id = Uuid::new_v4();
         let rooms = Rooms::new(Ipv4Addr::LOCALHOST.into(), "127.0.0.1".into(), 1, None);
         let players: Vec<_> = (0..SEATS).map(|_| Uuid::new_v4()).collect();
+        let mut levels = vec![halcyon_data::TalentLevels::new(); SEATS];
+        levels[0].insert(273, std::num::NonZeroU8::new(1).unwrap());
         let reservation = Reservation {
+            talent_levels: levels,
             match_id: room_id,
             players: players.clone(),
             teams: vec![],
@@ -335,7 +384,13 @@ mod tests {
                 })
                 .is_err()
         );
-        let address = rooms.reserve(reservation).unwrap().address;
+        let address = rooms.reserve(reservation.clone()).unwrap().address;
+        assert!(rooms.reserve(reservation.clone()).is_ok());
+        let mut changed = reservation;
+        changed.talent_levels[0].clear();
+        assert!(rooms.reserve(changed).is_err());
+        // Test roster uses Idris, one of the three evidenced numeric grants.
+        rooms.room(room_id).unwrap().lock().unwrap().world.entities[0].type_id = 273;
         let cipher = MatchCipher::new(&room_id.to_string());
         let mut clients = Vec::new();
         for (index, player) in players.iter().enumerate() {
@@ -511,6 +566,82 @@ mod tests {
         }
         let ack = until(&mut clients[0], &cipher, 0x0424).await;
         assert_eq!(ack.body, [0, 0, 5, 221, 0, 0]);
+        let chosen = halcyon_protocol::TalentSelection::Slot0;
+        let expected = halcyon_protocol::EquippedTalent {
+            actor: 1500,
+            selection: chosen,
+            level: 1,
+        };
+        clients[0]
+            .write_all(&cipher.encode(&chosen.request()).unwrap())
+            .await
+            .unwrap();
+        for socket in &mut clients {
+            let announced = until(socket, &cipher, 0x0484).await;
+            assert_eq!(announced.body, [0; 6]);
+            let equipped = next(socket, &cipher).await;
+            assert_eq!(
+                equipped.fields().unwrap(),
+                Fields::Live(halcyon_protocol::LiveFields::TalentEquipped(expected))
+            );
+        }
+        clients[0]
+            .write_all(&cipher.encode(&chosen.request()).unwrap())
+            .await
+            .unwrap();
+        until(&mut clients[0], &cipher, 0x0481).await;
+        clients[1]
+            .write_all(&cipher.encode(&barrier).unwrap())
+            .await
+            .unwrap();
+        loop {
+            let frame = next(&mut clients[1], &cipher).await;
+            if frame == barrier {
+                break;
+            }
+            assert!(!matches!(frame.opcode, 0x0484 | 0x0481));
+        }
+        let (observer_address, grant) = rooms.observe(room_id, Uuid::new_v4()).unwrap();
+        let mut observer = TcpStream::connect(observer_address).await.unwrap();
+        observer
+            .write_all(&hello("localhost").unwrap())
+            .await
+            .unwrap();
+        let mut ack = [0; 5];
+        observer.read_exact(&mut ack).await.unwrap();
+        assert_eq!(ack, ACK_FRAME);
+        observer
+            .write_all(
+                &cipher
+                    .encode(&Message::new(0x03e8, grant.to_string().as_bytes()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let restored = until(&mut observer, &cipher, 0x0481).await;
+        assert_eq!(
+            restored.fields().unwrap(),
+            Fields::Live(halcyon_protocol::LiveFields::TalentEquipped(expected))
+        );
+        let clear = halcyon_protocol::TalentSelection::NoTalent;
+        clients[0]
+            .write_all(&cipher.encode(&clear.request()).unwrap())
+            .await
+            .unwrap();
+        for socket in clients.iter_mut().chain(std::iter::once(&mut observer)) {
+            let cleared = until(socket, &cipher, 0x0481).await;
+            assert_eq!(cleared.body, [0, 0, 5, 220, 255, 0]);
+        }
+        rooms.revoke_observer(room_id, grant).unwrap();
+        // Re-equip so the reconnect below restores both a positive selection and an explicit clear.
+        clients[0]
+            .write_all(&cipher.encode(&chosen.request()).unwrap())
+            .await
+            .unwrap();
+        for socket in &mut clients {
+            until(socket, &cipher, 0x0481).await;
+        }
+
         // A paid/earned slot request has no trusted level in this room.
         // The next authoritative response must be for the explicit NoTalent request.
         for selection in [

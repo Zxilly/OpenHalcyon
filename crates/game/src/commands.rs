@@ -120,6 +120,7 @@ mod tests {
             let id = Uuid::new_v4();
             rooms
                 .reserve(Reservation {
+                    talent_levels: Vec::new(),
                     match_id: id,
                     players: players.clone(),
                     teams: vec![1, 1, 1, 0, 0, 0],
@@ -189,6 +190,7 @@ mod tests {
         let id = Uuid::new_v4();
         rooms
             .reserve(Reservation {
+                talent_levels: Vec::new(),
                 match_id: id,
                 players: vec![Uuid::new_v4(), Uuid::new_v4()],
                 teams: vec![0, 1],

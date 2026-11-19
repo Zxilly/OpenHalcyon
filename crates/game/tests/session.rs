@@ -56,6 +56,7 @@ async fn reservation_and_two_authenticated_sockets() {
     let id = Uuid::new_v4();
     let player = Uuid::new_v4();
     let req = Reservation {
+        talent_levels: Vec::new(),
         match_id: id,
         players: vec![player],
         teams: vec![],
@@ -228,6 +229,7 @@ async fn admission_precedes_authentication() {
     let player = Uuid::new_v4();
     let id = Uuid::new_v4();
     let req = Reservation {
+        talent_levels: Vec::new(),
         match_id: id,
         players: vec![player],
         teams: vec![],

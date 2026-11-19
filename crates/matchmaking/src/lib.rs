@@ -29,6 +29,8 @@ pub struct Ticket {
     pub generation: u64,
     pub home: Uuid,
     pub players: Vec<Uuid>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub talent_levels: Vec<halcyon_data::TalentLevels>,
     pub queue: Queue,
     /// Measured or policy-approved estimates from this party to prospective hosts.
     pub latency_ms: BTreeMap<Uuid, u32>,
@@ -285,6 +287,16 @@ impl Pool {
             || size > MAX_SEATS
             || ticket.players.is_empty()
             || ticket.players.len() > size
+            || (!ticket.talent_levels.is_empty()
+                && !ticket
+                    .queue
+                    .rules_digest
+                    .starts_with(halcyon_data::ARAL_TALENT_RULES_PREFIX))
+            || !halcyon_data::valid_talent_levels(
+                &ticket.queue.name,
+                ticket.players.len(),
+                &ticket.talent_levels,
+            )
             || ticket.queue.name.is_empty()
             || ticket.queue.rules_digest.is_empty()
             || ticket.players.iter().collect::<BTreeSet<_>>().len() != ticket.players.len()

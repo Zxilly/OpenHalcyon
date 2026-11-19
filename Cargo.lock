@@ -1093,6 +1093,7 @@ dependencies = [
 name = "halcyon-matchmaking"
 version = "1.0.0-draft.1"
 dependencies = [
+ "halcyon-data",
  "serde",
  "serde_json",
  "sha2",

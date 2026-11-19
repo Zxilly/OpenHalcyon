@@ -304,6 +304,7 @@ mod tests {
     async fn pressure_blocks_new_matches_and_preserves_reservations() {
         let rooms = Rooms::new(IpAddr::from([127, 0, 0, 1]), "127.0.0.1".into(), 2, None);
         let req = Reservation {
+            talent_levels: Vec::new(),
             match_id: Uuid::new_v4(),
             players: vec![Uuid::new_v4()],
             teams: vec![],
@@ -322,6 +323,7 @@ mod tests {
         rooms.activate(req.match_id).unwrap();
         assert!(matches!(
             rooms.reserve(Reservation {
+                talent_levels: Vec::new(),
                 match_id: Uuid::new_v4(),
                 ..req
             }),

@@ -153,7 +153,11 @@ fn sanitize(m: &mut Message) -> bool {
                     .all(|v| f32::from_be_bytes(*v).is_finite())
                 && f32::from_be_bytes(m.body[8..12].try_into().unwrap()) == 0.0 => {}
         0x424 if matches!(m.body.as_slice(), [_, _, _, _, 0, 0]) => {}
-        0x481 if matches!(m.body.as_slice(), [0, 0, _, _, 255, 0]) => {}
+        0x481
+            if matches!(
+                m.body.as_slice(),
+                [0, 0, 5, 220..=225, 255, 0] | [0, 0, 5, 220..=225, 0..=2, 1..=255]
+            ) => {}
         0x488 if matches!(m.body.as_slice(), [0, 0, _, _, 0..=2 | 254]) => {}
         0x45c if matches!(m.body.len(), 96 | 102) && m.body[96..].iter().all(|&v| v == 0) => {}
         0x3ef if m.body.is_empty() || m.body == [0; 6] => {}
@@ -284,6 +288,7 @@ mod tests {
             Message::ability_point_used(1501, [-40.5, -0.0, 1.], 3),
             Message::new(0x0415, [0, 0, 5, 220, 0, 0, 5, 221, 2]),
             Message::new(0x0481, [0, 0, 5, 220, 255, 0]),
+            Message::new(0x0481, [0, 0, 5, 225, 1, 1]),
             Message::new(0x0488, [0, 0, 5, 220, 254]),
         ] {
             assert!(sanitize(&mut m));

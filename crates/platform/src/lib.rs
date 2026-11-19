@@ -1,4 +1,7 @@
-pub use halcyon_data::{BotDifficulty, LEGACY_ARAL_QUEUE, LEGACY_ARAL_SEATS};
+pub use halcyon_data::{
+    ARAL_TALENT_HEROES, ARAL_TALENT_RULES_PREFIX, BotDifficulty, LEGACY_ARAL_QUEUE,
+    LEGACY_ARAL_SEATS, TalentLevels,
+};
 mod accounts;
 mod chat;
 mod federation;
@@ -11,6 +14,7 @@ pub use pooled_spectator::PooledSpectator;
 mod queue;
 mod recovery;
 mod spectator;
+mod talent_levels;
 pub use federation::FederatedIntent;
 pub use queue::{plan_teams, plan_teams_for_mode};
 pub use spectator::HostedSpectator;
@@ -47,6 +51,7 @@ pub struct PlatformConfig {
 
 #[derive(Debug, Clone)]
 pub struct Reservation {
+    pub talent_levels: Vec<halcyon_data::TalentLevels>,
     pub match_id: Uuid,
     pub players: Vec<Uuid>,
     /// Parallel human team indices (0 or 1). Empty retains the default room layout.
@@ -168,6 +173,7 @@ pub struct AppState {
     host: Arc<dyn MatchHost>,
     changes: watch::Sender<()>,
     config: Arc<PlatformConfig>,
+    talent_levels: Arc<Mutex<Option<talent_levels::Resolver>>>,
 }
 
 impl AppState {
@@ -241,6 +247,7 @@ impl AppState {
             notification::initialize(&tx)?;
             spectator::initialize(&tx)?;
             pooled_spectator::initialize(&tx)?;
+            talent_levels::initialize(&tx)?;
             tx.commit()?;
         }
         accounts::initialize(&db)?;
@@ -250,6 +257,7 @@ impl AppState {
             host,
             changes,
             config: Arc::new(config),
+            talent_levels: Default::default(),
         };
         state.resume_reservations()?;
         Ok(state)
@@ -284,21 +292,24 @@ impl AppState {
 
     fn resume_reservations(&self) -> Result<()> {
         let reservations = self.transaction(|tx| {
-            let mut matches =
-                tx.prepare("SELECT id, mode, difficulty FROM matches WHERE phase='reserving'")?;
+            let mut matches = tx.prepare(
+                "SELECT id, mode, difficulty, talent_levels FROM matches WHERE phase='reserving'",
+            )?;
             let rows = matches
                 .query_map([], |row| {
                     Ok((
                         row.get::<_, String>(0)?,
                         row.get::<_, String>(1)?,
                         queue::read_difficulty(row, 2)?,
+                        row.get::<_, Option<String>>(3)?,
                     ))
                 })?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
             rows.into_iter()
-                .map(|(match_id, mode, difficulty)| {
+                .map(|(match_id, mode, difficulty, stored)| {
                     let (players, teams, _) = queue::match_players(tx, &match_id, &mode)?;
                     Ok(Reservation {
+                        talent_levels: talent_levels::decode(stored.as_deref())?,
                         match_id: parse_id(&match_id)?,
                         players,
                         teams,
@@ -953,8 +964,10 @@ impl AppState {
             if !confirmed {
                 return Ok(None);
             }
-            tx.execute("UPDATE matches SET phase='reserving' WHERE id=?", [&match_id])?;
-            Ok(Some(Reservation { match_id: match_uuid, players, teams, mode, difficulty }))
+            let talent_levels = state.resolve_talent_levels(tx, &mode, &players)?;
+            let stored = serde_json::to_string(&talent_levels).map_err(|_| PlatformError::WorkerUnavailable)?;
+            tx.execute("UPDATE matches SET phase='reserving',talent_levels=? WHERE id=?", params![stored,match_id])?;
+            Ok(Some(Reservation { match_id: match_uuid, players, teams, mode, difficulty, talent_levels }))
         })?;
         if let Some(reservation) = reservation {
             state.reserve_match(reservation)?;

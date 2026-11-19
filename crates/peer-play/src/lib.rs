@@ -357,7 +357,10 @@ impl PeerPlay {
 impl Inner {
     fn difficulty_for_queue(&self, queue: &Queue) -> anyhow::Result<Option<BotDifficulty>> {
         if queue.build == 147219 {
-            if queue.rules_digest == self.cfg.rules_digest {
+            if queue.rules_digest == self.cfg.rules_digest
+                || (queue.name == halcyon_platform::LEGACY_ARAL_QUEUE
+                    && queue.rules_digest == self.aral_talent_rules())
+            {
                 return Ok(None);
             }
             if BotDifficulty::supports_queue(&queue.name)
@@ -370,6 +373,14 @@ impl Inner {
             }
         }
         anyhow::bail!("incompatible queue rules")
+    }
+
+    fn aral_talent_rules(&self) -> String {
+        format!(
+            "{}{}",
+            halcyon_platform::ARAL_TALENT_RULES_PREFIX,
+            self.cfg.rules_digest
+        )
     }
 
     async fn ticket(
@@ -426,7 +437,20 @@ impl Inner {
                 *baseline = (*baseline).max(*ms);
             }
         }
+        let talent_levels = self
+            .platform
+            .pooled_talent_levels(self.cfg.pool_id, i.ticket)
+            .await?;
+        let rules_digest = if i.mode == halcyon_platform::LEGACY_ARAL_QUEUE {
+            self.aral_talent_rules()
+        } else {
+            i.difficulty.map_or_else(
+                || self.cfg.rules_digest.clone(),
+                |level| self.difficulty_rules[&level].clone(),
+            )
+        };
         self.journal.freeze_ticket(Ticket {
+            talent_levels,
             id: i.ticket,
             generation: 1,
             home: self.cfg.node_id,
@@ -434,12 +458,7 @@ impl Inner {
             queue: Queue {
                 name: i.mode.clone(),
                 build: 147219,
-                rules_digest: i
-                    .difficulty
-                    .map_or(&self.cfg.rules_digest, |level| {
-                        &self.difficulty_rules[&level]
-                    })
-                    .clone(),
+                rules_digest,
                 seats: i.seats,
             },
             latency_ms,
@@ -643,11 +662,17 @@ impl Worker {
             Phase::Preparing => {
                 let mut players = Vec::new();
                 let mut sizes = Vec::new();
+                let mut talent_levels = Vec::new();
                 let mut queue = None;
                 for key in &a.tickets {
                     let t = &p.tickets[&key.id].ticket;
                     players.extend_from_slice(&t.players);
                     sizes.push(t.players.len());
+                    if t.talent_levels.is_empty() {
+                        talent_levels.resize_with(players.len(), Default::default);
+                    } else {
+                        talent_levels.extend_from_slice(&t.talent_levels);
+                    }
                     queue = Some(&t.queue);
                 }
                 let queue = queue.context("empty roster")?;
@@ -656,7 +681,15 @@ impl Worker {
                         .commit(a.id, "incompatible-rules", Command::Abort { id: a.id })
                         .await;
                 };
+                if talent_levels
+                    .iter()
+                    .all(halcyon_platform::TalentLevels::is_empty)
+                    || queue.rules_digest != s.aral_talent_rules()
+                {
+                    talent_levels.clear();
+                }
                 let prepared = s.rooms.prepare(Reservation {
+                    talent_levels,
                     match_id: a.id,
                     players,
                     teams: plan_teams_for_mode(&queue.name, &sizes),

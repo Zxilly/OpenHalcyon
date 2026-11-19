@@ -231,6 +231,7 @@ mod tests {
         let match_id = Uuid::new_v4();
         rooms
             .reserve(Reservation {
+                talent_levels: Vec::new(),
                 match_id,
                 players: (0..6).map(|_| Uuid::new_v4()).collect(),
                 teams: vec![],
@@ -323,6 +324,7 @@ mod tests {
         let match_id = Uuid::new_v4();
         rooms
             .reserve(Reservation {
+                talent_levels: Vec::new(),
                 match_id,
                 players: (0..6).map(|_| Uuid::new_v4()).collect(),
                 teams: vec![],
@@ -411,6 +413,7 @@ mod tests {
         let id = Uuid::new_v4();
         rooms
             .reserve(Reservation {
+                talent_levels: Vec::new(),
                 match_id: id,
                 players: (0..6).map(|_| Uuid::new_v4()).collect(),
                 mode: "casual_aral".into(),
@@ -476,6 +479,7 @@ mod tests {
         let id = Uuid::new_v4();
         rooms
             .reserve(Reservation {
+                talent_levels: Vec::new(),
                 match_id: id,
                 players: vec![Uuid::new_v4()],
                 teams: vec![0],
@@ -514,6 +518,7 @@ mod tests {
         let match_id = Uuid::new_v4();
         rooms
             .reserve(Reservation {
+                talent_levels: Vec::new(),
                 match_id,
                 players: (0..6).map(|_| Uuid::new_v4()).collect(),
                 teams: vec![],

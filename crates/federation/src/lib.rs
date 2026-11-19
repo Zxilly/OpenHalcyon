@@ -189,6 +189,7 @@ mod tests {
         let home = (leader + 1) % 3;
         let host = (leader + 2) % 3;
         let t = Ticket {
+            talent_levels: Vec::new(),
             id: Uuid::new_v4(),
             generation: 1,
             home: cfg[home].node_id,

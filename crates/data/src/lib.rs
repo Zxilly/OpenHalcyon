@@ -7,6 +7,54 @@ pub const LEGACY_ARAL_QUEUE: &str = "casual_aral";
 pub const THREE_PER_SIDE_SEATS: usize = 6;
 pub const LEGACY_ARAL_SEATS: usize = THREE_PER_SIDE_SEATS;
 
+/// Numeric ARAL entitlement per hero template. This never identifies a named talent.
+pub type TalentLevels = BTreeMap<u16, std::num::NonZeroU8>;
+pub const ARAL_TALENT_RULES_PREFIX: &str = "aral-talent-levels:";
+
+/// Public talent triplets independently cross-checked against delivery entity template IDs.
+pub struct AralTalentHero {
+    pub template: u16,
+    pub hero: &'static str,
+    pub inventory_family: &'static str,
+    pub asset_family: &'static str,
+    pub definitions_by_rarity: [&'static str; 3],
+}
+
+pub const ARAL_TALENT_HEROES: [AralTalentHero; 3] = [
+    AralTalentHero {
+        template: 254,
+        hero: "*Hero009*",
+        inventory_family: "krul",
+        asset_family: "Krul",
+        definitions_by_rarity: ["DeadMansBarrier", "HealingSmite", "CursedBlade"],
+    },
+    AralTalentHero {
+        template: 273,
+        hero: "*Idris*",
+        inventory_family: "idris",
+        asset_family: "Idris",
+        definitions_by_rarity: ["PathOfTheSeeker", "ChaChaChakram", "ShimmerHeal"],
+    },
+    AralTalentHero {
+        template: 439,
+        hero: "*Yates*",
+        inventory_family: "yates",
+        asset_family: "Yates",
+        definitions_by_rarity: ["TalentA", "TalentB", "TalentC"],
+    },
+];
+
+pub fn valid_talent_levels(mode: &str, seats: usize, grants: &[TalentLevels]) -> bool {
+    grants.is_empty()
+        || (mode == LEGACY_ARAL_QUEUE
+            && seats == grants.len()
+            && grants.iter().flatten().all(|(hero, _)| {
+                ARAL_TALENT_HEROES
+                    .iter()
+                    .any(|entry| entry.template == *hero)
+            }))
+}
+
 /// These exact queue IDs advertise three human seats on each team.
 pub fn three_per_side(mode: &str) -> bool {
     matches!(mode, LEGACY_ARAL_QUEUE | "ranked")

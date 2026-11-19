@@ -11,7 +11,7 @@ pub struct TalentProgress {
     pub fragments: u32,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub(crate) struct Binding {
     level_item: String,
@@ -118,6 +118,64 @@ impl Catalog {
         Ok(())
     }
 
+    /// Only the explicit complete published triplets for the verified templates qualify.
+    pub(crate) fn install_match_authority(
+        &self,
+        app: &halcyon_platform::AppState,
+    ) -> Result<(), Error> {
+        let mut triplets = BTreeMap::new();
+        for entry in halcyon_platform::ARAL_TALENT_HEROES {
+            let rows: Vec<_> = self
+                .definitions
+                .iter()
+                .filter(|(_, row)| row.public["hero"].as_str() == Some(entry.hero))
+                .collect();
+            if rows.len() != 3 {
+                continue;
+            }
+            let items: Option<Vec<_>> = ["rare", "epic", "legendary"]
+                .into_iter()
+                .zip(entry.definitions_by_rarity)
+                .map(|(tier, name)| {
+                    let id = format!("{}_{tier}", entry.inventory_family);
+                    let def = format!("*Talent_{}_{name}*", entry.asset_family);
+                    rows.iter()
+                        .any(|(key, row)| {
+                            key.as_str() == id && row.public["def"].as_str() == Some(def.as_str())
+                        })
+                        .then_some(())?;
+                    self.bindings.get(&id).map(|b| b.level_item.clone())
+                })
+                .collect();
+            if let Some(items) = items {
+                triplets.insert(entry.template, items);
+            }
+        }
+        if !triplets.is_empty() {
+            app.set_talent_levels_resolver(move |tx, player| {
+                let id = player.to_string();
+                let mut lookup = tx.prepare_cached(
+                    "SELECT count FROM community_inventory WHERE player=? AND item=?",
+                )?;
+                let mut levels = halcyon_platform::TalentLevels::new();
+                use rusqlite::OptionalExtension;
+                for (&template, items) in &triplets {
+                    let counts = items.iter().map(|item| {
+                        lookup
+                            .query_row([&id, item], |r| r.get::<_, u32>(0))
+                            .optional()
+                    });
+                    let counts = counts.collect::<rusqlite::Result<Vec<_>>>()?;
+                    if let Some(level) = equal_wire_level(&counts) {
+                        levels.insert(template, level);
+                    }
+                }
+                Ok(levels)
+            })?;
+        }
+        Ok(())
+    }
+
     fn balances(&self, id: &str, inventory: &BTreeMap<String, u32>) -> TalentProgress {
         self.bindings
             .get(id)
@@ -126,6 +184,16 @@ impl Catalog {
                 fragments: inventory.get(&b.fragment_item).copied().unwrap_or(0),
             })
     }
+}
+
+fn equal_wire_level(counts: &[Option<u32>]) -> Option<std::num::NonZeroU8> {
+    let [Some(a), Some(b), Some(c)] = counts else {
+        return None;
+    };
+    if a != b || a != c {
+        return None;
+    }
+    std::num::NonZeroU8::new(u8::try_from(*a).ok()?)
 }
 
 impl Platform {
@@ -180,6 +248,147 @@ impl Platform {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn equal_positive_wire_level_requires_three_owned_representable_levels() {
+        assert_eq!(equal_wire_level(&[Some(7); 3]).map(|v| v.get()), Some(7));
+        for denied in [
+            [None, Some(7), Some(7)],
+            [Some(7), Some(7), Some(8)],
+            [Some(0); 3],
+            [Some(256); 3],
+        ] {
+            assert_eq!(equal_wire_level(&denied), None);
+        }
+        assert_eq!(equal_wire_level(&[Some(7); 2]), None);
+    }
+
+    #[tokio::test]
+    async fn local_reservation_and_durable_peer_ticket_use_the_authoritative_inventory() {
+        use halcyon_community::{Community, ItemDefinition};
+        use halcyon_platform::{
+            AppState, HostedMatch, MatchHost, PlatformConfig, PlatformError, Reservation,
+        };
+        use std::sync::{Arc, Mutex};
+        #[derive(Default)]
+        struct Host(Mutex<Option<Reservation>>);
+        impl MatchHost for Host {
+            fn reserve(&self, reservation: Reservation) -> Result<HostedMatch, PlatformError> {
+                *self.0.lock().unwrap() = Some(reservation);
+                Ok(HostedMatch {
+                    address: "localhost:7557".into(),
+                })
+            }
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let config = PlatformConfig {
+            database_path: dir.path().join("platform.db"),
+            public_address: "localhost:8080".into(),
+            seats_per_match: 6,
+        };
+        let host = Arc::new(Host::default());
+        let app = AppState::open(config.clone(), host.clone()).unwrap();
+        let inventory = Community::open(&config.database_path).unwrap();
+        let rows: Map<_, _> = ["rare", "epic", "legendary"].into_iter()
+            .zip(["PathOfTheSeeker", "ChaChaChakram", "ShimmerHeal"])
+            .map(|(tier, name)| {
+                let id = format!("idris_{tier}");
+                (id.clone(), json!({"id": id, "hero": "*Idris*", "def": format!("*Talent_Idris_{name}*"), "level":74, "maxLevel": false, "levelRequirements": {}}))
+            }).collect();
+        let mut catalog = Catalog::parse(Value::Object(rows)).unwrap();
+        for id in catalog.definitions.keys() {
+            for item in [id.clone(), format!("{id}_fragments")] {
+                inventory
+                    .define_item(ItemDefinition {
+                        name: item.clone(),
+                        id: item,
+                        slot: "test".into(),
+                    })
+                    .await
+                    .unwrap();
+            }
+            catalog.bindings.insert(
+                id.clone(),
+                Binding {
+                    level_item: id.clone(),
+                    fragment_item: format!("{id}_fragments"),
+                },
+            );
+        }
+        catalog.install_match_authority(&app).unwrap();
+
+        let guests = {
+            let mut guests = Vec::new();
+            for index in 0..7 {
+                let name = format!("Guest{index}");
+                let guest = app.create_guest(name.clone()).await.unwrap();
+                inventory
+                    .observe_player(guest.player_id, name, true)
+                    .await
+                    .unwrap();
+                if matches!(index, 0 | 1 | 6) {
+                    for (ordinal, id) in catalog.definitions.keys().enumerate() {
+                        let level = if index == 1 && ordinal == 0 { 8 } else { 7 };
+                        inventory
+                            .award_item(Uuid::new_v4(), guest.player_id, id.clone(), level)
+                            .await
+                            .unwrap();
+                    }
+                }
+                guests.push(guest);
+            }
+            guests
+        };
+        let mode = "casual_aral".to_string();
+        for guest in &guests[..6] {
+            app.join(&guest.session_token, mode.clone()).await.unwrap();
+        }
+        let match_id = app
+            .profile(&guests[0].session_token)
+            .await
+            .unwrap()
+            .lobby
+            .unwrap()
+            .match_id
+            .unwrap();
+        for guest in &guests[..6] {
+            app.accept(&guest.session_token, match_id).await.unwrap();
+        }
+        {
+            let reserved = host.0.lock().unwrap();
+            let reserved = reserved.as_ref().unwrap();
+            for (id, grant) in reserved.players.iter().zip(&reserved.talent_levels) {
+                assert_eq!(
+                    grant.get(&273).map(|level| level.get()),
+                    (*id == guests[0].player_id).then_some(7)
+                );
+            }
+        }
+
+        let voter = &guests[6];
+        let pool = Uuid::new_v4();
+        let ticket = app
+            .federated_join(&voter.session_token, pool, mode, 6)
+            .await
+            .unwrap()
+            .ticket;
+        inventory
+            .award_item(Uuid::new_v4(), voter.player_id, "idris_rare".into(), 1)
+            .await
+            .unwrap();
+        drop(app);
+        let reopened = AppState::open(config, host).unwrap();
+        let frozen = reopened.pooled_talent_levels(pool, ticket).await.unwrap();
+        assert_eq!(frozen[0][&273].get(), 7);
+        assert!(
+            reopened
+                .pooled_talent_levels(Uuid::new_v4(), ticket)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
 
     #[test]
     fn observed_cap_and_cost_belong_only_to_the_observed_level() {
