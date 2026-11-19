@@ -133,6 +133,23 @@ fn sanitize(m: &mut Message) -> bool {
                     [52..=199, 0, 0, 1, 1, 1] | [52..=199, 0, 0, 1, 4, 2]
                 )) || super::aral_spawn::recordable(&m.body)) => {}
         0x3f8 if m.body.len() == 9 && (14..=23).contains(&m.body[0]) => {}
+        // Only the authored hero-slot and target combinations have verified wire meanings.
+        0x43a if matches!(m.body.as_slice(), [0, 0, 5, 220..=229, 0, 0, 0, 0..=3]) => {}
+        0x415
+            if matches!(
+                m.body.as_slice(),
+                [0, 0, 5, 220..=229, 0, 0, 5, 220..=229, 2]
+            ) => {}
+        0x416
+            if m.body.len() == 17
+                && matches!(m.body[..4], [0, 0, 5, 220..=229])
+                && matches!(m.body[16], 0 | 1 | 3)
+                && m.body[4..16]
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .all(|v| f32::from_be_bytes(*v).is_finite())
+                && f32::from_be_bytes(m.body[8..12].try_into().unwrap()) == 0.0 => {}
         0x424 if matches!(m.body.as_slice(), [_, _, _, _, 0, 0]) => {}
         0x481 if matches!(m.body.as_slice(), [0, 0, _, _, 255, 0]) => {}
         0x488 if matches!(m.body.as_slice(), [0, 0, _, _, 0..=2 | 254]) => {}
@@ -230,6 +247,9 @@ mod tests {
         for mut m in [
             Message::new(0x03f8, move_to),
             Message::new(0x0424, [0, 0, 5, 221, 0, 0]),
+            Message::ability_learned(1501, 3),
+            Message::ability_point_used(1501, [-40.5, -0.0, 1.], 3),
+            Message::new(0x0415, [0, 0, 5, 220, 0, 0, 5, 221, 2]),
             Message::new(0x0481, [0, 0, 5, 220, 255, 0]),
             Message::new(0x0488, [0, 0, 5, 220, 254]),
         ] {
@@ -237,7 +257,18 @@ mod tests {
             m.body.push(42);
             assert!(!sanitize(&mut m));
         }
-        for control in [0x03f5, 0x0484, 0x0485] {
+        assert!(!sanitize(&mut Message::ability_point_used(
+            1501,
+            [f32::NAN, 0., 0.],
+            0
+        )));
+        assert!(!sanitize(&mut Message::ability_point_used(
+            1501,
+            [0., 1., 0.],
+            0
+        )));
+        assert!(!sanitize(&mut Message::ability_learned(1550, 3)));
+        for control in [0x03f5, 0x0411, 0x0412, 0x0436, 0x0484, 0x0485] {
             assert!(!sanitize(&mut Message::new(control, [0; 6])));
         }
     }
