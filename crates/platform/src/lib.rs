@@ -1,4 +1,6 @@
+mod accounts;
 mod federation;
+mod recovery;
 pub use federation::FederatedIntent;
 
 use std::{
@@ -185,6 +187,7 @@ impl AppState {
              CREATE INDEX IF NOT EXISTS tickets_by_mode ON tickets(mode, match_id, serial);
              CREATE INDEX IF NOT EXISTS tickets_by_match ON tickets(match_id);",
         )?;
+        accounts::initialize(&db)?;
         let (changes, _) = watch::channel(());
         let state = Self {
             db: Arc::new(Mutex::new(db)),
