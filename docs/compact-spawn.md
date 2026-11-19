@@ -35,11 +35,13 @@ observed forms use vertical coordinate 0.06 and face toward the opposing
 side along X. The meanings of the skin word and several ancillary fields
 remain unresolved.
 
-This encoding applies to the initial Android 5v5 Solo structure profiles.
-The caller must use one entity per slot and select the matching opening.
-Respawns, other modes, and reconnects continue to use their existing
-replication paths. The byte layout was checked offline and does not establish
-native placement or rendering for the simulation's map.
+Across all 14 Solo replay chunks, the two crystal slots occur once per chunk.
+Their first 122 bytes are identical across chunks for each slot separately.
+The server uses that compact shape for a visible crystal on fresh world entry
+and on later introduction to a team, with current health in the measured
+health field. The same comparison on the two mid-lane towers shows changing
+words at offsets 76 and 80 on both teams. The home tower also changes heading,
+health and several flags. The tower encoder covers the opening state.
 
 ## Lane minions in the Solo recording
 

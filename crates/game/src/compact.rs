@@ -6,24 +6,25 @@ use super::messages::wire_id;
 const BODY_LEN: usize = 122;
 const STRUCTURE_SKIN_WORD: u32 = 0xc10b41da;
 
-/// An initial outer mid-lane tower or home crystal in the Android 5v5 Solo
+/// An opening outer mid-lane tower or a living home crystal in the Android 5v5 Solo
 /// opening. The caller selects that opening; other map families use different
 /// placement indices. Only one instance of each of these four slots is valid.
-pub(super) fn initial_structure(tick: u64, entity: &Entity) -> Option<Message> {
+pub(super) fn structure(tick: u64, entity: &Entity) -> Option<Message> {
     let placement = match (entity.kind, entity.type_id, entity.team) {
         (Kind::Crystal, 295, 0) => 6,
         (Kind::Crystal, 296, 1) => 7,
-        (Kind::Tower, 340, 0) => 9,
-        (Kind::Tower, 340, 1) => 12,
+        (Kind::Tower, 340, 0) if tick == 0 => 9,
+        (Kind::Tower, 340, 1) if tick == 0 => 12,
         _ => return None,
     };
-    if tick != 0
-        || !(1..=u32::from(u16::MAX) - 1500).contains(&entity.id)
+    if !(1..=u32::from(u16::MAX) - 1500).contains(&entity.id)
         || !entity.position.x.is_finite()
         || !entity.position.y.is_finite()
         || !entity.hp.is_finite()
         || entity.hp <= 0.0
-        || entity.hp != entity.max_hp
+        || !entity.max_hp.is_finite()
+        || entity.hp > entity.max_hp
+        || (tick == 0 && entity.hp != entity.max_hp)
     {
         return None;
     }
@@ -76,7 +77,7 @@ mod tests {
         let world = World::new(0, 1);
         let mut slots = Vec::new();
         for entity in &world.entities {
-            let Some(message) = initial_structure(world.tick, entity) else {
+            let Some(message) = structure(world.tick, entity) else {
                 assert!(matches!(entity.kind, Kind::Hero | Kind::Minion));
                 continue;
             };
@@ -101,7 +102,7 @@ mod tests {
     }
 
     #[test]
-    fn later_or_unsupported_structures_keep_the_normal_spawn_path() {
+    fn later_crystal_uses_current_health_but_tower_requires_opening_state() {
         let world = World::new(0, 1);
         let mut crystal = world
             .entities
@@ -109,11 +110,21 @@ mod tests {
             .find(|e| e.type_id == 295)
             .unwrap()
             .clone();
-        assert!(initial_structure(1, &crystal).is_none());
+        crystal.hp -= 375.0;
+        let resumed = structure(1800, &crystal).unwrap();
+        assert_eq!(word(&resumed.body, 36), crystal.hp.to_bits());
+        assert_eq!(word(&resumed.body, 40), crystal.max_hp.to_bits());
+        let tower = world
+            .entities
+            .iter()
+            .find(|e| e.kind == Kind::Tower)
+            .unwrap();
+        assert!(structure(1800, tower).is_none());
+        crystal.hp = crystal.max_hp;
         crystal.team = 1;
-        assert!(initial_structure(0, &crystal).is_none());
+        assert!(structure(0, &crystal).is_none());
         crystal.team = 0;
         crystal.id = u32::MAX;
-        assert!(initial_structure(0, &crystal).is_none());
+        assert!(structure(0, &crystal).is_none());
     }
 }

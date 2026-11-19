@@ -1142,8 +1142,8 @@ impl Room {
                 _ => None,
             })
             .collect();
-        let control_stream =
-            self.legacy_aral() || (self.solo_scene() && self.seats[0].control_world);
+        let native_solo = self.solo_scene() && self.seats[0].control_world;
+        let control_stream = self.legacy_aral() || native_solo;
         for team in 0..2 {
             let mut peers = self
                 .seats
@@ -1163,7 +1163,14 @@ impl Room {
                 if e.hp > 0. && self.world.visible(team as u8, e) {
                     current.insert(e.id);
                     if !previous.contains(&e.id) {
-                        out.push(spawn(e, &self.picks, self.data.as_deref()));
+                        let compact = if native_solo {
+                            compact::structure(self.world.tick, e)
+                        } else {
+                            None
+                        };
+                        out.push(
+                            compact.unwrap_or_else(|| spawn(e, &self.picks, self.data.as_deref())),
+                        );
                         messages::append_inventory(&mut out, e);
                     }
                 }

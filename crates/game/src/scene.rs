@@ -81,7 +81,10 @@ pub(super) fn solo_opening(room: &mut Room, seat: usize) -> Batch {
         // The recorded initial scene declares all ten starting heroes. On reconnect
         // live opposing positions are subject to the team's usual visibility.
         if (initial && e.kind == halcyon_sim::Kind::Hero) || (!initial && visible) {
-            out.push(messages::spawn(e, &room.picks, room.data.as_deref()));
+            out.push(
+                super::compact::structure(room.world.tick, e)
+                    .unwrap_or_else(|| messages::spawn(e, &room.picks, room.data.as_deref())),
+            );
             messages::append_inventory(&mut out, e);
             if visible {
                 room.visible[team as usize].insert(e.id);
@@ -103,7 +106,7 @@ pub(super) fn initial_structures(room: &mut Room) {
     for entity in &room.world.entities {
         if !known.contains(&entity.id)
             && room.world.visible(team, entity)
-            && let Some(message) = super::compact::initial_structure(room.world.tick, entity)
+            && let Some(message) = super::compact::structure(room.world.tick, entity)
         {
             known.insert(entity.id);
             batch.push(message);
@@ -215,12 +218,15 @@ mod tests {
             assert_eq!(next(&mut socket, &cipher).await.opcode, 0x451);
             let mut hero_ids = Vec::new();
             let mut full_structures = Vec::new();
+            let mut compact_structures = Vec::new();
             loop {
                 let m = next(&mut socket, &cipher).await;
                 if m.opcode == 0x46e {
                     break;
                 }
-                assert_ne!(m.opcode, 0x3f2);
+                if m.opcode == 0x3f2 {
+                    compact_structures.push(u32::from_be_bytes(m.body[..4].try_into().unwrap()));
+                }
                 if m.opcode == 0x3f3 {
                     let template = u16::from_be_bytes(m.body[2..4].try_into().unwrap());
                     if matches!(template, 295 | 296 | 340) {
@@ -235,10 +241,12 @@ mod tests {
             if reconnect {
                 assert!(hero_ids.len() < 10 && hero_ids.contains(&1500));
                 full_structures.sort_unstable();
-                assert_eq!(full_structures, [295, 340]);
+                assert_eq!(full_structures, [340]);
+                assert_eq!(compact_structures, [295]);
             } else {
                 assert_eq!(hero_ids.len(), 10);
                 assert!(full_structures.is_empty());
+                assert!(compact_structures.is_empty());
                 assert_eq!(shared.lock().unwrap().world.tick, 0);
                 let (tx, _) = mpsc::channel(8);
                 assert!(
