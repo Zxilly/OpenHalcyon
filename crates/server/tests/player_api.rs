@@ -134,6 +134,45 @@ private_key = "tls.key"
         );
     }
     let queue = format!("{api}/queue");
+    // Even on a two-seat instance, each solo queue must offer a match
+    // immediately for one guest without a difficulty override.
+    for mode in ["5v5_bots_solo", "solo"] {
+        assert_eq!(
+            client
+                .post(&queue)
+                .bearer_auth(token)
+                .json(&json!({"mode":mode}))
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::NO_CONTENT
+        );
+        let profile: Value = client
+            .get(&me)
+            .bearer_auth(token)
+            .send()
+            .await
+            .unwrap()
+            .error_for_status()
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(profile["lobby"]["mode"], mode);
+        assert_eq!(profile["lobby"]["phase"], "offered");
+        assert!(profile["lobby"]["matchId"].is_string());
+        assert_eq!(
+            client
+                .delete(&queue)
+                .bearer_auth(token)
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::NO_CONTENT
+        );
+    }
     assert_eq!(
         client
             .post(&queue)
@@ -171,7 +210,13 @@ private_key = "tls.key"
         .json()
         .await
         .unwrap();
-    assert_eq!(events["events"][0]["body"]["type"], "queued");
+    assert!(
+        events["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|event| event["body"] == json!({"type":"queued","mode":"5v5_pvp_casual"}))
+    );
     let second: Value = client
         .post(format!("{api}/guests"))
         .json(&json!({"name":"Second guest"}))

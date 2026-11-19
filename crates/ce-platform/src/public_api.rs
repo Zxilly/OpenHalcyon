@@ -3,11 +3,7 @@ use std::collections::BTreeMap;
 
 impl Platform {
     pub fn public_api(self: &Arc<Self>) -> Router {
-        if self.peers.is_some() {
-            halcyon_platform::router_with_matches(self.app.clone(), self.clone())
-        } else {
-            halcyon_platform::router(self.app.clone())
-        }
+        halcyon_platform::router_with_matches(self.app.clone(), self.clone())
     }
 
     pub(super) async fn enqueue_with_estimates(
@@ -17,12 +13,7 @@ impl Platform {
         difficulty: Option<BotDifficulty>,
         estimates: BTreeMap<Uuid, u32>,
     ) -> halcyon_platform::Result<()> {
-        let seats = match mode.as_str() {
-            "5v5_bots_solo" => 1,
-            "solo" if difficulty.is_some() => 1,
-            LEGACY_ARAL_QUEUE => LEGACY_ARAL_SEATS,
-            _ => self.app.seats_per_match(),
-        };
+        let seats = self.app.seats_for_mode(&mode);
         match &self.peers {
             Some(peers) => {
                 peers

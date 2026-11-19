@@ -24,8 +24,7 @@ use axum::{
     routing::{get, post},
 };
 use halcyon_platform::{
-    AppState, BotDifficulty, Guest, LEGACY_ARAL_QUEUE, LEGACY_ARAL_SEATS, PlatformError,
-    PlayerProfile, PublicMatches,
+    AppState, BotDifficulty, Guest, PlatformError, PlayerProfile, PublicMatches,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};

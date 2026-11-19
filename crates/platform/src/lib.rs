@@ -171,6 +171,14 @@ impl AppState {
         self.config.seats_per_match
     }
 
+    pub fn seats_for_mode(&self, mode: &str) -> usize {
+        match mode {
+            "5v5_bots_solo" | "solo" => 1,
+            LEGACY_ARAL_QUEUE => LEGACY_ARAL_SEATS,
+            _ => self.seats_per_match(),
+        }
+    }
+
     pub fn open(config: PlatformConfig, host: Arc<dyn MatchHost>) -> Result<Self> {
         if !(1..=64).contains(&config.seats_per_match) {
             return Err(PlatformError::Invalid(
@@ -444,17 +452,9 @@ impl PublicMatches for AppState {
         mode: String,
         difficulty: Option<BotDifficulty>,
     ) -> Result<()> {
-        if difficulty.is_some() {
-            let seats = if matches!(mode.as_str(), "5v5_bots_solo" | "solo") {
-                1
-            } else {
-                self.seats_per_match()
-            };
-            self.join_with_difficulty(token, mode, seats, difficulty)
-                .await
-        } else {
-            self.join(token, mode).await
-        }
+        let seats = self.seats_for_mode(&mode);
+        self.join_with_difficulty(token, mode, seats, difficulty)
+            .await
     }
 
     async fn cancel_queue(&self, token: &str) -> Result<()> {
@@ -842,11 +842,7 @@ async fn queue(
 }
 impl AppState {
     pub async fn join(&self, session_token: &str, mode: String) -> Result<()> {
-        let seats = if mode == LEGACY_ARAL_QUEUE {
-            LEGACY_ARAL_SEATS
-        } else {
-            self.config.seats_per_match
-        };
+        let seats = self.seats_for_mode(&mode);
         self.join_with_seats(session_token, mode, seats).await
     }
 }

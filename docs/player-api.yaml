@@ -104,11 +104,9 @@ paths:
         A valid queue identifier uses 1–32 ASCII letters, digits, underscores
         or hyphens. An explicit difficulty is accepted only on 5v5_bots_solo,
         solo, 5v5_bots_coop, 5v5_coop or 5v5_private_bots. The solo queues
-        use one human seat when a difficulty is supplied. In a pool,
-        5v5_bots_solo uses one seat even without that field. The casual_aral
-        queue uses six seats. Other requests use the configured seat count.
-        Federated queue entry considers party membership. The REST request
-        has no client ping-site report.
+        always use one human seat. The casual_aral queue uses six seats.
+        Other queues use the configured seat count. Queue entry follows the
+        same party rules as CE. The REST request has no client ping-site report.
       requestBody:
         required: true
         content:
