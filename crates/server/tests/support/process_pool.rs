@@ -99,17 +99,24 @@ async fn session(client: &Client, n: &Node) -> (Uuid, Value) {
     )
 }
 async fn state(client: &Client, n: &Node, token: &Value, want: &str) -> Value {
+    let mut last_phase = Value::Null;
     timeout(Duration::from_secs(90), async {
         loop {
             let r = rpc(client, n, "update", json!([token])).await;
-            if r["returnValue"]["state"] == want {
+            last_phase = r["returnValue"]["state"].clone();
+            if last_phase == want {
                 return r["returnValue"].clone();
             }
-            sleep(Duration::from_millis(300)).await
+            sleep(Duration::from_millis(300)).await;
         }
     })
     .await
-    .expect("home did not reach requested phase")
+    .unwrap_or_else(|_| {
+        panic!(
+            "{} did not reach {want}; last observed phase: {last_phase}",
+            n.origin
+        )
+    })
 }
 async fn admin(client: &Client, n: &Node) -> String {
     timeout(Duration::from_secs(45), async {
@@ -241,12 +248,14 @@ async fn running_pool(dir: &Path) -> RunningPool {
     for n in &nodes[..2] {
         identities.push(session(&client, n).await);
     }
+    // Two human homes use the configured 5v5 seat count and the separate
+    // gameplay connection. The legacy ARAL queue requires six human seats.
     for i in 0..2 {
         rpc(
             &client,
             &nodes[i],
             "joinLobby",
-            json!([identities[i].1, "{\"lobby\":\"casual_aral\"}", "147219"]),
+            json!([identities[i].1, {"lobby":"5v5_pvp_casual"}, "147219"]),
         )
         .await;
     }
