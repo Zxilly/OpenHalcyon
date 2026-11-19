@@ -212,6 +212,12 @@ impl Federation {
         }
         Ok(timeout(DEADLINE, self.raft.client_write(p)).await??.data)
     }
+    /// Read this node's last applied committed state without a quorum round trip.
+    /// Use for display after authenticating local membership, not for admission decisions.
+    pub fn inspect_applied<T>(&self, project: impl FnOnce(&Pool) -> T) -> T {
+        self.store.inspect(project)
+    }
+
     pub async fn read(&self) -> anyhow::Result<Pool> {
         self.inspect(Clone::clone).await
     }

@@ -2,7 +2,9 @@ pub use halcyon_data::{BotDifficulty, LEGACY_ARAL_QUEUE, LEGACY_ARAL_SEATS};
 mod accounts;
 mod chat;
 mod federation;
+mod native_offer;
 mod notification;
+pub use native_offer::{NativeOffer, NativeSeat};
 pub use notification::record_external_notification;
 mod pooled_spectator;
 pub use pooled_spectator::PooledSpectator;
@@ -233,6 +235,7 @@ impl AppState {
             queue::add_difficulty_column(&tx, "matches")?;
             halcyon_community::queue::initialize(&tx).map_err(queue::community_error)?;
             federation::initialize(&tx)?;
+            native_offer::initialize(&tx)?;
             notification::initialize(&tx)?;
             spectator::initialize(&tx)?;
             pooled_spectator::initialize(&tx)?;

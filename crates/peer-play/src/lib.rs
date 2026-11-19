@@ -188,6 +188,49 @@ impl PeerPlay {
             .map_err(|_| PlatformError::HostUnavailable)?;
         Ok(())
     }
+    /// Return only the committed allocation associated with this session's home ticket.
+    pub async fn native_offer(
+        &self,
+        session: &str,
+    ) -> halcyon_platform::Result<Option<halcyon_platform::NativeOffer>> {
+        use halcyon_platform::{NativeOffer, NativeSeat};
+        let home = &self.inner;
+        let Some(binding) = home
+            .platform
+            .federated_offer_binding(session, home.cfg.pool_id)
+            .await?
+        else {
+            return Ok(None);
+        };
+        Ok(home.fed.inspect_applied(|pool| {
+            let a = pool.allocations().get(&binding.room)?;
+            if a.phase == Phase::Aborted {
+                return None;
+            }
+            let mut authorized = false;
+            let mut seats = Vec::new();
+            for key in &a.tickets {
+                let entry = pool.tickets().get(&key.id)?;
+                if entry.ticket.generation != key.generation {
+                    return None;
+                }
+                let own = key.id == binding.ticket && entry.ticket.home == home.cfg.node_id;
+                authorized |= own && entry.ticket.players.contains(&binding.player);
+                let accepted = a.accepted.contains(&key.id);
+                seats.extend(entry.ticket.players.iter().map(|&player| NativeSeat {
+                    player,
+                    accepted: accepted || (own && binding.accepted.contains(&player)),
+                }));
+            }
+            authorized.then_some(NativeOffer {
+                id: a.id,
+                seats,
+                entries: a.tickets.len() as u32,
+                expires: None,
+            })
+        }))
+    }
+
     pub async fn accept(&self, token: &str, room: Uuid) -> halcyon_platform::Result<()> {
         let i = self.intent(token).await?;
         if i.match_id != Some(room) || !matches!(i.phase.as_str(), "offered" | "playing") {

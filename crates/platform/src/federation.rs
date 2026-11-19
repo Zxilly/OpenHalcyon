@@ -12,6 +12,13 @@ use super::{
     },
 };
 
+pub struct FederatedOfferBinding {
+    pub player: Uuid,
+    pub ticket: Uuid,
+    pub room: Uuid,
+    pub accepted: std::collections::BTreeSet<Uuid>,
+}
+
 #[derive(Clone, Debug)]
 pub struct FederatedIntent {
     pub ticket: Uuid,
@@ -254,6 +261,47 @@ impl AppState {
             }
             intent_by_ticket(tx, &ticket)?.ok_or(PlatformError::WorkerUnavailable)
         })).await
+    }
+
+    /// Bind an offer read to this session's unreleased home ticket, including
+    /// individual local party responses before the whole ticket accepts.
+    pub async fn federated_offer_binding(
+        &self,
+        token: &str,
+        pool: Uuid,
+    ) -> Result<Option<FederatedOfferBinding>> {
+        let key = digest(token);
+        self.run(move |state| {
+            let db = state
+                .db
+                .lock()
+                .map_err(|_| PlatformError::WorkerUnavailable)?;
+            let player = player(&db, &key)?;
+            let binding: Option<(String,String)> = db.query_row(
+                "SELECT f.ticket,f.match_id FROM federated_queue_members m JOIN federated_queue f
+                 ON f.ticket=m.ticket WHERE m.player=? AND m.released=0 AND f.pool=?
+                 AND f.phase IN ('offered','playing','finished') AND f.match_id IS NOT NULL",
+                params![player,pool.to_string()],|row| Ok((row.get(0)?,row.get(1)?))
+            ).optional()?;
+            let Some((ticket, room)) = binding else {
+                return Ok(None);
+            };
+            let mut stmt = db.prepare(
+                "SELECT player FROM federated_queue_members WHERE ticket=? AND accepted_match=?",
+            )?;
+            let uuid = |s: &str| Uuid::parse_str(s).map_err(|_| PlatformError::WorkerUnavailable);
+            let mut accepted = std::collections::BTreeSet::new();
+            for id in stmt.query_map(params![ticket, room], |r| r.get::<_, String>(0))? {
+                accepted.insert(uuid(&id?)?);
+            }
+            Ok(Some(FederatedOfferBinding {
+                player: uuid(&player)?,
+                ticket: uuid(&ticket)?,
+                room: uuid(&room)?,
+                accepted,
+            }))
+        })
+        .await
     }
 
     pub async fn federated_intent(&self, token: &str) -> Result<Option<FederatedIntent>> {
