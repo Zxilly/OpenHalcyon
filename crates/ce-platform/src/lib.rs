@@ -452,6 +452,19 @@ async fn dispatch(s: &Platform, m: &str, params: &[Value]) -> Result<(String, Va
         "exitLobby" if profile.lobby.as_ref().is_some_and(|l| l.phase == "playing") => {
             s.projected_state(&session, &profile).await?
         }
+        "rejectMatch" if params.len() > 1 => {
+            let room = params[1].as_str().ok_or(Error::Invalid)?;
+            if room.is_empty() {
+                json!(false)
+            } else {
+                let room = Uuid::parse_str(room).map_err(|_| Error::Invalid)?;
+                json!(if let Some(peers) = &s.peers {
+                    peers.reject_offer(&session, room).await?
+                } else {
+                    s.app.reject_local_offer(&session, room).await?
+                })
+            }
+        }
         "exitLobby" | "rejectMatch" | "notifyExitPostMatch" => {
             if spectator::is_spectating(&profile) || profile.lobby.is_none() {
                 spectator::leave(s, &session).await?;
@@ -465,12 +478,19 @@ async fn dispatch(s: &Platform, m: &str, params: &[Value]) -> Result<(String, Va
             }
         }
         "renamePlayerHandle" | "setPlayerHandle" => {
-            s.app.rename(&session, arg(params, 1)?.to_owned()).await?;
+            let native =
+                m == "renamePlayerHandle" && params.len() == 3 && params[1].as_str() == Some("");
+            let name = arg(params, if native { 2 } else { 1 })?;
+            s.app.rename(&session, name.to_owned()).await?;
             let updated = s.app.profile(&session).await?;
             s.community
                 .observe_player(id, updated.name.clone(), true)
                 .await?;
-            player_info(&updated)
+            if native {
+                json!({"handle":updated.name,"status":0,"success":true})
+            } else {
+                player_info(&updated)
+            }
         }
         "updatePlatformPlayerConfig" => {
             let field = params.get(1).ok_or(Error::Invalid)?;
@@ -503,24 +523,23 @@ async fn dispatch(s: &Platform, m: &str, params: &[Value]) -> Result<(String, Va
             s.meta
                 .set(id, "recent_action", Value::Array(params[1..].to_vec()))
                 .await?;
-            player_info(&profile)
+            if params.len() == 3 && params[1..].iter().all(Value::is_string) {
+                json!({})
+            } else {
+                player_info(&profile)
+            }
         }
         m if activity::handles(m) => s.activity_rpc(&profile, m, params).await?,
         m if content::Content::handles(m) => s.content_rpc(&profile, m, params).await?,
         "getLeaderboardData" => s.meta.ranking().await?,
         "endSession" => {
+            let snapshot = s.projected_state(&session, &profile).await?;
             spectator::leave(s, &session).await?;
             s.app.end_session(&session).await?;
             s.community
                 .observe_player(id, profile.name.clone(), false)
                 .await?;
-            return Ok((
-                String::new(),
-                state(&PlayerProfile {
-                    lobby: None,
-                    ..profile
-                }),
-            ));
+            return Ok((String::new(), snapshot));
         }
         _ => {
             let patch =
@@ -541,6 +560,11 @@ async fn dispatch(s: &Platform, m: &str, params: &[Value]) -> Result<(String, Va
                         .extend(fields.clone())
                 }
                 rv
+            } else if m == "friendRequestIssueByHandle"
+                && params.len() == 2
+                && params[1].is_string()
+            {
+                json!({})
             } else {
                 patch
             }

@@ -299,6 +299,23 @@ fn committed_offer_deadline_is_fixed_and_acceptance_ordered() {
     assert_eq!(pool.allocations()[&room].expires_at, Some(deadline));
     pool.apply_at(b.home, allocate, Some(110)).unwrap();
     assert_eq!(pool.allocations()[&room].expires_at, Some(deadline));
+    let reject = Command::Reject {
+        id: room,
+        ticket: key(&a),
+    };
+    let mut early_rejection = pool.clone();
+    early_rejection
+        .apply_at(a.home, reject.clone(), Some(deadline - 1))
+        .unwrap();
+    assert_eq!(early_rejection.allocations()[&room].phase, Phase::Aborted);
+    let mut expired_offer = pool.clone();
+    for at in [deadline, deadline + 1] {
+        assert_eq!(
+            expired_offer.apply_at(a.home, reject.clone(), Some(at)),
+            Err(Error::Conflict)
+        );
+        assert_eq!(expired_offer.allocations()[&room].phase, Phase::Preparing);
+    }
     let mut late = pool.clone();
     pool.apply_at(a.home, accept_a.clone(), Some(deadline - 1))
         .unwrap();
@@ -307,6 +324,10 @@ fn committed_offer_deadline_is_fixed_and_acceptance_ordered() {
     pool.apply_at(host, ready.clone(), Some(deadline - 1))
         .unwrap();
     pool.apply_at(host, expire.clone(), Some(deadline)).unwrap();
+    assert_eq!(
+        pool.apply_at(a.home, reject, Some(deadline - 1)),
+        Err(Error::Conflict)
+    );
     assert_eq!(pool.allocations()[&room].phase, Phase::Ready);
 
     late.apply_at(a.home, accept_a.clone(), Some(deadline - 1))
@@ -369,4 +390,35 @@ fn a_legacy_preparation_gets_one_persisted_grace_window() {
     );
     pool.apply_at(host, expire, Some(deadline)).unwrap();
     assert_eq!(pool.allocations()[&room].phase, Phase::Aborted);
+}
+
+#[test]
+fn rejecting_only_affects_the_offered_room_and_the_owners_ticket() {
+    let mut p = Pool::default();
+    let a = ticket(1, id(10), &[101, 102]);
+    let b = ticket(2, id(20), &[103, 104]);
+    for t in [&a, &b] {
+        p.apply(t.home, Command::Enqueue(t.clone())).unwrap();
+    }
+    let allocate = |room| Command::Allocate {
+        id: room,
+        host: id(50),
+        tickets: vec![key(&a), key(&b)],
+    };
+    let first = id(60);
+    let next = id(61);
+    p.apply(a.home, allocate(first)).unwrap();
+    p.apply(a.home, Command::Abort { id: first }).unwrap();
+    p.apply(a.home, allocate(next)).unwrap();
+    let reject = |room| Command::Reject {
+        id: room,
+        ticket: key(&a),
+    };
+    assert!(p.apply(a.home, reject(first)).is_err());
+    assert!(p.apply(b.home, reject(next)).is_err());
+    assert_eq!(p.allocations()[&next].phase, Phase::Preparing);
+    p.apply(a.home, reject(next)).unwrap();
+    assert_eq!(p.allocations()[&next].phase, Phase::Aborted);
+    assert_eq!(p.tickets()[&a.id].phase, TicketPhase::Closed);
+    assert_eq!(p.tickets()[&b.id].phase, TicketPhase::Queued);
 }

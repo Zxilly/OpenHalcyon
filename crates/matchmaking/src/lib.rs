@@ -118,6 +118,10 @@ pub enum Command {
         id: Uuid,
         digest: String,
     },
+    Reject {
+        id: Uuid,
+        ticket: TicketRef,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, Error)]
@@ -184,6 +188,17 @@ impl Pool {
         match command {
             Command::Enqueue(ticket) => self.enqueue(caller, ticket),
             Command::Cancel(ticket) => self.cancel(caller, ticket),
+            Command::Reject { id, ticket } => {
+                if self.owned(caller, ticket)?.phase != TicketPhase::Assigned(id) {
+                    return Err(Error::Conflict);
+                }
+                let room = self.allocations.get_mut(&id).ok_or(Error::Missing)?;
+                if room.phase != Phase::Preparing {
+                    return Err(Error::Conflict);
+                }
+                Self::check_window(room, epoch)?;
+                self.cancel(caller, ticket)
+            }
             Command::Allocate { id, host, tickets } => self.allocate(id, host, tickets, epoch),
             Command::Accept { id, ticket } => {
                 let entry = self.owned(caller, ticket)?;

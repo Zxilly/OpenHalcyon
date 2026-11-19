@@ -285,6 +285,39 @@ impl PeerPlay {
             }
         })
     }
+    pub async fn reject_offer(&self, token: &str, room: Uuid) -> halcyon_platform::Result<bool> {
+        let Some(ticket) = self
+            .inner
+            .platform
+            .native_reject_ticket(token, room, self.inner.cfg.pool_id)
+            .await?
+        else {
+            return Ok(false);
+        };
+        let request = Uuid::new_v5(&ticket, format!("reject/{room}").as_bytes());
+        match self
+            .inner
+            .fed
+            .submit(
+                request,
+                Command::Reject {
+                    id: room,
+                    ticket: TicketRef {
+                        id: ticket,
+                        generation: 1,
+                    },
+                },
+            )
+            .await
+            .map_err(|_| PlatformError::HostUnavailable)?
+        {
+            Ok(()) => Ok(true),
+            Err(halcyon_matchmaking::Error::Conflict | halcyon_matchmaking::Error::Missing) => {
+                Ok(false)
+            }
+            Err(_) => Err(PlatformError::HostUnavailable),
+        }
+    }
     pub async fn leave(&self, token: &str) -> halcyon_platform::Result<()> {
         let Some(i) = self
             .inner

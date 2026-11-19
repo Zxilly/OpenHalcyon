@@ -11,6 +11,14 @@ pub(crate) fn initialize(db: &Transaction<'_>) -> Result<(), Error> {
         CREATE TABLE IF NOT EXISTS ce_messages(id TEXT PRIMARY KEY, sender TEXT NOT NULL,
             recipient TEXT NOT NULL, body TEXT NOT NULL, created INTEGER DEFAULT(unixepoch()), dismissed INTEGER DEFAULT 0);
         CREATE INDEX IF NOT EXISTS ce_recipient ON ce_messages(recipient,dismissed,created);
+        CREATE TABLE IF NOT EXISTS ce_match_handles(room TEXT NOT NULL,player TEXT NOT NULL,handle TEXT NOT NULL,
+            PRIMARY KEY(room,player));
+        CREATE TRIGGER IF NOT EXISTS ce_snapshot_match_handle AFTER INSERT ON events
+            WHEN json_extract(NEW.body,'$.type')='match_finished' BEGIN
+            INSERT OR IGNORE INTO ce_match_handles
+            SELECT json_extract(NEW.body,'$.matchId'),p.id,p.name FROM players p
+            WHERE p.id=NEW.player AND EXISTS(SELECT 1 FROM json_each(NEW.body,'$.result.players') seat WHERE seat.key=p.id);
+            END;
         CREATE TABLE IF NOT EXISTS ce_honor(match_id TEXT NOT NULL,source TEXT NOT NULL,target TEXT NOT NULL,
             kind TEXT NOT NULL, PRIMARY KEY(match_id,source,target));
         CREATE TABLE IF NOT EXISTS ce_pending_gifts(player TEXT NOT NULL,target TEXT NOT NULL,sku TEXT NOT NULL,
@@ -188,16 +196,31 @@ impl Platform {
             }
             "reportHonorPlayer" => {
                 let room=id(params,1,&["matchId"])?.to_string();
-                let target=id(params,2,&["playerUUID","targetUUID"])?.to_string();
-                if actor==target {return Err(Error::Invalid);}
+                let identifier=text(params,2,&["playerUUID","targetUUID","handle"],128)?;
                 let kind=text(params,3,&["honor","reason"],64)?;
                 self.meta.transaction(move|tx|{
+                    let uuid=Uuid::parse_str(&identifier).ok();
+                    let target=if let Some(id)=uuid {id.to_string()} else {
+                        // A missing remote name could collide with a locally observed one.
+                        let complete:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM events e
+                          WHERE e.player=? AND json_extract(e.body,'$.type')='match_finished'
+                          AND json_extract(e.body,'$.matchId')=? AND json_type(e.body,'$.result.players')='object'
+                          AND NOT EXISTS(SELECT 1 FROM json_each(e.body,'$.result.players') seat
+                            LEFT JOIN ce_match_handles h ON h.room=? AND h.player=seat.key WHERE h.player IS NULL))",
+                            params![actor,room,room],|row|row.get(0))?;
+                        if !complete {return Err(Error::Unavailable("match handle roster incomplete"));}
+                        let mut rows=tx.prepare("SELECT player FROM ce_match_handles WHERE room=? AND handle=? COLLATE NOCASE LIMIT 2")?;
+                        let hits=rows.query_map(params![room,identifier],|r|r.get(0))?.collect::<rusqlite::Result<Vec<String>>>()?;
+                        let [one]=hits.as_slice() else {return Err(Error::Invalid)};
+                        one.clone()
+                    };
+                    if actor==target {return Err(Error::Invalid);}
                     let evidence:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM events e,json_each(e.body,'$.result.players') p
                         WHERE e.player=? AND json_extract(e.body,'$.type')='match_finished' AND json_extract(e.body,'$.matchId')=? AND p.key=?)",
                         params![actor,room,target],|r|r.get(0))?;
                     if !evidence {return Err(Error::Unavailable("no shared completed match"));}
                     tx.execute("INSERT INTO ce_honor VALUES(?,?,?,?) ON CONFLICT DO NOTHING",params![room,actor,target,kind])?;
-                    Ok(json!({"success":true}))
+                    Ok(if uuid.is_some(){json!({"success":true})}else{json!({})})
                 }).await
             }
             "notifyGameResults" | "updateMatchInfo" => {

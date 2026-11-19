@@ -154,3 +154,29 @@ Set the top-level `native_state_updates = true` in the server TOML to advertise 
 WebSocket and HTTP long polling use the same recipient-local SQLite cursor. To resume, send the previous envelope's `time` and `tag` as query parameters. A request without a cursor starts with the current player snapshot. Invitations go to the invitee alone, roster changes go to party members, and kicks go to the removed player. A departure is sent to the remaining members. Dissolving the party sends a state-change notice to its former members. Retries of an existing invitation or an already accepted invitation add no duplicate events. Revoked invitations and obsolete roster notices replay as a generic state snapshot at the original cursor.
 
 The 155-method inventory establishes the available party RPC names. The local protocol notes (§4) and the generated `stateUpdateCallback` analysis identify the envelope and the four `quintParty*` keys in `text`. This server emits those keys as markers with empty objects. The generated reports and demonstration server suggest inner fields, but the original values and native UI behavior remain unverified. Details are available from the authorized party RPCs.
+
+### Captured platform RPC coverage
+
+The archived Android relay contains 361 JSONRpc URL occurrences across 14 method names. Every name also occurs in the separate iOS-era interceptor archive. Eight stand-alone Android response files provide direct envelope examples, including the rejected guest-recovery call. The interceptor archive contains 2,946 request/response pairs with a method and parameter array across 30 names. Counts below refer exclusively to those pairs.
+
+| Method | Calls | Method | Calls |
+| --- | ---: | --- | ---: |
+| friendListAll | 700 | queryPendingMatch | 25 |
+| update | 611 | joinLobby | 17 |
+| getPlayerInfo | 270 | acceptMatch | 15 |
+| getLiveEventData | 186 | rejectMatch | 11 |
+| getLeaderboardData | 170 | notifyExitPostMatch | 8 |
+| startSessionForPlayer | 139 | friendRequestIssueByHandle | 8 |
+| exitLobby | 137 | reportHonorPlayer | 5 |
+| getTalentsData | 134 | guildSearch | 4 |
+| endSession | 121 | queryTeamInvites | 3 |
+| getPlayerForGuestAccount | 114 | queryGuildInvites | 3 |
+| getSkinManifest | 93 | queryGuildInfo | 3 |
+| updatePlatformPlayerConfig | 60 | renamePlayerHandle | 3 |
+| guildGetData | 36 | recordMatchExperienceMetrics | 3 |
+| createGuestPlayer | 33 | joinGuild | 2 |
+| notifyPlayerAction | 31 | createTeam | 1 |
+
+The archived interceptor source includes explicit response rewrites. It inserts fictional friend entries and sets `numFriends` to their count, adds leaderboard and event content, and can decorate responses with progression and trophy fields. Its source describes the upstream empty friend list as `confirmed: [], pending: [], numOffline: 0`. These injected features cannot establish an official CE content catalog. The guild/team empty responses establish their envelope shape only; their data provides no evidence that an official roster mutation completed.
+
+The native rejection request carries the session and a room UUID. Ten UUID requests returned true and one empty string returned false. The home checks the offer and the requesting seat together; a replay after the caller joins another queue leaves that queue intact. Native rename supplies an empty middle string and a requested handle. Each observed reply carried a string handle, numeric status 0 and boolean success. The service returns its persisted handle. All five native honor actions supplied a completed room UUID, a target string and the literal `honor`; the acknowledgement was an empty object. A handle-based honor requires a unique recorded match-time handle and completed roster evidence for the requesting seat. If any participant lacks a recorded handle, the home cannot rule out a name collision and disables name resolution for that match. Explicit player UUIDs remain available to authenticated participants with shared match evidence.

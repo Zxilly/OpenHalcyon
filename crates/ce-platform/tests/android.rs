@@ -622,8 +622,84 @@ async fn aral_offer_projection_is_private_read_only_and_survives_reopen() {
             0
         );
     }
+    let stale =
+        rpc(&r, "queryPendingMatch", json!([tokens[0]])).await["returnValue"]["matchId"].clone();
+    // Local acceptance and rejection both close at the persisted deadline.
+    let clock = rusqlite::Connection::open(&db).unwrap();
+    clock
+        .execute(
+            "UPDATE matches SET offered_at=unixepoch()-30 WHERE id=?",
+            [stale.as_str().unwrap()],
+        )
+        .unwrap();
+    assert_eq!(
+        rpc(&r, "rejectMatch", json!([tokens[0], stale])).await["returnValue"],
+        false
+    );
+    clock
+        .execute(
+            "UPDATE matches SET offered_at=unixepoch() WHERE id=?",
+            [stale.as_str().unwrap()],
+        )
+        .unwrap();
+    drop(clock);
+    for (seat, requested) in [
+        (0, json!("")),
+        (0, json!(uuid::Uuid::new_v4())),
+        (6, stale.clone()),
+    ] {
+        assert_eq!(
+            rpc(&r, "rejectMatch", json!([tokens[seat], requested])).await["returnValue"],
+            false
+        );
+    }
+    assert_eq!(
+        rpc(&r, "rejectMatch", json!([tokens[0], stale])).await["returnValue"],
+        true
+    );
+    for t in &tokens[..6] {
+        assert_eq!(
+            rpc(&r, "joinLobby", json!([t,{"lobby":"casual_aral"},"147219"])).await["code"],
+            0
+        );
+    }
+    assert_eq!(
+        rpc(&r, "rejectMatch", json!([tokens[0], stale])).await["returnValue"],
+        true
+    );
+    let renamed = rpc(&r, "renamePlayerHandle", json!([tokens[1], "", "Coral"])).await;
+    assert_eq!(
+        renamed["returnValue"],
+        json!({"success":true,"status":0,"handle":"Coral"})
+    );
     let offer = rpc(&r, "queryPendingMatch", json!([tokens[0]])).await["returnValue"].clone();
     assert_eq!(offer["isValid"], false);
+    let invite = rpc(
+        &r,
+        "friendRequestIssueByHandle",
+        json!([tokens[2], "Coral"]),
+    )
+    .await;
+    assert_eq!(invite["returnValue"], json!({}));
+    assert_eq!(invite["code"], 0);
+    assert_ne!(
+        rpc(
+            &r,
+            "friendRequestIssueByHandle",
+            json!([tokens[2], "MissingHandle"])
+        )
+        .await["code"],
+        0
+    );
+    assert_eq!(
+        rpc(
+            &r,
+            "notifyPlayerAction",
+            json!([tokens[2], "touch", "menu"])
+        )
+        .await["returnValue"],
+        json!({})
+    );
     let rows = offer["responses"].as_array().unwrap();
     assert_eq!(rows.len(), 6);
     for (row, id) in rows.iter().zip(&players) {
@@ -683,8 +759,40 @@ async fn aral_offer_projection_is_private_read_only_and_survives_reopen() {
     assert_eq!(resumed["returnValue"]["state"], "playing");
     assert_eq!(resumed["returnValue"]["matchId"], offer["matchId"]);
     assert_eq!(resumed["returnValue"]["numPlayers"], 6);
+    assert_eq!(
+        rpc(&r, "rejectMatch", json!([tokens[5], offer["matchId"]])).await["returnValue"],
+        false
+    );
+    let logout = rpc(&r, "endSession", json!([tokens[5]])).await;
+    assert_eq!(logout["returnValue"]["matchId"], offer["matchId"]);
+    assert_eq!(logout["returnValue"]["state"], "playing");
+    assert_eq!(logout["returnValue"]["port"], 7012);
+    assert_ne!(rpc(&r, "update", json!([tokens[5]])).await["code"], 0);
     let room = offer["matchId"].as_str().unwrap().parse().unwrap();
-    app.finish_match(room, json!({"winner":0})).unwrap();
+    let result = json!({"winner":0,"players":players[..6].iter().map(|p|(p.as_str().unwrap().to_owned(),json!({"team":0}))).collect::<serde_json::Map<_,_>>()});
+    app.finish_match(room, result.clone()).unwrap();
+    rpc(&r, "renamePlayerHandle", json!([tokens[1], "", "CoralNew"])).await;
+    for _ in 0..2 {
+        let reply = rpc(
+            &r,
+            "reportHonorPlayer",
+            json!([tokens[2], room, "Coral", "honor"]),
+        )
+        .await;
+        assert_eq!(reply["code"], 0);
+        assert_eq!(reply["returnValue"], json!({}));
+    }
+    for (seat, target) in [(2, "Guest"), (2, "CoralNew"), (6, "Coral"), (1, "Coral")] {
+        assert_ne!(
+            rpc(
+                &r,
+                "reportHonorPlayer",
+                json!([tokens[seat], room, target, "honor"])
+            )
+            .await["code"],
+            0
+        );
+    }
     rpc(&r, "notifyExitPostMatch", json!([tokens[0]])).await;
     let end = rpc(&r, "update", json!([tokens[2]])).await;
     assert_eq!(end["returnValue"]["state"], "post_match");
@@ -693,7 +801,7 @@ async fn aral_offer_projection_is_private_read_only_and_survives_reopen() {
     let settled = end["returnValue"]["expiry"].as_f64().unwrap();
     assert!(end["returnValue"]["ttl"].as_u64().unwrap() <= 100);
     let stamp = end["returnValue"]["timestamp"].clone();
-    app.finish_match(room, json!({"winner":0})).unwrap();
+    app.finish_match(room, result).unwrap();
     drop(r);
     drop(app);
     let (_app, r) = open();
@@ -702,6 +810,21 @@ async fn aral_offer_projection_is_private_read_only_and_survives_reopen() {
     assert_eq!(resumed["returnValue"]["timestamp"], stamp);
     // The two captured pairs retain an identical absolute expiry and timestamp.
     let dbw = rusqlite::Connection::open(&db).unwrap();
+    dbw.execute(
+        "DELETE FROM ce_match_handles WHERE room=? AND player=?",
+        rusqlite::params![room.to_string(), players[0].as_str().unwrap()],
+    )
+    .unwrap();
+    assert_ne!(
+        rpc(
+            &r,
+            "reportHonorPlayer",
+            json!([tokens[2], room, "Coral", "honor"])
+        )
+        .await["code"],
+        0
+    );
+
     dbw.execute(
         "UPDATE native_settlements SET at_ms=at_ms-30000 WHERE room=?",
         [room.to_string()],

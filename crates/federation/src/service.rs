@@ -221,6 +221,7 @@ impl Federation {
             p.command,
             Command::Allocate { .. }
                 | Command::Accept { .. }
+                | Command::Reject { .. }
                 | Command::HostReady { .. }
                 | Command::Expire { .. }
         )

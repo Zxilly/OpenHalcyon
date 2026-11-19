@@ -15,6 +15,11 @@ pub struct NativeOffer {
 }
 
 pub(super) fn initialize(tx: &rusqlite::Transaction<'_>) -> Result<()> {
+    tx.execute_batch(
+        "CREATE TABLE IF NOT EXISTS native_rejections(
+        player TEXT NOT NULL, room TEXT NOT NULL, ticket TEXT,
+        PRIMARY KEY(player, room))",
+    )?;
     let had_settlements: bool = tx.query_row(
         "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name='native_settlements')",
         [], |row| row.get(0),
@@ -51,6 +56,83 @@ pub(super) fn initialize(tx: &rusqlite::Transaction<'_>) -> Result<()> {
 }
 
 impl AppState {
+    /// Local rejection and its retry receipt share one transaction.
+    pub async fn reject_local_offer(&self, session: &str, room: Uuid) -> Result<bool> {
+        let key = digest(session);
+        self.run(move |state| {
+            state.transaction(|tx| {
+                let actor = player(tx, &key)?;
+                let room = room.to_string();
+                let previous = tx.query_row(
+                    "SELECT EXISTS (
+                        SELECT 1 FROM native_rejections
+                        WHERE player=? AND room=? AND ticket IS NULL
+                    )",
+                    params![actor, room],
+                    |row| row.get::<_, bool>(0),
+                )?;
+                if previous {
+                    return Ok(true);
+                }
+                let offered = tx.query_row(
+                    "SELECT EXISTS (
+                        SELECT 1 FROM tickets t JOIN matches m ON m.id=t.match_id
+                        WHERE t.player=? AND m.id=? AND m.phase='offered'
+                          AND m.offered_at > unixepoch()-30
+                    )",
+                    params![actor, room],
+                    |row| row.get::<_, bool>(0),
+                )?;
+                if !offered {
+                    return Ok(false);
+                }
+                abort(tx, &room, "player_left")?;
+                tx.execute(
+                    "INSERT INTO native_rejections(player,room) VALUES(?,?)",
+                    params![actor, room],
+                )?;
+                Ok(true)
+            })
+        })
+        .await
+    }
+
+    /// Save the original authenticated binding before proposing a rejection.
+    /// A retry can submit the same room-scoped Raft request after ticket release.
+    pub async fn native_reject_ticket(
+        &self,
+        session: &str,
+        room: Uuid,
+        pool: Uuid,
+    ) -> Result<Option<Uuid>> {
+        let key = digest(session);
+        self.run(move |state| {
+            state.transaction(|tx| {
+                let actor = player(tx, &key)?;
+                let room = room.to_string();
+                tx.execute(
+                    "INSERT OR IGNORE INTO native_rejections(player,room,ticket)
+                     SELECT member.player, queue.match_id, queue.ticket
+                     FROM federated_queue queue
+                     JOIN federated_queue_members member ON member.ticket=queue.ticket
+                     WHERE member.player=? AND queue.match_id=? AND queue.pool=?
+                       AND queue.phase='offered' AND member.released=0",
+                    params![actor, room, pool.to_string()],
+                )?;
+                let ticket: Option<String> = tx
+                    .query_row(
+                        "SELECT ticket FROM native_rejections
+                     WHERE player=? AND room=? AND ticket IS NOT NULL",
+                        params![actor, room],
+                        |row| row.get(0),
+                    )
+                    .optional()?;
+                ticket.as_deref().map(parse_id).transpose()
+            })
+        })
+        .await
+    }
+
     pub async fn native_queue_party_size(&self, session: &str) -> Result<u32> {
         let key = digest(session);
         self.run(move |state| {
