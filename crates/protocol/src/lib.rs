@@ -465,6 +465,8 @@ pub struct MatchStatistics<'a>(&'a [u8]);
 pub struct PlayerStatistics {
     pub player: u32,
     pub team: u8,
+    /// Raw +0x50 column. All eight observed reports used 255 for occupied slots and zero for unused slots.
+    pub slot_flag: u8,
     pub damage_to_heroes: f32,
     pub weapon_damage_to_heroes: f32,
     pub crystal_damage_to_heroes: f32,
@@ -477,6 +479,20 @@ pub struct PlayerStatistics {
     pub items: [u32; 10],
 }
 impl MatchStatistics<'_> {
+    /// Two wire team IDs associated with the report's team records.
+    pub fn team_ids(&self) -> [u8; 2] {
+        [self.0[0x62c], self.0[0x62d]]
+    }
+
+    /// Four original BE32 float bit patterns feeding two minion damage ratios.
+    /// The original numerator and denominator names remain unresolved.
+    pub fn minion_damage_ratio_inputs(&self) -> [u32; 4] {
+        std::array::from_fn(|i| {
+            let start = 0x63c + 4 * i;
+            u32::from_be_bytes(self.0[start..start + 4].try_into().unwrap())
+        })
+    }
+
     /// Returns the raw slot, including any unused/sentinel player identifier.
     pub fn slot(&self, i: usize) -> Option<PlayerStatistics> {
         if i >= 16 {
@@ -489,6 +505,7 @@ impl MatchStatistics<'_> {
         Some(PlayerStatistics {
             player: word(4 * i),
             team: b[0x40 + i],
+            slot_flag: b[0x50 + i],
             damage_to_heroes: float(0x60),
             weapon_damage_to_heroes: float(0xa0),
             crystal_damage_to_heroes: float(0xe0),
@@ -1035,11 +1052,21 @@ mod tests {
         b[0x220 + 2 * i..0x222 + 2 * i].copy_from_slice(&0x1234u16.to_be_bytes());
         let item = 0x300 + 40 * i + 9 * 4;
         b[item..item + 4].copy_from_slice(&0xba987654u32.to_be_bytes());
+        b[0x50 + i] = 255;
+        b[0x62c..0x62e].copy_from_slice(&[1, 2]);
+        let inputs = [0u32, 0x80000000, 0x7fc01234, 0x3f800000];
+        for (index, word) in inputs.iter().enumerate() {
+            let offset = 0x63c + index * 4;
+            b[offset..offset + 4].copy_from_slice(&word.to_be_bytes());
+        }
         let m = Message::new(0x48d, b.as_slice());
         let Fields::MatchStatistics(stats) = m.fields().unwrap() else {
             panic!()
         };
+        assert_eq!(stats.team_ids(), [1, 2]);
+        assert_eq!(stats.minion_damage_ratio_inputs(), inputs);
         let last = stats.slot(i).unwrap();
+        assert_eq!(last.slot_flag, 255);
         assert_eq!(
             (
                 last.player,
