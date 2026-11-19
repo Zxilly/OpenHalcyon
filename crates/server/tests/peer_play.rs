@@ -1118,3 +1118,6 @@ async fn local_friend_spectates_read_only_and_revokes_on_exit() {
     .unwrap();
     assert_eq!(rooms.detail(id).unwrap()["phase"], "running");
 }
+
+#[path = "support/process_pool.rs"]
+mod process_pool;
