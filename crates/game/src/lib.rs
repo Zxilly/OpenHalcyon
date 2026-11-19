@@ -71,6 +71,7 @@ impl Peer {
 struct Seat {
     locked: bool,
     draft_sync_sent: bool,
+    recommended_path: Option<u8>,
     preamble: scene::Preamble,
     loading_roster_sent: bool,
     control_world: bool,
@@ -650,7 +651,9 @@ impl Room {
         {
             return;
         }
-        let marker = transport::TeamBatch::new(vec![Message::new(0x03ef, [])]);
+        let mut records = self.recommended_paths(None);
+        records.push(Message::new(0x03ef, []));
+        let marker = transport::TeamBatch::new(records);
         for peer in self.seats.iter().filter_map(Seat::gameplay_peer) {
             peer.send(transport::Delivery::Team(marker.clone()));
         }
@@ -788,6 +791,7 @@ impl Room {
             out.push(spawn(e, &self.picks, self.data.as_deref()));
             messages::append_inventory(&mut out, e);
         }
+        out.extend(self.recommended_paths(team));
         out
     }
     fn detach(&mut self, i: usize, ch: usize, generation: u64) {
@@ -923,6 +927,35 @@ impl Room {
             | Fields::Live(halcyon_protocol::LiveFields::MovePoint { x, y })
                 if pending_world_input =>
             {
+                out = self.set_recommended_path(i, value);
+                accepted_world_input = pending_world_input;
+            }
+            Fields::Live(halcyon_protocol::LiveFields::MovePoint { x, y })
+                if solo_scene
+                    && ch == 0
+                    && self.seats[i].scene_written
+                    && (game || pending_world_input) =>
+            {
+                let actor = &self.world.entities[i];
+                if self.visible[usize::from(actor.team)].contains(&actor.id)
+                    && let Some(slot) = self.solo_slots.fixed(actor)
+                    && let Some(ack) = point_move::submit(
+                        &mut self.world,
+                        i as u32 + 1,
+                        slot,
+                        Position { x, y },
+                        &m.body,
+                    )
+                {
+                    if pending_world_input {
+                        accepted_world_input = true;
+                        first_point_ack = Some(ack);
+                    } else {
+                        out.push(ack);
+                    }
+                }
+            }
+            Fields::Movement { x, y } if pending_world_input => {
                 accepted_world_input = m.body.len() == 14
                     && x.is_finite()
                     && y.is_finite()

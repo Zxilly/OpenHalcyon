@@ -19,6 +19,41 @@ pub(super) fn from_live(request: LiveFields<'_>) -> Option<Command> {
     }
 }
 
+fn build_path(actor: u32, value: u8) -> super::Message {
+    let mut body = u32::from(wire_id(actor)).to_be_bytes().to_vec();
+    body.push(value);
+    super::Message::new(0x0488, body)
+}
+
+impl super::Room {
+    pub(super) fn recommended_paths(&self, viewer_team: Option<u8>) -> super::Batch {
+        self.seats
+            .iter()
+            .zip(&self.world.entities)
+            .filter(|(_, actor)| self.legacy_aral() || viewer_team.is_none_or(|t| t == actor.team))
+            .filter_map(|(seat, actor)| Some(build_path(actor.id, seat.recommended_path?)))
+            .collect()
+    }
+
+    pub(super) fn set_recommended_path(&mut self, i: usize, value: u8) -> super::Batch {
+        let actor = &self.world.entities[i];
+        let applied = build_path(actor.id, value);
+        let response = vec![super::Message::new(0x0485, [value]), applied];
+        if self.seats[i].recommended_path.replace(value) != Some(value) {
+            for (j, seat) in self.seats.iter().enumerate() {
+                if j != i
+                    && (self.legacy_aral() || self.world.entities[j].team == actor.team)
+                    && let Some(peer) = seat.gameplay_peer()
+                {
+                    peer.send(super::transport::Delivery::Private(response.clone()));
+                }
+            }
+            self.publish_observers(&response);
+        }
+        response
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -75,6 +110,78 @@ mod tests {
             .is_none()
         );
         assert!(from_live(LiveFields::LearnSelection(0)).is_none());
+    }
+
+    #[tokio::test]
+    async fn path_broadcast_and_reconnect_use_authenticated_actors_and_mode_scope() {
+        for aral in [false, true] {
+            let rooms = Rooms::new(Ipv4Addr::LOCALHOST.into(), "127.0.0.1".into(), 1, None);
+            let players: Vec<_> = (0..6).map(|_| Uuid::new_v4()).collect();
+            let id = Uuid::new_v4();
+            rooms
+                .reserve(Reservation {
+                    match_id: id,
+                    players: players.clone(),
+                    teams: vec![1, 1, 1, 0, 0, 0],
+                    mode: if aral { "casual_aral" } else { "5v5_casual" }.into(),
+                    difficulty: None,
+                })
+                .unwrap();
+            let shared = rooms.room(id).unwrap();
+            let mut room = shared.lock().unwrap();
+            let mut readers = Vec::new();
+            for seat in 0..6 {
+                let (tx, rx) = tokio::sync::mpsc::channel(8);
+                let slot = &mut room.seats[seat];
+                let ch = usize::from(!aral);
+                if aral {
+                    let actor = u32::from(wire_id(seat as u32 + 1));
+                    slot.preamble.observe(&Message::new(0x46e, [0; 6]), actor);
+                    let mut ready = actor.to_be_bytes().to_vec();
+                    ready.extend([1, 0]);
+                    slot.preamble.observe(&Message::new(0x471, ready), actor);
+                    slot.preamble.observe(&Message::new(0x46d, [0; 6]), actor);
+                }
+                slot.peers[ch] = Some(crate::Peer {
+                    generation: seat as u64,
+                    tx,
+                    stalled: tokio::sync::watch::channel(false).0,
+                });
+                readers.push(rx);
+            }
+            room.phase("running");
+            for value in [0xfe, 1] {
+                let out = room
+                    .receive(2, usize::from(!aral), Message::new(0x485, [value]))
+                    .unwrap();
+                assert_eq!(out[1].body, [0, 0, 5, 222, value]);
+                for (seat, rx) in readers.iter_mut().enumerate() {
+                    if seat != 2 && (aral || seat < 3) {
+                        let crate::transport::Delivery::Private(batch) = rx.try_recv().unwrap()
+                        else {
+                            panic!()
+                        };
+                        assert_eq!(batch, out);
+                    } else {
+                        assert!(rx.try_recv().is_err());
+                    }
+                }
+                assert_eq!(
+                    room.spawn_view(Some(1))
+                        .iter()
+                        .filter(|m| m.opcode == 0x488)
+                        .count(),
+                    1
+                );
+                assert_eq!(
+                    room.spawn_view(Some(0))
+                        .iter()
+                        .filter(|m| m.opcode == 0x488)
+                        .count(),
+                    usize::from(aral)
+                );
+            }
+        }
     }
 
     #[tokio::test]

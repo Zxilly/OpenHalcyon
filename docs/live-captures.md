@@ -126,3 +126,9 @@ The available point and entity ability requests are from Lorelai and Idris.
 Neither has an authoritative spell implementation in the current simulation.
 The capture does not bind those heroes' selectors to the implemented Ringo,
 Adagio, Lyra, SAW, Karas or Shin casts.
+
+## Recommended build path
+
+Seven archived ARAL streams contain 40 server-side `0x0485` one-byte path announcements and 40 `0x0488` setters. A setter carries the player-info actor as BE32 followed by the path byte. Of the 40 setters, 27 carry `0xfe`, four carry 0, six carry 1 and three carry 2. The receiving seat could see 19 setters for its own team (including itself) and 21 for the opposing team. Six recordings also include the local client's `0x0485` request. In each case a setter with the same byte and the local `0x0471` actor followed after 29–100 ms. Other server records can intervene.
+
+The host accepts those four values from the authenticated world connection and derives the actor from its seat. A valid Solo choice following the flushed native opening can complete the world handoff just like the existing movement or clock inputs. The requester receives an announcement and actor-tagged setter. Other admitted ARAL seats receive changes for both teams. Other supported rooms share changes within the selecting team. Reconnect and observer snapshots replay the latest actor-tagged state; repeated requests receive confirmation without another peer broadcast. These path bytes are retained independently of shop contents and the end report's item-build classification.

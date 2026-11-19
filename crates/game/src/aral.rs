@@ -78,6 +78,7 @@ pub(super) fn opening(room: &Room, team: Option<u8>) -> Batch {
         batch.push(messages::spawn(actor, &room.picks, room.data.as_deref()));
         messages::append_inventory(&mut batch, actor);
     }
+    batch.extend(room.recommended_paths(team));
     batch
 }
 

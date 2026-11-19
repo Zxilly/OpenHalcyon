@@ -102,6 +102,7 @@ pub(super) fn solo_opening(room: &mut Room, seat: usize) -> std::io::Result<Batc
             }
         }
     }
+    out.extend(room.recommended_paths(Some(team)));
     Ok(out)
 }
 
@@ -453,6 +454,54 @@ mod tests {
             assert!(room.receive(0, 0, target(6.)).unwrap().is_empty());
         }
     }
+    #[tokio::test]
+    async fn solo_build_request_after_scene_write_can_confirm_and_rehydrate() {
+        let rooms = Rooms::new("127.0.0.1".parse().unwrap(), "127.0.0.1".into(), 1, None);
+        let id = Uuid::new_v4();
+        let player = Uuid::new_v4();
+        rooms
+            .reserve(Reservation {
+                match_id: id,
+                players: vec![player],
+                teams: vec![0],
+                mode: "solo".into(),
+                difficulty: None,
+            })
+            .unwrap();
+        let shared = rooms.room(id).unwrap();
+        let mut room = shared.lock().unwrap();
+        let (tx, _rx) = mpsc::channel(16);
+        room.attach(player, tx, watch::channel(false).0).unwrap();
+        room.receive(0, 0, Message::new(0x463, [0; 6])).unwrap();
+        room.phase_start = Instant::now() - Duration::from_secs(8);
+        room.tick();
+        room.receive(0, 0, Message::new(0x46e, [0; 6])).unwrap();
+        room.receive(0, 0, Message::new(0x471, [0, 0, 5, 220, 1, 0]))
+            .unwrap();
+        let request = || Message::new(0x485, [2, 0, 0, 0, 0, 0]);
+        assert!(room.receive(0, 0, request()).unwrap().is_empty());
+        room.seats[0].scene_written = true;
+        for body in [vec![3], vec![0xff], vec![1, 1, 0, 0, 0, 0], vec![2, 0]] {
+            assert!(
+                room.receive(0, 0, Message::new(0x485, body))
+                    .unwrap()
+                    .is_empty()
+            );
+        }
+        assert_eq!(room.phase, "loading");
+        let out = room.receive(0, 0, request()).unwrap();
+        assert_eq!(
+            out.iter().map(|m| m.opcode).collect::<Vec<_>>(),
+            [0x485, 0x488, 0x3ef]
+        );
+        assert_eq!(out[1].body, [0, 0, 5, 220, 2]);
+        assert_eq!(room.phase, "running");
+        assert_eq!(room.receive(0, 0, request()).unwrap().len(), 2);
+        let hydrated = solo_opening(&mut room, 0).unwrap();
+        assert_eq!(hydrated.iter().filter(|m| m.opcode == 0x488).count(), 1);
+        assert_eq!(hydrated.last().unwrap(), &out[1]);
+    }
+
     #[tokio::test]
     async fn solo_loads_selected_roster_once_and_allows_separate_data_until_scene_request() {
         let rooms = Rooms::new("127.0.0.1".parse().unwrap(), "127.0.0.1".into(), 1, None);
