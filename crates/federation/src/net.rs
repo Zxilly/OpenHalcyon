@@ -20,6 +20,14 @@ use tokio::net::TcpStream;
 use tokio_rustls::{TlsAcceptor, TlsConnector};
 
 pub(crate) const MAX_BODY: usize = 16 * 1024 * 1024;
+#[derive(Debug)]
+pub(crate) struct PeerStatus(pub hyper::StatusCode, Uuid);
+impl std::fmt::Display for PeerStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "peer {} returned {}", self.1, self.0)
+    }
+}
+impl std::error::Error for PeerStatus {}
 type Sender = hyper::client::conn::http1::SendRequest<Full<Bytes>>;
 type Rpc<T, E = openraft::error::Infallible> =
     Result<T, RPCError<Uuid, BasicNode, RaftError<Uuid, E>>>;
@@ -131,11 +139,9 @@ impl Transport {
                 .header("content-type", "application/cbor")
                 .body(Full::new(Bytes::from(encode(input)?)))?;
             let res = sender.send_request(req).await?;
-            ensure!(
-                res.status().is_success(),
-                "peer {id} returned {}",
-                res.status()
-            );
+            if !res.status().is_success() {
+                return Err(PeerStatus(res.status(), id).into());
+            }
             let b = Limited::new(res.into_body(), MAX_BODY)
                 .collect()
                 .await

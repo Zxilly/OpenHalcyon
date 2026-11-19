@@ -139,6 +139,9 @@ impl Pool {
     pub fn allocations(&self) -> &BTreeMap<Uuid, Allocation> {
         &self.allocations
     }
+    pub fn active_ticket(&self, home: Uuid, player: Uuid) -> Option<Uuid> {
+        self.owners.get(&(home, player)).copied()
+    }
 
     /// The transport authenticates the caller as a member before submission.
     pub fn apply(&mut self, caller: Uuid, command: Command) -> Result<(), Error> {

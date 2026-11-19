@@ -110,16 +110,17 @@ impl PeerPlay {
         else {
             return Ok(false);
         };
-        let snapshot = inner
+        let host = inner
             .fed
-            .read()
+            .inspect(|snapshot| {
+                snapshot
+                    .allocations()
+                    .get(&room)
+                    .filter(|a| a.phase == Phase::Ready)
+                    .map(|a| a.host)
+            })
             .await
-            .map_err(|_| PlatformError::HostUnavailable)?;
-        let host = snapshot
-            .allocations()
-            .get(&room)
-            .filter(|a| a.phase == Phase::Ready)
-            .map(|a| a.host)
+            .map_err(|_| PlatformError::HostUnavailable)?
             .ok_or(PlatformError::Conflict(
                 "friend is unavailable for spectating",
             ))?;
@@ -198,13 +199,23 @@ impl Inner {
         if claims.is_empty() {
             return Ok(());
         }
-        let authority = self.fed.read().await.ok();
+        let ended = self
+            .fed
+            .inspect(|pool| {
+                claims
+                    .iter()
+                    .filter(|claim| {
+                        pool.allocations().get(&claim.room).is_some_and(|room| {
+                            matches!(room.phase, Phase::Finished | Phase::Aborted)
+                        })
+                    })
+                    .map(|claim| claim.room)
+                    .collect::<BTreeSet<_>>()
+            })
+            .await
+            .unwrap_or_default();
         for claim in claims {
-            let terminal = authority
-                .as_ref()
-                .and_then(|pool| pool.allocations().get(&claim.room))
-                .is_some_and(|room| matches!(room.phase, Phase::Finished | Phase::Aborted));
-            if terminal {
+            if ended.contains(&claim.room) {
                 self.platform.close_pooled_spectator(claim.request).await?;
             } else if claim.cancelled
                 && let Err(error) = self.revoke_observer(&claim).await

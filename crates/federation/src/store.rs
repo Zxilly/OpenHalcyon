@@ -76,8 +76,15 @@ impl Store {
         };
         job().map_err(|e| maperr(e, ErrorVerb::Write))
     }
+    #[cfg(test)]
     pub fn machine(&self) -> Result<Machine, E> {
         Ok(self.0.lock().unwrap().machine.clone())
+    }
+    pub fn membership(&self) -> StoredMembership<Uuid, BasicNode> {
+        self.0.lock().unwrap().machine.membership.clone()
+    }
+    pub fn inspect<T>(&self, reader: impl FnOnce(&Pool) -> T) -> T {
+        reader(&self.0.lock().unwrap().machine.pool)
     }
     pub fn pool_changes(&self, known: Option<u64>) -> Result<(u64, Option<Pool>), E> {
         let state = self.0.lock().unwrap();

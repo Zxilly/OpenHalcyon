@@ -4,7 +4,7 @@ use std::{
 };
 
 use anyhow::{Context, ensure};
-use halcyon_matchmaking::{Phase, TicketPhase};
+use halcyon_matchmaking::Phase;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -75,31 +75,31 @@ impl Federation {
                     .any(|id| *id == home),
                 "viewer home is not a pool voter"
             );
-            let pool = self.read().await?;
-            let room = pool
-                .allocations()
-                .get(&request.room)
-                .context("room is unavailable")?;
-            ensure!(
-                room.phase == Phase::Ready && room.host == self.net.cfg.node_id,
-                "room is unavailable"
-            );
-            ensure!(
-                room.tickets.iter().any(|ticket| {
-                    pool.tickets().get(&ticket.id).is_some_and(|entry| {
-                        entry.ticket.home == home && entry.ticket.players.contains(&request.target)
-                    })
-                }),
-                "target is unavailable"
-            );
-            ensure!(
-                !pool.tickets().values().any(|entry| {
-                    entry.phase != TicketPhase::Closed
-                        && entry.ticket.home == home
-                        && entry.ticket.players.contains(&request.viewer)
-                }),
-                "viewer is already participating"
-            );
+            self.inspect(|pool| -> anyhow::Result<()> {
+                let room = pool
+                    .allocations()
+                    .get(&request.room)
+                    .context("room is unavailable")?;
+                ensure!(
+                    room.phase == Phase::Ready && room.host == self.net.cfg.node_id,
+                    "room is unavailable"
+                );
+                ensure!(
+                    room.tickets.iter().any(|ticket| {
+                        pool.tickets().get(&ticket.id).is_some_and(|entry| {
+                            entry.ticket.home == home
+                                && entry.ticket.players.contains(&request.target)
+                        })
+                    }),
+                    "target is unavailable"
+                );
+                ensure!(
+                    pool.active_ticket(home, request.viewer).is_none(),
+                    "viewer is already participating"
+                );
+                Ok(())
+            })
+            .await??;
         }
         let handler = self
             .observers

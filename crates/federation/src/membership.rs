@@ -70,7 +70,7 @@ impl Federation {
             return self.net.post(leader, "/internal/members", &(), READ).await;
         }
         timeout(READ, self.raft.ensure_linearizable()).await??;
-        let membership = self.store.machine()?.membership;
+        let membership = self.store.membership();
         Ok(Members {
             pool_id: self.net.cfg.pool_id,
             leader,

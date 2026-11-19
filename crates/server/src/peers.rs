@@ -49,16 +49,21 @@ impl Network {
             let mut last = None;
             let mut local_tickets = 0;
             loop {
-                let read = tokio::time::timeout(Duration::from_secs(2), source.read()).await;
-                let healthy = if let Ok(Ok(pool)) = read {
-                    local_tickets = pool
-                        .tickets()
-                        .values()
-                        .filter(|e| {
-                            e.ticket.home == id
-                                && e.phase != halcyon_matchmaking::TicketPhase::Closed
-                        })
-                        .count();
+                let read = tokio::time::timeout(
+                    Duration::from_secs(2),
+                    source.inspect(|pool| {
+                        pool.tickets()
+                            .values()
+                            .filter(|e| {
+                                e.ticket.home == id
+                                    && e.phase != halcyon_matchmaking::TicketPhase::Closed
+                            })
+                            .count()
+                    }),
+                )
+                .await;
+                let healthy = if let Ok(Ok(count)) = read {
+                    local_tickets = count;
                     last = Some(chrono::Utc::now());
                     true
                 } else {

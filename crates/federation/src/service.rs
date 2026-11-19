@@ -193,33 +193,67 @@ impl Federation {
         Ok(timeout(DEADLINE, self.raft.client_write(p)).await??.data)
     }
     pub async fn read(&self) -> anyhow::Result<Pool> {
-        let id = self
+        self.inspect(Clone::clone).await
+    }
+
+    /// Read a projection under the local state lock after confirming the quorum
+    /// index. The closure must be short and must return owned data.
+    pub async fn inspect<T>(&self, project: impl FnOnce(&Pool) -> T) -> anyhow::Result<T> {
+        if let Some(old_leader) = self.read_barrier().await? {
+            let pool = self
+                .net
+                .post(old_leader, "/internal/read", &(), DEADLINE)
+                .await?;
+            return Ok(project(&pool));
+        }
+        Ok(self.store.inspect(project))
+    }
+
+    // A previous peer executable returns HTTP 404 for the read-index request.
+    // During a rolling deployment its existing linearizable read RPC remains valid.
+    async fn read_barrier(&self) -> anyhow::Result<Option<Uuid>> {
+        let leader = self
             .raft
             .current_leader()
             .await
             .context("no elected leader")?;
-        if id == self.net.cfg.node_id {
-            return self.read_here().await;
+        if leader == self.net.cfg.node_id {
+            timeout(DEADLINE, self.raft.ensure_linearizable()).await??;
+        } else {
+            let index = match self
+                .net
+                .post::<_, Option<u64>>(leader, "/internal/read-index", &(), DEADLINE)
+                .await
+            {
+                Ok(index) => index,
+                Err(e)
+                    if e.downcast_ref::<crate::net::PeerStatus>()
+                        .is_some_and(|s| s.0 == StatusCode::NOT_FOUND) =>
+                {
+                    return Ok(Some(leader));
+                }
+                Err(e) => return Err(e),
+            };
+            self.raft
+                .wait(Some(DEADLINE))
+                .applied_index_at_least(index, "quorum read index")
+                .await?;
         }
-        self.net.post(id, "/internal/read", &(), DEADLINE).await
+        Ok(None)
     }
     async fn read_here(&self) -> anyhow::Result<Pool> {
         timeout(DEADLINE, self.raft.ensure_linearizable()).await??;
-        Ok(self.store.machine()?.pool)
+        Ok(self.store.inspect(Clone::clone))
     }
     /// A linearizable read that sends the pool only when the applied index changed.
     pub async fn changes(&self, known: Option<u64>) -> anyhow::Result<(u64, Option<Pool>)> {
-        let id = self
-            .raft
-            .current_leader()
-            .await
-            .context("no elected leader")?;
-        if id == self.net.cfg.node_id {
-            return self.changes_here(known).await;
+        if let Some(old_leader) = self.read_barrier().await? {
+            return self
+                .net
+                .post(old_leader, "/internal/changes", &known, DEADLINE)
+                .await;
         }
-        self.net
-            .post(id, "/internal/changes", &known, DEADLINE)
-            .await
+        Ok(self.store.pool_changes(known)?)
     }
     async fn changes_here(&self, known: Option<u64>) -> anyhow::Result<(u64, Option<Pool>)> {
         timeout(DEADLINE, self.raft.ensure_linearizable()).await??;
@@ -310,6 +344,10 @@ impl Federation {
             return Ok(StatusCode::NOT_FOUND.into_response());
         };
         let seg: Vec<_> = resource.split('/').collect();
+                "/internal/read-index" => {
+                    let (id, _) = timeout(DEADLINE, self.raft.get_read_log_id()).await??;
+                    return cbor(&id.map(|id| id.index));
+                }
         if let ["hosts", key, "capacity"] = seg.as_slice()
             && parts.method == Method::PUT
         {
@@ -327,18 +365,19 @@ impl Federation {
             .into_response());
         }
         if parts.method == Method::GET {
-            let pool = self.read().await?;
-            let data = match seg.as_slice() {
-                ["tickets", id] => Uuid::parse_str(id)
-                    .ok()
-                    .and_then(|id| pool.tickets().get(&id))
-                    .map(serde_json::to_value),
-                ["allocations", id] => Uuid::parse_str(id)
-                    .ok()
-                    .and_then(|id| pool.allocations().get(&id))
-                    .map(serde_json::to_value),
-                _ => None,
-            };
+            let data = self
+                .inspect(|pool| match seg.as_slice() {
+                    ["tickets", id] => Uuid::parse_str(id)
+                        .ok()
+                        .and_then(|id| pool.tickets().get(&id))
+                        .map(serde_json::to_value),
+                    ["allocations", id] => Uuid::parse_str(id)
+                        .ok()
+                        .and_then(|id| pool.allocations().get(&id))
+                        .map(serde_json::to_value),
+                    _ => None,
+                })
+                .await?;
             return Ok(match data {
                 Some(v) => axum::Json(v?).into_response(),
                 None => StatusCode::NOT_FOUND.into_response(),
