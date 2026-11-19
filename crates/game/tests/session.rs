@@ -48,6 +48,7 @@ async fn reservation_and_two_authenticated_sockets() {
     let req = Reservation {
         match_id: id,
         players: vec![player],
+        teams: vec![],
         mode: "5v5_bots_solo".into(),
     };
     let addr = rooms.reserve(req.clone()).unwrap().address;
@@ -74,6 +75,15 @@ async fn reservation_and_two_authenticated_sockets() {
         .await
         .unwrap();
     let updated = until(&mut control, &c, 0x459).await;
+    let halcyon_protocol::Fields::DraftRoster(typed) = updated.fields().unwrap() else {
+        panic!("expected draft roster")
+    };
+    let slot = typed.slot(0).unwrap();
+    assert_eq!(slot.entity, 1500);
+    assert_eq!(slot.display_name, b"Guest");
+    assert!(slot.selected);
+    assert!(!slot.locked);
+    assert!(typed.slot(16).is_none());
     assert_eq!(&updated.body[17..19], &243u16.to_be_bytes());
     assert_eq!(&updated.body[21..25], &0xf240ebfeu32.to_be_bytes());
     control
@@ -95,6 +105,35 @@ async fn reservation_and_two_authenticated_sockets() {
         .await
         .unwrap();
     until(&mut game, &c, 0x42e).await;
+    let viewer = Uuid::new_v4();
+    let grant = rooms.spectate(id, viewer).unwrap();
+    assert_eq!(
+        rooms.spectate(id, viewer).unwrap().spectator_id,
+        grant.spectator_id
+    );
+    assert_ne!(grant.address, addr);
+    let mut watch = login(&grant.address, grant.spectator_id, &c).await;
+    let roster = until(&mut watch, &c, 0x459).await;
+    assert!(roster.body[105..141].iter().all(|&v| v == 0));
+    watch
+        .write_all(&c.encode(&Message::movement(3., 4.)).unwrap())
+        .await
+        .unwrap();
+    timeout(Duration::from_secs(2), async {
+        let mut bytes = [0; 4096];
+        while watch.read(&mut bytes).await.unwrap_or(0) != 0 {}
+    })
+    .await
+    .unwrap();
+    let mut watch = login(&grant.address, grant.spectator_id, &c).await;
+    until(&mut watch, &c, 0x459).await;
+    rooms.stop_spectating(id, grant.spectator_id).unwrap();
+    timeout(Duration::from_secs(2), async {
+        let mut bytes = [0; 4096];
+        while watch.read(&mut bytes).await.unwrap_or(0) != 0 {}
+    })
+    .await
+    .unwrap();
     let (pending, record) = rooms.terminate(id, "test", "finished").unwrap();
     assert!(!pending);
     assert_eq!(
@@ -128,24 +167,40 @@ async fn admission_precedes_authentication() {
     let req = Reservation {
         match_id: id,
         players: vec![player],
+        teams: vec![],
         mode: "solo".into(),
     };
     let addr = rooms.prepare(req.clone()).unwrap().address;
-    let mut s = TcpStream::connect(&addr).await.unwrap();
-    let mut b = [0];
-    assert_eq!(
-        timeout(Duration::from_secs(1), s.read(&mut b))
-            .await
-            .unwrap()
-            .unwrap(),
-        0
-    );
+    let mut early = TcpStream::connect(&addr).await.unwrap();
     rooms.discard(id).unwrap();
     assert!(rooms.detail(id).is_none());
+    let mut b = [0; 1];
+    let _ = timeout(Duration::from_secs(1), early.read(&mut b))
+        .await
+        .unwrap();
     let addr = rooms.prepare(req).unwrap().address;
+    let mut s = TcpStream::connect(&addr).await.unwrap();
+    s.write_all(&hello_with_port("127.0.0.1", s.peer_addr().unwrap().port()).unwrap())
+        .await
+        .unwrap();
+    let mut ack = [0; 5];
+    assert!(
+        timeout(Duration::from_millis(60), s.read(&mut ack))
+            .await
+            .is_err()
+    );
     rooms.activate(id).unwrap();
     assert!(rooms.discard(id).is_err());
+    timeout(Duration::from_secs(1), s.read_exact(&mut ack))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(ack, ACK_FRAME);
     let c = MatchCipher::new(&id.to_string());
-    let mut s = login(&addr, player, &c).await;
+    let mut body = vec![0; 70];
+    body[..36].copy_from_slice(player.to_string().as_bytes());
+    s.write_all(&c.encode(&Message::new(0x3e8, body)).unwrap())
+        .await
+        .unwrap();
     until(&mut s, &c, 0x3e9).await;
 }

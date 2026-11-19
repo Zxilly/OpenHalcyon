@@ -107,8 +107,8 @@ pub fn spawn(e: &Entity, picks: &[Pick], data: Option<&halcyon_data::GameData>) 
         for (offset, value) in [
             (74, unit.move_speed),
             (98, unit.attack_speed),
-            (122, unit.energy),
-            (126, unit.energy),
+            (122, e.energy),
+            (126, e.max_energy),
             (190, unit.armor),
             (202, unit.shield),
             (214, unit.weapon),
@@ -120,6 +120,44 @@ pub fn spawn(e: &Entity, picks: &[Pick], data: Option<&halcyon_data::GameData>) 
     Message::new(0x3f3, b)
 }
 
+fn info(world: &World, players: &[Uuid], picks: &[Pick], i: usize, full: bool) -> Message {
+    let e = &world.entities[i];
+    let p = &picks[i];
+    let mut b = vec![0; if full { 222 } else { 216 }];
+    let bot = i >= players.len();
+    let name = if bot && full {
+        format!("{} Bot", p.name)
+    } else if bot {
+        p.name.clone()
+    } else {
+        "Guest".into()
+    };
+    put_text(&mut b[..64], &name);
+    if full {
+        let uuid = players
+            .get(i)
+            .map(ToString::to_string)
+            .unwrap_or_else(|| "__Kindred_Player_Bot__".to_owned());
+        put_text(&mut b[64..128], &uuid);
+        for chunk in b[176..204].as_chunks_mut::<4>().0 {
+            chunk.copy_from_slice(&0x811c9dc5u32.to_be_bytes());
+        }
+        b[204..208].fill(0xff);
+        if !bot {
+            b[206] = 0;
+        }
+    }
+    b[160..164].copy_from_slice(&u32::from(wire_id(e.id)).to_be_bytes());
+    b[164..168].copy_from_slice(&u32::from(e.type_id).to_be_bytes());
+    b[168..172].copy_from_slice(&p.skin.to_be_bytes());
+    b[172..176].copy_from_slice(&0x9241f10eu32.to_be_bytes());
+    b[209] = 2;
+    b[210] = e.team + 1;
+    b[212] = u8::from(bot);
+    b[215] = u8::from(!bot);
+    Message::new(0x3ee, b)
+}
+
 /// Replay chunks contain both roster forms before the first world spawn.
 pub(super) fn world_header(
     world: &World,
@@ -128,43 +166,6 @@ pub(super) fn world_header(
     mode: &str,
     seat: usize,
 ) -> Vec<Message> {
-    fn info(world: &World, players: &[Uuid], picks: &[Pick], i: usize, full: bool) -> Message {
-        let e = &world.entities[i];
-        let p = &picks[i];
-        let mut b = vec![0; if full { 222 } else { 216 }];
-        let bot = i >= players.len();
-        let name = if bot && full {
-            format!("{} Bot", p.name)
-        } else if bot {
-            p.name.clone()
-        } else {
-            "Guest".into()
-        };
-        put_text(&mut b[..64], &name);
-        if full {
-            let uuid = players
-                .get(i)
-                .map(ToString::to_string)
-                .unwrap_or_else(|| "__Kindred_Player_Bot__".to_owned());
-            put_text(&mut b[64..128], &uuid);
-            for chunk in b[176..204].chunks_exact_mut(4) {
-                chunk.copy_from_slice(&0x811c9dc5u32.to_be_bytes());
-            }
-            b[204..208].fill(0xff);
-            if !bot {
-                b[206] = 0;
-            }
-        }
-        b[160..164].copy_from_slice(&u32::from(wire_id(e.id)).to_be_bytes());
-        b[164..168].copy_from_slice(&u32::from(e.type_id).to_be_bytes());
-        b[168..172].copy_from_slice(&p.skin.to_be_bytes());
-        b[172..176].copy_from_slice(&0x9241f10eu32.to_be_bytes());
-        b[209] = 2;
-        b[210] = e.team + 1;
-        b[212] = u8::from(bot);
-        b[215] = u8::from(!bot);
-        Message::new(0x3ee, b)
-    }
     let mut out: Vec<_> = (0..10)
         .map(|i| info(world, players, picks, i, false))
         .collect();
@@ -179,4 +180,26 @@ pub(super) fn world_header(
     out.extend((0..10).map(|i| info(world, players, picks, i, true)));
     out.push(Message::new(0x451, [0; 4]));
     out
+}
+
+pub(super) fn item_grant(actor: u32, item: u32, instance: u32) -> Message {
+    Message::new(
+        0x43d,
+        [
+            actor.to_be_bytes(),
+            item.to_be_bytes(),
+            instance.to_be_bytes(),
+        ]
+        .concat(),
+    )
+}
+pub(super) fn modifier(actor: u32, stat: u8, value: f32) -> Message {
+    let mut b = [
+        actor.to_be_bytes(),
+        u32::MAX.to_be_bytes(),
+        value.to_be_bytes(),
+    ]
+    .concat();
+    b.extend([stat, 1]);
+    Message::new(0x41c, b)
 }

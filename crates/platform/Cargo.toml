@@ -5,6 +5,7 @@ edition.workspace = true
 
 [dependencies]
 argon2 = "0.5"
+halcyon-community = { path = "../community" }
 axum = { version = "0.8", features = ["ws"] }
 rusqlite = { version = "0.37", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }

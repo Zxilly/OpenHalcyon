@@ -1,7 +1,12 @@
 mod accounts;
+mod chat;
 mod federation;
+mod queue;
 mod recovery;
+mod spectator;
 pub use federation::FederatedIntent;
+pub use queue::plan_teams;
+pub use spectator::HostedSpectator;
 
 use std::{
     path::PathBuf,
@@ -37,6 +42,8 @@ pub struct PlatformConfig {
 pub struct Reservation {
     pub match_id: Uuid,
     pub players: Vec<Uuid>,
+    /// Parallel human team indices (0 or 1). Empty retains the default room layout.
+    pub teams: Vec<u8>,
     pub mode: String,
 }
 
@@ -48,6 +55,16 @@ pub struct HostedMatch {
 /// Implementations must make repeated reservations for the same match id idempotent.
 pub trait MatchHost: Send + Sync + 'static {
     fn reserve(&self, reservation: Reservation) -> Result<HostedMatch>;
+
+    /// Issue or refresh an isolated read-only credential for this viewer.
+    fn spectate(&self, _match_id: Uuid, _viewer: Uuid) -> Result<HostedSpectator> {
+        Err(PlatformError::HostUnavailable)
+    }
+
+    /// Revoke the credential and close its connections. Repeated calls are harmless.
+    fn stop_spectating(&self, _match_id: Uuid, _spectator_id: Uuid) -> Result<()> {
+        Err(PlatformError::HostUnavailable)
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -109,6 +126,8 @@ pub struct Lobby {
     pub phase: String,
     pub address: Option<String>,
     pub result: Option<Value>,
+    #[serde(skip_serializing)]
+    pub spectator_id: Option<Uuid>,
 }
 
 #[derive(Serialize)]
@@ -152,7 +171,7 @@ impl AppState {
                 "seats_per_match must be between 1 and 64",
             ));
         }
-        let db = Connection::open(&config.database_path)?;
+        let mut db = Connection::open(&config.database_path)?;
         db.execute_batch(
             "PRAGMA journal_mode=WAL;
              PRAGMA foreign_keys=ON;
@@ -170,15 +189,9 @@ impl AppState {
              CREATE TABLE IF NOT EXISTS tickets (
                 serial INTEGER PRIMARY KEY AUTOINCREMENT,
                 player TEXT NOT NULL UNIQUE REFERENCES players(id), mode TEXT NOT NULL,
-                match_id TEXT REFERENCES matches(id), accepted INTEGER NOT NULL DEFAULT 0
+                match_id TEXT REFERENCES matches(id), accepted INTEGER NOT NULL DEFAULT 0,
+                batch TEXT, seat_limit INTEGER
              );
-             CREATE TABLE IF NOT EXISTS federated_intents (
-                ticket TEXT PRIMARY KEY, player TEXT NOT NULL UNIQUE REFERENCES players(id),
-                pool TEXT NOT NULL, mode TEXT NOT NULL, seats INTEGER NOT NULL,
-                accepted_match TEXT, cancel INTEGER NOT NULL DEFAULT 0, phase TEXT NOT NULL DEFAULT 'pending',
-                match_id TEXT, address TEXT, result TEXT
-             );
-             CREATE INDEX IF NOT EXISTS federated_intents_by_pool ON federated_intents(pool);
              CREATE TABLE IF NOT EXISTS events (
                 cursor INTEGER PRIMARY KEY AUTOINCREMENT,
                 player TEXT NOT NULL REFERENCES players(id), body TEXT NOT NULL
@@ -187,6 +200,24 @@ impl AppState {
              CREATE INDEX IF NOT EXISTS tickets_by_mode ON tickets(mode, match_id, serial);
              CREATE INDEX IF NOT EXISTS tickets_by_match ON tickets(match_id);",
         )?;
+        {
+            let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+            let mut query = tx.prepare("SELECT name FROM pragma_table_info('tickets')")?;
+            let columns = query
+                .query_map([], |row| row.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            drop(query);
+            if !columns.iter().any(|column| column == "batch") {
+                tx.execute_batch("ALTER TABLE tickets ADD COLUMN batch TEXT")?;
+            }
+            if !columns.iter().any(|column| column == "seat_limit") {
+                tx.execute_batch("ALTER TABLE tickets ADD COLUMN seat_limit INTEGER")?;
+            }
+            halcyon_community::queue::initialize(&tx).map_err(queue::community_error)?;
+            federation::initialize(&tx)?;
+            spectator::initialize(&tx)?;
+            tx.commit()?;
+        }
         accounts::initialize(&db)?;
         let (changes, _) = watch::channel(());
         let state = Self {
@@ -205,7 +236,7 @@ impl AppState {
             .lock()
             .map_err(|_| PlatformError::WorkerUnavailable)?;
         let before = db.total_changes();
-        let tx = db.transaction()?;
+        let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let value = work(&tx)?;
         tx.commit()?;
         let changed = db.total_changes() != before;
@@ -236,15 +267,11 @@ impl AppState {
                 .collect::<rusqlite::Result<Vec<_>>>()?;
             rows.into_iter()
                 .map(|(match_id, mode)| {
-                    let mut tickets =
-                        tx.prepare("SELECT player FROM tickets WHERE match_id=? ORDER BY serial")?;
-                    let players = tickets
-                        .query_map([&match_id], |row| row.get::<_, String>(0))?
-                        .map(|id| parse_id(&id?))
-                        .collect::<Result<Vec<_>>>()?;
+                    let (players, teams, _) = queue::match_players(tx, &match_id)?;
                     Ok(Reservation {
                         match_id: parse_id(&match_id)?,
                         players,
+                        teams,
                         mode,
                     })
                 })
@@ -345,6 +372,8 @@ impl AppState {
                 "UPDATE matches SET phase='finished', result=? WHERE id=?",
                 params![result.to_string(), match_id],
             )?;
+            queue::release_matches(tx, &match_id)?;
+            spectator::close_match(tx, &match_id)?;
             announce(
                 tx,
                 &match_id,
@@ -508,16 +537,8 @@ impl AppState {
                 .lock()
                 .map_err(|_| PlatformError::WorkerUnavailable)?;
             let id = player(&db, &key)?;
-            db.query_row(
-                "SELECT p.id, p.name, coalesce(t.mode, f.mode), coalesce(m.id, f.match_id), coalesce(m.phase, f.phase),
-                  coalesce(m.address, f.address), coalesce(m.result, f.result)
-                 FROM players p LEFT JOIN tickets t ON t.player=p.id
-                 LEFT JOIN matches m ON m.id=t.match_id
-                 LEFT JOIN federated_intents f ON f.player=p.id AND f.phase<>'closed' WHERE p.id=?",
-                [&id],
-                read_profile,
-            )
-            .map_err(Into::into)
+            let sql = format!("SELECT {PROFILE_FIELDS} {PROFILE_JOINS} WHERE p.id=?");
+            db.query_row(&sql, [&id], read_profile).map_err(Into::into)
         })
         .await
     }
@@ -530,7 +551,9 @@ impl AppState {
                 .db
                 .lock()
                 .map_err(|_| PlatformError::WorkerUnavailable)?;
-            let sql = format!("{ACTIVITY_QUERY} WHERE p.id=?");
+            let sql = format!(
+                "SELECT {PROFILE_FIELDS}, p.last_seen, {ONLINE_SQL} {PROFILE_JOINS} WHERE p.id=?"
+            );
             db.query_row(&sql, [id.to_string()], read_activity)
                 .optional()
                 .map_err(Into::into)
@@ -553,7 +576,7 @@ impl AppState {
                 .lock()
                 .map_err(|_| PlatformError::WorkerUnavailable)?;
             let sql = format!(
-                "{ACTIVITY_QUERY} WHERE p.id > ?1 AND (?2 IS NULL OR ({ONLINE_SQL}) = ?2)
+                "SELECT {PROFILE_FIELDS}, p.last_seen, {ONLINE_SQL} {PROFILE_JOINS} WHERE p.id > ?1 AND (?2 IS NULL OR ({ONLINE_SQL}) = ?2)
                  ORDER BY p.id LIMIT ?3"
             );
             let after = after.map_or_else(String::new, |id| id.to_string());
@@ -580,7 +603,8 @@ impl AppState {
                           OR f.phase IN ('pending', 'queued', 'offered'))
                  FROM players p LEFT JOIN sessions s ON s.player=p.id
                  LEFT JOIN tickets t ON t.player=p.id LEFT JOIN matches m ON m.id=t.match_id
-                 LEFT JOIN federated_intents f ON f.player=p.id"
+                 LEFT JOIN federated_queue_members fm ON fm.player=p.id AND fm.released=0
+                 LEFT JOIN federated_queue f ON f.ticket=fm.ticket"
             );
             db.query_row(&sql, [], |row| {
                 Ok(PlatformCounts {
@@ -630,14 +654,10 @@ impl AppState {
                 .lock()
                 .map_err(|_| PlatformError::WorkerUnavailable)?;
             let total = db.query_row("SELECT count(*) FROM players", [], |row| row.get(0))?;
-            let mut statement = db.prepare(
-                "SELECT p.id, p.name, coalesce(t.mode, f.mode), coalesce(m.id, f.match_id), coalesce(m.phase, f.phase),
-                  coalesce(m.address, f.address), coalesce(m.result, f.result)
-                 FROM players p LEFT JOIN tickets t ON t.player=p.id
-                 LEFT JOIN matches m ON m.id=t.match_id
-                 LEFT JOIN federated_intents f ON f.player=p.id AND f.phase<>'closed'
-                 ORDER BY p.rowid LIMIT ? OFFSET ?",
-            )?;
+            let sql = format!(
+                "SELECT {PROFILE_FIELDS} {PROFILE_JOINS} ORDER BY p.rowid LIMIT ? OFFSET ?"
+            );
+            let mut statement = db.prepare(&sql)?;
             let players = statement
                 .query_map(params![limit, offset], read_profile)?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -648,19 +668,22 @@ impl AppState {
 }
 
 const ONLINE_SQL: &str = "s.player IS NOT NULL AND p.last_seen >= unixepoch() - 90";
-const ACTIVITY_QUERY: &str =
-    "SELECT p.id, p.name, coalesce(t.mode, f.mode), coalesce(m.id, f.match_id), coalesce(m.phase, f.phase),
-                  coalesce(m.address, f.address), coalesce(m.result, f.result), p.last_seen,
-            s.player IS NOT NULL AND p.last_seen >= unixepoch() - 90
-     FROM players p LEFT JOIN sessions s ON s.player=p.id
+const PROFILE_FIELDS: &str =
+    "p.id, p.name, coalesce(t.mode, f.mode, sm.mode), coalesce(m.id, f.match_id, sm.id),
+     coalesce(m.phase, f.phase, CASE WHEN sm.id IS NOT NULL THEN 'spectating' END),
+     coalesce(m.address, f.address, sp.address), coalesce(m.result, f.result), sp.spectator_id";
+const PROFILE_JOINS: &str = "FROM players p LEFT JOIN sessions s ON s.player=p.id
      LEFT JOIN tickets t ON t.player=p.id LEFT JOIN matches m ON m.id=t.match_id
-     LEFT JOIN federated_intents f ON f.player=p.id AND f.phase<>'closed'";
+     LEFT JOIN federated_queue_members fm ON fm.player=p.id AND fm.released=0
+     LEFT JOIN federated_queue f ON f.ticket=fm.ticket AND f.phase<>'closed'
+     LEFT JOIN spectator_sessions sp ON sp.player=p.id AND sp.spectator_id IS NOT NULL
+     LEFT JOIN matches sm ON sm.id=sp.match_id AND sm.phase='playing'";
 
 fn read_activity(row: &rusqlite::Row<'_>) -> rusqlite::Result<PlayerActivity> {
     Ok(PlayerActivity {
         profile: read_profile(row)?,
-        last_seen: row.get(7)?,
-        online: row.get(8)?,
+        last_seen: row.get(8)?,
+        online: row.get(9)?,
     })
 }
 
@@ -686,6 +709,11 @@ fn read_profile(row: &rusqlite::Row<'_>) -> rusqlite::Result<PlayerProfile> {
                 .get::<_, Option<String>>(4)?
                 .unwrap_or_else(|| "queued".into()),
             address: row.get(5)?,
+            spectator_id: row
+                .get::<_, Option<String>>(7)?
+                .as_deref()
+                .map(|id| uuid_at(id, 7))
+                .transpose()?,
             result: row
                 .get::<_, Option<String>>(6)?
                 .as_deref()
@@ -742,79 +770,11 @@ impl AppState {
         self.join_with_seats(session_token, mode, self.config.seats_per_match)
             .await
     }
-
-    /// The caller supplies a stable policy for the named mode.
-    pub async fn join_with_seats(
-        &self,
-        session_token: &str,
-        mode: String,
-        seats: usize,
-    ) -> Result<()> {
-        if !(1..=64).contains(&seats) {
-            return Err(PlatformError::Invalid(
-                "seat count must be between 1 and 64",
-            ));
-        }
-        let key = digest(session_token);
-        if mode.is_empty()
-            || mode.len() > 32
-            || !mode
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
-        {
-            return Err(PlatformError::Invalid("invalid mode"));
-        }
-        self.expire_offers().await?;
-        self.run(move |state| {
-            state.transaction(|tx| {
-                let id = player(tx, &key)?;
-                if tx.query_row(
-                    "SELECT EXISTS(SELECT 1 FROM federated_intents WHERE player=?)",
-                    [&id],
-                    |row| row.get(0),
-                )? {
-                    return Err(PlatformError::Conflict("player has a federated ticket"));
-                }
-                let inserted = tx.execute(
-                    "INSERT INTO tickets(player, mode) VALUES(?, ?) ON CONFLICT(player) DO NOTHING",
-                    params![id, mode],
-                )?;
-                if inserted == 0 {
-                    return Err(PlatformError::Conflict("already queued or in a match"));
-                }
-                event(tx, &id, json!({"type":"queued", "mode":mode}))?;
-                let mut waiting = tx.prepare(
-            "SELECT player FROM tickets WHERE mode=? AND match_id IS NULL ORDER BY serial LIMIT ?",
-        )?;
-                let participants = waiting
-                    .query_map(params![mode, seats], |row| row.get::<_, String>(0))?
-                    .collect::<rusqlite::Result<Vec<_>>>()?;
-                if participants.len() == seats {
-                    let match_id = Uuid::new_v4().to_string();
-                    tx.execute(
-                        "INSERT INTO matches(id, mode, phase) VALUES(?, ?, 'offered')",
-                        params![match_id, mode],
-                    )?;
-                    for participant in participants {
-                        tx.execute(
-                            "UPDATE tickets SET match_id=? WHERE player=?",
-                            params![match_id, participant],
-                        )?;
-                    }
-                    announce(
-                        tx,
-                        &match_id,
-                        json!({"type":"match_offered", "matchId":match_id, "mode":mode}),
-                    )?;
-                }
-                Ok(())
-            })
-        })
-        .await
-    }
 }
 
 fn abort(tx: &Transaction<'_>, match_id: &str, reason: &'static str) -> Result<()> {
+    queue::release_matches(tx, match_id)?;
+    spectator::close_match(tx, match_id)?;
     tx.execute("UPDATE matches SET phase='aborted' WHERE id=?", [match_id])?;
     announce(
         tx,
@@ -856,8 +816,20 @@ impl AppState {
                             ));
                         }
                     }
-                } else if tx.execute("DELETE FROM tickets WHERE player=?", [&id])? != 0 {
-                    event(tx, &id, json!({"type":"queue_left"}))?;
+                } else {
+                    let batch: Option<String> = tx.query_row(
+                        "SELECT batch FROM tickets WHERE player=?", [&id], |row| row.get(0),
+                    ).optional()?.flatten();
+                    if let Some(batch) = batch {
+                        tx.execute(
+                            "INSERT INTO events(player, body) SELECT player, ? FROM tickets WHERE batch=? ORDER BY serial",
+                            params![json!({"type":"queue_left"}).to_string(), batch],
+                        )?;
+                        tx.execute("DELETE FROM tickets WHERE batch=?", [&batch])?;
+                        halcyon_community::queue::release(tx, &batch).map_err(queue::community_error)?;
+                    } else if tx.execute("DELETE FROM tickets WHERE player=?", [&id])? != 0 {
+                        event(tx, &id, json!({"type":"queue_left"}))?;
+                    }
                 }
                 Ok(())
             })
@@ -892,17 +864,12 @@ impl AppState {
                 _ => return Err(PlatformError::Conflict("match is already starting")),
             }
             tx.execute("UPDATE tickets SET accepted=1 WHERE player=?", [&id])?;
-            let mut seats = tx.prepare("SELECT player, accepted FROM tickets WHERE match_id=? ORDER BY serial")?;
-            let participants = seats.query_map([&match_id], |row| Ok((row.get::<_, String>(0)?, row.get::<_, bool>(1)?)))?
-                .collect::<rusqlite::Result<Vec<_>>>()?;
-            if participants.iter().any(|(_, accepted)| !accepted) {
+            let (players, teams, confirmed) = queue::match_players(tx, &match_id)?;
+            if !confirmed {
                 return Ok(None);
             }
-            let players = participants.into_iter()
-                .map(|(id, _)| Uuid::parse_str(&id).map_err(|_| PlatformError::WorkerUnavailable))
-                .collect::<Result<Vec<_>>>()?;
             tx.execute("UPDATE matches SET phase='reserving' WHERE id=?", [&match_id])?;
-            Ok(Some(Reservation { match_id: match_uuid, players, mode }))
+            Ok(Some(Reservation { match_id: match_uuid, players, teams, mode }))
         })?;
         if let Some(reservation) = reservation {
             state.reserve_match(reservation)?;

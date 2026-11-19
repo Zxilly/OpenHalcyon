@@ -11,7 +11,7 @@ use tokio::{
 fn bad(msg: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, msg)
 }
-async fn frame<R: AsyncRead + Unpin>(reader: &mut R) -> io::Result<Vec<u8>> {
+pub(super) async fn frame<R: AsyncRead + Unpin>(reader: &mut R) -> io::Result<Vec<u8>> {
     let size = reader.read_u16().await? as usize;
     if !(2..=MAX_PAYLOAD).contains(&size) {
         return Err(bad("invalid frame size"));
@@ -20,7 +20,7 @@ async fn frame<R: AsyncRead + Unpin>(reader: &mut R) -> io::Result<Vec<u8>> {
     reader.read_exact(&mut bytes).await?;
     Ok(bytes)
 }
-async fn write<W: AsyncWrite + Unpin>(
+pub(super) async fn write<W: AsyncWrite + Unpin>(
     writer: &mut W,
     manager: &Manager,
     bytes: &[u8],
@@ -38,9 +38,10 @@ impl Drop for Connected {
     }
 }
 async fn connection(mut sock: TcpStream, room: Shared, manager: Rooms) -> io::Result<()> {
-    if !room.lock().unwrap().admitted {
-        return Err(bad("reservation pending"));
-    }
+    let mut admitted = room.lock().unwrap().admission_ready.subscribe();
+    timeout(Duration::from_secs(10), admitted.wait_for(|ready| *ready))
+        .await?
+        .map_err(|_| bad("reservation closed"))?;
     sock.set_nodelay(true)?;
     let cipher = MatchCipher::new(&room.lock().unwrap().id.to_string());
     let uuid = timeout(Duration::from_secs(10), async {
@@ -78,7 +79,11 @@ async fn connection(mut sock: TcpStream, room: Shared, manager: Rooms) -> io::Re
         let mut budget = 0;
         let mut start = Instant::now();
         loop {
-            let raw = timeout(Duration::from_secs(45), frame(&mut rd)).await??;
+            let raw = timeout(
+                Duration::from_secs(if ch == 0 { 600 } else { 90 }),
+                frame(&mut rd),
+            )
+            .await??;
             if start.elapsed() >= Duration::from_secs(1) {
                 start = Instant::now();
                 budget = 0;
@@ -126,9 +131,5 @@ pub(super) async fn serve(
         }
     }
     drop(listener);
-    // Give the writer a chance to flush the final encrypted game-end batch.
-    if room.lock().unwrap().reason == Some("completed") {
-        time::sleep(Duration::from_millis(100)).await;
-    }
     tasks.shutdown().await;
 }

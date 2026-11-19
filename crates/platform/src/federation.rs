@@ -1,13 +1,18 @@
-use rusqlite::{OptionalExtension, Row, params};
+use halcyon_community::queue as community_queue;
+use rusqlite::{Connection, OptionalExtension, Row, Transaction, params};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-use super::{AppState, PlatformError, Result, digest, event, player};
+use super::{
+    AppState, PlatformError, Result, digest, event, player,
+    queue::{Roster, community_error, validate_mode},
+};
 
 #[derive(Clone, Debug)]
 pub struct FederatedIntent {
     pub ticket: Uuid,
     pub player: Uuid,
+    pub players: Vec<Uuid>,
     pub pool: Uuid,
     pub mode: String,
     pub seats: u8,
@@ -20,7 +25,61 @@ pub struct FederatedIntent {
 }
 
 const FIELDS: &str =
-    "ticket, player, pool, mode, seats, accepted_match, cancel, phase, match_id, address, result";
+    "f.ticket, f.player, f.pool, f.mode, f.seats, f.accepted_match, f.cancel, f.phase,
+     f.match_id, f.address, f.result,
+     (SELECT json_group_array(player ORDER BY pos) FROM federated_queue_members WHERE ticket=f.ticket)";
+
+pub(super) fn initialize(tx: &Transaction<'_>) -> Result<()> {
+    tx.execute_batch(
+        "CREATE TABLE IF NOT EXISTS federated_queue (
+            ticket TEXT PRIMARY KEY, player TEXT NOT NULL REFERENCES players(id),
+            pool TEXT NOT NULL, mode TEXT NOT NULL, seats INTEGER NOT NULL,
+            accepted_match TEXT, cancel INTEGER NOT NULL DEFAULT 0, phase TEXT NOT NULL DEFAULT 'pending',
+            match_id TEXT, address TEXT, result TEXT
+         );
+         CREATE INDEX IF NOT EXISTS federated_queue_by_pool ON federated_queue(pool);
+         CREATE TABLE IF NOT EXISTS federated_queue_members (
+            ticket TEXT NOT NULL REFERENCES federated_queue(ticket) ON DELETE CASCADE,
+            player TEXT NOT NULL REFERENCES players(id), pos INTEGER NOT NULL,
+            accepted_match TEXT, released INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY(ticket, player), UNIQUE(ticket, pos)
+         );
+         CREATE UNIQUE INDEX IF NOT EXISTS federated_one_active_ticket
+         ON federated_queue_members(player) WHERE released=0;",
+    )?;
+    let legacy: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='federated_intents')",
+        [], |row| row.get(0),
+    )?;
+    if legacy {
+        tx.execute_batch(
+            "INSERT INTO federated_queue
+             SELECT ticket, player, pool, mode, seats, accepted_match, cancel, phase, match_id, address, result
+             FROM federated_intents;
+             INSERT INTO federated_queue_members(ticket, player, pos, accepted_match)
+             SELECT ticket, player, 0, accepted_match FROM federated_intents;
+             DROP TABLE federated_intents;",
+        )?;
+    }
+    Ok(())
+}
+
+fn intent_for_player(db: &Connection, player: &str) -> Result<Option<FederatedIntent>> {
+    let sql = format!(
+        "SELECT {FIELDS} FROM federated_queue f JOIN federated_queue_members m ON m.ticket=f.ticket
+         WHERE m.player=? AND m.released=0"
+    );
+    db.query_row(&sql, [player], row_intent)
+        .optional()
+        .map_err(Into::into)
+}
+
+fn intent_by_ticket(db: &Connection, ticket: &str) -> Result<Option<FederatedIntent>> {
+    let sql = format!("SELECT {FIELDS} FROM federated_queue f WHERE f.ticket=?");
+    db.query_row(&sql, [ticket], row_intent)
+        .optional()
+        .map_err(Into::into)
+}
 
 fn parse<T>(
     row: &Row<'_>,
@@ -57,6 +116,8 @@ fn row_intent(row: &Row<'_>) -> rusqlite::Result<FederatedIntent> {
         match_id: parse(row, 8, parse_uuid)?,
         address: row.get(9)?,
         result: parse(row, 10, |s| serde_json::from_str(s).map_err(Into::into))?,
+        players: parse(row, 11, |s| serde_json::from_str(s).map_err(Into::into))?
+            .unwrap_or_default(),
     })
 }
 
@@ -68,40 +129,63 @@ impl AppState {
         mode: String,
         seats: u8,
     ) -> Result<FederatedIntent> {
-        if !(1..=64).contains(&seats)
-            || mode.is_empty()
-            || mode.len() > 32
-            || !mode
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
-        {
-            return Err(PlatformError::Invalid(
-                "invalid federated mode or seat count",
-            ));
-        }
+        self.federated_join_roster(token, pool, mode, seats, false)
+            .await
+    }
+
+    pub async fn federated_join_party_or_solo(
+        &self,
+        token: &str,
+        pool: Uuid,
+        mode: String,
+        seats: u8,
+    ) -> Result<FederatedIntent> {
+        self.federated_join_roster(token, pool, mode, seats, true)
+            .await
+    }
+
+    async fn federated_join_roster(
+        &self,
+        token: &str,
+        pool: Uuid,
+        mode: String,
+        seats: u8,
+        with_party: bool,
+    ) -> Result<FederatedIntent> {
+        validate_mode(&mode, usize::from(seats))?;
         let key = digest(token);
         self.run(move |state| state.transaction(|tx| {
             let id = player(tx, &key)?;
-            let sql = format!("SELECT {FIELDS} FROM federated_intents WHERE player=?");
-            let existing = tx.query_row(&sql, [&id], row_intent).optional()?;
-            if let Some(existing) = existing {
-                if existing.pool == pool && existing.mode == mode && existing.seats == seats
+            let roster = Roster::select(tx, id.clone(), &mode, usize::from(seats), with_party)?;
+            if let Some(existing) = intent_for_player(tx, &id)? {
+                let claimed_party: Option<String> = tx.query_row(
+                    "SELECT party FROM community_party_queues WHERE ticket=?",
+                    [existing.ticket.to_string()], |row| row.get(0),
+                ).optional()?;
+                if existing.player.to_string() == id && existing.pool == pool
+                    && existing.mode == mode && existing.seats == seats
                     && matches!(existing.phase.as_str(), "pending" | "queued") && !existing.cancel
+                    && claimed_party == roster.party
+                    && existing.players.iter().map(Uuid::to_string).eq(roster.players.iter().cloned())
                 {
                     return Ok(existing);
                 }
                 return Err(PlatformError::Conflict("player has a federated ticket"));
             }
-            if tx.query_row("SELECT EXISTS(SELECT 1 FROM tickets WHERE player=?)", [&id], |row| row.get(0))? {
-                return Err(PlatformError::Conflict("player has a local ticket"));
-            }
-            let ticket = Uuid::new_v4();
+            roster.ensure_free(tx)?;
+            let ticket = Uuid::new_v4().to_string();
+            roster.claim(tx, &ticket)?;
             tx.execute(
-                "INSERT INTO federated_intents(ticket, player, pool, mode, seats) VALUES(?, ?, ?, ?, ?)",
-                params![ticket.to_string(), id, pool.to_string(), mode, seats],
+                "INSERT INTO federated_queue(ticket, player, pool, mode, seats) VALUES(?, ?, ?, ?, ?)",
+                params![ticket, id, pool.to_string(), mode, seats],
             )?;
-
-            Ok(tx.query_row(&sql, [&id], row_intent)?)
+            for (index, member) in roster.players.iter().enumerate() {
+                tx.execute(
+                    "INSERT INTO federated_queue_members(ticket, player, pos) VALUES(?, ?, ?)",
+                    params![ticket, member, index],
+                )?;
+            }
+            intent_by_ticket(tx, &ticket)?.ok_or(PlatformError::WorkerUnavailable)
         })).await
     }
 
@@ -113,10 +197,7 @@ impl AppState {
                 .lock()
                 .map_err(|_| PlatformError::WorkerUnavailable)?;
             let id = player(&db, &key)?;
-            let sql = format!("SELECT {FIELDS} FROM federated_intents WHERE player=?");
-            db.query_row(&sql, [&id], row_intent)
-                .optional()
-                .map_err(Into::into)
+            intent_for_player(&db, &id)
         })
         .await
     }
@@ -128,7 +209,7 @@ impl AppState {
                 .lock()
                 .map_err(|_| PlatformError::WorkerUnavailable)?;
             let sql =
-                format!("SELECT {FIELDS} FROM federated_intents WHERE pool=? ORDER BY ticket");
+                format!("SELECT {FIELDS} FROM federated_queue f WHERE f.pool=? ORDER BY f.ticket");
             let mut query = db.prepare(&sql)?;
             query
                 .query_map([pool.to_string()], row_intent)?
@@ -138,7 +219,32 @@ impl AppState {
         .await
     }
 
-    /// Persist a participant's acceptance or cancellation for the federation worker to submit.
+    /// Persist the caller's choice. A party becomes accepted after every member confirms.
+    pub async fn federated_action_as(
+        &self,
+        token: &str,
+        ticket: Uuid,
+        accept: Option<Uuid>,
+        cancel: bool,
+    ) -> Result<FederatedIntent> {
+        let key = digest(token);
+        let ticket = ticket.to_string();
+        self.run(move |state| {
+            state.transaction(|tx| {
+                let id = player(tx, &key)?;
+                let intent = intent_for_player(tx, &id)?
+                    .filter(|active| active.ticket.to_string() == ticket)
+                    .ok_or(PlatformError::Conflict(
+                        "federated ticket does not belong to player",
+                    ))?;
+                apply_action(tx, &intent, &id, accept, cancel)?;
+                intent_by_ticket(tx, &ticket)?.ok_or(PlatformError::WorkerUnavailable)
+            })
+        })
+        .await
+    }
+
+    /// Host-side action for a single-player ticket.
     pub async fn federated_action(
         &self,
         ticket: Uuid,
@@ -148,37 +254,14 @@ impl AppState {
         let ticket = ticket.to_string();
         self.run(move |state| {
             state.transaction(|tx| {
-                let sql = format!("SELECT {FIELDS} FROM federated_intents WHERE ticket=?");
-                let intent = tx
-                    .query_row(&sql, [&ticket], row_intent)
-                    .optional()?
+                let intent = intent_by_ticket(tx, &ticket)?
                     .ok_or(PlatformError::Conflict("federated ticket does not exist"))?;
-                if let Some(match_id) = accept {
-                    if cancel
-                        || intent.cancel
-                        || intent.match_id != Some(match_id)
-                        || !matches!(intent.phase.as_str(), "offered" | "playing")
-                    {
-                        return Err(PlatformError::Conflict("no federated offer for this match"));
-                    }
-                    tx.execute(
-                        "UPDATE federated_intents SET accepted_match=? WHERE ticket=?",
-                        params![match_id.to_string(), ticket],
-                    )?;
-                } else if cancel {
-                    if !matches!(intent.phase.as_str(), "pending" | "queued" | "offered") {
-                        return Err(PlatformError::Conflict(
-                            "federated match has already started",
-                        ));
-                    }
-                    tx.execute(
-                        "UPDATE federated_intents SET cancel=1 WHERE ticket=?",
-                        [&ticket],
-                    )?;
-                } else {
-                    return Err(PlatformError::Invalid("no federated action"));
+                if intent.players.len() != 1 {
+                    return Err(PlatformError::Conflict(
+                        "party action requires an individual session",
+                    ));
                 }
-                Ok(())
+                apply_action(tx, &intent, &intent.player.to_string(), accept, cancel)
             })
         })
         .await
@@ -204,8 +287,7 @@ impl AppState {
         let phase = phase.to_owned();
         let ticket = ticket.to_string();
         self.run(move |state| state.transaction(|tx| {
-            let sql = format!("SELECT {FIELDS} FROM federated_intents WHERE ticket=?");
-            let Some(intent) = tx.query_row(&sql, [&ticket], row_intent).optional()? else {
+            let Some(intent) = intent_by_ticket(tx, &ticket)? else {
                 return Ok(());
             };
             if intent.phase == phase && intent.match_id == match_id && intent.address == address && intent.result == result {
@@ -223,9 +305,18 @@ impl AppState {
             let accepted = intent.accepted_match.filter(|id| Some(*id) == match_id)
                 .map(|id| id.to_string());
             tx.execute(
-                "UPDATE federated_intents SET phase=?, match_id=?, address=?, result=?, accepted_match=? WHERE ticket=?",
+                "UPDATE federated_queue SET phase=?, match_id=?, address=?, result=?, accepted_match=? WHERE ticket=?",
                 params![phase, match_string, address, result.as_ref().map(Value::to_string), accepted, ticket],
             )?;
+            if intent.match_id != match_id {
+                tx.execute(
+                    "UPDATE federated_queue_members SET accepted_match=NULL WHERE ticket=?",
+                    [&ticket],
+                )?;
+            }
+            if matches!(phase.as_str(), "closed" | "finished") {
+                community_queue::release(tx, &ticket).map_err(community_error)?;
+            }
             let message = match phase.as_str() {
                 "queued" => json!({"type":"queued", "mode":intent.mode}),
                 "offered" => json!({"type":"match_offered", "matchId":match_id, "mode":intent.mode}),
@@ -236,34 +327,121 @@ impl AppState {
                 }),
                 _ => json!({"type":"queue_left"}),
             };
-            event(tx, &intent.player.to_string(), message)
+            tx.execute(
+                "INSERT INTO events(player,body) SELECT player, ? FROM federated_queue_members
+                 WHERE ticket=? AND released=0 ORDER BY pos",
+                params![message.to_string(), ticket],
+            )?;
+            Ok(())
         })).await
     }
 
-    /// Release local exclusivity only once the federation confirms closure or the user leaves results.
-    pub async fn federated_release(&self, ticket: Uuid) -> Result<()> {
-        let ticket = ticket.to_string();
+    /// Release one participant's local claim after they exit results.
+    pub async fn federated_acknowledge(&self, token: &str, ticket: Uuid) -> Result<()> {
+        let key = digest(token);
         self.run(move |state| {
             state.transaction(|tx| {
-                let sql = format!("SELECT {FIELDS} FROM federated_intents WHERE ticket=?");
-                let Some(intent) = tx.query_row(&sql, [&ticket], row_intent).optional()? else {
+                let id = player(tx, &key)?;
+                let Some(intent) = intent_for_player(tx, &id)? else {
                     return Ok(());
                 };
-                match intent.phase.as_str() {
-                    "closed" => {}
-                    "finished" => event(
-                        tx,
-                        &intent.player.to_string(),
-                        json!({
-                            "type":"post_match_left", "matchId":intent.match_id
-                        }),
-                    )?,
-                    _ => return Err(PlatformError::Conflict("federated ticket is still active")),
+                if intent.ticket != ticket || intent.phase != "finished" {
+                    return Err(PlatformError::Conflict("federated ticket is still active"));
                 }
-                tx.execute("DELETE FROM federated_intents WHERE ticket=?", [&ticket])?;
-                Ok(())
+                acknowledge(tx, &intent, &id)
             })
         })
         .await
     }
+
+    /// Release the entire closed ticket, or acknowledge a single-player result.
+    pub async fn federated_release(&self, ticket: Uuid) -> Result<()> {
+        let ticket = ticket.to_string();
+        self.run(move |state| {
+            state.transaction(|tx| {
+                let Some(intent) = intent_by_ticket(tx, &ticket)? else {
+                    return Ok(());
+                };
+                match intent.phase.as_str() {
+                    "closed" => {
+                        community_queue::release(tx, &ticket).map_err(community_error)?;
+                        tx.execute("DELETE FROM federated_queue WHERE ticket=?", [&ticket])?;
+                        Ok(())
+                    }
+                    "finished" if intent.players.len() == 1 => {
+                        acknowledge(tx, &intent, &intent.player.to_string())
+                    }
+                    _ => Err(PlatformError::Conflict(
+                        "each party member must exit individually",
+                    )),
+                }
+            })
+        })
+        .await
+    }
+}
+
+fn apply_action(
+    tx: &Transaction<'_>,
+    intent: &FederatedIntent,
+    actor: &str,
+    accept: Option<Uuid>,
+    cancel: bool,
+) -> Result<()> {
+    let ticket = intent.ticket.to_string();
+    if let Some(match_id) = accept {
+        if cancel
+            || intent.cancel
+            || intent.match_id != Some(match_id)
+            || !matches!(intent.phase.as_str(), "offered" | "playing")
+        {
+            return Err(PlatformError::Conflict("no federated offer for this match"));
+        }
+        let id = match_id.to_string();
+        tx.execute(
+            "UPDATE federated_queue_members SET accepted_match=? WHERE ticket=? AND player=? AND released=0",
+            params![id, ticket, actor],
+        )?;
+        tx.execute(
+            "UPDATE federated_queue SET accepted_match=?1 WHERE ticket=?2 AND NOT EXISTS (
+                SELECT 1 FROM federated_queue_members WHERE ticket=?2 AND accepted_match IS NOT ?1
+             )",
+            params![id, ticket],
+        )?;
+    } else if cancel {
+        if !matches!(intent.phase.as_str(), "pending" | "queued" | "offered") {
+            return Err(PlatformError::Conflict(
+                "federated match has already started",
+            ));
+        }
+        tx.execute(
+            "UPDATE federated_queue SET cancel=1 WHERE ticket=?",
+            [&ticket],
+        )?;
+    } else {
+        return Err(PlatformError::Invalid("no federated action"));
+    }
+    Ok(())
+}
+
+fn acknowledge(tx: &Transaction<'_>, intent: &FederatedIntent, player: &str) -> Result<()> {
+    let ticket = intent.ticket.to_string();
+    if tx.execute(
+        "UPDATE federated_queue_members SET released=1 WHERE ticket=? AND player=? AND released=0",
+        params![ticket, player],
+    )? != 0
+    {
+        event(
+            tx,
+            player,
+            json!({"type":"post_match_left", "matchId":intent.match_id}),
+        )?;
+    }
+    tx.execute(
+        "DELETE FROM federated_queue WHERE ticket=?1 AND NOT EXISTS (
+            SELECT 1 FROM federated_queue_members WHERE ticket=?1 AND released=0
+         )",
+        [&ticket],
+    )?;
+    Ok(())
 }

@@ -5,7 +5,7 @@ use halcyon_matchmaking::{
     Allocation, Command, Endpoint, Phase, Pool, Queue, Ticket, TicketPhase, TicketRef, plan,
     result_digest,
 };
-use halcyon_platform::{AppState, FederatedIntent, PlatformError, Reservation};
+use halcyon_platform::{AppState, FederatedIntent, PlatformError, Reservation, plan_teams};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
@@ -83,14 +83,36 @@ impl PeerPlay {
         let _ = done.wait_for(|v| *v).await;
     }
     pub async fn join(&self, token: &str, mode: String, seats: u8) -> halcyon_platform::Result<()> {
+        self.join_roster(token, mode, seats, false).await
+    }
+    pub async fn join_party_or_solo(
+        &self,
+        token: &str,
+        mode: String,
+        seats: u8,
+    ) -> halcyon_platform::Result<()> {
+        self.join_roster(token, mode, seats, true).await
+    }
+    async fn join_roster(
+        &self,
+        token: &str,
+        mode: String,
+        seats: u8,
+        with_party: bool,
+    ) -> halcyon_platform::Result<()> {
         let s = &self.inner;
         if seats == 0 || seats > 10 {
             return Err(PlatformError::Invalid("invalid seat count"));
         }
-        let intent = s
-            .platform
-            .federated_join(token, s.cfg.pool_id, mode, seats)
-            .await?;
+        let intent = if with_party {
+            s.platform
+                .federated_join_party_or_solo(token, s.cfg.pool_id, mode, seats)
+                .await?
+        } else {
+            s.platform
+                .federated_join(token, s.cfg.pool_id, mode, seats)
+                .await?
+        };
         s.enqueue(&intent)
             .await
             .map_err(|_| PlatformError::HostUnavailable)?;
@@ -101,10 +123,14 @@ impl PeerPlay {
         if i.match_id != Some(room) || !matches!(i.phase.as_str(), "offered" | "playing") {
             return Err(PlatformError::Conflict("no offer for this match"));
         }
-        self.inner
+        let i = self
+            .inner
             .platform
-            .federated_action(i.ticket, Some(room), false)
+            .federated_action_as(token, i.ticket, Some(room), false)
             .await?;
+        if i.accepted_match != Some(room) || i.phase == "playing" {
+            return Ok(());
+        }
         self.inner
             .accept(&i, room)
             .await
@@ -113,14 +139,19 @@ impl PeerPlay {
     pub async fn leave(&self, token: &str) -> halcyon_platform::Result<()> {
         let i = self.intent(token).await?;
         if i.phase == "finished" {
-            return self.inner.platform.federated_release(i.ticket).await;
+            return self
+                .inner
+                .platform
+                .federated_acknowledge(token, i.ticket)
+                .await;
         }
         if i.phase == "playing" {
             return Err(PlatformError::Conflict("match is already playing"));
         }
-        self.inner
+        let i = self
+            .inner
             .platform
-            .federated_action(i.ticket, None, true)
+            .federated_action_as(token, i.ticket, None, true)
             .await?;
         self.inner
             .cancel(&i)
@@ -150,7 +181,7 @@ impl Inner {
             id: i.ticket,
             generation: 1,
             home: self.cfg.node_id,
-            players: vec![i.player],
+            players: i.players.clone(),
             queue: Queue {
                 name: i.mode.clone(),
                 build: 147219,
@@ -275,6 +306,8 @@ impl Address for Endpoint {
 }
 #[derive(Default)]
 struct Worker {
+    revision: Option<u64>,
+    pool: Arc<Pool>,
     anchors: BTreeMap<Uuid, Instant>,
     preparing: BTreeMap<Uuid, Instant>,
     active: BTreeSet<Uuid>,
@@ -282,7 +315,12 @@ struct Worker {
 }
 impl Worker {
     async fn round(&mut self, s: &Inner) -> anyhow::Result<()> {
-        let pool = s.fed.read().await?;
+        let (revision, changed) = s.fed.changes(self.revision).await?;
+        if let Some(pool) = changed {
+            self.pool = Arc::new(pool);
+        }
+        self.revision = Some(revision);
+        let pool = self.pool.clone();
         for i in s.platform.federated_intents(s.cfg.pool_id).await? {
             if let Err(e) = s.sync_home(&pool, &i).await {
                 tracing::debug!(%e,ticket=%i.ticket,"home reconciliation deferred")
@@ -328,15 +366,18 @@ impl Worker {
         match a.phase {
             Phase::Preparing => {
                 let mut players = Vec::new();
+                let mut sizes = Vec::new();
                 let mut mode = None;
                 for key in &a.tickets {
                     let t = &p.tickets()[&key.id].ticket;
                     players.extend_from_slice(&t.players);
+                    sizes.push(t.players.len());
                     mode = Some(t.queue.name.clone());
                 }
                 let prepared = s.rooms.prepare(Reservation {
                     match_id: a.id,
                     players,
+                    teams: plan_teams(&sizes),
                     mode: mode.context("empty roster")?,
                 });
                 let Ok(hosted) = prepared else {
@@ -413,7 +454,7 @@ impl Worker {
                 .is_none_or(|t| t.elapsed() > Duration::from_secs(2))
             {
                 let total = s.rooms.capacity();
-                let free = total.saturating_sub(s.rooms.active_rooms());
+                let free = s.rooms.available_rooms();
                 s.fed
                     .advertise(Capacity {
                         sequence: s.journal.sequence()?,

@@ -251,9 +251,10 @@ async fn overview(State(state): State<Admin>) -> Result<Json<Value>> {
     let counts = state.platform.counts().await?;
     let (active_rooms, human_seats, bot_seats, reserved_seats) = state.rooms.hosting_counts();
     let capacity = state.rooms.capacity();
+    let resources = state.rooms.resource_metrics();
     let admission = if capacity == 0 {
         "disabled"
-    } else if active_rooms >= capacity {
+    } else if state.rooms.available_rooms() == 0 {
         "full"
     } else {
         "accepting"
@@ -266,8 +267,8 @@ async fn overview(State(state): State<Admin>) -> Result<Json<Value>> {
         "hosting": {
             "instanceId": state.config.instance_id,
             "admission": admission, "humanSeats": human_seats, "botSeats": bot_seats,
-            "reservedSeats": reserved_seats, "tickP99Ms": null, "cpuPercent": null,
-            "rssBytes": null, "outboundBytesPerSecond": null,
+            "reservedSeats": reserved_seats, "tickP99Ms": resources.tick_p99_ms, "cpuPercent": resources.process_cpu_percent,
+            "rssBytes": resources.rss_bytes, "outboundBytesPerSecond": resources.egress_bytes_per_second,
         },
     })))
 }

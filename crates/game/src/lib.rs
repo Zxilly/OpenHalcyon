@@ -1,5 +1,8 @@
 //! In-process room hosting with CE control and game TCP connections.
+mod admission;
+pub use admission::{AdmissionPolicy, PortRange, ResourceMetrics};
 mod messages;
+mod observer;
 mod transport;
 use chrono::{DateTime, Utc};
 use halcyon_data::GameData;
@@ -13,7 +16,7 @@ use std::{
     net::{IpAddr, TcpListener},
     sync::{
         Arc, Mutex,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::Instant,
 };
@@ -28,6 +31,9 @@ type Shared = Arc<Mutex<Room>>;
 pub struct Rooms(Arc<Manager>);
 struct Manager {
     bind_ip: IpAddr,
+    gate: Mutex<admission::Gate>,
+    monitor_started: AtomicBool,
+    ports: admission::Ports,
     host: String,
     capacity: usize,
     data: Option<Arc<GameData>>,
@@ -60,6 +66,7 @@ struct Seat {
     peers: [Option<Peer>; 2],
     last: Option<DateTime<Utc>>,
     seen: [HashSet<u16>; 2],
+    inventory: Vec<(halcyon_sim::BasicItem, u32, u32)>,
 }
 struct Pick {
     name: String,
@@ -95,15 +102,27 @@ impl TickLatency {
         json!({"count":self.count,"totalUs":self.total_us,"maxUs":self.max_us,"missedDeadlines":self.misses,"over40ms":self.over40,"recentSampleCount":recent.len(),"p99Us":recent.get(index)})
     }
 }
+#[derive(Clone, Copy, Default)]
+struct Combat {
+    kills: u32,
+    deaths: u32,
+    damage: f64,
+    healing: f64,
+}
 struct Room {
+    observers: HashMap<Uuid, observer::Observer>,
     latency: TickLatency,
     admitted: bool,
+    admission_ready: watch::Sender<bool>,
     data: Option<Arc<GameData>>,
     picks: Vec<Pick>,
     id: Uuid,
     address: String,
     queue: String,
     players: Vec<Uuid>,
+    requested_teams: Vec<u8>,
+    next_item: u32,
+    combat: [Combat; 10],
     catalog: Vec<String>,
     seats: Vec<Seat>,
     world: World,
@@ -127,7 +146,30 @@ impl Rooms {
         capacity: usize,
         data: Option<Arc<GameData>>,
     ) -> Self {
-        Self(Arc::new(Manager {
+        Self::with_policy(
+            bind_ip,
+            advertised_host,
+            capacity,
+            data,
+            AdmissionPolicy::default(),
+            None,
+        )
+        .expect("valid default room policy")
+    }
+    pub fn with_policy(
+        bind_ip: IpAddr,
+        advertised_host: String,
+        capacity: usize,
+        data: Option<Arc<GameData>>,
+        policy: AdmissionPolicy,
+        game_port_range: Option<PortRange>,
+    ) -> Result<Self, PlatformError> {
+        let ports = admission::Ports::new(game_port_range)?;
+        let capacity = capacity.min(ports.slots());
+        let this = Self(Arc::new(Manager {
+            gate: Mutex::new(admission::Gate::new(policy)?),
+            monitor_started: AtomicBool::default(),
+            ports,
             bind_ip,
             host: advertised_host,
             capacity,
@@ -135,7 +177,9 @@ impl Rooms {
             rooms: Mutex::default(),
             finish: Mutex::default(),
             bytes: AtomicU64::default(),
-        }))
+        }));
+        this.monitor_resources();
+        Ok(this)
     }
     pub fn set_finish_handler(&self, handler: Finish) {
         *self.0.finish.lock().unwrap() = Some(handler);
@@ -160,6 +204,14 @@ impl Rooms {
                     (active + 1, human, bots, prepared + 10)
                 }
             })
+    }
+    fn advertise(&self, port: u16) -> String {
+        let host = &self.0.host;
+        if host.contains(':') && !host.starts_with('[') {
+            format!("[{host}]:{port}")
+        } else {
+            format!("{host}:{port}")
+        }
     }
     pub fn capacity(&self) -> usize {
         self.0.capacity
@@ -244,7 +296,13 @@ impl Rooms {
             if !r.admitted {
                 return;
             }
-            (r.id, json!({"reason":end,"winner":r.world.winner}))
+            let players:serde_json::Map<_,_>=r.players.iter().enumerate().map(|(i,id)|{
+                let e=&r.world.entities[i];(id.to_string(),json!({"team":e.team,"victory":r.world.winner.map(|w|e.team==w),"hero":r.picks[i].name,"gold":e.gold,"level":e.level,"xp":e.xp,"kills":r.combat[i].kills,"deaths":r.combat[i].deaths,"damage":r.combat[i].damage,"healing":r.combat[i].healing}))
+            }).collect();
+            (
+                r.id,
+                json!({"reason":end,"winner":r.world.winner,"ticks":r.world.tick,"players":players}),
+            )
         };
         if let Some(f) = self.0.finish.lock().unwrap().clone() {
             f(id, result);
@@ -255,6 +313,21 @@ fn now() -> String {
     Utc::now().to_rfc3339()
 }
 impl MatchHost for Rooms {
+    fn spectate(
+        &self,
+        match_id: Uuid,
+        viewer: Uuid,
+    ) -> Result<halcyon_platform::HostedSpectator, PlatformError> {
+        let (address, spectator_id) = self.observe(match_id, viewer)?;
+        Ok(halcyon_platform::HostedSpectator {
+            address,
+            spectator_id,
+        })
+    }
+    fn stop_spectating(&self, match_id: Uuid, spectator_id: Uuid) -> Result<(), PlatformError> {
+        self.revoke_observer(match_id, spectator_id)
+    }
+
     fn reserve(&self, req: Reservation) -> Result<HostedMatch, PlatformError> {
         self.allocate(req, true)
     }
@@ -274,6 +347,7 @@ impl Rooms {
             return Err(PlatformError::Conflict("closed reservation"));
         }
         room.admitted = true;
+        room.admission_ready.send_replace(true);
         Ok(())
     }
     pub fn discard(&self, id: Uuid) -> Result<(), PlatformError> {
@@ -289,6 +363,7 @@ impl Rooms {
         Ok(())
     }
     fn allocate(&self, req: Reservation, admitted: bool) -> Result<HostedMatch, PlatformError> {
+        self.monitor_resources();
         let mut rooms = self.0.rooms.lock().unwrap();
         rooms.retain(|_, room| {
             room.lock()
@@ -298,7 +373,8 @@ impl Rooms {
         });
         if let Some(r) = rooms.get(&req.match_id) {
             let r = r.lock().unwrap();
-            if r.queue != req.mode
+            if r.requested_teams != req.teams
+                || r.queue != req.mode
                 || r.players != req.players
                 || r.ended.is_some()
                 || (admitted && !r.admitted)
@@ -315,18 +391,20 @@ impl Rooms {
         {
             return Err(PlatformError::Invalid("invalid roster"));
         }
-        if rooms
+        let occupied = rooms
             .values()
             .filter(|r| r.lock().unwrap().ended.is_none())
-            .count()
-            >= self.0.capacity
-        {
+            .count();
+        if self.free_with_count(occupied) == 0 {
             return Err(PlatformError::HostUnavailable);
         }
         let rt =
             tokio::runtime::Handle::try_current().map_err(|_| PlatformError::HostUnavailable)?;
-        let listener =
-            TcpListener::bind((self.0.bind_ip, 0)).map_err(|_| PlatformError::HostUnavailable)?;
+        let listener = self
+            .0
+            .ports
+            .bind(self.0.bind_ip)
+            .map_err(|_| PlatformError::HostUnavailable)?;
         listener
             .set_nonblocking(true)
             .map_err(|_| PlatformError::HostUnavailable)?;
@@ -334,18 +412,25 @@ impl Rooms {
             .local_addr()
             .map_err(|_| PlatformError::HostUnavailable)?
             .port();
-        let host = &self.0.host;
-        let address = if host.contains(':') && !host.starts_with('[') {
-            format!("[{host}]:{port}")
-        } else {
-            format!("{host}:{port}")
-        };
+        let address = self.advertise(port);
         let seed = req.match_id.as_u128() as u64;
         let n = req.players.len() as u8;
         let mut world = match &self.0.data {
             Some(d) => World::from_data(seed, n, d).map_err(|_| PlatformError::HostUnavailable)?,
             None => World::new(seed, n),
         };
+        if !req.teams.is_empty()
+            && (req.teams.len() != req.players.len()
+                || req.teams.iter().any(|t| *t > 1)
+                || [0, 1]
+                    .iter()
+                    .any(|team| req.teams.iter().filter(|t| *t == team).count() > 5))
+        {
+            return Err(PlatformError::Invalid("invalid human teams"));
+        }
+        world
+            .assign_teams(&req.teams)
+            .map_err(|_| PlatformError::Invalid("invalid human teams"))?;
         let mut picks = Vec::with_capacity(10);
         for i in 0..10 {
             let bot = i >= usize::from(n);
@@ -381,6 +466,8 @@ impl Rooms {
         let (stop, stopped) = watch::channel(false);
         let t = Utc::now();
         let mut room = Room {
+            admission_ready: watch::channel(admitted).0,
+            observers: HashMap::new(),
             latency: TickLatency::default(),
             admitted,
             data: self.0.data.clone(),
@@ -389,6 +476,9 @@ impl Rooms {
             address: address.clone(),
             queue: req.mode,
             players: req.players,
+            requested_teams: req.teams,
+            next_item: 40000,
+            combat: [Combat::default(); 10],
             catalog,
             seats: (0..n).map(|_| Seat::default()).collect(),
             world,
@@ -440,7 +530,7 @@ impl Room {
         v["tickLatency"] = self.latency.report();
         if detail {
             v["participants"]=Value::Array((0..10).map(|i|{let s=self.seats.get(i);
-            json!({"slot":i,"playerId":self.players.get(i),"homeInstanceId":null,"botProfile":if s.is_none(){Some("lane-v1")}else{None},"displayName":if s.is_some(){"Guest".into()}else{format!("{} Bot",self.picks[i].name)},"hero":self.picks[i].name,"locked":s.is_none_or(|s|s.locked),"controlConnected":s.is_some_and(|s|s.peers[0].is_some()),"gameConnected":s.is_some_and(|s|s.peers[1].is_some()),"lastEventAt":s.and_then(|s|s.last).map(|x|x.to_rfc3339())})
+            json!({"slot":i,"team":self.world.entities[i].team,"playerId":self.players.get(i),"homeInstanceId":null,"botProfile":if s.is_none(){Some("lane-v1")}else{None},"displayName":if s.is_some(){"Guest".into()}else{format!("{} Bot",self.picks[i].name)},"hero":self.picks[i].name,"locked":s.is_none_or(|s|s.locked),"controlConnected":s.is_some_and(|s|s.peers[0].is_some()),"gameConnected":s.is_some_and(|s|s.peers[1].is_some()),"lastEventAt":s.and_then(|s|s.last).map(|x|x.to_rfc3339())})
         }).collect());
         }
         v
@@ -456,7 +546,9 @@ impl Room {
             return None;
         }
         // A locked seat can open its data connection while other humans are still selecting.
-        let game = self.seats[idx].locked && self.seats[idx].peers[1].is_none();
+        let game = self.seats[idx].locked
+            && self.seats[idx].peers[1].is_none()
+            && (self.seats[idx].peers[0].is_some() || self.phase == "running");
         let ch = usize::from(game);
         if self.seats[idx].peers[ch].is_some() {
             return None;
@@ -471,7 +563,7 @@ impl Room {
                 self.world
                     .entities
                     .iter()
-                    .filter(|e| self.world.visible((idx % 2) as u8, e))
+                    .filter(|e| self.world.visible(self.world.entities[idx].team, e))
                     .map(|e| e.id)
                     .collect()
             } else {
@@ -500,18 +592,31 @@ impl Room {
             )
         };
         if game {
-            batch.extend(
-                self.world
-                    .entities
-                    .iter()
-                    .filter(|e| self.world.visible((idx % 2) as u8, e))
-                    .map(|e| spawn(e, &self.picks, self.data.as_deref())),
-            );
+            batch.extend(self.spawn_view(Some(self.world.entities[idx].team)));
             if self.seats.iter().all(|s| s.peers[1].is_some()) {
                 self.phase("running");
             }
         }
         Some((idx, ch, self.generation, batch))
+    }
+    fn spawn_view(&self, team: Option<u8>) -> Batch {
+        let mut out = vec![];
+        for e in &self.world.entities {
+            if e.hp <= 0. || team.is_some_and(|t| !self.world.visible(t, e)) {
+                continue;
+            }
+            out.push(spawn(e, &self.picks, self.data.as_deref()));
+            if let Some(s) = self.seats.get((e.id - 1) as usize) {
+                for &(_, item, instance) in &s.inventory {
+                    out.push(messages::item_grant(
+                        u32::from(wire_id(e.id)),
+                        item,
+                        instance,
+                    ));
+                }
+            }
+        }
+        out
     }
     fn detach(&mut self, i: usize, ch: usize, generation: u64) {
         if self.seats[i].peers[ch]
@@ -553,6 +658,69 @@ impl Room {
         }
         roster
     }
+    fn validated_skin(&self, hero: &str, requested: u32) -> u32 {
+        let default = halcyon_protocol::skin_hash(&format!("{hero}_DefaultSkin"));
+        if requested == default {
+            return default;
+        }
+        let prefix = format!("{hero}_");
+        let valid = self.data.as_ref().is_some_and(|data| {
+            data.skin_names.iter().any(|name| {
+                name.starts_with(&prefix) && halcyon_protocol::skin_hash(name) == requested
+            })
+        });
+        if valid { requested } else { default }
+    }
+    fn buy(&mut self, i: usize, actor: u32, item: u32) -> Batch {
+        use halcyon_sim::BasicItem;
+        let Some(offer) = BasicItem::from_template(item) else {
+            return vec![];
+        };
+        let before = self.world.entities[i].gold;
+        if self
+            .world
+            .command(i as u32 + 1, Command::Buy(offer))
+            .is_err()
+        {
+            return vec![];
+        }
+        let paid = before - self.world.entities[i].gold;
+        let mut ack = vec![
+            Message::new(0x439, [actor.to_be_bytes(), item.to_be_bytes()].concat()),
+            Message::entity_stat(actor as u16, -(paid as f32), 6),
+        ];
+        if matches!(offer, BasicItem::HeavySteel | BasicItem::SixSins)
+            && let Some(slot) = self.seats[i]
+                .inventory
+                .iter()
+                .position(|(k, _, _)| *k == BasicItem::WeaponBlade)
+        {
+            let (old, _, instance) = self.seats[i].inventory.remove(slot);
+            let (stat, bonus) = self.world.item_bonus(old);
+            ack.push(messages::modifier(actor, stat, -bonus));
+            let mut b = [actor.to_be_bytes(), instance.to_be_bytes()].concat();
+            b.extend(1u16.to_be_bytes());
+            ack.push(Message::new(0x44b, b));
+        }
+        let instance = self.next_item;
+        self.next_item += 1;
+        self.seats[i].inventory.push((offer, item, instance));
+        ack.push(messages::item_grant(actor, item, instance));
+        let (stat, bonus) = self.world.item_bonus(offer);
+        ack.push(messages::modifier(actor, stat, bonus));
+        for (j, seat) in self.seats.iter().enumerate() {
+            if j != i
+                && self
+                    .world
+                    .visible(self.world.entities[j].team, &self.world.entities[i])
+                && let Some(peer) = &seat.peers[1]
+            {
+                peer.send(ack.clone());
+            }
+        }
+        self.publish_observers(&ack);
+        ack
+    }
     fn receive(&mut self, i: usize, ch: usize, m: Message) -> std::io::Result<Batch> {
         self.last_active = Instant::now();
         let seen = &mut self.seats[i].seen[ch];
@@ -565,6 +733,13 @@ impl Room {
                 let _ = self
                     .world
                     .command(i as u32 + 1, Command::MoveTo(Position { x, y }));
+            }
+            Fields::ShopRequest { actor, item }
+                if ch == 1
+                    && self.phase == "running"
+                    && actor == u32::from(wire_id(i as u32 + 1)) =>
+            {
+                out = self.buy(i, actor, item);
             }
             Fields::HeroLock if ch == 0 => {
                 let op = m.opcode;
@@ -605,6 +780,7 @@ impl Room {
                         name == "Ringo"
                     };
                     if valid {
+                        let skin = self.validated_skin(&name, skin);
                         self.picks[i] = Pick {
                             name,
                             skin,
@@ -616,8 +792,8 @@ impl Room {
                 }
                 out.push(m);
             }
-            _ if ch == 0 && m.opcode == 0x45f && m.body.len() >= 4 => {
-                self.picks[i].skin = u32::from_be_bytes(m.body[..4].try_into().unwrap());
+            Fields::SkinSelection(skin) if ch == 0 => {
+                self.picks[i].skin = self.validated_skin(&self.picks[i].name, skin);
                 out.push(self.roster_update(Some(i)));
                 out.push(m);
             }
@@ -651,10 +827,30 @@ impl Room {
             self.roster_update(None);
         }
 
+        // Native CE control admissions stay in loading until a data channel authenticates.
+        // Replay chunk headers share opcodes with TCP, but are not a control transition.
         if self.phase != "running" {
             return;
         }
         let events = self.world.step();
+        self.tick_observers(&events);
+        for event in &events {
+            match *event {
+                Event::Death { id, killer } if (1..=10).contains(&id) => {
+                    self.combat[(id - 1) as usize].deaths += 1;
+                    if (1..=10).contains(&killer) {
+                        self.combat[(killer - 1) as usize].kills += 1;
+                    }
+                }
+                Event::Damage { source, amount, .. } if (1..=10).contains(&source) => {
+                    self.combat[(source - 1) as usize].damage += f64::from(amount)
+                }
+                Event::Heal { source, amount, .. } if (1..=10).contains(&source) => {
+                    self.combat[(source - 1) as usize].healing += f64::from(amount)
+                }
+                _ => {}
+            }
+        }
         // Both teams share visibility, so compute at most twice per tick.
         let visible: [HashSet<u32>; 2] = std::array::from_fn(|team| {
             self.world
@@ -669,7 +865,7 @@ impl Room {
                 continue;
             };
             let mut out = vec![];
-            let team = i % 2;
+            let team = usize::from(self.world.entities[i].team);
             let current = &visible[team];
             for e in &self.world.entities {
                 if current.contains(&e.id) && !peer.visible.contains(&e.id) {
@@ -678,28 +874,15 @@ impl Room {
             }
 
             for ev in &events {
-                let id = match ev {
-                    Event::Move { id, .. } => *id,
-                    Event::Damage { target, .. } => *target,
-                    _ => continue,
-                };
-                if !current.contains(&id) && !peer.visible.contains(&id) {
-                    continue;
+                if let Event::Move { id, position } = ev
+                    && current.contains(id)
+                {
+                    out.push(Message::position(wire_id(*id), position.x, position.y));
                 }
-                out.push(match ev {
-                    Event::Move { position, .. } => {
-                        Message::position(wire_id(id), position.x, position.y)
-                    }
-                    Event::Damage { amount, .. } => Message::entity_stat(wire_id(id), -*amount, 6),
-                    _ => unreachable!(),
-                });
             }
             peer.visible.clone_from(current);
             if self.world.tick.is_multiple_of(20) {
                 out.push(snapshot(&self.world, &self.players, &self.picks));
-            }
-            if self.world.winner.is_some() {
-                out.push(Message::new(0x485, [0; 6]));
             }
             if !out.is_empty() {
                 peer.send(out);
@@ -710,5 +893,66 @@ impl Room {
             self.phase("ending");
             self.stop.send_replace(true);
         }
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[tokio::test]
+    async fn shop_uses_authenticated_seat_and_authoritative_gold() {
+        let rooms = Rooms::new("127.0.0.1".parse().unwrap(), "127.0.0.1".into(), 1, None);
+        let id = Uuid::new_v4();
+        rooms
+            .reserve(Reservation {
+                match_id: id,
+                players: vec![Uuid::new_v4()],
+                teams: vec![0],
+                mode: "solo".into(),
+            })
+            .unwrap();
+        let shared = rooms.room(id).unwrap();
+        let mut room = shared.lock().unwrap();
+        room.phase("running");
+        room.world.entities[0].gold = 300;
+        let buy =
+            |actor: u32| Message::new(0x439, [actor.to_be_bytes(), 458u32.to_be_bytes()].concat());
+        assert!(room.receive(0, 1, buy(1501)).unwrap().is_empty());
+        assert!(room.receive(0, 0, buy(1500)).unwrap().is_empty());
+        assert_eq!(room.world.entities[0].gold, 300);
+        let ack = room.receive(0, 1, buy(1500)).unwrap();
+        assert_eq!(
+            ack.iter().map(|m| m.opcode).collect::<Vec<_>>(),
+            [0x439, 0x41d, 0x43d, 0x41c]
+        );
+        assert_eq!(room.world.entities[0].gold, 0);
+        assert!(matches!(
+            ack[1].fields().unwrap(),
+            Fields::EntityStat {
+                entity: 1500,
+                value: -300.,
+                stat: 6
+            }
+        ));
+        assert!(matches!(
+            ack[2].fields().unwrap(),
+            Fields::ItemGrant {
+                actor: 1500,
+                item: 458,
+                ..
+            }
+        ));
+        assert!(room.receive(0, 1, buy(1500)).unwrap().is_empty());
+        room.world.entities[0].gold = 850;
+        let upgrade = Message::new(
+            0x439,
+            [1500u32.to_be_bytes(), 505u32.to_be_bytes()].concat(),
+        );
+        let upgraded = room.receive(0, 1, upgrade).unwrap();
+        assert_eq!(
+            upgraded.iter().map(|m| m.opcode).collect::<Vec<_>>(),
+            [0x439, 0x41d, 0x41c, 0x44b, 0x43d, 0x41c]
+        );
+        assert_eq!(&upgraded[3].body[4..8], &ack[2].body[8..12]);
+        assert_eq!(room.seats[0].inventory.len(), 1);
     }
 }
