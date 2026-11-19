@@ -4,6 +4,22 @@ OpenHalcyon is an independent Rust server project for the Vainglory Community Ed
 
 The workspace targets stable Rust. The MIT license covers the project's original implementation. Supply any client-derived data locally.
 
+## What works today
+
+The original Android client can create or recover a guest, reach the menu,
+enter the 5v5 Solo Bots queue, select a hero and reach **LOCKED IN**.
+The transition from the draft to a rendered battlefield still needs a
+successful CE game-channel exchange. The repository documents which fields
+come from the Android executable, which appeared in recorded traffic, and
+which simulation rules the project supplies. [CE compatibility](docs/protocol-coverage.md)
+
+The Rust game host runs a match through crystal destruction and settlement.
+An integration test starts three independent server processes, signs two CE
+guests into separate home nodes over HTTPS, and opens their encrypted game
+sockets on the third node. Both guests return to menus with one identical
+result after an election during play. A separate host-restart test verifies
+that losing the room aborts the match on both homes. [Process tests](crates/server/tests/support/process_pool.rs)
+
 ## Run an instance
 
 ```sh
