@@ -37,3 +37,21 @@ Generic layouts retain their existing economy and thresholds. The
 replication ordering and snapshot field values are covered by local
 tests. The captures and offline reader evidence do not establish exact
 native behavior for every modifier, mode or client build.
+
+
+## Passive income
+
+The Solo replay's 0x03EF start marker occurs at 5.12 seconds. Near replay
+time 45, nine heroes begin receiving 3 gold and 0.6 XP each second. The
+tenth receives 0.3 and 0.06 about ten times per second. All ten open with
+600 spendable and cumulative gold. In ARAL the first regular awards start
+about 30 seconds after the start marker and total 15 gold and 1.8 XP per
+second per seat. Among 42 seats in the seven captures, two receive 0.18 XP
+approximately every tenth of a second.
+
+The host batches the native income at one-second intervals, beginning 40
+seconds after Solo starts and 30 seconds after ARAL starts. The same ledger
+increments spendable gold and records passive income while a hero awaits
+respawn. Visible hero declarations restore both the current gold and its
+cumulative earned baseline. Solo and ARAL use the full 32-bit snapshot
+restoration flag when reading these fields.
