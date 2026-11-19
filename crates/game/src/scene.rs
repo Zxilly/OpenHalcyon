@@ -442,16 +442,36 @@ mod tests {
             assert!(room.receive(0, 0, target(6.)).unwrap().is_empty());
             assert_eq!(room.phase, "loading");
             room.seats[0].scene_written = true;
+            if op == 0x3f5 {
+                assert!(room.receive(0, 0, target(6.)).unwrap().is_empty());
+                assert_eq!(room.phase, "loading");
+            }
+            room.seats[0].world_actor_written = true;
+            if op == 0x3f5 {
+                let mut invalid = target(6.);
+                invalid.body[13] = 1;
+                assert!(room.receive(0, 0, invalid).unwrap().is_empty());
+                assert_eq!(room.phase, "loading");
+            }
             assert!(room.receive(0, 0, target(f32::NAN)).unwrap().is_empty());
             assert!(room.receive(0, 0, target(10000.)).unwrap().is_empty());
             assert_eq!(room.phase, "loading");
             let before = room.world.entities[0].position;
             let out = room.receive(0, 0, target(6.)).unwrap();
-            assert_eq!(out.iter().map(|m| m.opcode).collect::<Vec<_>>(), [0x3ef]);
+            let expected = if op == 0x3f5 {
+                &[0x3ef, 0x3f8][..]
+            } else {
+                &[0x3ef][..]
+            };
+            assert_eq!(out.iter().map(|m| m.opcode).collect::<Vec<_>>(), expected);
+            if op == 0x3f5 {
+                assert_eq!(out[1].body, [14, 0x40, 0xc0, 0, 0, 0, 0, 0, 0]);
+            }
             assert_eq!(room.phase, "running");
             room.tick();
             assert_ne!(room.world.entities[0].position, before);
-            assert!(room.receive(0, 0, target(6.)).unwrap().is_empty());
+            let repeated = room.receive(0, 0, target(6.)).unwrap();
+            assert_eq!(repeated, out[1..]);
         }
     }
     #[tokio::test]

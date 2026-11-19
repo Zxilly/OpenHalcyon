@@ -102,7 +102,12 @@ pub(super) fn opening(room: &Room, team: Option<u8>) -> Batch {
         .take(SEATS)
         .filter(|actor| actor.hp > 0. && team.is_none_or(|id| room.world.visible(id, actor)))
     {
-        batch.push(messages::spawn(actor, &room.picks, room.data.as_deref()));
+        batch.push(super::point_move::full_spawn(
+            actor,
+            &room.picks,
+            room.data.as_deref(),
+            true,
+        ));
         messages::append_inventory(&mut batch, actor);
     }
     batch.extend(room.recommended_paths(team));
@@ -152,10 +157,15 @@ mod tests {
             }
         })
         .await
-        .unwrap()
+        .unwrap_or_else(|_| panic!("ARAL opcode {opcode:#06x} did not arrive"))
     }
 
-    async fn request_scene(socket: &mut TcpStream, cipher: &MatchCipher, actor: u32) {
+    async fn request_scene(
+        socket: &mut TcpStream,
+        cipher: &MatchCipher,
+        actor: u32,
+        initial: bool,
+    ) {
         let probe = Message::new(0x046e, [0; 6]);
         socket
             .write_all(&cipher.encode(&probe).unwrap())
@@ -177,9 +187,23 @@ mod tests {
         }
         let clock = next(socket, cipher).await;
         assert_eq!(clock.opcode, 0x0451);
-        assert_eq!(clock.body, [0; 6]);
-        assert_eq!(next(socket, cipher).await.opcode, 0x03f3);
-        until(socket, cipher, probe.opcode).await;
+        if initial {
+            assert_eq!(clock.body, [0; 6]);
+        }
+        let mut declared = false;
+        loop {
+            let frame = next(socket, cipher).await;
+            if frame.opcode == probe.opcode {
+                break;
+            }
+            if frame.opcode == 0x03f3 {
+                let id = u32::from_be_bytes(frame.body[8..12].try_into().unwrap());
+                assert!((1500..1506).contains(&id));
+                assert_eq!(frame.body[745], 16 + (id - 1500) as u8);
+                declared |= id == actor;
+            }
+        }
+        assert!(declared, "own actor declaration precedes readiness");
         assert_eq!(next(socket, cipher).await.opcode, request.opcode);
     }
 
@@ -297,7 +321,7 @@ mod tests {
             assert_eq!(roster_count, SEATS);
         }
         for (index, socket) in clients.iter_mut().enumerate() {
-            request_scene(socket, &cipher, 1500 + index as u32).await;
+            request_scene(socket, &cipher, 1500 + index as u32, true).await;
         }
         assert_eq!(rooms.detail(room_id).unwrap()["phase"], "loading");
         for socket in clients.iter_mut().take(5) {
@@ -307,6 +331,45 @@ mod tests {
         ready(&mut clients[5], &cipher).await;
         for socket in &mut clients {
             assert_eq!(until(socket, &cipher, 0x03ef).await.body, [0; 6]);
+        }
+        assert!(
+            room.lock()
+                .unwrap()
+                .seats
+                .iter()
+                .all(|seat| seat.world_actor_written)
+        );
+        let point = |x: f32| Message::new(0x03f5, [x.to_be_bytes(), 0f32.to_be_bytes()].concat());
+        for (seat, x) in [(0, 2.0), (3, 4.0), (0, 2.0)] {
+            clients[seat]
+                .write_all(&cipher.encode(&point(x)).unwrap())
+                .await
+                .unwrap();
+            let reply = until(&mut clients[seat], &cipher, 0x03f8).await;
+            assert_eq!(
+                reply.fields().unwrap(),
+                Fields::MoveAction {
+                    selector: 16 + seat as u8,
+                    x,
+                    y: 0.,
+                    remaining: &[0; 5]
+                }
+            );
+        }
+        let barrier = Message::new(0, [0; 6]);
+        clients[1]
+            .write_all(&cipher.encode(&barrier).unwrap())
+            .await
+            .unwrap();
+        loop {
+            let response = next(&mut clients[1], &cipher).await;
+            if response == barrier {
+                break;
+            }
+            assert_ne!(
+                response.opcode, 0x03f8,
+                "point reply leaked to a second seat"
+            );
         }
         // A paid/earned slot request has no trusted level in this room.
         // The next authoritative response must be for the explicit NoTalent request.
@@ -337,6 +400,40 @@ mod tests {
             .unwrap();
         until(&mut clients[0], &cipher, 0x042e).await;
         assert_eq!(rooms.detail(room_id).unwrap()["phase"], "running");
+
+        clients[3].shutdown().await.unwrap();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while room.lock().unwrap().seats[3].peers[0].is_some() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        let mut returned = TcpStream::connect(&address).await.unwrap();
+        returned
+            .write_all(&hello("localhost").unwrap())
+            .await
+            .unwrap();
+        let mut ack = [0; 5];
+        returned.read_exact(&mut ack).await.unwrap();
+        assert_eq!(ack, ACK_FRAME);
+        returned
+            .write_all(
+                &cipher
+                    .encode(&Message::new(0x03e8, players[3].to_string().as_bytes()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        until(&mut returned, &cipher, 0x046c).await;
+        request_scene(&mut returned, &cipher, 1503, false).await;
+        ready(&mut returned, &cipher).await;
+        returned
+            .write_all(&cipher.encode(&point(4.)).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(until(&mut returned, &cipher, 0x03f8).await.body[0], 19);
+        clients[3] = returned;
 
         {
             let mut room = room.lock().unwrap();

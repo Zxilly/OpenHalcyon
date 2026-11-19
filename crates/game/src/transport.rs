@@ -60,6 +60,18 @@ impl Delivery {
         };
         messages.iter().any(|m| m.opcode == opcode)
     }
+    fn declares_actor(&self, actor: u16, slot: u8) -> bool {
+        let messages = match self {
+            Self::Private(messages) => messages,
+            Self::Team(team) => &team.messages,
+        };
+        messages.iter().any(|message| {
+            message.opcode == 0x03f3
+                && message.body.get(10..12) == Some(actor.to_be_bytes().as_slice())
+                && message.body.get(745) == Some(&slot)
+        })
+    }
+
     fn into_records(self) -> Batch {
         match self {
             Self::Private(messages) => messages,
@@ -179,7 +191,19 @@ async fn connection(mut sock: TcpStream, room: Shared, manager: Rooms) -> io::Re
     let write_loop = async {
         let mut next = Some(Delivery::Private(initial));
         let mut bytes = Vec::new();
-        let mut waiting_for_scene = ch == 0 && room.lock().unwrap().solo_scene();
+        let (mut waiting_for_scene, mut registration) = {
+            let state = room.lock().unwrap();
+            let solo = ch == 0 && state.solo_scene();
+            let actor = &state.world.entities[seat];
+            let slot = if ch == 0 && state.legacy_aral() {
+                point_move::aral_slot(actor)
+            } else if solo {
+                state.solo_slots.fixed(actor)
+            } else {
+                None
+            };
+            (solo, slot.map(|slot| (wire_id(actor.id), slot)))
+        };
         while let Some(batch) = next {
             write(&mut wr, &manager.0, batch.bytes(&cipher, &mut bytes)?).await?;
             if waiting_for_scene && batch.contains(0x046f) {
@@ -192,6 +216,19 @@ async fn connection(mut sock: TcpStream, room: Shared, manager: Rooms) -> io::Re
                     seat.scene_written = true;
                 }
                 waiting_for_scene = false;
+            }
+            if let Some((actor, slot)) = registration
+                && batch.declares_actor(actor, slot)
+            {
+                let mut state = room.lock().unwrap();
+                let seat = &mut state.seats[seat];
+                if seat.peers[ch]
+                    .as_ref()
+                    .is_some_and(|p| p.generation == generation)
+                {
+                    seat.world_actor_written = true;
+                }
+                registration = None;
             }
             // Large initial catalogs are sent once. Keep steady-state buffers small.
             if bytes.capacity() > 32 * 1024 {

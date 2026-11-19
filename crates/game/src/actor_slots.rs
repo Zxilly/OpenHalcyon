@@ -36,7 +36,7 @@ impl ActorSlots {
         }
     }
 
-    fn fixed(&self, entity: &Entity) -> Option<u8> {
+    pub(super) fn fixed(&self, entity: &Entity) -> Option<u8> {
         match (entity.kind, entity.type_id, entity.team) {
             (Kind::Hero, _, _) if (1..=10).contains(&entity.id) => {
                 self.heroes[(entity.id - 1) as usize]

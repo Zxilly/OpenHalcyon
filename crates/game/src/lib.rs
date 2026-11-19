@@ -7,6 +7,7 @@ mod commands;
 mod compact;
 mod messages;
 mod observer;
+mod point_move;
 mod recording;
 mod result_frames;
 mod scene;
@@ -76,6 +77,7 @@ struct Seat {
     loading_roster_sent: bool,
     control_world: bool,
     scene_written: bool,
+    world_actor_written: bool,
     peers: [Option<Peer>; 2],
     last: Option<DateTime<Utc>>,
     seen: [HashSet<u16>; 2],
@@ -722,6 +724,7 @@ impl Room {
         } else {
             self.seats[idx].loading_roster_sent = false;
             self.seats[idx].scene_written = false;
+            self.seats[idx].world_actor_written = false;
             self.seats[idx].draft_sync_sent = false;
             self.seats[idx].preamble = Default::default();
         }
@@ -788,7 +791,12 @@ impl Room {
             if e.hp <= 0. || team.is_some_and(|t| !self.world.visible(t, e)) {
                 continue;
             }
-            out.push(spawn(e, &self.picks, self.data.as_deref()));
+            out.push(point_move::full_spawn(
+                e,
+                &self.picks,
+                self.data.as_deref(),
+                self.legacy_aral(),
+            ));
             messages::append_inventory(&mut out, e);
         }
         out.extend(self.recommended_paths(team));
@@ -910,6 +918,7 @@ impl Room {
             && self.seats[i].preamble.scene_requested()
             && !self.seats[i].preamble.confirmed();
         let mut accepted_world_input = false;
+        let mut first_point_ack = None;
         let sync_after_pick =
             !legacy && ch == 0 && m.opcode == 0x45e && !self.seats[i].draft_sync_sent;
         let seen = &mut self.seats[i].seen[ch];
@@ -923,22 +932,33 @@ impl Room {
         }
         let mut out = vec![];
         match m.fields()? {
-            Fields::Movement { x, y }
-            | Fields::Live(halcyon_protocol::LiveFields::MovePoint { x, y })
-                if pending_world_input =>
+            Fields::ControlByte { value, remaining }
+                if m.opcode == 0x0485
+                    && (game
+                        || pending_world_input
+                        || (legacy
+                            && ch == 0
+                            && self.seats[i].preamble.scene_requested()
+                            && matches!(self.phase, "loading" | "running")))
+                    && matches!(value, 0 | 1 | 2 | 0xfe)
+                    && remaining.iter().all(|v| *v == 0) =>
             {
                 out = self.set_recommended_path(i, value);
                 accepted_world_input = pending_world_input;
             }
             Fields::Live(halcyon_protocol::LiveFields::MovePoint { x, y })
-                if solo_scene
-                    && ch == 0
-                    && self.seats[i].scene_written
+                if ch == 0
+                    && self.seats[i].world_actor_written
+                    && (legacy || solo_scene && self.seats[i].scene_written)
                     && (game || pending_world_input) =>
             {
                 let actor = &self.world.entities[i];
-                if self.visible[usize::from(actor.team)].contains(&actor.id)
-                    && let Some(slot) = self.solo_slots.fixed(actor)
+                let slot = if legacy {
+                    point_move::aral_slot(actor)
+                } else {
+                    self.solo_slots.fixed(actor)
+                };
+                if let Some(slot) = slot
                     && let Some(ack) = point_move::submit(
                         &mut self.world,
                         i as u32 + 1,
@@ -1090,6 +1110,7 @@ impl Room {
             self.seats[i].preamble.confirm_world_input();
             self.phase("running");
             out.push(Message::new(0x03ef, []));
+            out.extend(first_point_ack);
         }
         if sync_after_pick {
             // Android's first 0x045E response precedes this one-time draft message.
@@ -1209,7 +1230,8 @@ impl Room {
             .collect();
         let native_solo = self.solo_scene() && self.seats[0].control_world;
         let postgame = result_frames::aral_lost_crystal(self.legacy_aral(), &self.world);
-        let control_stream = self.legacy_aral() || native_solo;
+        let legacy_aral = self.legacy_aral();
+        let control_stream = legacy_aral || native_solo;
         for team in 0..2 {
             let mut peers = self
                 .seats
@@ -1236,7 +1258,12 @@ impl Room {
                                 self.data.as_deref(),
                             )
                         } else {
-                            Some(spawn(e, &self.picks, self.data.as_deref()))
+                            Some(point_move::full_spawn(
+                                e,
+                                &self.picks,
+                                self.data.as_deref(),
+                                legacy_aral,
+                            ))
                         };
                         let Some(message) = message else { continue };
                         out.push(message);

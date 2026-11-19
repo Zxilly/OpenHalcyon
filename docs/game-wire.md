@@ -220,3 +220,15 @@ seat and endpoint. Canceling an outstanding offer and leaving post-match keep
 their existing behavior. The restart trace establishes that the client calls
 exitLobby after reauthentication. An on-device check is still needed to
 determine whether this response alone is sufficient to return to the scene.
+
+The native Solo and ARAL control streams send 0x03F8 privately after an
+accepted 0x03F5 point request. The reply carries that connection's own
+registered actor slot and the requested X/Z destination. Registration is
+checked against the full 0x03F3 declaration actually written to the
+connection. The subsequent authoritative motion remains 0x042E.
+
+In all seven played ARAL captures, actors 1500–1505 used slots 16–21 in
+actor order, independent of team. This was true in all 42 opening hero
+declarations. The ARAL host uses the same slot on opening, rejoin and later
+hero declarations. The packet and reconnect behavior are covered by local
+socket tests.
