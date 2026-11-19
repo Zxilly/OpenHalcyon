@@ -40,3 +40,23 @@ The caller must use one entity per slot and select the matching opening.
 Respawns, other modes, and reconnects continue to use their existing
 replication paths. The byte layout was checked offline and does not establish
 native placement or rendering for the simulation's map.
+
+## Lane minions in the Solo recording
+
+Across all 14 VGR chunks of one Android 147219 match, template 335 appears
+190 times, 336 appears 255 times, 337 appears 118 times and 338 appears
+24 times in compact spawns. These 587 records cover 130 actor IDs. Each
+actor has one creation record with mask 1 at +117. Those 130 records omit
+the numeric stats and carry zero bytes for HP, maximum HP and speed. The
+457 records with mask 0 carry current and maximum HP at +36 and +40.
+Maximum HP was respectively 475, 575, 880 and 950 for the four templates.
+All records use the skin word 0xeb39ce55.
+
+The reader exposes the slot at +116, numeric mask at +117, route at +120 and
+wire team at +121. Wire team 1 used routes 0–2 and wire team 2 used routes
+3–5. On the first wave the central route on each side used 1 and 4. Slots
+changed between waves and were reused by later actors. The capture supplies
+neither a general slot allocator nor a mapping from OpenHalcyon's simulated
+formations to the six native routes. The simulation also scales HP at creation.
+The compact reader retains all original bytes for both masks and both known
+record lengths. Live minion replication continues using the existing encoder.

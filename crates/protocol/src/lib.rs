@@ -353,6 +353,7 @@ impl Message {
                 template: number(0)?,
                 skin: number(4)?,
                 entity: number(8)?,
+                lane_minion: LaneMinionSpawn::decode(b),
                 remaining: &b[12..],
             },
             0x45a if b.len() >= AralRoster::BODY_BYTES => Fields::AralRoster(AralRoster::new(b)?),
@@ -501,6 +502,41 @@ impl MatchStatistics<'_> {
         })
     }
 }
+/// Fields shared by the four captured Android Solo lane-minion templates.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LaneMinionSpawn {
+    pub slot: u8,
+    pub stat_mask: u8,
+    pub route: u8,
+    pub wire_team: u8,
+    /// Current and maximum HP; the masked creation form omits both values.
+    pub health: Option<(f32, f32)>,
+}
+
+impl LaneMinionSpawn {
+    fn decode(body: &[u8]) -> Option<Self> {
+        let word = |offset: usize| u32::from_be_bytes(body[offset..offset + 4].try_into().unwrap());
+        if !(335..=338).contains(&word(0))
+            || word(4) != 0xeb39ce55
+            || !matches!((body[120], body[121]), (0..=2, 1) | (3..=5, 2))
+        {
+            return None;
+        }
+        let health = match body[117] {
+            0 => Some((f32::from_bits(word(36)), f32::from_bits(word(40)))),
+            1 => None,
+            _ => return None,
+        };
+        Some(Self {
+            slot: body[116],
+            stat_mask: body[117],
+            route: body[120],
+            wire_team: body[121],
+            health,
+        })
+    }
+}
+
 #[derive(Debug, PartialEq)]
 pub enum Fields<'a> {
     Live(LiveFields<'a>),
@@ -661,6 +697,7 @@ pub enum Fields<'a> {
         template: u32,
         skin: u32,
         entity: u32,
+        lane_minion: Option<LaneMinionSpawn>,
         remaining: &'a [u8],
     },
     AralRosterHeader {
@@ -1171,6 +1208,54 @@ mod tests {
         assert!(Message::new(0x430, &data[..7]).fields().is_err());
     }
     #[test]
+    fn compact_lane_minion_health_is_present_only_in_the_full_stat_form() {
+        for template in 335u32..=338 {
+            for size in [122, 126] {
+                for mask in [0, 1] {
+                    let mut body = vec![0xab; size];
+                    body[..4].copy_from_slice(&template.to_be_bytes());
+                    body[4..8].copy_from_slice(&0xeb39ce55u32.to_be_bytes());
+                    body[36..40].copy_from_slice(&321.5f32.to_be_bytes());
+                    body[40..44].copy_from_slice(&475f32.to_be_bytes());
+                    body[116..122].copy_from_slice(&[56, mask, 0, 1, 1, 1]);
+                    let message = Message::new(0x03f2, body.clone());
+                    let Fields::CompactSpawn {
+                        lane_minion: Some(minion),
+                        remaining,
+                        ..
+                    } = message.fields().unwrap()
+                    else {
+                        panic!("expected Solo lane minion")
+                    };
+                    assert_eq!(
+                        minion,
+                        LaneMinionSpawn {
+                            slot: 56,
+                            stat_mask: mask,
+                            route: 1,
+                            wire_team: 1,
+                            health: (mask == 0).then_some((321.5, 475.0))
+                        }
+                    );
+                    assert_eq!(remaining, &body[12..]);
+                    let cipher = MatchCipher::new("synthetic");
+                    let bytes = cipher.encode(&message).unwrap();
+                    let decoded = cipher.decode(&bytes[2..]).unwrap();
+                    assert_eq!(&decoded.body[..size], &body);
+                    body[121] = 2;
+                    assert!(matches!(
+                        Message::new(0x03f2, body).fields().unwrap(),
+                        Fields::CompactSpawn {
+                            lane_minion: None,
+                            ..
+                        }
+                    ));
+                }
+            }
+        }
+    }
+
+    #[test]
     fn read_only_prefixes_and_compact_spawn_variants() {
         for (code, kind) in [
             (0x42b, Opcode::EntityState),
@@ -1198,6 +1283,7 @@ mod tests {
                     template: 65541,
                     skin: 131078,
                     entity: 196615,
+                    lane_minion: None,
                     remaining: &body[12..]
                 }
             );
