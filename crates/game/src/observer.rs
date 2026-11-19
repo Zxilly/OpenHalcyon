@@ -105,7 +105,7 @@ async fn client(
     timeout(Duration::from_secs(10), async {
         parse_hello(&transport::frame(&mut socket).await?)?;
         transport::write(&mut socket, &manager.0, &ACK_FRAME).await?;
-        let m = cipher.decode(&transport::frame(&mut socket).await?)?;
+        let m = cipher.decode_owned(transport::frame(&mut socket).await?)?;
         if !matches!(m.fields()?,Fields::PlayerUuid(s) if Uuid::parse_str(s)==Ok(grant)) {
             return Err(io::Error::from(io::ErrorKind::PermissionDenied));
         }
@@ -134,10 +134,11 @@ async fn client(
     let (mut rd, mut wr) = socket.into_split();
     let outgoing = async {
         let mut next = Some(initial);
+        let mut bytes = Vec::new();
         while let Some(batch) = next {
-            let mut bytes = vec![];
+            bytes.clear();
             for m in batch {
-                bytes.extend(cipher.encode(&m)?);
+                cipher.encode_into(&m, &mut bytes)?;
             }
             transport::write(&mut wr, &manager.0, &bytes).await?;
             next = rx.recv().await;
@@ -157,7 +158,7 @@ async fn client(
                 return Err(io::ErrorKind::InvalidData.into());
             }
 
-            let m = cipher.decode(&transport::frame(&mut rd).await?)?;
+            let m = cipher.decode_owned(transport::frame(&mut rd).await?)?;
             // No route from this socket to Room::receive or World::command.
             if !matches!(m.fields()?, Fields::Clock(_) | Fields::Heartbeat) {
                 return Err(io::ErrorKind::PermissionDenied.into());

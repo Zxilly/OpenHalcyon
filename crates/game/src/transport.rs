@@ -47,7 +47,7 @@ async fn connection(mut sock: TcpStream, room: Shared, manager: Rooms) -> io::Re
     let uuid = timeout(Duration::from_secs(10), async {
         parse_hello(&frame(&mut sock).await?)?;
         write(&mut sock, &manager.0, &ACK_FRAME).await?;
-        let msg = cipher.decode(&frame(&mut sock).await?)?;
+        let msg = cipher.decode_owned(frame(&mut sock).await?)?;
         let Fields::PlayerUuid(s) = msg.fields()? else {
             return Err(bad("expected roster identification"));
         };
@@ -80,12 +80,17 @@ async fn connection(mut sock: TcpStream, room: Shared, manager: Rooms) -> io::Re
     let (mut rd, mut wr) = sock.into_split();
     let write_loop = async {
         let mut next = Some(initial);
+        let mut bytes = Vec::new();
         while let Some(batch) = next {
-            let mut bytes = Vec::new();
+            bytes.clear();
             for m in &batch {
-                bytes.extend(cipher.encode(m)?);
+                cipher.encode_into(m, &mut bytes)?;
             }
             write(&mut wr, &manager.0, &bytes).await?;
+            // Large initial catalogs are sent once. Keep steady-state buffers small.
+            if bytes.capacity() > 32 * 1024 {
+                bytes = Vec::new();
+            }
             if let Some(recorder) = recording.as_mut() {
                 let tick = room.lock().unwrap().world.tick;
                 if !recorder.record(tick, batch) {
@@ -113,7 +118,7 @@ async fn connection(mut sock: TcpStream, room: Shared, manager: Rooms) -> io::Re
             if budget > 300 {
                 return Err(bad("input rate exceeded"));
             }
-            let m = cipher.decode(&raw)?;
+            let m = cipher.decode_owned(raw)?;
             let out = room.lock().unwrap().receive(seat, ch, m)?;
             if !out.is_empty() {
                 tx.try_send(out).map_err(|_| bad("output queue full"))?;

@@ -502,6 +502,14 @@ impl MatchCipher {
         Self(BlowfishLE::new_from_slice(&hash.finalize()).expect("MD5 digest fits Blowfish"))
     }
     pub fn encode(&self, msg: &Message) -> io::Result<Vec<u8>> {
+        let mut frame = Vec::new();
+        self.encode_into(msg, &mut frame)?;
+        Ok(frame)
+    }
+
+    /// Append a length-prefixed encrypted frame to an existing send buffer.
+    /// An invalid frame leaves the caller's buffer intact.
+    pub fn encode_into(&self, msg: &Message, frame: &mut Vec<u8>) -> io::Result<()> {
         if msg.body.len() > MAX_PAYLOAD - 2 {
             return Err(invalid("oversized message"));
         }
@@ -509,25 +517,36 @@ impl MatchCipher {
         if len > MAX_PAYLOAD {
             return Err(invalid("oversized encrypted frame"));
         }
-        let mut frame = Vec::with_capacity(len + 2);
+        let start = frame.len();
+        frame.reserve(len + 2);
         frame.extend((len as u16).to_be_bytes());
         frame.extend(msg.opcode.to_be_bytes());
         frame.extend(&msg.body);
-        frame.resize(len + 2, 0);
-        for block in frame[2..].as_chunks_mut::<8>().0 {
+        frame.resize(start + len + 2, 0);
+        for block in frame[start + 2..].as_chunks_mut::<8>().0 {
             self.0.encrypt_block(block.into());
         }
-        Ok(frame)
+        Ok(())
     }
     pub fn decode(&self, payload: &[u8]) -> io::Result<Message> {
-        if payload.is_empty() || payload.len() > MAX_PAYLOAD || !payload.len().is_multiple_of(8) {
+        if payload.len() > MAX_PAYLOAD {
             return Err(invalid("invalid encrypted frame length"));
         }
-        let mut plain = payload.to_vec();
+        self.decode_owned(payload.to_vec())
+    }
+
+    /// Reuse the transport's received allocation for the decrypted body.
+    pub fn decode_owned(&self, mut plain: Vec<u8>) -> io::Result<Message> {
+        if plain.is_empty() || plain.len() > MAX_PAYLOAD || !plain.len().is_multiple_of(8) {
+            return Err(invalid("invalid encrypted frame length"));
+        }
         for block in plain.as_chunks_mut::<8>().0 {
             self.0.decrypt_block(block.into());
         }
-        Message::from_plain(&plain)
+        let opcode = u16::from_be_bytes([plain[0], plain[1]]);
+        plain.copy_within(2.., 0);
+        plain.truncate(plain.len() - 2);
+        Ok(Message::new(opcode, plain))
     }
 }
 
