@@ -72,11 +72,16 @@ impl Shop {
         let mut shop = Self::default();
         for item in BasicItem::VALUES {
             let (id, stat) = item.descriptor();
-            let row = data
-                .items
-                .iter()
-                .find(|v| v.id == id)
-                .ok_or_else(|| format!("missing item {id}"))?;
+            let Some(row) = data.items.iter().find(|v| v.id == id) else {
+                if matches!(item, BasicItem::HeavySteel | BasicItem::SixSins) {
+                    shop.0[item as usize] = Offer {
+                        price: 0,
+                        bonus: 0.,
+                    };
+                    continue;
+                }
+                return Err(format!("missing item {id}"));
+            };
             let price = row
                 .cost_a
                 .filter(|n| *n > 0)
@@ -100,6 +105,9 @@ impl World {
     }
     pub(super) fn buy(&mut self, i: usize, item: BasicItem) -> Result<(), &'static str> {
         let offer = self.shop.0[item as usize];
+        if offer.price == 0 {
+            return Err("item unavailable");
+        }
         let h = &mut self.entities[i];
         if h.kind != Kind::Hero || h.position.dist(base(h.team)) > 3. {
             return Err("outside base shop");
