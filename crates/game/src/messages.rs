@@ -4,6 +4,8 @@ use halcyon_protocol::Message;
 use halcyon_sim::{Entity, World};
 use uuid::Uuid;
 
+pub(super) const GUEST_HANDLE: &str = "Guest";
+
 pub fn wire_id(id: u32) -> u16 {
     u16::try_from(1499 + id).unwrap_or(0xffff)
 }
@@ -127,7 +129,7 @@ pub fn snapshot(world: &World, players: &[Uuid], picks: &[Pick]) -> Message {
             r[16] = e.team + 1;
             r[19..21].copy_from_slice(&wire_id(e.id).to_be_bytes());
             if let Some(uuid) = players.get(idx) {
-                put_text(&mut r[25..57], "Guest");
+                put_text(&mut r[25..57], GUEST_HANDLE);
                 put_text(&mut r[105..141], &uuid.to_string());
             } else {
                 put_text(&mut r[25..57], &format!("{} Bot", pick.name));
@@ -212,7 +214,7 @@ pub(super) fn info(
     } else if bot {
         p.name.clone()
     } else {
-        "Guest".into()
+        GUEST_HANDLE.into()
     };
     put_text(&mut b[..64], &name);
     if full {

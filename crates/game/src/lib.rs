@@ -1180,6 +1180,7 @@ impl Room {
                     out = if solo_scene {
                         scene::solo_opening(self, i)?
                     } else {
+                        scene::announce_aral_entry(self, i, &m);
                         aral::opening(self, team)
                     };
                     out.push(Message::new(0x046e, [0; 6]));

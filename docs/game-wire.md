@@ -259,3 +259,18 @@ The Android reader sizes and the independent Windows formatter research agree on
 Every duration change (0441), cancellation (0445) and timeout (0446) above matches a previously observed target and instance in its own stream. In one steady ARAL sequence, 043E carried target/source 1501, instance 4992, definition 689 and duration bits 0x4800. The later 0441 carried the same target and instance with f32 value 8.0. A separate application carried target 5131, source 1502, instance 5133 and duration bits 0xBC00. The subsequent 0445 identified target 5131 and instance 5133. These examples establish the join key. Deriving a specific ability effect or assigning a meaning to negative duration requires further evidence.
 
 The longer archive forms have six and four bytes beyond the respective native formatter layouts. All those suffixes in these two corpora were zero. The reader and checked constructor preserve any suffix bytes supplied for the observed lengths, including nonzero bytes. The archive producer build remains unmatched; no equivalence between the long records and the shorter formatter's runtime behavior follows from the common prefix. Repeated VGR chunk snapshots can carry the same instance.
+
+
+## ARAL peer scene entry
+
+All 18 captured `0x03ED` messages name another roster member. The first
+64 bytes carry the same handle as that member's declaration. The two
+big-endian words at +64 and +68 identify the zero-based seat and its hero
+actor. Each is immediately followed by a zero `0x046E` and a `0x0471` for
+that same actor. The receiving seat had already completed its own scene
+request in all 18 cases. Sixteen notifications preceded the start action.
+The final registration byte was 1 in sixteen cases and 0 in two; both
+appear before and after start. The host relays the supported authenticated
+flag-1 scene entry to the other ARAL seats whose own hero registration has
+been written. The encrypted six-seat test checks the order, handle, seat
+and registered actor for five successive arrivals.

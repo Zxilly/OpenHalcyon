@@ -9,11 +9,11 @@ The host paths are in [room dispatch](../crates/game/src/lib.rs), [transport](..
 | Opcode | Frames | Path | Action and emitted scope |
 |---|---:|:---:|---|
 | `0000` | 1,175 | E | Session clock |
-| `03E8` | 16 | U | UUID field; original server-side purpose unresolved |
+| `03E8` | 16 | U | Another declared roster member’s UUID in all 16 samples. The triggering event is unresolved |
 | `03E9` | 9 | H | Actor and mode settings |
 | `03EA` | 10 | U | Word |
 | `03EC` | 6 | U | Word |
-| `03ED` | 18 | U | Word and handle |
+| `03ED` | 18 | H | Other ARAL seat entering an already registered peer’s scene |
 | `03EE` | 84 | H | Participant declarations at load or restore |
 | `03EF` | 7 | H | ActionStartMatch · Room start or readiness confirmation |
 | `03F1` | 9 | A | ActionEndMatch · Natural crystal or ARAL surrender result; also historical non-ARAL draft synchronization form |

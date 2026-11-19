@@ -40,6 +40,36 @@ impl Preamble {
     }
 }
 
+/// An ARAL connection already in the scene can observe another seat joining it.
+pub(super) fn announce_aral_entry(room: &Room, entering: usize, registration: &Message) {
+    let mut recipients = room
+        .seats
+        .iter()
+        .enumerate()
+        .filter(|(index, seat)| {
+            *index != entering && seat.world_actor_written && seat.preamble.scene_requested()
+        })
+        .filter_map(|(_, seat)| seat.peers[0].as_ref())
+        .peekable();
+    if recipients.peek().is_none() {
+        return;
+    }
+    let mut handle = [0; 78];
+    let name = messages::GUEST_HANDLE.as_bytes();
+    handle[..name.len()].copy_from_slice(name);
+    handle[64..68].copy_from_slice(&(entering as u32).to_be_bytes());
+    let actor = messages::wire_id(room.world.entities[entering].id);
+    handle[68..72].copy_from_slice(&u32::from(actor).to_be_bytes());
+    let batch = super::transport::TeamBatch::new(vec![
+        Message::new(0x03ed, handle),
+        Message::new(0x046e, [0; 6]),
+        registration.clone(),
+    ]);
+    for peer in recipients {
+        peer.send(super::transport::Delivery::Team(batch.clone()));
+    }
+}
+
 pub(super) fn players(room: &Room) -> impl Iterator<Item = Message> {
     (0..room.picks.len()).map(|i| messages::info(&room.world, &room.players, &room.picks, i, true))
 }
@@ -125,6 +155,7 @@ pub(super) fn initial_structures(room: &mut Room) {
         }
     }
     if !batch.is_empty() {
+        room.tower_views[0].declarations(&batch);
         peer.send(super::transport::Delivery::Private(batch));
     }
 }

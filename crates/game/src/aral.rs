@@ -90,7 +90,8 @@ pub(super) fn roster(room: &Room, remaining: f32, private: bool) -> Message {
             row[17..19].copy_from_slice(&actor.type_id.to_be_bytes());
             row[19..21].copy_from_slice(&messages::wire_id(actor.id).to_be_bytes());
             row[21..25].copy_from_slice(&pick.skin.to_be_bytes());
-            row[25..30].copy_from_slice(b"Guest");
+            row[25..25 + messages::GUEST_HANDLE.len()]
+                .copy_from_slice(messages::GUEST_HANDLE.as_bytes());
             if !private {
                 row[105..141].copy_from_slice(player.to_string().as_bytes());
             }
@@ -504,6 +505,23 @@ mod tests {
         }
         for (index, socket) in clients.iter_mut().enumerate() {
             request_scene(socket, &cipher, 1500 + index as u32, true).await;
+        }
+        // The first socket had entered before the other five made their requests.
+        for seat in 1..SEATS {
+            let actor = 1500 + seat as u32;
+            let handle = until(&mut clients[0], &cipher, 0x03ed).await;
+            assert!(
+                matches!(handle.fields().unwrap(), Fields::HandleRecord {text:b"Guest", field64,lookup, ..}
+                if field64 == seat as u32 && lookup == actor)
+            );
+            assert_eq!(
+                next(&mut clients[0], &cipher).await,
+                Message::new(0x046e, [0; 6])
+            );
+            let confirmation = next(&mut clients[0], &cipher).await;
+            assert_eq!(confirmation.opcode, 0x0471);
+            assert_eq!(confirmation.body[..4], actor.to_be_bytes());
+            assert_eq!(confirmation.body[4..], [1, 0]);
         }
         assert_eq!(rooms.detail(room_id).unwrap()["phase"], "loading");
         for socket in clients.iter_mut().take(5) {
