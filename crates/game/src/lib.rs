@@ -812,12 +812,13 @@ impl Room {
                 continue;
             }
             out.push(point_move::full_spawn(
+                &self.world,
                 e,
                 &self.picks,
                 self.data.as_deref(),
                 self.legacy_aral(),
             ));
-            messages::append_inventory(&mut out, e);
+            messages::append_inventory(&mut out, &self.world, e);
         }
         out.extend(self.recommended_paths(team));
         out
@@ -1337,7 +1338,7 @@ impl Room {
                         };
                         let Some(message) = message else { continue };
                         out.push(message);
-                        messages::append_inventory(&mut out, e);
+                        messages::append_inventory(&mut out, &self.world, e);
                     }
                     current.insert(e.id);
                 }
@@ -1345,6 +1346,12 @@ impl Room {
             for ev in events {
                 result_frames::append_postgame(&mut out, ev, postgame);
                 if let Event::Purchase(receipt) = ev {
+                    if legacy_aral
+                        && current.contains(&receipt.actor)
+                        && !previous.contains(&receipt.actor)
+                    {
+                        continue;
+                    }
                     if current.contains(&receipt.actor)
                         || fallen.contains(&receipt.actor) && previous.contains(&receipt.actor)
                     {
@@ -1358,6 +1365,9 @@ impl Room {
                     continue;
                 }
                 if let Event::GoldAward { id, amount } = ev {
+                    if legacy_aral && current.contains(id) && !previous.contains(id) {
+                        continue;
+                    }
                     if current.contains(id) || fallen.contains(id) && previous.contains(id) {
                         out.push(Message::entity_stat(wire_id(*id), *amount as f32, 6));
                     }

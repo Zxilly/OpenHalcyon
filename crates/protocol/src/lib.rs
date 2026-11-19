@@ -18,6 +18,7 @@ pub use statistics::{
 mod aral;
 pub use aral::AralRoster;
 mod abilities;
+mod gold;
 mod live;
 pub use live::LiveFields;
 mod metadata;

@@ -234,14 +234,18 @@ pub(super) fn item_grant(actor: u32, item: u32, instance: u32) -> Message {
         .concat(),
     )
 }
-pub(super) fn append_inventory(out: &mut Vec<Message>, entity: &Entity) {
+pub(super) fn append_inventory(out: &mut Vec<Message>, world: &World, entity: &Entity) {
     let actor = u32::from(wire_id(entity.id));
-    out.extend(
-        entity
-            .inventory
-            .iter()
-            .map(|held| item_grant(actor, held.kind.template(), held.instance)),
-    );
+    for held in &entity.inventory {
+        out.push(item_grant(actor, held.kind.template(), held.instance));
+        // HP, max energy, armor, shield and weapon power already include
+        // equipment in the full declaration. Restore the remaining modifiers.
+        for (stat, bonus) in world.item_bonuses(held.kind) {
+            if matches!(stat, 3 | 5 | 15 | 25) {
+                out.push(modifier(actor, stat, bonus));
+            }
+        }
+    }
 }
 pub(super) fn append_purchase(
     out: &mut Vec<Message>,
@@ -259,17 +263,19 @@ pub(super) fn append_purchase(
     if !include_item_changes {
         return;
     }
-    if let Some(used) = receipt.consumed {
-        let (stat, bonus) = world.item_bonus(used.kind);
-        out.push(modifier(actor, stat, -bonus));
+    for used in &receipt.consumed {
+        for (stat, bonus) in world.item_bonuses(used.kind) {
+            out.push(modifier(actor, stat, -bonus));
+        }
         let mut body = [actor.to_be_bytes(), used.instance.to_be_bytes()].concat();
         body.extend(1u16.to_be_bytes());
         out.push(Message::new(0x44b, body));
     }
     let granted = receipt.granted;
     out.push(item_grant(actor, granted.kind.template(), granted.instance));
-    let (stat, bonus) = world.item_bonus(granted.kind);
-    out.push(modifier(actor, stat, bonus));
+    for (stat, bonus) in world.item_bonuses(granted.kind) {
+        out.push(modifier(actor, stat, bonus));
+    }
 }
 
 pub(super) fn modifier(actor: u32, stat: u8, value: f32) -> Message {

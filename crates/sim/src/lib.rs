@@ -19,7 +19,7 @@ pub use native_learn::{known_native_learn_operand, native_learn_operand, native_
 use score::DamageSchool;
 pub use score::{PlayerScore, TeamScore};
 use serde::{Deserialize, Serialize};
-pub use shop::{BasicItem, HeldItem, Purchase};
+pub use shop::{BasicItem, HeldItem, ItemStats, Purchase};
 
 /// Different simulation sources or content packs receive distinct federation queue keys.
 pub fn rules_digest(data: Option<&GameData>) -> String {
@@ -253,6 +253,7 @@ pub struct Entity {
     pub xp: f32,
     pub skill_points: u8,
     pub inventory: Vec<HeldItem>,
+    pub item_stats: ItemStats,
     #[serde(skip)]
     bonus_hp: f32,
     pub ability_ranks: [u8; 3],
@@ -596,6 +597,7 @@ impl World {
             gold: starting_gold,
             bot,
             inventory: Vec::new(),
+            item_stats: ItemStats::default(),
             bonus_hp: 0.,
             level: 1,
             xp: 0.,
@@ -784,6 +786,9 @@ impl World {
             }
         }
         if self.tick.is_multiple_of(TICK_HZ) {
+            if matches!(self.layout, Layout::Aral { .. }) {
+                self.aral_passive_gold(events);
+            }
             self.update_rally();
         }
         let n = self.entities.len();
@@ -812,6 +817,7 @@ impl World {
             }
             if e.kind == Kind::Hero {
                 e.energy = (e.energy
+                    + e.item_stats.energy_regen / TICK_HZ as f32
                     + if self.layout.at_base(e, false) {
                         1.2
                     } else {
@@ -937,10 +943,19 @@ impl World {
                     };
                     let haste = e.status.haste_until > self.tick;
                     let crystal = e.kind == Kind::Crystal;
+                    // Karas's 4.13 basic-attack coefficient is explicitly named in official_rules.
+                    let karas_crystal = if e.type_id == 926 {
+                        e.item_stats.crystal * self.abilities.karas_basic_crystal_ratio * 100.
+                            / (100. + t.stats.shield)
+                    } else {
+                        0.
+                    };
                     let ranged = e.kind == Kind::Hero && e.stats.range >= 4.;
                     let travel = (e.position.dist(t.position) * TICK_HZ as f32 / 18.).ceil() as u64;
+                    let interval =
+                        (if haste { 10.0 } else { 17.0 }) / (1. + e.item_stats.attack_speed);
                     self.entities[i].winding = None;
-                    self.entities[i].next_attack = self.tick + if haste { 10 } else { 17 };
+                    self.entities[i].next_attack = self.tick + interval.ceil() as u64;
                     self.entities[i].status.empowered =
                         self.entities[i].status.empowered.saturating_sub(1);
                     events.push(Event::Attack { source, target: id });
@@ -959,6 +974,27 @@ impl World {
                         ));
                     } else {
                         self.hurt(source, team, j, damage, school, events);
+                    }
+                    if karas_crystal > 0. {
+                        if ranged {
+                            self.effects.push(SpellEffect::impact(
+                                self.tick + travel,
+                                source,
+                                team,
+                                id,
+                                karas_crystal,
+                                DamageSchool::Crystal,
+                            ));
+                        } else {
+                            self.hurt(
+                                source,
+                                team,
+                                j,
+                                karas_crystal,
+                                DamageSchool::Crystal,
+                                events,
+                            );
+                        }
                     }
                     if self.winner.is_some() {
                         break;

@@ -538,7 +538,7 @@ mod tests {
         };
         r.world.entities[i].gold = 2000;
         let first = r.world.purchase(id, BasicItem::WeaponBlade).unwrap();
-        r.replicate(&[Event::Purchase(first)]);
+        r.replicate(&[Event::Purchase(first.clone())]);
         let batch = ally.try_recv().unwrap().into_records();
         assert_eq!(
             batch.iter().map(|m| m.opcode).collect::<Vec<_>>(),
@@ -548,7 +548,7 @@ mod tests {
         assert!(enemy.try_recv().is_err());
         r.visible[0].remove(&id);
         let second = r.world.purchase(id, BasicItem::LightArmor).unwrap();
-        let events = [Event::Purchase(second), Event::GoldAward { id, amount: 25 }];
+        let events = [Event::Purchase(second.clone()), Event::GoldAward { id, amount: 25 }];
         r.replicate(&events);
         let batch = ally.try_recv().unwrap().into_records();
         let expected = [first.granted.instance, second.granted.instance];

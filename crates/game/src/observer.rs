@@ -217,7 +217,13 @@ impl Room {
             return;
         }
         let mut out = vec![];
-        let postgame = crate::result_frames::aral_lost_crystal(self.legacy_aral(), &self.world);
+        let aral = self.legacy_aral();
+        let postgame = crate::result_frames::aral_lost_crystal(aral, &self.world);
+        let spawned = |actor| {
+            events
+                .iter()
+                .any(|e| matches!(e,Event::Spawn{id} if *id==actor))
+        };
         for ev in events {
             crate::result_frames::append_postgame(&mut out, ev, postgame);
             match *ev {
@@ -226,17 +232,27 @@ impl Room {
                 }
                 Event::Spawn { id } => {
                     if let Some(e) = self.world.entities.iter().find(|e| e.id == id) {
-                        out.push(spawn(e, &self.picks, self.data.as_deref()));
-                        super::messages::append_inventory(&mut out, e);
+                        out.push(super::point_move::full_spawn(
+                            &self.world,
+                            e,
+                            &self.picks,
+                            self.data.as_deref(),
+                            aral,
+                        ));
+                        super::messages::append_inventory(&mut out, &self.world, e);
                     }
                 }
-                Event::Purchase(receipt) => {
-                    let respawned = events
-                        .iter()
-                        .any(|e| matches!(e,Event::Spawn{id} if *id==receipt.actor));
-                    super::messages::append_purchase(&mut out, &self.world, &receipt, !respawned);
+                Event::Purchase(ref receipt) => {
+                    let respawned = spawned(receipt.actor);
+                    if aral && respawned {
+                        continue;
+                    }
+                    super::messages::append_purchase(&mut out, &self.world, receipt, !respawned);
                 }
                 Event::GoldAward { id, amount } => {
+                    if aral && spawned(id) {
+                        continue;
+                    }
                     out.push(Message::entity_stat(wire_id(id), amount as f32, 6))
                 }
                 _ => {
@@ -336,7 +352,7 @@ mod tests {
                 .unwrap();
             r.tick_observers(&[
                 Event::Spawn { id: 2 },
-                Event::Purchase(receipt),
+                Event::Purchase(receipt.clone()),
                 Event::GoldAward { id: 2, amount: 17 },
             ]);
             let batch = rx.try_recv().unwrap();

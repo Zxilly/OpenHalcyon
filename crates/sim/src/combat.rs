@@ -92,6 +92,7 @@ pub(super) struct AbilityBook {
     strike_dmg: f32,
     strike_hits: u8,
     chakram_weapon_ratio: f32,
+    pub(super) karas_basic_crystal_ratio: f32,
 }
 impl Default for AbilityBook {
     fn default() -> Self {
@@ -108,6 +109,7 @@ impl Default for AbilityBook {
             strike_dmg: 200.,
             strike_hits: 3,
             chakram_weapon_ratio: 0.8,
+            karas_basic_crystal_ratio: 0.6,
         }
     }
 }
@@ -135,6 +137,7 @@ impl AbilityBook {
         };
         Ok(Self {
             chakram_weapon_ratio: num("Idris", "B_weapon_ratio")?,
+            karas_basic_crystal_ratio: num("Karas", "basic_crystal_ratio").unwrap_or(0.6),
             gift_cd: five("Adagio", "cooldown_s")?,
             gift_hp: num("Adagio", "burst_heal_health_ratio")?,
             empower: five("Adagio", "empowered_attacks")?,
@@ -315,7 +318,8 @@ impl World {
         } else {
             e.energy -= rule.cost;
         }
-        e.cooldown[c.slot.idx()] = self.tick + rule.cooldown;
+        e.cooldown[c.slot.idx()] =
+            self.tick + (rule.cooldown as f32 / (1. + e.item_stats.cooldown)).ceil() as u64;
         let src = e.id;
         let team = e.team;
         let origin = e.position;

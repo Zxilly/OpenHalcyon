@@ -135,7 +135,7 @@ impl WaveSlots {
             return None;
         }
         if entity.kind == Kind::Hero {
-            return Some(point_move::full_spawn(entity, picks, data, true));
+            return Some(point_move::full_spawn(world, entity, picks, data, true));
         }
         if entity.kind != Kind::Minion {
             return structure(world, entity);

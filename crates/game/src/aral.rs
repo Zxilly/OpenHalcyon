@@ -112,7 +112,7 @@ pub(super) fn opening(room: &mut Room, team: Option<u8>) -> Batch {
             match actor.kind {
                 halcyon_sim::Kind::Hero => {
                     batch.push(declaration);
-                    messages::append_inventory(&mut batch, actor);
+                    messages::append_inventory(&mut batch, &room.world, actor);
                 }
                 halcyon_sim::Kind::Minion => lane_minions.push(declaration),
                 _ => map_objects.push(declaration),
@@ -137,6 +137,10 @@ pub(super) fn clock(tick: u64) -> Message {
 }
 
 #[cfg(test)]
+#[path = "aral_shop_test.rs"]
+mod shop_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::{Rooms, transport};
@@ -154,7 +158,7 @@ mod tests {
     };
     use uuid::Uuid;
 
-    async fn next(socket: &mut TcpStream, cipher: &MatchCipher) -> Message {
+    pub(super) async fn next(socket: &mut TcpStream, cipher: &MatchCipher) -> Message {
         let bytes = timeout(Duration::from_secs(3), transport::frame(socket))
             .await
             .unwrap()
@@ -162,7 +166,11 @@ mod tests {
         cipher.decode_owned(bytes).unwrap()
     }
 
-    async fn until(socket: &mut TcpStream, cipher: &MatchCipher, opcode: u16) -> Message {
+    pub(super) async fn until(
+        socket: &mut TcpStream,
+        cipher: &MatchCipher,
+        opcode: u16,
+    ) -> Message {
         timeout(Duration::from_secs(3), async {
             loop {
                 let message = next(socket, cipher).await;
@@ -226,6 +234,7 @@ mod tests {
                 assert_eq!(frame.body[745], 16 + (id - 1500) as u8);
                 declared |= id == actor;
                 if initial {
+                    assert_eq!(frame.spawn_gold(), Some((2000., 2000.)));
                     let (x, z) = pads[(id - 1500) as usize];
                     assert_eq!(frame.body[18..22], x.to_be_bytes());
                     assert_eq!(frame.body[26..30], z.to_be_bytes());
@@ -288,15 +297,20 @@ mod tests {
 
     #[tokio::test]
     async fn six_authenticated_aral_streams_cross_into_game_without_reconnect() {
-        play_six_seats(false).await;
+        play_six_seats(false, false).await;
     }
 
     #[tokio::test]
     async fn six_authenticated_seats_receive_one_result_after_a_team_surrenders() {
-        play_six_seats(true).await;
+        play_six_seats(true, false).await;
     }
 
-    async fn play_six_seats(surrender: bool) {
+    #[tokio::test]
+    async fn encrypted_aral_shop_replays_measured_components_and_reconnects() {
+        play_six_seats(false, true).await;
+    }
+
+    async fn play_six_seats(surrender: bool, shop: bool) {
         let room_id = Uuid::new_v4();
         let rooms = Rooms::new(Ipv4Addr::LOCALHOST.into(), "127.0.0.1".into(), 1, None);
         let players: Vec<_> = (0..SEATS).map(|_| Uuid::new_v4()).collect();
@@ -404,6 +418,18 @@ mod tests {
                 .iter()
                 .all(|seat| seat.world_actor_written)
         );
+        if shop {
+            super::shop_tests::shop_sequence(
+                &mut clients,
+                &cipher,
+                &rooms,
+                room_id,
+                &address,
+                players[0],
+            )
+            .await;
+            return;
+        }
         let point =
             |x: f32, z: f32| Message::new(0x03f5, [x.to_be_bytes(), z.to_be_bytes()].concat());
         for (seat, x, z) in [(0, -74.0, 0.88), (3, 75.0, -5.06), (0, -74.0, 0.88)] {
