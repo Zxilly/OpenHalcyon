@@ -1,6 +1,10 @@
 use super::*;
 use layout::point;
 
+// Slots 0, 2, 8 and 10 are presentation-only shop/beacon declarations.
+// Reserve the entire native static block; dynamic entities start at 517.
+const FIRST_STATIC_ACTOR: u32 = 501;
+
 pub(super) const PADS: [[(f32, f32); 3]; 2] = [
     [(-78.18, 0.88), (-81.81, 1.97), (-77.03, -1.94)],
     [(79.66, -0.91), (78.6, -5.06), (83.22, 0.72)],
@@ -81,27 +85,22 @@ impl World {
         self.layout = Layout::Aral {
             hero_starts: starts,
         };
-        for e in &mut self.entities {
-            let (s, p) = match e.kind {
-                Kind::Hero => {
-                    e.position = self.layout.home(e);
-                    continue;
-                }
-                Kind::Crystal => (
-                    self.aral_units.0[3 + usize::from(e.team)],
-                    self.layout.objective(e.team),
-                ),
-                Kind::Tower => (self.aral_units.0[5], point(e.team, 17.06, 1.93)),
-                Kind::Minion => continue,
-            };
-            e.position = p;
-            e.type_id = s.id;
-            e.max_hp = s.hp;
-            e.hp = s.hp;
-            e.stats = s;
+        self.entities.retain(|actor| actor.kind == Kind::Hero);
+        for hero in &mut self.entities {
+            hero.position = self.layout.home(hero);
         }
         for team in 0..2 {
-            for (_, template, x, z) in TOWERS[..4].iter().copied() {
+            let first = FIRST_STATIC_ACTOR + u32::from(team) * 8;
+            self.next_id = first + 1;
+            self.spawn_with_stats(
+                team,
+                Kind::Crystal,
+                self.aral_units.0[3 + usize::from(team)],
+                self.layout.objective(team),
+                false,
+            );
+            for (slot, template, x, z) in TOWERS {
+                self.next_id = first + u32::from(slot);
                 let stats = self.aral_units.0[if template == 300 { 5 } else { 6 }];
                 self.spawn_with_stats(team, Kind::Tower, stats, point(team, x, z), false);
             }
@@ -113,20 +112,9 @@ impl World {
         if !matches!(self.layout, Layout::Aral { .. }) {
             return None;
         }
-        let e = &self.entities[self.index(actor)?];
-        let slot = match e.kind {
-            Kind::Crystal => 1,
-            Kind::Tower => {
-                TOWERS
-                    .iter()
-                    .find(|(_, template, x, z)| {
-                        e.type_id == *template && e.position == point(e.team, *x, *z)
-                    })?
-                    .0
-            }
-            _ => return None,
-        };
-        Some(slot + e.team * 8)
+        let slot = actor.checked_sub(FIRST_STATIC_ACTOR)?;
+        let kind = self.entities[self.index(actor)?].kind;
+        (slot < 16 && matches!(kind, Kind::Crystal | Kind::Tower)).then_some(slot as u8)
     }
 
     pub(super) fn is_outer_tower(&self, actor: &Entity) -> bool {
@@ -197,6 +185,16 @@ mod tests {
         let mut w = lane();
         w.use_aral_lane().unwrap();
         assert_eq!(w.entities.len(), 18);
+        assert!(w.entities.is_sorted_by(|left, right| left.id < right.id));
+        let sim_slots: Vec<_> = w.entities[6..]
+            .iter()
+            .map(|e| e.id - FIRST_STATIC_ACTOR)
+            .collect();
+        assert_eq!(sim_slots, [1, 3, 4, 5, 6, 7, 9, 11, 12, 13, 14, 15]);
+        for slot in [0, 2, 8, 10] {
+            assert!(w.index(FIRST_STATIC_ACTOR + slot).is_none());
+        }
+        assert_eq!(w.next_id, 517);
         for team in [0, 1] {
             let positions: Vec<_> = w.entities[..6]
                 .iter()
@@ -233,6 +231,7 @@ mod tests {
                     && let Some(i) = w.index(id)
                 {
                     let e = &w.entities[i];
+                    assert!(id >= 517);
                     if e.kind == Kind::Minion && e.team == 0 {
                         assert!(e.position.dist(point(0, 71.28, 12.93)) < 0.2);
                         rows.push((w.tick / TICK_HZ, e.type_id));

@@ -41,11 +41,24 @@ The full hero declaration carries these X/Z coordinates from the simulator,
 team height 1.2973974 or 1.7773974, and actor-order slots 16–21.
 Movement requests and authoritative updates share these world coordinates.
 
-The initial scene sends the simulator's two crystals and ten towers in
-0x03F2 before 0x03EF. Slots 1 and 9 use crystals 292 and 293. Slots
-3–7 and 11–15 use tower templates 300/301. Their positions and health come
-from the simulated actors. Shop and beacon slots 0, 2, 8, and 10 are
-unused by this model. Running rejoin obeys the existing team view.
+The initial scene sends 16 map objects in 0x03F2 before 0x03EF. Slots
+1 and 9 use crystals 292 and 293. Slots 3–7 and 11–15 use tower templates
+300/301. Their positions and health come from the simulated actors.
+Shops are template 314 in slots 0 and 8. Beacons are template 298 in slots
+2 and 10. The four scenery records are stable on rejoin, where simulated
+actors still obey the team view.
+
+All 112 static declarations across seven matches use actor ID
+2000 + slot, in descending slot order. The room reserves that entire
+actor range and starts dynamic allocation after it. Shops and beacons
+are presentation-only. They do not take damage, grant buffs or vision,
+or alter purchase authorization.
+
+Successful purchase records include the request acknowledgement,
+a gold debit and an item grant from hero pads 9.02–12.13 units away from
+the visual shop. The captures do not establish a shop-centered purchase
+radius. The server checks its existing ARAL home-pad purchase zone in
+the authoritative transaction.
 
 Across the seven captures, 784 first wave-minion declarations use mask 1,
 routes 0/1, and the observed templates 287–289. All omit numeric HP
@@ -60,7 +73,7 @@ stays unavailable. Capacity exhaustion defers the declaration and associated
 updates, while the actor remains in the simulation.
 
 A six-client Rust socket test verifies the measured pad declarations,
-the set of compact structure slots, authenticated readiness and point
+all 16 compact map slots, authenticated readiness and point
 acknowledgement, actual motion in those coordinates, and a rejoining seat.
 The terrain and server-side replication are a supported subset. Rendering
 of the new scene and wave packets on the original client remains unverified.

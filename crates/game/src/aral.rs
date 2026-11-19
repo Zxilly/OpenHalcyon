@@ -95,6 +95,8 @@ pub(super) fn opening(room: &mut Room, team: Option<u8>) -> Batch {
     batch.push(messages::scene_mode(&room.queue, 0));
     batch.extend(crate::scene::players(room));
     batch.push(clock(room.world.tick));
+    let mut map_objects: Vec<_> = super::aral_spawn::scenery().collect();
+    let mut lane_minions = Vec::new();
     for actor in &room.world.entities {
         if actor.hp <= 0.0 || team.is_some_and(|side| !room.world.visible(side, actor)) {
             continue;
@@ -107,10 +109,19 @@ pub(super) fn opening(room: &mut Room, team: Option<u8>) -> Batch {
             team.unwrap_or(actor.team),
             false,
         ) {
-            batch.push(declaration);
-            messages::append_inventory(&mut batch, actor);
+            match actor.kind {
+                halcyon_sim::Kind::Hero => {
+                    batch.push(declaration);
+                    messages::append_inventory(&mut batch, actor);
+                }
+                halcyon_sim::Kind::Minion => lane_minions.push(declaration),
+                _ => map_objects.push(declaration),
+            }
         }
     }
+    map_objects.sort_unstable_by_key(|m| std::cmp::Reverse(m.body[116]));
+    batch.extend(map_objects);
+    batch.extend(lane_minions);
     batch.extend(room.recommended_paths(team));
     batch
 }
@@ -224,14 +235,27 @@ mod tests {
                 }
             }
             if frame.opcode == 0x03f2 {
-                structures.push(frame.body[116]);
-                assert!(super::super::aral_spawn::recordable(&frame.body[..122]));
+                let slot = frame.body[116];
+                structures.push(slot);
+                assert_eq!(
+                    u32::from_be_bytes(frame.body[8..12].try_into().unwrap()),
+                    2000 + u32::from(slot)
+                );
+                assert!(crate::aral_spawn::recordable(&frame.body[..122]));
             }
         }
         assert!(declared, "own actor declaration precedes readiness");
         if initial {
-            structures.sort_unstable();
-            assert_eq!(structures, [1, 3, 4, 5, 6, 7, 9, 11, 12, 13, 14, 15]);
+            assert_eq!(structures, (0..16).rev().collect::<Vec<_>>());
+        } else {
+            assert!(structures.is_sorted_by(|left, right| left > right));
+            assert_eq!(
+                structures
+                    .into_iter()
+                    .filter(|slot| matches!(slot, 0 | 2 | 8 | 10))
+                    .collect::<Vec<_>>(),
+                [10, 8, 2, 0]
+            );
         }
         assert_eq!(next(socket, cipher).await.opcode, request.opcode);
     }
@@ -523,7 +547,7 @@ mod tests {
             let death = until(socket, &cipher, 0x0430).await;
             assert_eq!(
                 u32::from_be_bytes(death.body[..4].try_into().unwrap()),
-                1512
+                2009
             );
             let message = until(socket, &cipher, 0x048d).await;
             let Fields::MatchStatistics(report) = message.fields().unwrap() else {

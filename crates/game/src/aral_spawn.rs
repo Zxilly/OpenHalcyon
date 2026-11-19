@@ -48,6 +48,56 @@ pub(super) fn structure(world: &World, entity: &Entity) -> Option<Message> {
     Some(Message::new(0x03f2, body))
 }
 
+/// Fixed map scenery. These actors have no simulation, vision, or economic effect.
+pub(super) fn scenery() -> impl Iterator<Item = Message> {
+    [0, 2, 8, 10]
+        .into_iter()
+        .filter_map(scenery_body)
+        .map(|body| Message::new(0x03f2, body))
+}
+
+fn scenery_body(slot: u8) -> Option<[u8; 122]> {
+    let (template, position, direction, hp) = match slot {
+        0 => (
+            314u32,
+            [-88.5, 0.89, 2.0],
+            [0.766_044_44, 0.0, -0.642_787_64],
+            868.0,
+        ),
+        8 => (314, [88.565, 1.8, 0.51], [0.0, 0.0, 1.0], 868.0),
+        2 => (298, [-76.12, 0.0, 19.9], [0.0, 0.0, 1.0], 9999.0),
+        10 => (
+            298,
+            [76.12, 0.1, 19.9],
+            [0.104_528_464, -0.0, 0.994_521_9],
+            9999.0,
+        ),
+        _ => return None,
+    };
+    let team = slot / 8;
+    let mut body = [0; 122];
+    body[..4].copy_from_slice(&template.to_be_bytes());
+    body[4..8].copy_from_slice(&STRUCTURE_SKIN.to_be_bytes());
+    body[8..12].copy_from_slice(&(2000 + u32::from(slot)).to_be_bytes());
+    floats(&mut body, 12, position);
+    floats(&mut body, 24, direction);
+    floats(&mut body, 36, [hp, hp]);
+    floats(&mut body, 84, [12.0]);
+    body[88..96].fill(1);
+    if template == 314 {
+        floats(&mut body, 52, [2.5]);
+        floats(&mut body, 64, [1.0]);
+        body[96..104].fill(3);
+    }
+    body[97 + usize::from(team)] = 15;
+    body[112..116].fill(255);
+    body[116] = slot;
+    body[119] = 1;
+    body[120] = 255;
+    body[121] = team + 1;
+    Some(body)
+}
+
 const FIRST_WAVE_SLOT: usize = 22;
 const WAVE_SLOTS: usize = 200 - FIRST_WAVE_SLOT;
 
@@ -156,12 +206,16 @@ pub(super) fn recordable(body: &[u8]) -> bool {
         return false;
     }
     let template = u32::from_be_bytes(body[..4].try_into().unwrap());
+    if matches!(template, 298 | 314) {
+        return scenery_body(body[116]).is_some_and(|scenery| body == scenery);
+    }
     match (template, &body[116..122]) {
         (292, [1, 0, 0, 1, 255, 1])
         | (293, [9, 0, 0, 1, 255, 2])
         | (300, [5..=7, 0, 0, 1, 255, 1] | [13..=15, 0, 0, 1, 255, 2])
         | (301, [3..=4, 0, 0, 1, 255, 1] | [11..=12, 0, 0, 1, 255, 2]) => {
             body[4..8] == STRUCTURE_SKIN.to_be_bytes()
+                && body[8..12] == (2000 + u32::from(body[116])).to_be_bytes()
         }
         (287..=289, [22..=199, 1, 0, 2..=4, 0, 1] | [22..=199, 1, 0, 2..=4, 1, 2]) => {
             body[4..8] == MINION_SKIN.to_be_bytes() && body[36..88] == [0; 52]
@@ -193,7 +247,12 @@ fn base(entity: &Entity, skin: u32, slot: u8) -> [u8; 122] {
 }
 
 fn floats<const N: usize>(body: &mut [u8], offset: usize, values: [f32; N]) {
-    for (word, value) in body[offset..offset + N * 4].chunks_exact_mut(4).zip(values) {
+    for (word, value) in body[offset..offset + N * 4]
+        .as_chunks_mut::<4>()
+        .0
+        .iter_mut()
+        .zip(values)
+    {
         word.copy_from_slice(&value.to_be_bytes());
     }
 }
@@ -201,6 +260,36 @@ fn floats<const N: usize>(body: &mut [u8], offset: usize, values: [f32; N]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fixed_scenery_encodes_only_the_observed_profiles() {
+        let messages: Vec<_> = scenery().collect();
+        assert_eq!(messages.len(), 4);
+        for (message, (slot, template, position, hp)) in messages.into_iter().zip([
+            (0, 314u32, [-88.5_f32, 0.89, 2.0], 868.0_f32),
+            (2, 298, [-76.12, 0.0, 19.9], 9999.0),
+            (8, 314, [88.565, 1.8, 0.51], 868.0),
+            (10, 298, [76.12, 0.1, 19.9], 9999.0),
+        ]) {
+            let mut b = message.body;
+            assert_eq!(message.opcode, 0x03f2);
+            assert!(recordable(&b));
+            assert_eq!(b[..4], template.to_be_bytes());
+            assert_eq!(b[8..12], (2000 + u32::from(slot)).to_be_bytes());
+            assert_eq!(
+                b[12..24],
+                position
+                    .into_iter()
+                    .flat_map(f32::to_be_bytes)
+                    .collect::<Vec<_>>()
+            );
+            assert_eq!(b[36..40], hp.to_be_bytes());
+            assert_eq!(b[40..44], hp.to_be_bytes());
+            assert_eq!(b[116..122], [slot, 0, 0, 1, 255, slot / 8 + 1]);
+            b[11] ^= 1;
+            assert!(!recordable(&b));
+        }
+    }
 
     #[test]
     fn pristine_wave_uses_compact_and_damaged_snapshot_keeps_the_same_slot() {
