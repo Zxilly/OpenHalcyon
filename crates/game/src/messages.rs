@@ -287,6 +287,15 @@ pub(super) fn modifier(actor: u32, stat: u8, value: f32) -> Message {
 /// may already have left the post-step visibility set.
 fn combat_event(event: &halcyon_sim::Event, visible: impl Fn(u32) -> bool) -> Option<Message> {
     use halcyon_sim::Event;
+    if let Event::Level { id, .. } = *event {
+        if !visible(id) {
+            return None;
+        }
+        let mut body = [0; 14];
+        body[..4].copy_from_slice(&u32::from(wire_id(id)).to_be_bytes());
+        body[4..8].copy_from_slice(&1_u32.to_be_bytes());
+        return Some(Message::new(0x0434, body));
+    }
     if let Event::Respawn { id, position } = *event {
         if !visible(id) {
             return None;
@@ -359,6 +368,29 @@ mod combat_tests {
     use super::*;
     use halcyon_protocol::Fields;
     use halcyon_sim::Event;
+    #[test]
+    fn each_visible_level_gain_uses_the_single_step_wire_operand() {
+        let mut records = vec![];
+        for level in [2, 3] {
+            let event = Event::Level { id: 4, level };
+            append_combat(&mut records, &event, |_| false);
+            append_combat(&mut records, &event, |id| id == 4);
+        }
+        assert_eq!(records.len(), 2);
+        for message in records {
+            assert_eq!(message.opcode, 0x0434);
+            assert!(matches!(
+                message.fields().unwrap(),
+                Fields::ProgressAction {
+                    actor: 1503,
+                    operand: 1,
+                    remaining: [0, 0, 0, 0, 0, 0],
+                    ..
+                }
+            ));
+        }
+    }
+
     #[test]
     fn respawn_uses_the_authoritative_actor_and_spawn_point_inside_vision() {
         let p = halcyon_sim::Position { x: 31.25, y: -4.5 };

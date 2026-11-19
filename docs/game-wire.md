@@ -58,7 +58,7 @@ The native receiver's field conversions and the local replay agree on the follow
 | 0x041A, 0x041B, 0x0441, 0x0445 | All 12 actor/key pairs from ability override records recur in clear-override records. Buff-duration and buff-cancel records share 26 actor/key pairs. All corresponding actor references occur in local spawn records. |
 | 0x042C, 0x048C | The camp visibility prefix has an actor and two bytes. All 12 referenced actors occur in local spawns. The aggro record has two leading bytes and an unaligned float at offset 2. Its first four bytes cannot generally be treated as an actor. |
 | 0x03F9, 0x03FA, 0x03FB | The native movement receivers convert three floats after a selector, two references or one actor respectively. The decoder keeps the three values in wire order. |
-| 0x0434, 0x043A | Level and grant-ability records carry an actor and a 32-bit operand. The local level samples alone cannot distinguish an increment from an absolute level. |
+| 0x0434, 0x043A | Level and grant-ability records carry an actor and a 32-bit operand. All nine Solo level records and all 209 hero level records across seven ARAL matches carry operand 1, including successive level actions on the same hero. Each authoritative simulation level gained emits one such action to viewers of that actor. The grant-ability operand is hero-specific. |
 
 ## The final 99 replay records
 
