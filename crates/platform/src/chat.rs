@@ -8,7 +8,10 @@ impl AppState {
     pub async fn local_match_contacts(&self, session: &str) -> Result<Vec<(Uuid, String)>> {
         let key = digest(session);
         self.run(move |state| {
-            let db = state.db.lock().map_err(|_| PlatformError::WorkerUnavailable)?;
+            let db = state
+                .db
+                .lock()
+                .map_err(|_| PlatformError::WorkerUnavailable)?;
             let id = player(&db, &key)?;
             let mut query = db.prepare(
                 "SELECT p.id,p.name FROM tickets mine
@@ -17,11 +20,16 @@ impl AppState {
                  JOIN players p ON p.id=peer.player
                  WHERE mine.player=? ORDER BY p.id",
             )?;
-            query.query_map(params![id], |row| Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?)))?
+            query
+                .query_map(params![id], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })?
                 .map(|row| {
                     let (id, name) = row?;
-                    Ok((parse_id(&id)?,name))
-                }).collect()
-        }).await
+                    Ok((parse_id(&id)?, name))
+                })
+                .collect()
+        })
+        .await
     }
 }
