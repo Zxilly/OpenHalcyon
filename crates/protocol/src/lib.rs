@@ -126,6 +126,86 @@ impl Message {
         };
         Ok(match self.opcode {
             0 => Fields::Clock(float(0)?),
+            0x3e9 => Fields::GameSetup {
+                first_word: number(0)?,
+                mode: b
+                    .get(32..96)
+                    .ok_or(invalid("truncated game setup"))?
+                    .split(|&v| v == 0)
+                    .next()
+                    .unwrap_or_default(),
+                remaining: &b[96..],
+            },
+            0x3f8 if matches!(b.len(), 9 | 14) => Fields::MoveAction {
+                selector: b[0],
+                x: float(1)?,
+                y: float(5)?,
+                remaining: &b[9..],
+            },
+            0x42b | 0x43e | 0x43f => Fields::EntityPrefix {
+                kind: Opcode::try_from(self.opcode).expect("matched known opcode"),
+                entity: number(0)?,
+                remaining: &b[4..],
+            },
+            0x3ed => Fields::HandleRecord {
+                text: b
+                    .get(..64)
+                    .ok_or(invalid("truncated name field"))?
+                    .split(|&v| v == 0)
+                    .next()
+                    .unwrap_or_default(),
+                field64: number(64)?,
+                lookup: number(68)?,
+                remaining: &b[72..],
+            },
+            0x46f => Fields::NameField {
+                kind: Opcode::ModeName,
+                text: b
+                    .get(..64)
+                    .ok_or(invalid("truncated name field"))?
+                    .split(|&v| v == 0)
+                    .next()
+                    .unwrap_or_default(),
+                remaining: &b[64..],
+            },
+            0x45c => {
+                let raw = b.get(..96).ok_or(invalid("truncated control entries"))?;
+                let entries = std::array::from_fn(|i| {
+                    let slot = &raw[i * 6..][..6];
+                    ControlEntry {
+                        reference: u32::from_be_bytes(slot[..4].try_into().unwrap()),
+                        gate: slot[4],
+                        flag: slot[5],
+                    }
+                });
+                Fields::ControlTable {
+                    entries,
+                    remaining: &b[96..],
+                }
+            }
+            0x471 => Fields::ReferencedFlag {
+                reference: number(0)?,
+                flag: *b.get(4).ok_or(invalid("truncated control flag"))?,
+                remaining: &b[5..],
+            },
+            0x458 | 0x46d | 0x46e | 0x470 | 0x47c => {
+                let (flag, remaining) = b.split_first().ok_or(invalid("truncated control byte"))?;
+                Fields::ControlByte {
+                    value: *flag,
+                    remaining,
+                }
+            }
+            0x3f2 if matches!(b.len(), 122 | 126) => Fields::CompactSpawn {
+                template: number(0)?,
+                skin: number(4)?,
+                entity: number(8)?,
+                remaining: &b[12..],
+            },
+            0x45a => Fields::AralRosterHeader {
+                remaining_seconds: float(0)?,
+                allotted_seconds: float(4)?,
+                remaining: &b[8..],
+            },
             0x459 => Fields::DraftRoster(DraftRoster::new(b)?),
             0x41c => Fields::StatModifier {
                 actor: number(0)?,
@@ -154,9 +234,9 @@ impl Message {
                 skin: number(4)?,
             },
             0x3f3 => Fields::Spawn {
-                template: word(2)?,
+                template: number(0)?,
                 skin: number(4)?,
-                entity: word(10)?,
+                entity: number(8)?,
                 team: number(12)?,
                 x: float(18)?,
                 height: float(22)?,
@@ -202,7 +282,65 @@ impl Message {
     }
 }
 #[derive(Debug, PartialEq)]
+pub struct ControlEntry {
+    pub reference: u32,
+    pub gate: u8,
+    pub flag: u8,
+}
+
+#[derive(Debug, PartialEq)]
 pub enum Fields<'a> {
+    GameSetup {
+        first_word: u32,
+        mode: &'a [u8],
+        remaining: &'a [u8],
+    },
+    MoveAction {
+        selector: u8,
+        x: f32,
+        y: f32,
+        remaining: &'a [u8],
+    },
+    HandleRecord {
+        text: &'a [u8],
+        field64: u32,
+        lookup: u32,
+        remaining: &'a [u8],
+    },
+    ControlTable {
+        entries: [ControlEntry; 16],
+        remaining: &'a [u8],
+    },
+    ReferencedFlag {
+        reference: u32,
+        flag: u8,
+        remaining: &'a [u8],
+    },
+    ControlByte {
+        value: u8,
+        remaining: &'a [u8],
+    },
+    EntityPrefix {
+        kind: Opcode,
+        entity: u32,
+        remaining: &'a [u8],
+    },
+    NameField {
+        kind: Opcode,
+        text: &'a [u8],
+        remaining: &'a [u8],
+    },
+    CompactSpawn {
+        template: u32,
+        skin: u32,
+        entity: u32,
+        remaining: &'a [u8],
+    },
+    AralRosterHeader {
+        remaining_seconds: f32,
+        allotted_seconds: f32,
+        remaining: &'a [u8],
+    },
     DraftRoster(DraftRoster<'a>),
     StatModifier {
         actor: u32,
@@ -231,9 +369,9 @@ pub enum Fields<'a> {
         skin: u32,
     },
     Spawn {
-        template: u16,
+        template: u32,
         skin: u32,
-        entity: u16,
+        entity: u32,
         team: u32,
         x: f32,
         height: f32,
@@ -442,6 +580,107 @@ impl<R: Read> ReplayReader<R> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn read_only_prefixes_and_compact_spawn_variants() {
+        for (code, kind) in [
+            (0x42b, Opcode::EntityState),
+            (0x43e, Opcode::EntityProp),
+            (0x43f, Opcode::EntityData),
+        ] {
+            assert_eq!(
+                Message::new(code, [0x12, 0x34, 0x56, 0x78, 0xab])
+                    .fields()
+                    .unwrap(),
+                Fields::EntityPrefix {
+                    kind,
+                    entity: 0x12345678,
+                    remaining: &[0xab]
+                }
+            );
+            assert!(Message::new(code, [0, 1, 2]).fields().is_err());
+        }
+        for size in [122, 126] {
+            let mut body = vec![0xfe; size];
+            body[..12].copy_from_slice(&[0, 1, 0, 5, 0, 2, 0, 6, 0, 3, 0, 7]);
+            assert_eq!(
+                Message::new(0x3f2, body.clone()).fields().unwrap(),
+                Fields::CompactSpawn {
+                    template: 65541,
+                    skin: 131078,
+                    entity: 196615,
+                    remaining: &body[12..]
+                }
+            );
+        }
+        assert!(matches!(
+            Message::new(0x3f2, [0; 8]).fields().unwrap(),
+            Fields::Opaque(_)
+        ));
+        let mut body = vec![0; 74];
+        body[..5].copy_from_slice(b"Guest");
+        body[64] = 10;
+        assert_eq!(
+            Message::new(0x3ed, body.clone()).fields().unwrap(),
+            Fields::HandleRecord {
+                text: b"Guest",
+                field64: 10 << 24,
+                lookup: 0,
+                remaining: &body[72..]
+            }
+        );
+        assert_eq!(
+            Message::new(0x46f, body.clone()).fields().unwrap(),
+            Fields::NameField {
+                kind: Opcode::ModeName,
+                text: b"Guest",
+                remaining: &body[64..]
+            }
+        );
+        let mut table = vec![0; 102];
+        table[90..96].copy_from_slice(&[1, 2, 3, 4, 5, 6]);
+        let msg = Message::new(0x45c, table);
+        let Fields::ControlTable { entries, remaining } = msg.fields().unwrap() else {
+            panic!()
+        };
+        assert_eq!(
+            entries[15],
+            ControlEntry {
+                reference: 0x01020304,
+                gate: 5,
+                flag: 6
+            }
+        );
+        assert_eq!(remaining, [0; 6]);
+        assert!(Message::new(0x45c, [0; 95]).fields().is_err());
+        assert_eq!(
+            Message::new(0x471, [0, 0, 0, 7, 1, 3]).fields().unwrap(),
+            Fields::ReferencedFlag {
+                reference: 7,
+                flag: 1,
+                remaining: &[3]
+            }
+        );
+        let action = Message::new(0x3f8, [5, 0x3f, 0x80, 0, 0, 0xc0, 0, 0, 0]);
+        assert_eq!(
+            action.fields().unwrap(),
+            Fields::MoveAction {
+                selector: 5,
+                x: 1.,
+                y: -2.,
+                remaining: &[]
+            }
+        );
+        let roster = Message::new(0x45a, [0x41, 0xa0, 0, 0, 0x41, 0xf0, 0, 0, 0x7f]);
+        assert_eq!(
+            roster.fields().unwrap(),
+            Fields::AralRosterHeader {
+                remaining_seconds: 20.,
+                allotted_seconds: 30.,
+                remaining: &[0x7f]
+            }
+        );
+        assert!(Message::new(0x45a, [0; 7]).fields().is_err());
+    }
     #[test]
     fn inventory_event_fields_preserve_source_and_flags() {
         let modifier = [0, 0, 0, 37, 0, 0, 0, 23, 0xc1, 0x48, 0, 0, 7, 2];

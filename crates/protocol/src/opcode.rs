@@ -1,7 +1,20 @@
-/// Opcodes with observed CE meanings. Use Message::opcode for unclassified values.
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
-#[repr(u16)]
-pub enum Opcode {
+macro_rules! opcodes {
+    ($( $name:ident = $raw:literal, )*) => {
+        /// Opcodes with observed CE meanings. Unknown numbers stay in Message::opcode.
+        #[derive(Debug, Clone, Copy, Eq, PartialEq)]
+        #[repr(u16)]
+        pub enum Opcode { $( $name = $raw, )* }
+
+        impl TryFrom<u16> for Opcode {
+            type Error = u16;
+            fn try_from(raw: u16) -> Result<Self, Self::Error> {
+                match raw { $( $raw => Ok(Self::$name), )* other => Err(other) }
+            }
+        }
+    };
+}
+
+opcodes! {
     ClockSync = 0x0000,
     Hello = 0x0005,
     Heartbeat = 0x0006,
@@ -43,54 +56,4 @@ pub enum Opcode {
     LockSelection = 0x0463,
     SetupC = 0x046b,
     ModeName = 0x046f,
-}
-
-impl TryFrom<u16> for Opcode {
-    type Error = u16;
-    fn try_from(raw: u16) -> Result<Self, Self::Error> {
-        match raw {
-            0x0000 => Ok(Self::ClockSync),
-            0x0005 => Ok(Self::Hello),
-            0x0006 => Ok(Self::Heartbeat),
-            0x03e8 => Ok(Self::PlayerUuid),
-            0x03e9 => Ok(Self::GameSetup),
-            0x03ea => Ok(Self::EntityActA),
-            0x03eb => Ok(Self::EntityActB),
-            0x03ec => Ok(Self::PosUpdate),
-            0x03ed => Ok(Self::PlayerHandle),
-            0x03ee => Ok(Self::PlayerInfo),
-            0x03ef => Ok(Self::TickSyncA),
-            0x03f0 => Ok(Self::TickSyncB),
-            0x03f1 => Ok(Self::TickSyncC),
-            0x03f2 => Ok(Self::Snapshot),
-            0x03f3 => Ok(Self::EntitySpawn),
-            0x03f4 => Ok(Self::MoveCmd),
-            0x03f5 => Ok(Self::StateUpdA),
-            0x03f6 => Ok(Self::StateUpdB),
-            0x03f7 => Ok(Self::StateUpdC),
-            0x03f8 => Ok(Self::EntityFloat),
-            0x03f9 => Ok(Self::EntityAct2),
-            0x041c => Ok(Self::StatModifier),
-            0x041d => Ok(Self::EntityStat),
-            0x042b => Ok(Self::EntityState),
-            0x042e => Ok(Self::Position),
-            0x0439 => Ok(Self::ShopRequest),
-            0x043d => Ok(Self::ItemGrant),
-            0x043e => Ok(Self::EntityProp),
-            0x043f => Ok(Self::EntityData),
-            0x044b => Ok(Self::RemoveItem),
-            0x0453 => Ok(Self::HeroCatalog),
-            0x0454 => Ok(Self::GameMode),
-            0x0455 => Ok(Self::HeroLock),
-            0x0458 => Ok(Self::SetupA),
-            0x0459 => Ok(Self::Snapshot5V5),
-            0x045a => Ok(Self::SnapshotAral),
-            0x045e => Ok(Self::HeroSelection),
-            0x045f => Ok(Self::SkinSelection),
-            0x0463 => Ok(Self::LockSelection),
-            0x046b => Ok(Self::SetupC),
-            0x046f => Ok(Self::ModeName),
-            _ => Err(raw),
-        }
-    }
 }
