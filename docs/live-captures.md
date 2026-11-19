@@ -228,3 +228,5 @@ game recorder retains those authoritative 0481 records. A positive selection
 uses the immutable numeric level bound to that seat and its current hero in
 the reservation. Equal verified ownership levels for all three candidate
 talents suffice to establish that number without choosing a named effect.
+
+[Server emission matrix for all 103 observed opcodes](server-emissions.md)
