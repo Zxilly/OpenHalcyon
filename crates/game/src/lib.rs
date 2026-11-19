@@ -1000,7 +1000,14 @@ impl Room {
                 if ch == 0 && (legacy || solo_scene) => {}
             Fields::Live(request) if game => {
                 if let Some(command) = commands::from_live(request) {
-                    let _ = self.world.command(i as u32 + 1, command);
+                    let aral_target = legacy && ch == 0 && matches!(command, Command::Attack(_));
+                    if aral_target && !matches!(m.body.as_slice(), [_, _, _, _, 0, 0]) {
+                        return Ok(out);
+                    }
+                    let accepted = self.world.command(i as u32 + 1, command).is_ok();
+                    if accepted && aral_target {
+                        out.push(m);
+                    }
                 }
             }
             Fields::ShopRequest { actor, item }

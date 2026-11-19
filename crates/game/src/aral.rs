@@ -371,6 +371,22 @@ mod tests {
                 "point reply leaked to a second seat"
             );
         }
+        // The server acknowledges the requested target only after validating the attack.
+        {
+            let mut state = room.lock().unwrap();
+            state.world.entities[0].position = halcyon_sim::Position { x: 1., y: 0. };
+            state.world.entities[1].position = halcyon_sim::Position { x: 4., y: 0. };
+        }
+        for target in [1500_u32, 19999, 1501] {
+            let mut body = target.to_be_bytes().to_vec();
+            body.push(0);
+            clients[0]
+                .write_all(&cipher.encode(&Message::new(0x0424, body)).unwrap())
+                .await
+                .unwrap();
+        }
+        let ack = until(&mut clients[0], &cipher, 0x0424).await;
+        assert_eq!(ack.body, [0, 0, 5, 221, 0, 0]);
         // A paid/earned slot request has no trusted level in this room.
         // The next authoritative response must be for the explicit NoTalent request.
         for selection in [
