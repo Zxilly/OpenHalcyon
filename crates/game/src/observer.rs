@@ -339,9 +339,9 @@ mod tests {
         let (_, late) = rooms.observe(id, Uuid::new_v4()).unwrap();
         let mut room = shared.lock().unwrap();
         let mut streams = vec![];
-        for i in 0..3 {
+        for (i, seat) in room.seats.iter_mut().take(3).enumerate() {
             let (tx, rx) = mpsc::channel(8);
-            room.seats[i].peers[1] = Some(Peer {
+            seat.peers[1] = Some(Peer {
                 generation: i as u64 + 1,
                 tx,
                 stalled: watch::channel(false).0,
@@ -499,9 +499,9 @@ mod tests {
         let (view, mut observer) = mpsc::channel(8);
         room.observers.get_mut(&grant).unwrap().live = Some(view);
         let mut streams = Vec::new();
-        for i in 0..2 {
+        for (i, seat) in room.seats.iter_mut().take(2).enumerate() {
             let (tx, rx) = mpsc::channel(8);
-            room.seats[i].peers[1] = Some(Peer {
+            seat.peers[1] = Some(Peer {
                 generation: i as u64 + 1,
                 tx,
                 stalled: watch::channel(false).0,

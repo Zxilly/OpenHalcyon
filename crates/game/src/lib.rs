@@ -1645,7 +1645,7 @@ mod tests {
             assert_eq!(opening[0].body[100], room.world.entities[seat].team + 1);
             let roster = opening.last().unwrap();
             assert_eq!(roster.opcode, 0x459);
-            for (i, row) in roster.body.chunks_exact(161).take(16).enumerate() {
+            for (i, row) in roster.body.as_chunks::<161>().0.iter().enumerate() {
                 assert_eq!(row[8], u8::from(i < 6));
                 if let Some(participant) = guests.get(i) {
                     assert_eq!(&row[105..141], participant.player_id.to_string().as_bytes());
