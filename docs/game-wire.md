@@ -182,3 +182,22 @@ The server continues to replicate authoritative positions with 0x042E and
 send a declaration before updates for actors that enter its visibility set.
 Verified live Solo visibility-transition traffic would be needed to replace
 that policy with the native one.
+
+## CE session recovery during play
+
+For a seat in an active match, CE startSessionForPlayer and update use the
+same player UUID and persisted match ID, host and port as first entry.
+Guest recovery may rotate the platform session credential. The game seat UUID
+and match ID remain stable across that rotation. Native protocol references
+list proxy_host and proxy_port as optional relays. Direct routing uses host
+and port.
+
+An Android app restart trace shows getPlayerForGuestAccount,
+startSessionForPlayer, getPlayerInfo and update around a successful game
+TCP authentication, followed by exitLobby. The menus response in the older
+official exitLobby sample describes the idle case. During active play, the CE
+adapter responds to exitLobby with the ordinary playing state and keeps the
+seat and endpoint. Canceling an outstanding offer and leaving post-match keep
+their existing behavior. The restart trace establishes that the client calls
+exitLobby after reauthentication. An on-device check is still needed to
+determine whether this response alone is sufficient to return to the scene.

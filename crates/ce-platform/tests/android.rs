@@ -187,6 +187,39 @@ async fn android_guest_lobby_notifications_and_recovery() {
     let playing = rpc(&r, "update", json!([token])).await;
     assert_eq!(playing["returnValue"]["state"], "playing");
     assert_eq!(playing["returnValue"]["port"], 7123);
+    let already_playing = rpc(&r, "exitLobby", json!([token])).await;
+    let looked_up = rpc(&r, "getPlayerForGuestAccount", json!([recovery])).await;
+    assert_eq!(looked_up["code"], 0);
+    let recovered = &looked_up["returnValue"]["playerUUID"];
+    assert_eq!(recovered, recovery);
+    let resumed = rpc(&r, "startSessionForPlayer", json!([recovered])).await;
+    assert_eq!(resumed["code"], 0);
+    assert_ne!(resumed["sessionToken"], *token);
+    assert_eq!(rpc(&r, "update", json!([token])).await["code"], -1);
+    assert_eq!(
+        resumed["returnValue"]["playerUUID"],
+        bootstrap["playerUUID"]
+    );
+    let token = &resumed["sessionToken"];
+    let resumed_profile = rpc(&r, "getPlayerInfo", json!([token])).await;
+    assert_eq!(resumed_profile["code"], 0);
+    for response in [
+        already_playing,
+        resumed.clone(),
+        rpc(&r, "update", json!([token])).await,
+        rpc(&r, "exitLobby", json!([token])).await,
+    ] {
+        assert_eq!(response["code"], 0);
+        for field in ["state", "matchId", "host", "port", "site"] {
+            assert_eq!(
+                response["returnValue"][field], playing["returnValue"][field],
+                "{field} changed on resume"
+            );
+        }
+    }
+    for method in ["rejectMatch", "notifyExitPostMatch"] {
+        assert_eq!(rpc(&r, method, json!([token])).await["code"], -2);
+    }
     let record = rpc(
         &r,
         "recordMatchExperienceMetrics",
@@ -212,11 +245,16 @@ async fn android_guest_lobby_notifications_and_recovery() {
     )
     .unwrap();
     assert_eq!(
+        rpc(&r, "update", json!([token])).await["returnValue"]["state"],
+        "post_match"
+    );
+    let exit = rpc(&r, "exitLobby", json!([token])).await;
+    assert_eq!(exit["returnValue"]["state"], "menus");
+    assert!(exit["returnValue"]["expiry"].is_f64());
+    assert_eq!(
         rpc(&r, "notifyExitPostMatch", json!([token])).await["returnValue"],
         json!({"success":true})
     );
-    let exit = rpc(&r, "exitLobby", json!([token])).await;
-    assert!(exit["returnValue"]["expiry"].is_f64());
     let restored = rpc(
         &r,
         "getPlayerForGuestAccount",

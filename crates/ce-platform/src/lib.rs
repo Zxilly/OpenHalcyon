@@ -428,6 +428,11 @@ async fn dispatch(s: &Platform, m: &str, params: &[Value]) -> Result<(String, Va
         }
         "spectateFriend" => spectator::begin(s, &session, params).await?,
         "spectatorExitMatch" => spectator::exit(s, &session).await?,
+        // The Android startup sequence calls exitLobby even after resuming a
+        // live seat. Leaving the pre-match lobby must preserve that seat.
+        "exitLobby" if profile.lobby.as_ref().is_some_and(|l| l.phase == "playing") => {
+            state(&profile)
+        }
         "exitLobby" | "rejectMatch" | "notifyExitPostMatch" => {
             if spectator::is_spectating(&profile) || profile.lobby.is_none() {
                 spectator::leave(s, &session).await?;
