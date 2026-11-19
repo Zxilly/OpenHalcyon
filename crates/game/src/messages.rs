@@ -112,15 +112,17 @@ pub fn spawn(e: &Entity, picks: &[Pick], data: Option<&halcyon_data::GameData>) 
     b[46..50].copy_from_slice(&e.max_hp.to_be_bytes());
     let unit = data.and_then(|d| hero.and_then(|p| d.unit(&p.name)));
     if let Some(unit) = unit {
+        for (offset, value) in [(74, unit.move_speed), (98, unit.attack_speed), (226, 0.5)] {
+            b[offset..offset + 4].copy_from_slice(&value.to_be_bytes());
+        }
+    }
+    if hero.is_some() {
         for (offset, value) in [
-            (74, unit.move_speed),
-            (98, unit.attack_speed),
             (122, e.energy),
             (126, e.max_energy),
-            (190, unit.armor),
-            (202, unit.shield),
-            (214, unit.weapon),
-            (226, 0.5),
+            (190, e.armor()),
+            (202, e.shield()),
+            (214, e.weapon_power()),
         ] {
             b[offset..offset + 4].copy_from_slice(&value.to_be_bytes());
         }
@@ -201,6 +203,44 @@ pub(super) fn item_grant(actor: u32, item: u32, instance: u32) -> Message {
         .concat(),
     )
 }
+pub(super) fn append_inventory(out: &mut Vec<Message>, entity: &Entity) {
+    let actor = u32::from(wire_id(entity.id));
+    out.extend(
+        entity
+            .inventory
+            .iter()
+            .map(|held| item_grant(actor, held.kind.template(), held.instance)),
+    );
+}
+pub(super) fn append_purchase(
+    out: &mut Vec<Message>,
+    world: &World,
+    receipt: &halcyon_sim::Purchase,
+    include_item_changes: bool,
+) {
+    let actor = u32::from(wire_id(receipt.actor));
+    out.push(Message::entity_stat(
+        actor as u16,
+        -(receipt.paid as f32),
+        6,
+    ));
+    // A spawn in this batch already describes the post-tick inventory.
+    if !include_item_changes {
+        return;
+    }
+    if let Some(used) = receipt.consumed {
+        let (stat, bonus) = world.item_bonus(used.kind);
+        out.push(modifier(actor, stat, -bonus));
+        let mut body = [actor.to_be_bytes(), used.instance.to_be_bytes()].concat();
+        body.extend(1u16.to_be_bytes());
+        out.push(Message::new(0x44b, body));
+    }
+    let granted = receipt.granted;
+    out.push(item_grant(actor, granted.kind.template(), granted.instance));
+    let (stat, bonus) = world.item_bonus(granted.kind);
+    out.push(modifier(actor, stat, bonus));
+}
+
 pub(super) fn modifier(actor: u32, stat: u8, value: f32) -> Message {
     let mut b = [
         actor.to_be_bytes(),

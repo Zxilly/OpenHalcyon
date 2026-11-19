@@ -10,6 +10,19 @@ pub enum BasicItem {
     HeavySteel,
     SixSins,
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HeldItem {
+    pub kind: BasicItem,
+    pub instance: u32,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Purchase {
+    pub actor: u32,
+    pub paid: u32,
+    pub granted: HeldItem,
+    pub consumed: Option<HeldItem>,
+}
+
 impl BasicItem {
     const VALUES: [Self; 7] = [
         Self::WeaponBlade,
@@ -20,17 +33,11 @@ impl BasicItem {
         Self::HeavySteel,
         Self::SixSins,
     ];
+    pub fn template(self) -> u32 {
+        [458, 469, 501, 467, 472, 505, 461][self as usize]
+    }
     pub fn from_template(id: u32) -> Option<Self> {
-        Some(match id {
-            458 => Self::WeaponBlade,
-            461 => Self::SixSins,
-            467 => Self::Oakheart,
-            469 => Self::LightArmor,
-            472 => Self::EnergyBattery,
-            501 => Self::LightShield,
-            505 => Self::HeavySteel,
-            _ => return None,
-        })
+        Self::VALUES.into_iter().find(|item| item.template() == id)
     }
     fn descriptor(self) -> (&'static str, u64) {
         match self {
@@ -103,7 +110,14 @@ impl World {
     pub fn item_bonus(&self, item: BasicItem) -> (u8, f32) {
         (item.descriptor().1 as u8, self.shop.0[item as usize].bonus)
     }
-    pub(super) fn buy(&mut self, i: usize, item: BasicItem) -> Result<(), &'static str> {
+    pub fn purchase(&mut self, actor: u32, item: BasicItem) -> Result<Purchase, &'static str> {
+        let i = self.index(actor).ok_or("unknown actor")?;
+        self.buy(i, item)
+    }
+    pub(super) fn buy(&mut self, i: usize, item: BasicItem) -> Result<Purchase, &'static str> {
+        if self.winner.is_some() || self.entities[i].hp <= 0. {
+            return Err("shop closed");
+        }
         let offer = self.shop.0[item as usize];
         if offer.price == 0 {
             return Err("item unavailable");
@@ -117,7 +131,7 @@ impl World {
         let component = if upgrade {
             h.inventory
                 .iter()
-                .position(|i| *i == BasicItem::WeaponBlade)
+                .position(|i| i.kind == BasicItem::WeaponBlade)
         } else {
             None
         };
@@ -132,10 +146,15 @@ impl World {
         if (h.inventory.len() >= 6 && component.is_none()) || h.gold < price {
             return Err("cannot purchase");
         }
-        if let Some(index) = component {
-            h.inventory.remove(index);
+        let granted = HeldItem {
+            kind: item,
+            instance: self.next_item,
+        };
+        self.next_item = self.next_item.checked_add(1).ok_or("item instance limit")?;
+        let consumed = component.map(|index| {
             h.stats.weapon -= blade.bonus;
-        }
+            h.inventory.remove(index)
+        });
         match item {
             BasicItem::HeavySteel | BasicItem::SixSins | BasicItem::WeaponBlade => {
                 h.stats.weapon += offer.bonus
@@ -153,14 +172,86 @@ impl World {
             }
         }
         h.gold -= price;
-        h.inventory.push(item);
-        Ok(())
+        h.inventory.push(granted);
+        Ok(Purchase {
+            actor: h.id,
+            paid: price,
+            granted,
+            consumed,
+        })
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn bot_receipt_and_exact_component_instances_survive_duplicate_templates() {
+        let mut world = World::new(4, 1);
+        for e in &mut world.entities[..10] {
+            e.position = base(e.team);
+            e.gold = 3000;
+        }
+        let blade = BasicItem::WeaponBlade;
+        let first = world.purchase(1, blade).unwrap();
+        let second = world.purchase(1, blade).unwrap();
+        let upgrade = world.purchase(1, BasicItem::HeavySteel).unwrap();
+        assert_eq!(upgrade.consumed, Some(first.granted));
+        assert_eq!(upgrade.paid, 850);
+        assert_eq!(
+            world.entities[0].inventory,
+            [second.granted, upgrade.granted]
+        );
+        let receipt = (0..10)
+            .flat_map(|_| world.step())
+            .find_map(|event| match event {
+                Event::Purchase(receipt) => Some(receipt),
+                _ => None,
+            })
+            .unwrap();
+        let actor = &world.entities[world.index(receipt.actor).unwrap()];
+        assert!(actor.bot && actor.inventory.contains(&receipt.granted));
+        assert!(receipt.granted.instance > upgrade.granted.instance);
+        assert_eq!(receipt.paid, 300);
+    }
+
+    #[test]
+    fn lethal_awards_match_actual_balance_changes_once() {
+        let mut w = World::new(2, 1);
+        let pos = base(0);
+        let target = w.spawn(1, Kind::Minion, 0, pos, false);
+        let idx = w.index(target).unwrap();
+        w.entities[0].position = pos;
+        w.entities[2].position = pos;
+        let before: Vec<_> = w.entities[..10].iter().map(|e| e.gold).collect();
+        let mut events = vec![];
+        w.hurt(1, 0, idx, 1., &mut events);
+        assert!(!events.iter().any(|e| matches!(e, Event::GoldAward { .. })));
+        w.hurt(1, 0, idx, 100000., &mut events);
+        let count = events.len();
+        w.hurt(1, 0, idx, 100000., &mut events);
+        assert_eq!(count, events.len());
+        for (e, old) in w.entities[..10].iter().zip(before) {
+            let delta = e.gold - old;
+            let awards: Vec<_> = events
+                .iter()
+                .filter_map(|event| match event {
+                    Event::GoldAward { id, amount } if *id == e.id => Some(*amount),
+                    _ => None,
+                })
+                .collect();
+            if delta > 0 {
+                assert_eq!(awards, [delta]);
+            } else {
+                assert!(awards.is_empty());
+            }
+        }
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, Event::GoldAward { id: 3, .. }))
+        );
+    }
     #[test]
     fn observed_tier_two_upgrades_consume_one_blade_or_charge_full_price() {
         for (item, upgrade, bonus) in [
@@ -175,20 +266,25 @@ mod tests {
             assert_eq!(w.entities[0].gold, 0);
             assert_eq!(w.entities[0].stats.weapon, start + bonus);
             let h = &mut w.entities[0];
-            h.inventory = vec![BasicItem::LightArmor; 5];
+            h.inventory = (0..5)
+                .map(|instance| HeldItem {
+                    kind: BasicItem::LightArmor,
+                    instance,
+                })
+                .collect();
             h.stats.weapon = start;
             h.gold = 300;
             w.command(1, Command::Buy(BasicItem::WeaponBlade)).unwrap();
             w.entities[0].gold = upgrade - 1;
             assert!(w.command(1, Command::Buy(item)).is_err());
             assert_eq!(
-                w.entities[0].inventory.last(),
-                Some(&BasicItem::WeaponBlade)
+                w.entities[0].inventory.last().map(|held| held.kind),
+                Some(BasicItem::WeaponBlade)
             );
             w.entities[0].gold = upgrade;
             w.command(1, Command::Buy(item)).unwrap();
             assert_eq!(w.entities[0].inventory.len(), 6);
-            assert_eq!(w.entities[0].inventory.last(), Some(&item));
+            assert_eq!(w.entities[0].inventory.last().map(|v| v.kind), Some(item));
             assert_eq!(w.entities[0].gold, 0);
             assert_eq!(w.entities[0].stats.weapon, start + bonus);
         }

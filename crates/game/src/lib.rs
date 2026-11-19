@@ -67,7 +67,6 @@ struct Seat {
     peers: [Option<Peer>; 2],
     last: Option<DateTime<Utc>>,
     seen: [HashSet<u16>; 2],
-    inventory: Vec<(halcyon_sim::BasicItem, u32, u32)>,
 }
 struct Pick {
     name: String,
@@ -125,7 +124,6 @@ struct Room {
     queue: String,
     players: Vec<Uuid>,
     requested_teams: Vec<u8>,
-    next_item: u32,
     combat: [Combat; 10],
     catalog: Vec<String>,
     seats: Vec<Seat>,
@@ -491,7 +489,6 @@ impl Rooms {
             queue: req.mode,
             players: req.players,
             requested_teams: req.teams,
-            next_item: 40000,
             combat: [Combat::default(); 10],
             catalog,
             seats: (0..n).map(|_| Seat::default()).collect(),
@@ -622,15 +619,7 @@ impl Room {
                 continue;
             }
             out.push(spawn(e, &self.picks, self.data.as_deref()));
-            if let Some(s) = self.seats.get((e.id - 1) as usize) {
-                for &(_, item, instance) in &s.inventory {
-                    out.push(messages::item_grant(
-                        u32::from(wire_id(e.id)),
-                        item,
-                        instance,
-                    ));
-                }
-            }
+            messages::append_inventory(&mut out, e);
         }
         out
     }
@@ -692,40 +681,17 @@ impl Room {
         let Some(offer) = BasicItem::from_template(item) else {
             return vec![];
         };
-        let before = self.world.entities[i].gold;
-        if self
-            .world
-            .command(i as u32 + 1, Command::Buy(offer))
-            .is_err()
-        {
+        let Ok(receipt) = self.world.purchase(i as u32 + 1, offer) else {
             return vec![];
-        }
-        let paid = before - self.world.entities[i].gold;
-        let mut ack = vec![
-            Message::new(0x439, [actor.to_be_bytes(), item.to_be_bytes()].concat()),
-            Message::entity_stat(actor as u16, -(paid as f32), 6),
-        ];
-        if matches!(offer, BasicItem::HeavySteel | BasicItem::SixSins)
-            && let Some(slot) = self.seats[i]
-                .inventory
-                .iter()
-                .position(|(k, _, _)| *k == BasicItem::WeaponBlade)
-        {
-            let (old, _, instance) = self.seats[i].inventory.remove(slot);
-            let (stat, bonus) = self.world.item_bonus(old);
-            ack.push(messages::modifier(actor, stat, -bonus));
-            let mut b = [actor.to_be_bytes(), instance.to_be_bytes()].concat();
-            b.extend(1u16.to_be_bytes());
-            ack.push(Message::new(0x44b, b));
-        }
-        let instance = self.next_item;
-        self.next_item += 1;
-        self.seats[i].inventory.push((offer, item, instance));
-        ack.push(messages::item_grant(actor, item, instance));
-        let (stat, bonus) = self.world.item_bonus(offer);
-        ack.push(messages::modifier(actor, stat, bonus));
+        };
+        let mut ack = vec![Message::new(
+            0x439,
+            [actor.to_be_bytes(), item.to_be_bytes()].concat(),
+        )];
+        messages::append_purchase(&mut ack, &self.world, &receipt, true);
         for (j, seat) in self.seats.iter().enumerate() {
             if j != i
+                && self.visible[self.world.entities[j].team as usize].contains(&receipt.actor)
                 && self
                     .world
                     .visible(self.world.entities[j].team, &self.world.entities[i])
@@ -903,10 +869,30 @@ impl Room {
                     current.insert(e.id);
                     if !previous.contains(&e.id) {
                         out.push(spawn(e, &self.picks, self.data.as_deref()));
+                        messages::append_inventory(&mut out, e);
                     }
                 }
             }
             for ev in events {
+                if let Event::Purchase(receipt) = ev {
+                    if current.contains(&receipt.actor)
+                        || fallen.contains(&receipt.actor) && previous.contains(&receipt.actor)
+                    {
+                        messages::append_purchase(
+                            &mut out,
+                            &self.world,
+                            receipt,
+                            previous.contains(&receipt.actor),
+                        );
+                    }
+                    continue;
+                }
+                if let Event::GoldAward { id, amount } = ev {
+                    if current.contains(id) || fallen.contains(id) && previous.contains(id) {
+                        out.push(Message::entity_stat(wire_id(*id), *amount as f32, 6));
+                    }
+                    continue;
+                }
                 if let Event::Move { id, position } = ev
                     && current.contains(id)
                 {
@@ -994,6 +980,6 @@ mod tests {
             [0x439, 0x41d, 0x41c, 0x44b, 0x43d, 0x41c]
         );
         assert_eq!(&upgraded[3].body[4..8], &ack[2].body[8..12]);
-        assert_eq!(room.seats[0].inventory.len(), 1);
+        assert_eq!(room.world.entities[0].inventory.len(), 1);
     }
 }

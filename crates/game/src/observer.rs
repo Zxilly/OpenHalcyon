@@ -222,7 +222,17 @@ impl Room {
                 Event::Spawn { id } => {
                     if let Some(e) = self.world.entities.iter().find(|e| e.id == id) {
                         out.push(spawn(e, &self.picks, self.data.as_deref()));
+                        super::messages::append_inventory(&mut out, e);
                     }
+                }
+                Event::Purchase(receipt) => {
+                    let respawned = events
+                        .iter()
+                        .any(|e| matches!(e,Event::Spawn{id} if *id==receipt.actor));
+                    super::messages::append_purchase(&mut out, &self.world, &receipt, !respawned);
+                }
+                Event::GoldAward { id, amount } => {
+                    out.push(Message::entity_stat(wire_id(id), amount as f32, 6))
                 }
                 _ => {
                     super::messages::append_combat(&mut out, ev, |_| true);
@@ -249,5 +259,58 @@ impl Room {
                 true
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn observer_respawn_and_purchase_emit_one_grant_and_actual_currency() {
+        let rooms = Rooms::new("127.0.0.1".parse().unwrap(), "127.0.0.1".into(), 1, None);
+        let id = Uuid::new_v4();
+        rooms
+            .reserve(Reservation {
+                match_id: id,
+                players: vec![Uuid::new_v4()],
+                teams: vec![0],
+                mode: "5v5".into(),
+            })
+            .unwrap();
+        let shared = rooms.room(id).unwrap();
+        shared.lock().unwrap().phase("running");
+        let (_, grant) = rooms.observe(id, Uuid::new_v4()).unwrap();
+        let (tx, mut rx) = mpsc::channel(1);
+        {
+            let mut r = shared.lock().unwrap();
+            r.world.tick = 1;
+            r.observers.get_mut(&grant).unwrap().live = Some(tx);
+            r.world.entities[1].gold = 300;
+            let receipt = r
+                .world
+                .purchase(2, halcyon_sim::BasicItem::WeaponBlade)
+                .unwrap();
+            r.tick_observers(&[
+                Event::Spawn { id: 2 },
+                Event::Purchase(receipt),
+                Event::GoldAward { id: 2, amount: 17 },
+            ]);
+            let batch = rx.try_recv().unwrap();
+            assert_eq!(
+                batch.iter().map(|m| m.opcode).collect::<Vec<_>>(),
+                [0x3f3, 0x43d, 0x41d, 0x41d]
+            );
+            assert!(
+                matches!(batch[1].fields().unwrap(),Fields::ItemGrant{instance,..} if instance==receipt.granted.instance)
+            );
+            for (message, delta) in batch[2..].iter().zip([-300., 17.]) {
+                assert!(
+                    matches!(message.fields().unwrap(),Fields::EntityStat{stat:6,value,..} if value==delta)
+                );
+            }
+        }
+        rooms.revoke_observer(id, grant).unwrap();
+        assert!(rx.recv().await.is_none());
     }
 }

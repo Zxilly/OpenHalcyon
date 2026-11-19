@@ -103,18 +103,24 @@ impl World {
             if a.team != team || a.kind != Kind::Hero {
                 continue;
             }
-            if a.id == src {
-                a.gold += bounty
-            }
-            if a.hp <= 0. || (a.position.dist(pos) > 10. && a.id != src) {
-                continue;
-            }
-            if kind == Kind::Minion && a.id != src {
-                a.gold += if hero_kill {
+            let nearby = a.hp > 0. && (a.position.dist(pos) <= 10. || a.id == src);
+            let amount = if a.id == src {
+                bounty
+            } else if nearby && kind == Kind::Minion {
+                if hero_kill {
                     bounty / 2
                 } else {
                     bounty * 3 / 10
-                };
+                }
+            } else {
+                0
+            };
+            if amount > 0 {
+                a.gold += amount;
+                events.push(Event::GoldAward { id: a.id, amount });
+            }
+            if !nearby {
+                continue;
             }
             allies[count] = j;
             count += 1;

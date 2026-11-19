@@ -9,7 +9,7 @@ use combat::{AbilityBook, Cast, SpellEffect, Status};
 pub use combat::{AbilitySlot, CastTarget};
 use halcyon_data::{GameData, Unit};
 use serde::{Deserialize, Serialize};
-pub use shop::BasicItem;
+pub use shop::{BasicItem, HeldItem, Purchase};
 
 /// Different simulation sources or content packs receive distinct federation queue keys.
 pub fn rules_digest(data: Option<&GameData>) -> String {
@@ -77,6 +77,11 @@ pub enum Command {
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Event {
+    Purchase(Purchase),
+    GoldAward {
+        id: u32,
+        amount: u32,
+    },
     Spawn {
         id: u32,
     },
@@ -222,7 +227,7 @@ pub struct Entity {
     pub level: u8,
     pub xp: f32,
     pub skill_points: u8,
-    pub inventory: Vec<BasicItem>,
+    pub inventory: Vec<HeldItem>,
     #[serde(skip)]
     bonus_hp: f32,
     pub ability_ranks: [u8; 3],
@@ -253,6 +258,7 @@ pub struct World {
     pub entities: Vec<Entity>,
     stats: [Stats; 8],
     next_id: u32,
+    next_item: u32,
     seed: u64,
     first_wave: u64,
     wave_interval: u64,
@@ -263,6 +269,18 @@ pub struct World {
     first_blood: bool,
     rally: [Option<Position>; 2],
 }
+impl Entity {
+    pub fn weapon_power(&self) -> f32 {
+        self.stats.weapon
+    }
+    pub fn armor(&self) -> f32 {
+        self.stats.armor
+    }
+    pub fn shield(&self) -> f32 {
+        self.stats.shield
+    }
+}
+
 fn base(team: u8) -> Position {
     Position {
         x: if team == 0 { 0. } else { LANE },
@@ -281,6 +299,7 @@ impl World {
                 self.winner,
                 self.seed,
                 self.next_id,
+                self.next_item,
                 self.first_wave,
                 self.wave_interval,
                 &self.stats,
@@ -431,6 +450,7 @@ impl World {
             winner: None,
             entities: Vec::with_capacity(50),
             next_id: 1,
+            next_item: 40000,
             stats,
             seed,
             first_wave,
@@ -532,7 +552,7 @@ impl World {
             Command::MoveTo(p) if !nav::walkable(p) => {
                 return Err("outside lane");
             }
-            Command::Buy(item) => return self.buy(i, item),
+            Command::Buy(item) => return self.buy(i, item).map(|_| ()),
             Command::Learn(slot) => return self.learn(i, slot),
             Command::Cast { slot, target } => return self.begin_cast(i, slot, target),
             Command::Attack(id) => {
@@ -683,7 +703,9 @@ impl World {
                         } else {
                             BasicItem::WeaponBlade
                         };
-                        let _ = self.buy(i, item);
+                        if let Ok(receipt) = self.buy(i, item) {
+                            events.push(Event::Purchase(receipt));
+                        }
                     }
                     for slot in [AbilitySlot::C, AbilitySlot::A, AbilitySlot::B] {
                         if self.can_learn(i, slot) {

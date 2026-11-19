@@ -409,6 +409,95 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn bot_inventory_is_stable_across_visibility_and_reconnect() {
+        use halcyon_sim::BasicItem;
+        let rooms = Rooms::new("127.0.0.1".parse().unwrap(), "127.0.0.1".into(), 1, None);
+        let id = Uuid::new_v4();
+        let players = [Uuid::new_v4(), Uuid::new_v4()];
+        rooms
+            .reserve(Reservation {
+                match_id: id,
+                players: players.to_vec(),
+                teams: vec![0, 1],
+                mode: "5v5".into(),
+            })
+            .unwrap();
+        let shared = rooms.room(id).unwrap();
+        let mut r = shared.lock().unwrap();
+        r.phase("running");
+        r.world.tick = 1;
+        for s in &mut r.seats {
+            s.locked = true;
+        }
+        let attach = |r: &mut Room, id| {
+            let (tx, rx) = mpsc::channel(16);
+            let (_, ch, _, batch) = r.attach(id, tx, watch::channel(false).0).unwrap();
+            assert_eq!(ch, 1);
+            (rx, batch)
+        };
+        let (mut ally, _) = attach(&mut r, players[0]);
+        let (mut enemy, _) = attach(&mut r, players[1]);
+        let i = r
+            .world
+            .entities
+            .iter()
+            .position(|e| e.kind == halcyon_sim::Kind::Hero && e.bot && e.team == 0)
+            .unwrap();
+        let id = r.world.entities[i].id;
+        let actor = u32::from(wire_id(id));
+        let grants = |messages: &[Message]| {
+            messages
+                .iter()
+                .filter_map(|m| match m.fields().unwrap() {
+                    Fields::ItemGrant {
+                        actor: a, instance, ..
+                    } if a == actor => Some(instance),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        r.world.entities[i].gold = 2000;
+        let first = r.world.purchase(id, BasicItem::WeaponBlade).unwrap();
+        r.replicate(&[Event::Purchase(first)]);
+        let batch = ally.try_recv().unwrap().into_records();
+        assert_eq!(
+            batch.iter().map(|m| m.opcode).collect::<Vec<_>>(),
+            [0x41d, 0x43d, 0x41c]
+        );
+        assert_eq!(grants(&batch), [first.granted.instance]);
+        assert!(enemy.try_recv().is_err());
+        r.visible[0].remove(&id);
+        let second = r.world.purchase(id, BasicItem::LightArmor).unwrap();
+        let events = [Event::Purchase(second), Event::GoldAward { id, amount: 25 }];
+        r.replicate(&events);
+        let batch = ally.try_recv().unwrap().into_records();
+        let expected = [first.granted.instance, second.granted.instance];
+        assert_eq!(grants(&batch), expected);
+        assert_eq!(
+            batch
+                .iter()
+                .filter_map(|m| match m.fields().unwrap() {
+                    Fields::EntityStat { stat: 6, value, .. } => Some(value),
+                    _ => None,
+                })
+                .collect::<Vec<_>>(),
+            [-300., 25.]
+        );
+        assert!(enemy.try_recv().is_err());
+        assert!(grants(&r.spawn_view(Some(1))).is_empty());
+        assert_eq!(grants(&r.spawn_view(None)), expected);
+        let generation = r.seats[0].peers[1].as_ref().unwrap().generation;
+        r.detach(0, 1, generation);
+        let (_, reconnect) = attach(&mut r, players[0]);
+        assert_eq!(grants(&reconnect), expected);
+        let spawn = batch.iter().find(|m| m.opcode == 0x3f3).unwrap();
+        assert_eq!(
+            f32::from_be_bytes(spawn.body[190..194].try_into().unwrap()),
+            r.world.entities[i].armor()
+        );
+    }
+
+    #[tokio::test]
     async fn teammates_share_ciphertext_while_opponents_and_reconnects_keep_their_view() {
         let rooms = Rooms::new("127.0.0.1".parse().unwrap(), "127.0.0.1".into(), 1, None);
         let id = Uuid::new_v4();
