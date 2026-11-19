@@ -8,3 +8,8 @@ repository.workspace = true
 [dependencies]
 blowfish = "0.9"
 md-5 = "0.10"
+
+[dev-dependencies]
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true

@@ -1146,6 +1146,9 @@ version = "1.0.0-draft.1"
 dependencies = [
  "blowfish",
  "md-5",
+ "serde",
+ "serde_json",
+ "uuid",
 ]
 
 [[package]]

@@ -9,6 +9,8 @@ use std::io::{self, Read, Write};
 
 mod aral;
 pub use aral::AralRoster;
+mod live;
+pub use live::LiveFields;
 mod metadata;
 mod opcode;
 mod skin;
@@ -160,39 +162,6 @@ impl Message {
                 remaining: &b[5..],
             },
             0x48d if matches!(b.len(), 1612 | 1614) => Fields::MatchStatistics(MatchStatistics(b)),
-            0x403 | 0x406 | 0x407 | 0x409 | 0x40e | 0x410 | 0x416 | 0x419 | 0x41f | 0x443
-            | 0x446 | 0x44c | 0x478 => {
-                // Actual endian-conversion boundaries in the 147219 dispatch branches.
-                let (words, has_halfword, bytes) = match self.opcode {
-                    0x403 | 0x44c => (5, false, 1),
-                    0x406 => (8, false, 0),
-                    0x407 => (4, false, 0),
-                    0x409 | 0x410 | 0x416 => (4, false, 1),
-                    0x40e => (6, true, 2),
-                    0x419 => (6, false, 0),
-                    0x41f | 0x446 => (2, false, 0),
-                    0x443 => (3, false, 0),
-                    0x478 => (2, false, 1),
-                    _ => unreachable!(),
-                };
-                let word_end = 4 * words;
-                let byte_start = word_end + 2 * usize::from(has_halfword);
-                let end = byte_start + bytes;
-                if b.len() != end && b.len() != (end + 2).next_multiple_of(8) - 2 {
-                    Fields::Opaque(b)
-                } else {
-                    Fields::ActionWords(ActionWords {
-                        words: b[..word_end].as_chunks::<4>().0,
-                        halfword: if has_halfword {
-                            Some(u16::from_be_bytes([b[word_end], b[word_end + 1]]))
-                        } else {
-                            None
-                        },
-                        bytes: &b[byte_start..end],
-                        remaining: &b[end..],
-                    })
-                }
-            }
             0x41a | 0x41b if b.len() == 14 => Fields::AbilityOverride {
                 actor: number(0)?,
                 key: number(4)?,
@@ -463,7 +432,7 @@ impl Message {
                     _ => Fields::GameMode(name),
                 }
             }
-            _ => Fields::Opaque(b),
+            _ => live::fields(self.opcode, b).unwrap_or(Fields::Opaque(b)),
         })
     }
 }
@@ -534,6 +503,7 @@ impl MatchStatistics<'_> {
 }
 #[derive(Debug, PartialEq)]
 pub enum Fields<'a> {
+    Live(LiveFields<'a>),
     HeaderOnly {
         remaining: &'a [u8],
     },
