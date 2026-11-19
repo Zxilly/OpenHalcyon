@@ -307,7 +307,9 @@ impl Federation {
                 id.to_string() == *key
             }
             (Command::Abort { id }, ["allocations", key, "abort"]) => id.to_string() == *key,
-            (Command::Finish { id, .. }, ["results", key]) => id.to_string() == *key,
+            (Command::Finish { id, .. } | Command::Settle { id, .. }, ["results", key]) => {
+                id.to_string() == *key
+            }
             _ => false,
         };
         if !matches {

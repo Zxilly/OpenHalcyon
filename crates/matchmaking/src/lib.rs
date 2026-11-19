@@ -76,6 +76,8 @@ pub struct Allocation {
     pub accepted: BTreeSet<Uuid>,
     pub endpoint: Option<Endpoint>,
     pub result_digest: Option<String>,
+    #[serde(default)]
+    pub result: Option<serde_json::Value>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -97,6 +99,11 @@ pub enum Command {
     },
     Abort {
         id: Uuid,
+    },
+    Settle {
+        id: Uuid,
+        digest: String,
+        result: serde_json::Value,
     },
     Finish {
         id: Uuid,
@@ -178,7 +185,13 @@ impl Pool {
                 Ok(())
             }
             Command::Abort { id } => self.abort(id),
-            Command::Finish { id, digest } => self.finish(caller, id, digest),
+            Command::Finish { id, digest } => self.finish(caller, id, digest, None),
+            Command::Settle { id, digest, result } => {
+                if result_digest(&result).as_deref() != Ok(digest.as_str()) {
+                    return Err(Error::Invalid);
+                }
+                self.finish(caller, id, digest, Some(result))
+            }
         }
     }
 
@@ -304,6 +317,7 @@ impl Pool {
                 accepted: BTreeSet::new(),
                 endpoint: None,
                 result_digest: None,
+                result: None,
                 phase: Phase::Preparing,
             },
         );
@@ -331,13 +345,24 @@ impl Pool {
         Ok(())
     }
 
-    fn finish(&mut self, caller: Uuid, id: Uuid, digest: String) -> Result<(), Error> {
+    fn finish(
+        &mut self,
+        caller: Uuid,
+        id: Uuid,
+        digest: String,
+        result: Option<serde_json::Value>,
+    ) -> Result<(), Error> {
         let room = self.allocations.get_mut(&id).ok_or(Error::Missing)?;
         if caller != room.host {
             return Err(Error::Forbidden);
         }
         if let Some(existing) = &room.result_digest {
-            return if existing == &digest {
+            return if existing == &digest
+                && (room.result.is_none() || result.is_none() || result == room.result)
+            {
+                if room.result.is_none() {
+                    room.result = result;
+                }
                 Ok(())
             } else {
                 Err(Error::Conflict)
@@ -350,10 +375,23 @@ impl Pool {
             return Err(Error::Invalid);
         }
         room.result_digest = Some(digest);
+        room.result = result;
         room.phase = Phase::Finished;
         for key in room.tickets.clone() {
             self.close(key.id);
         }
         Ok(())
     }
+}
+
+/// SHA-256 over a bounded compact JSON summary with recursively sorted object keys.
+pub fn result_digest(result: &serde_json::Value) -> Result<String, Error> {
+    use sha2::{Digest, Sha256};
+    let mut canonical = result.clone();
+    canonical.sort_all_objects();
+    let bytes = serde_json::to_vec(&canonical).map_err(|_| Error::Invalid)?;
+    if bytes.len() > 8192 {
+        return Err(Error::Invalid);
+    }
+    Ok(format!("{:x}", Sha256::digest(bytes)))
 }

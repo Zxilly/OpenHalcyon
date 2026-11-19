@@ -18,7 +18,8 @@ pub struct Capacity {
     pub total_seats: usize,
 }
 #[derive(Clone, Default)]
-pub(crate) struct Offers(Arc<Mutex<BTreeMap<Uuid, (Capacity, Instant)>>>);
+pub(crate) struct Offers(Arc<Mutex<OfferMap>>);
+type OfferMap = BTreeMap<(Uuid, Queue), (Capacity, Instant)>;
 impl Offers {
     pub fn update(&self, id: Uuid, offer: Capacity) -> anyhow::Result<()> {
         ensure!(
@@ -26,14 +27,15 @@ impl Offers {
             "invalid capacity"
         );
         let mut seen = self.0.lock().unwrap();
-        if let Some((old, _)) = seen.get(&id) {
+        let key = (id, offer.queue.clone());
+        if let Some((old, _)) = seen.get(&key) {
             if old.sequence == offer.sequence && old == &offer {
                 return Ok(());
             }
             ensure!(old.sequence < offer.sequence, "stale capacity");
         }
         let expires = Instant::now() + Duration::from_millis(offer.ttl_ms);
-        seen.insert(id, (offer, expires));
+        seen.insert(key, (offer, expires));
         Ok(())
     }
     pub fn live(&self) -> Vec<HostOffer> {
@@ -43,7 +45,7 @@ impl Offers {
             .unwrap()
             .iter()
             .filter(|(_, (_, expires))| *expires > now)
-            .map(|(id, (v, _))| HostOffer {
+            .map(|((id, _), (v, _))| HostOffer {
                 id: *id,
                 queue: v.queue.clone(),
                 free_seats: v.free_seats,
