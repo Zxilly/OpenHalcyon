@@ -548,7 +548,10 @@ mod tests {
         assert!(enemy.try_recv().is_err());
         r.visible[0].remove(&id);
         let second = r.world.purchase(id, BasicItem::LightArmor).unwrap();
-        let events = [Event::Purchase(second.clone()), Event::GoldAward { id, amount: 25 }];
+        let events = [
+            Event::Purchase(second.clone()),
+            Event::GoldAward { id, amount: 25 },
+        ];
         r.replicate(&events);
         let batch = ally.try_recv().unwrap().into_records();
         let expected = [first.granted.instance, second.granted.instance];
