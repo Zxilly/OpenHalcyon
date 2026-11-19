@@ -871,6 +871,13 @@ impl Room {
                 .map(|e| e.id)
                 .collect()
         });
+        let fallen: HashSet<u32> = events
+            .iter()
+            .filter_map(|event| match event {
+                Event::Death { id, .. } => Some(*id),
+                _ => None,
+            })
+            .collect();
         for (i, seat) in self.seats.iter_mut().enumerate() {
             let Some(peer) = &mut seat.peers[1] else {
                 continue;
@@ -889,6 +896,11 @@ impl Room {
                     && current.contains(id)
                 {
                     out.push(Message::position(wire_id(*id), position.x, position.y));
+                } else {
+                    messages::append_combat(&mut out, ev, |actor| {
+                        current.contains(&actor)
+                            || (fallen.contains(&actor) && peer.visible.contains(&actor))
+                    });
                 }
             }
             peer.visible.clone_from(current);

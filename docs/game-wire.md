@@ -22,7 +22,7 @@ The local VGR export contains 153 modifier records (0x041C) and one item removal
 To verify the native handoff, a matching successful Android 147219 session would need to cover the lock acknowledgement, connection and channel order, initial replies and the first rendered battlefield. Complete message bodies, their directions and channel association are needed to compare that transition with replay initialization. The operator can decode locally and substitute consistent anonymous player identifiers.
 ## Read-only record variants
 
-A full pass over all 43,160 local VGR records using `ReplayReader` and `Message::fields` produced 35,764 typed records and 7,396 opaque records, with zero decoding errors. A typed record may expose only a prefix. `Message::body` retains the complete body, including padding.
+A full pass over all 43,160 local VGR records using `ReplayReader` and `Message::fields` produced 37,601 typed records and 5,559 opaque records, with zero decoding errors. A typed record may expose only a prefix. `Message::body` retains the complete body, including padding.
 
 | Opcode | Recovered fields and limits |
 | --- | --- |
@@ -35,3 +35,11 @@ A full pass over all 43,160 local VGR records using `ReplayReader` and `Message:
 | 0x0458, 0x046D, 0x046E, 0x0470, 0x047C | The receiver/emitter evidence supports one control byte. Its gameplay meaning remains unresolved. |
 
 Independent source details include the receiver's actor resolution, leading-text conversion, control offsets and length variants. [Native roster study](https://github.com/TurnaboutHero/vainglory-replay-decoder/blob/f4743be743564e3aadef1566499fe25d9d0f9ffc/vg/docs/NATIVE_ROSTER_2026-10-04.md) Â· [Receiver and record families](https://github.com/TurnaboutHero/vainglory-replay-decoder/blob/f4743be743564e3aadef1566499fe25d9d0f9ffc/vg/docs/EVENT_SEMANTICS_2026-10-04.md)
+
+## Health and death
+
+The local replay contains 1,735 health impacts (0x041E) and 102 death actions (0x0430). The 147219 reader consumes 16 structural bytes for an impact and eight for a death. The replay bodies contain 22 and 14 bytes respectively. The impact prefix contains target and source references, a signed float operand and three presentation fields. Death contains the dying actor and the raw source. The codec retains each suffix. [Native impact serializer and receiver](https://github.com/TurnaboutHero/vainglory-replay-decoder/blob/f4743be743564e3aadef1566499fe25d9d0f9ffc/vg/docs/impact_wire_2026-10-16/01_NATIVE.md) ¡¤ [Death evidence](https://github.com/TurnaboutHero/vainglory-replay-decoder/blob/f4743be743564e3aadef1566499fe25d9d0f9ffc/vg/docs/DEATH_EVENTS_2026-09-09.md)
+
+The server sends negative applied damage and positive healing using the locally observed presentation tuple (5, 0, 0). Both actor references must be visible to the recipient. A victim visible on the previous tick remains eligible for its lethal impact and death. Spectators receive the full field of view, and per-player VGR recordings retain only combat events delivered to that player. The decoder's attack-target request (0x0424) and target-change action (0x0425) describe target selection. A corresponding CE input for a completed attack or ability cast still needs a trace linking the command to the action.
+
+Hero deaths also emit the local modifier form with operand +1, layer 0 and operation 0. Attribute 42 increments the victim's death counter. Attribute 41 increments a hero killer's kill counter. The local replay contains six death modifiers and four kill modifiers with this layout. These counters follow the same visibility rule as the associated death. [Native counter fields](https://github.com/TurnaboutHero/vainglory-replay-decoder/blob/f4743be743564e3aadef1566499fe25d9d0f9ffc/vg/docs/NATIVE_COUNTER_FIELDS_2026-10-04.md)

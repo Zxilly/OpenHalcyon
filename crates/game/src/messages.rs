@@ -203,3 +203,131 @@ pub(super) fn modifier(actor: u32, stat: u8, value: f32) -> Message {
     b.extend([stat, 1]);
     Message::new(0x41c, b)
 }
+
+/// Both references must be known to the recipient. For a lethal tick the victim
+/// may already have left the post-step visibility set.
+fn combat_event(event: &halcyon_sim::Event, visible: impl Fn(u32) -> bool) -> Option<Message> {
+    use halcyon_sim::Event;
+    let (target, source, operand) = match *event {
+        Event::Damage {
+            source,
+            target,
+            amount,
+            ..
+        } => (target, source, Some(-amount)),
+        Event::Heal {
+            source,
+            target,
+            amount,
+            ..
+        } => (target, source, Some(amount)),
+        Event::Death { id, killer } => (id, killer, None),
+        _ => return None,
+    };
+    if !visible(target) || !visible(source) {
+        return None;
+    }
+    let target = u32::from(wire_id(target));
+    let source = u32::from(wire_id(source));
+    Some(match operand {
+        // This presentation tuple occurs with both signs in the local CE
+        // recording. The simulator supplies the applied health change.
+        Some(value) => Message::health_impact(target, source, value, 5, 0, 0),
+        None => Message::actor_death(target, source),
+    })
+}
+
+pub(super) fn append_combat(
+    out: &mut Vec<Message>,
+    event: &halcyon_sim::Event,
+    visible: impl Fn(u32) -> bool,
+) {
+    let Some(message) = combat_event(event, visible) else {
+        return;
+    };
+    out.push(message);
+    if let halcyon_sim::Event::Death { id, killer } = *event
+        && (1..=10).contains(&id)
+    {
+        out.push(hero_counter(id, 42));
+        if (1..=10).contains(&killer) {
+            out.push(hero_counter(killer, 41));
+        }
+    }
+}
+fn hero_counter(id: u32, stat: u8) -> Message {
+    let mut body = vec![0; 22];
+    body[..4].copy_from_slice(&u32::from(wire_id(id)).to_be_bytes());
+    body[4..8].copy_from_slice(&u32::MAX.to_be_bytes());
+    body[8..12].copy_from_slice(&1f32.to_be_bytes());
+    body[12] = stat;
+    Message::new(0x41c, body)
+}
+
+#[cfg(test)]
+mod combat_tests {
+    use super::*;
+    use halcyon_protocol::Fields;
+    use halcyon_sim::Event;
+    #[test]
+    fn visible_hero_death_adds_the_authoritative_counters_once() {
+        let mut out = vec![];
+        let hero = Event::Death { id: 3, killer: 7 };
+        append_combat(&mut out, &hero, |id| id == 3);
+        assert!(out.is_empty());
+        append_combat(&mut out, &hero, |_| true);
+        assert_eq!(
+            out.iter().map(|m| m.opcode).collect::<Vec<_>>(),
+            [0x430, 0x41c, 0x41c]
+        );
+        assert_eq!(
+            (&out[1].body[12..15], &out[2].body[12..15]),
+            (&[42, 0, 0][..], &[41, 0, 0][..])
+        );
+        out.clear();
+        append_combat(&mut out, &Event::Death { id: 21, killer: 3 }, |_| true);
+        assert_eq!(out.len(), 1);
+    }
+    #[test]
+    fn signed_health_and_death_require_both_visible_references() {
+        let damage = Event::Damage {
+            source: 2,
+            target: 4,
+            amount: 7.25,
+            hp: 0.,
+        };
+        let heal = Event::Heal {
+            source: 2,
+            target: 4,
+            amount: 3.5,
+            hp: 8.,
+        };
+        let death = Event::Death { id: 4, killer: 2 };
+        for (e, expected) in [(&damage, -7.25), (&heal, 3.5)] {
+            assert!(combat_event(e, |id| id == 4).is_none());
+            assert!(combat_event(e, |id| id == 2).is_none());
+            let msg = combat_event(e, |_| true).unwrap();
+            assert_eq!(
+                msg.fields().unwrap(),
+                Fields::HealthImpact {
+                    target: 1503,
+                    source: 1501,
+                    operand: expected,
+                    word: 5,
+                    byte: 0,
+                    flag: 0,
+                    remaining: &[0; 6]
+                }
+            );
+        }
+        assert!(combat_event(&death, |id| id == 4).is_none());
+        assert_eq!(
+            combat_event(&death, |_| true).unwrap().fields().unwrap(),
+            Fields::ActorDeath {
+                victim: 1503,
+                source: 1501,
+                remaining: &[0; 6]
+            }
+        );
+    }
+}

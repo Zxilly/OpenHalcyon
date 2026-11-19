@@ -199,7 +199,9 @@ impl Room {
                         out.push(spawn(e, &self.picks, self.data.as_deref()));
                     }
                 }
-                _ => {}
+                _ => {
+                    super::messages::append_combat(&mut out, ev, |_| true);
+                }
             }
         }
         if self.world.tick.is_multiple_of(20) {

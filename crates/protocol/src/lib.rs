@@ -90,6 +90,29 @@ impl Message {
         b.push(stat);
         Self::new(0x41d, b)
     }
+    pub fn actor_death(victim: u32, source: u32) -> Self {
+        let mut body = vec![0; 14];
+        body[..4].copy_from_slice(&victim.to_be_bytes());
+        body[4..8].copy_from_slice(&source.to_be_bytes());
+        Self::new(0x430, body)
+    }
+    pub fn health_impact(
+        target: u32,
+        source: u32,
+        operand: f32,
+        word: u16,
+        byte: u8,
+        flag: u8,
+    ) -> Self {
+        let mut body = vec![0; 22];
+        body[..4].copy_from_slice(&target.to_be_bytes());
+        body[4..8].copy_from_slice(&source.to_be_bytes());
+        body[8..12].copy_from_slice(&operand.to_be_bytes());
+        body[12..14].copy_from_slice(&word.to_be_bytes());
+        body[14] = byte;
+        body[15] = flag;
+        Self::new(0x41e, body)
+    }
     pub fn fields(&self) -> io::Result<Fields<'_>> {
         let b = &self.body;
         let float = |i: usize| -> io::Result<f32> {
@@ -126,6 +149,20 @@ impl Message {
         };
         Ok(match self.opcode {
             0 => Fields::Clock(float(0)?),
+            0x430 => Fields::ActorDeath {
+                victim: number(0)?,
+                source: number(4)?,
+                remaining: &b[8..],
+            },
+            0x41e => Fields::HealthImpact {
+                target: number(0)?,
+                source: number(4)?,
+                operand: float(8)?,
+                word: word(12)?,
+                byte: *b.get(14).ok_or(invalid("missing impact byte"))?,
+                flag: *b.get(15).ok_or(invalid("missing impact flag"))?,
+                remaining: &b[16..],
+            },
             0x3e9 => Fields::GameSetup {
                 first_word: number(0)?,
                 mode: b
@@ -290,6 +327,20 @@ pub struct ControlEntry {
 
 #[derive(Debug, PartialEq)]
 pub enum Fields<'a> {
+    ActorDeath {
+        victim: u32,
+        source: u32,
+        remaining: &'a [u8],
+    },
+    HealthImpact {
+        target: u32,
+        source: u32,
+        operand: f32,
+        word: u16,
+        byte: u8,
+        flag: u8,
+        remaining: &'a [u8],
+    },
     GameSetup {
         first_word: u32,
         mode: &'a [u8],
@@ -599,6 +650,33 @@ impl<R: Read> ReplayReader<R> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn health_and_death_keep_raw_presentation_fields_and_padding() {
+        let data = [0, 1, 0, 2, 0, 3, 0, 4, 0xc0, 0x60, 0, 0, 0, 74, 2, 1, 0xf1];
+        let msg = Message::new(0x41e, data);
+        assert_eq!(
+            msg.fields().unwrap(),
+            Fields::HealthImpact {
+                target: 65538,
+                source: 196612,
+                operand: -3.5,
+                word: 74,
+                byte: 2,
+                flag: 1,
+                remaining: &[0xf1]
+            }
+        );
+        assert!(Message::new(0x41e, &data[..15]).fields().is_err());
+        assert_eq!(
+            Message::new(0x430, &data[..9]).fields().unwrap(),
+            Fields::ActorDeath {
+                victim: 65538,
+                source: 196612,
+                remaining: &[0xc0]
+            }
+        );
+        assert!(Message::new(0x430, &data[..7]).fields().is_err());
+    }
     #[test]
     fn read_only_prefixes_and_compact_spawn_variants() {
         for (code, kind) in [

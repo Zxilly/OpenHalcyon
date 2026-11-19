@@ -115,6 +115,8 @@ fn sanitize(m: &mut Message) -> bool {
             }
         }
         // Audited outbound gameplay opcodes only. Unknown and control messages stay out.
+        0x41e if m.body.len() == 22 && m.body[16..] == [0; 6] => {}
+        0x430 if m.body.len() == 14 && m.body[8..] == [0; 6] => {}
         0x3e9 | 0x3f3 | 0x41c | 0x41d | 0x42e | 0x439 | 0x43d | 0x44b | 0x451 | 0x46c | 0x46f
         | 0x470 => {}
         _ => return false,
@@ -181,6 +183,16 @@ async fn save(dir: PathBuf, first_tick: u64, mut rx: mpsc::Receiver<Sample>) -> 
 mod tests {
     use super::*;
     use halcyon_protocol::ReplayReader;
+    #[test]
+    fn keeps_authored_combat_frames_without_arbitrary_tails() {
+        let mut death = Message::actor_death(1510, 1511);
+        let mut impact = Message::health_impact(1510, 1511, -7., 5, 0, 0);
+        assert!(sanitize(&mut death) && sanitize(&mut impact));
+        death.body.push(0);
+        impact.body[16] = 1;
+        assert!(!sanitize(&mut death) && !sanitize(&mut impact));
+    }
+
     #[tokio::test]
     async fn rotation_marks_only_complete_simulated_windows() {
         let temp = tempfile::tempdir().unwrap();
