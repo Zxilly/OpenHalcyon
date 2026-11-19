@@ -93,8 +93,8 @@ impl Meta {
     }
     pub async fn ranking(&self) -> Result<Value, Error> {
         self.transaction(|tx|{
-            let mut q=tx.prepare("SELECT p.id,p.name,COUNT(*) AS played,SUM(c.won) FROM ce_completed c JOIN players p ON p.id=c.player
-                GROUP BY p.id ORDER BY played DESC,p.id LIMIT 100")?;
+            let mut q=tx.prepare("SELECT p.id,p.name,c.completed,c.wins FROM ce_player_matches c JOIN players p ON p.id=c.player
+                ORDER BY c.completed DESC,c.player LIMIT 100")?;
             let entries=q.query_map([],|r|Ok(json!({"playerUUID":r.get::<_,String>(0)?,"handle":r.get::<_,String>(1)?,"completed":r.get::<_,u64>(2)?,"wins":r.get::<_,u64>(3)?})))?.collect::<Result<Vec<_>,_>>()?;
             Ok(json!({"leaderboards":[{"leaderboardId":"completed","leaderboardTitle":"Completed matches","entries":entries}],"events":[],"time":now()}))
         }).await
@@ -103,8 +103,7 @@ impl Meta {
     pub async fn hero_stats(&self, id: Uuid) -> Result<Value, Error> {
         self.transaction(move |tx| {
             let mut query = tx.prepare(
-                "SELECT hero,count(*),sum(won) FROM ce_completed
-                 WHERE player=? AND hero IS NOT NULL GROUP BY hero ORDER BY hero",
+                "SELECT hero,completed,wins FROM ce_hero_matches WHERE player=? ORDER BY hero",
             )?;
             let rows = query.query_map([id.to_string()], |row| {
                 Ok(

@@ -1,10 +1,10 @@
 use super::{Error, Platform, meta::Meta, player_info};
 use halcyon_platform::PlayerProfile;
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{OptionalExtension, Transaction, params};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-pub(crate) fn initialize(db: &Connection) -> Result<(), Error> {
+pub(crate) fn initialize(db: &Transaction<'_>) -> Result<(), Error> {
     db.execute_batch("CREATE INDEX IF NOT EXISTS ce_event_kind ON events(player,json_extract(body,'$.type'));
         CREATE TABLE IF NOT EXISTS ce_scores(player TEXT NOT NULL,achievement TEXT NOT NULL,score INTEGER NOT NULL,
             PRIMARY KEY(player,achievement));
@@ -23,62 +23,7 @@ pub(crate) fn initialize(db: &Connection) -> Result<(), Error> {
         BEGIN INSERT INTO ce_wait_history SELECT mode,unixepoch()-joined FROM ce_wait WHERE player=NEW.player
         ON CONFLICT(mode) DO UPDATE SET seconds=0.875*seconds+0.125*excluded.seconds;
         DELETE FROM ce_wait WHERE player=NEW.player; END;")?;
-    // Both the local host and a remote ticket's home project trusted results
-    // into events. The unique match key keeps replay and restart idempotent.
-    db.execute_batch(
-        "CREATE TABLE IF NOT EXISTS ce_completed(
-        player TEXT NOT NULL, room TEXT NOT NULL, won INTEGER NOT NULL, hero TEXT,
-        PRIMARY KEY(player,room));
-        CREATE TABLE IF NOT EXISTS ce_migrations(name TEXT PRIMARY KEY);",
-    )?;
-    if db.execute(
-        "INSERT OR IGNORE INTO ce_migrations VALUES('match_mode_and_day')",
-        [],
-    )? == 1
-    {
-        db.execute_batch(
-            "ALTER TABLE ce_completed ADD COLUMN mode TEXT;
-            ALTER TABLE ce_completed ADD COLUMN day INTEGER;
-            CREATE INDEX ce_federated_match ON federated_queue(match_id);
-            UPDATE ce_completed SET mode=(SELECT mode FROM matches WHERE id=ce_completed.room);",
-        )?;
-    }
-    db.execute_batch("
-        DROP TRIGGER IF EXISTS ce_result_event;
-        CREATE TRIGGER ce_result_event AFTER INSERT ON events
-        WHEN json_extract(NEW.body,'$.type')='match_finished'
-            AND coalesce(json_extract(NEW.body,'$.result.reason'),'completed')='completed'
-        BEGIN
-            INSERT OR IGNORE INTO ce_completed SELECT NEW.player,json_extract(NEW.body,'$.matchId'),
-               coalesce(json_extract(p.value,'$.victory')=1,0),json_extract(p.value,'$.hero'),
-               coalesce((SELECT mode FROM matches WHERE id=json_extract(NEW.body,'$.matchId')),
-                    (SELECT mode FROM federated_queue WHERE match_id=json_extract(NEW.body,'$.matchId') LIMIT 1)),unixepoch()/86400
-            FROM (SELECT 1) LEFT JOIN json_each(NEW.body,'$.result.players') p ON p.key=NEW.player;
-        END;
-        CREATE TRIGGER IF NOT EXISTS ce_match_quests AFTER INSERT ON ce_completed
-        WHEN EXISTS(SELECT 1 FROM community_players WHERE id=NEW.player)
-        BEGIN
-            INSERT INTO community_quest_states(player,quest,progress)
-            SELECT NEW.player,id,1 FROM community_quests
-                WHERE category='complete_match' OR (category='win_match' AND NEW.won=1)
-            ON CONFLICT(player,quest) DO UPDATE SET progress=min(progress+1,
-                (SELECT goal FROM community_quests WHERE id=excluded.quest))
-                WHERE state='active';
-        END;",
-    )?;
-    if db.execute(
-        "INSERT OR IGNORE INTO ce_migrations VALUES('materialize_completed_matches')",
-        [],
-    )? == 1
-    {
-        db.execute_batch("INSERT OR IGNORE INTO ce_completed SELECT e.player,json_extract(e.body,'$.matchId'),
-            coalesce(json_extract(p.value,'$.victory')=1,0),json_extract(p.value,'$.hero'),
-            (SELECT mode FROM matches WHERE id=json_extract(e.body,'$.matchId')),NULL
-            FROM events e LEFT JOIN json_each(e.body,'$.result.players') p ON p.key=e.player
-            WHERE json_extract(e.body,'$.type')='match_finished'
-              AND coalesce(json_extract(e.body,'$.result.reason'),'completed')='completed' ORDER BY e.cursor;")?;
-    }
-    Ok(())
+    super::match_stats::initialize(db)
 }
 
 fn field<'a>(params: &'a [Value], pos: usize, names: &[&str]) -> Result<&'a Value, Error> {
@@ -125,27 +70,7 @@ impl Meta {
     pub(crate) async fn player_fields(&self, player: Uuid) -> Result<Value, Error> {
         self.transaction(move|tx| {
             let player=player.to_string();
-            let mut info=tx.query_row("SELECT count(*), coalesce(sum(won),0),count(*) FILTER(WHERE mode NOT LIKE '%tutorial%'),
-                count(*) FILTER(WHERE won=1 AND day=unixepoch()/86400),
-                count(*) FILTER(WHERE won=1 AND mode LIKE '%aral%'), count(*) FILTER(WHERE won=1 AND mode LIKE '%blitz%'),
-                count(*) FILTER(WHERE won=1 AND mode='blitz_rounds_casual'),count(*) FILTER(WHERE won=1 AND mode LIKE '%casual%'),
-                count(*) FILTER(WHERE won=1 AND mode LIKE '%ranked%') FROM ce_completed WHERE player=?", [&player],
-                |r|Ok(json!({"completed":r.get::<_,u64>(0)?,"wins":r.get::<_,u64>(1)?,
-                    "completed_non_tutorial":r.get::<_,u64>(2)?,"winsToday":r.get::<_,u64>(3)?,
-                    "wins_aral":r.get::<_,u64>(4)?,"wins_blitz":r.get::<_,u64>(5)?,
-                    "wins_blitz_rounds_casual":r.get::<_,u64>(6)?,"wins_casual":r.get::<_,u64>(7)?,
-                    "wins_ranked":r.get::<_,u64>(8)?})))?;
-            let mut streak=tx.prepare("SELECT won FROM ce_completed WHERE player=? ORDER BY rowid DESC")?;
-            let mut streak=streak.query([&player])?;
-            if let Some(row)=streak.next()? {
-                let won:bool=row.get(0)?;
-                let mut length=1u64;
-                while let Some(row)=streak.next()? {
-                    if row.get::<_,bool>(0)?!=won {break;}
-                    length+=1;
-                }
-                info[if won {"winStreak"} else {"lossStreak"}]=json!(length);
-            }
+            let mut info=super::match_stats::player_fields(tx, &player)?;
             let mut inv=tx.prepare("SELECT item,count FROM community_inventory i JOIN community_items d ON d.id=i.item WHERE player=? AND d.slot='currency'")?;
             let balances=inv.query_map([&player],|r|Ok((r.get::<_,String>(0)?,json!(r.get::<_,u32>(1)?))))?
                 .collect::<rusqlite::Result<serde_json::Map<String,Value>>>()?;

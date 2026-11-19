@@ -3,6 +3,7 @@ mod activity;
 mod auth;
 mod community;
 mod content;
+mod match_stats;
 mod meta;
 mod notify;
 mod party_notify;
