@@ -90,7 +90,10 @@ pub enum Command {
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Event {
-    Learned { source: u32, slot: AbilitySlot },
+    Learned {
+        source: u32,
+        slot: AbilitySlot,
+    },
     Purchase(Purchase),
     GoldAward {
         id: u32,
@@ -852,7 +855,10 @@ impl World {
                 }
                 for slot in [AbilitySlot::C, AbilitySlot::A, AbilitySlot::B] {
                     if self.learn(i, slot).is_ok() {
-                        events.push(Event::Learned { source: self.entities[i].id, slot });
+                        events.push(Event::Learned {
+                            source: self.entities[i].id,
+                            slot,
+                        });
                         break;
                     }
                 }
