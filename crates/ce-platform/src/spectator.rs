@@ -34,12 +34,27 @@ pub(crate) async fn begin(
             .ok_or(Error::Invalid)?;
         Uuid::parse_str(id).map_err(|_| Error::Invalid)?
     };
+    if let Some(peers) = &platform.peers
+        && peers.spectate_friend(session, friend).await?
+    {
+        return platform.start_session(session, &platform.app.profile(session).await?);
+    }
     platform.app.start_spectating(session, friend).await?;
     platform.start_session(session, &platform.app.profile(session).await?)
 }
 
-pub(crate) async fn exit(platform: &Platform, session: &str) -> Result<Value, Error> {
+pub(crate) async fn leave(platform: &Platform, session: &str) -> Result<(), Error> {
+    if let Some(peers) = &platform.peers
+        && peers.leave_spectating(session).await?
+    {
+        return Ok(());
+    }
     platform.app.leave_spectator(session).await?;
+    Ok(())
+}
+
+pub(crate) async fn exit(platform: &Platform, session: &str) -> Result<Value, Error> {
+    leave(platform, session).await?;
     Ok(player_info(&platform.app.profile(session).await?))
 }
 

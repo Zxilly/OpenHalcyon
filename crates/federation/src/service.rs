@@ -26,6 +26,7 @@ pub struct Federation {
     pub(crate) membership_lock: Arc<tokio::sync::Mutex<()>>,
     pub(crate) net: Transport,
     pub(crate) offers: crate::capacity::Offers,
+    pub(crate) observers: crate::observation::Observers,
     stop: watch::Sender<bool>,
     listener_closed: watch::Receiver<bool>,
 }
@@ -63,6 +64,7 @@ impl Federation {
             store,
             net,
             offers: Default::default(),
+            observers: Default::default(),
             stop,
             listener_closed,
         };
@@ -278,6 +280,9 @@ impl Federation {
         }
         if path == "/federation/v1/membership" && parts.method == Method::GET {
             return Ok(axum::Json(self.members().await?).into_response());
+        }
+        if path == "/internal/observe" && parts.method == Method::POST {
+            return cbor(&self.observer_here(peer, decode(&body)?).await?);
         }
         if !self.voter(peer) {
             return Ok(StatusCode::FORBIDDEN.into_response());

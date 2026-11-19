@@ -72,7 +72,8 @@ impl Roster {
             "SELECT EXISTS(SELECT 1 FROM players WHERE id=?1),
                     EXISTS(SELECT 1 FROM tickets WHERE player=?1)
                     OR EXISTS(SELECT 1 FROM federated_queue_members WHERE player=?1 AND released=0)
-                    OR EXISTS(SELECT 1 FROM spectator_sessions WHERE player=?1)",
+                    OR EXISTS(SELECT 1 FROM spectator_sessions WHERE player=?1)
+                    OR EXISTS(SELECT 1 FROM pooled_spectators WHERE player=?1)",
         )?;
         for member in &self.players {
             let (registered, occupied): (bool, bool) =

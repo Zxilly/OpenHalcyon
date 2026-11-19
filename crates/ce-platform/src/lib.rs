@@ -380,8 +380,8 @@ async fn dispatch(s: &Platform, m: &str, params: &[Value]) -> Result<(String, Va
         "spectateFriend" => spectator::begin(s, &session, params).await?,
         "spectatorExitMatch" => spectator::exit(s, &session).await?,
         "exitLobby" | "rejectMatch" | "notifyExitPostMatch" => {
-            if spectator::is_spectating(&profile) {
-                s.app.leave_spectator(&session).await?;
+            if spectator::is_spectating(&profile) || profile.lobby.is_none() {
+                spectator::leave(s, &session).await?;
             } else if profile.lobby.is_some() {
                 match &s.peers {
                     Some(peers) => peers.leave(&session).await?,
@@ -438,7 +438,7 @@ async fn dispatch(s: &Platform, m: &str, params: &[Value]) -> Result<(String, Va
         m if content::Content::handles(m) => s.content_rpc(&profile, m, params).await?,
         "getLeaderboardData" => s.meta.ranking().await?,
         "endSession" => {
-            s.app.leave_spectator(&session).await?;
+            spectator::leave(s, &session).await?;
             s.app.end_session(&session).await?;
             s.community
                 .observe_player(id, profile.name.clone(), false)

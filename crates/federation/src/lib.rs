@@ -8,6 +8,8 @@ mod membership;
 pub use capacity::Capacity;
 pub use membership::{MemberChange, Members, PoolAdmin};
 mod net;
+mod observation;
+pub use observation::{ObserverReply, ObserverRequest};
 mod service;
 mod store;
 pub use service::Federation;

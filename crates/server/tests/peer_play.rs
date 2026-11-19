@@ -6,7 +6,7 @@ use axum::{
     http::Request,
 };
 use halcyon_ce_platform::{Config as CeConfig, Platform};
-use halcyon_federation::{Config as FederationConfig, Federation};
+use halcyon_federation::{Config as FederationConfig, Federation, ObserverRequest};
 use halcyon_game::Rooms;
 use halcyon_matchmaking::{Phase, Pool};
 use halcyon_peer_play::{Config, PeerPlay};
@@ -589,6 +589,154 @@ async fn party_game_survives_two_home_elections_and_replays_result_once() {
     )
     .await;
 
+    let viewer_home = &node(&cluster, homes[0]).rpc;
+    rpc(
+        viewer_home,
+        "renamePlayerHandle",
+        json!([tokens[0], "HarborCaptain"]),
+    )
+    .await;
+    let guest = rpc(
+        viewer_home,
+        "createGuestPlayer",
+        json!([
+            "kindred",
+            "en",
+            "US",
+            "production",
+            "en",
+            "BAKLAVA",
+            "android",
+            "",
+            "147219",
+            1,
+            "device",
+            "model",
+            "0"
+        ]),
+    )
+    .await;
+    let viewer = rpc(
+        viewer_home,
+        "startSessionForPlayer",
+        json!([guest["returnValue"]["playerUUID"]]),
+    )
+    .await;
+    let viewer_id: Uuid =
+        serde_json::from_value(viewer["returnValue"]["playerUUID"].clone()).unwrap();
+    let viewer_token = &viewer["sessionToken"];
+    let denied = rpc_result(
+        viewer_home,
+        "spectateFriend",
+        json!([viewer_token, players[0]]),
+    )
+    .await;
+    assert_ne!(
+        denied["code"], 0,
+        "a local spectator needs a confirmed friendship"
+    );
+    let wrong_home = node(&cluster, 1)
+        .raft
+        .observer_request(
+            host_id,
+            ObserverRequest {
+                room: id,
+                request: Uuid::new_v4(),
+                viewer: viewer_id,
+                target: players[0],
+                revoke: false,
+            },
+        )
+        .await;
+    assert!(
+        wrong_home.is_err(),
+        "a member cannot vouch for a target on another home"
+    );
+
+    rpc(
+        viewer_home,
+        "friendRequestIssueByHandle",
+        json!([viewer_token, "HarborCaptain"]),
+    )
+    .await;
+    rpc(
+        viewer_home,
+        "friendRequestConfirm",
+        json!([tokens[0], viewer_id]),
+    )
+    .await;
+    let grant = rpc(
+        viewer_home,
+        "spectateFriend",
+        json!([viewer_token, players[0]]),
+    )
+    .await;
+    let observation = &grant["returnValue"];
+    assert_eq!(observation["state"], "spectating");
+    assert_eq!(observation["matchId"], id.to_string());
+    let grant_id: Uuid = serde_json::from_value(observation["spectatorId"].clone()).unwrap();
+    let observer_address = format!(
+        "{}:{}",
+        observation["host"].as_str().unwrap(),
+        observation["port"]
+    );
+    assert_ne!(observer_address, addr);
+    let mut viewing = login(&observer_address, grant_id, &cipher).await;
+    until(&mut viewing, &cipher, 0x459).await;
+    let occupied = rpc_result(
+        viewer_home,
+        "joinLobby",
+        json!([viewer_token,{"lobby":"5v5_casual"}]),
+    )
+    .await;
+    assert_ne!(
+        occupied["code"], 0,
+        "an active observer holds an exclusive home claim"
+    );
+    rpc(viewer_home, "spectatorExitMatch", json!([viewer_token])).await;
+    state(viewer_home, viewer_token, "menus").await;
+    timeout(Duration::from_secs(3), async {
+        let mut bytes = [0; 4096];
+        while viewing.read(&mut bytes).await.unwrap_or(0) != 0 {}
+    })
+    .await
+    .expect("remote host did not revoke the observer stream");
+    let renewed = rpc(
+        viewer_home,
+        "spectateFriend",
+        json!([viewer_token, players[0]]),
+    )
+    .await;
+    assert_eq!(renewed["returnValue"]["state"], "spectating");
+    assert_ne!(renewed["returnValue"]["spectatorId"], grant_id.to_string());
+    rpc(
+        viewer_home,
+        "setPresenceInvisibility",
+        json!([tokens[0], true]),
+    )
+    .await;
+    state(viewer_home, viewer_token, "menus").await;
+    let hidden = rpc_result(
+        viewer_home,
+        "spectateFriend",
+        json!([viewer_token, players[0]]),
+    )
+    .await;
+    assert_ne!(hidden["code"], 0);
+    rpc(
+        viewer_home,
+        "setPresenceInvisibility",
+        json!([tokens[0], false]),
+    )
+    .await;
+    let reap = rpc(
+        viewer_home,
+        "spectateFriend",
+        json!([viewer_token, players[0]]),
+    )
+    .await;
+    assert_eq!(reap["returnValue"]["state"], "spectating");
+
     // Finish with the worker offline, then rebuild it from the same host journal.
     let gs = cluster[2].as_mut().unwrap();
     timeout(Duration::from_secs(8), gs.peer_play.shutdown())
@@ -639,6 +787,7 @@ async fn party_game_survives_two_home_elections_and_replays_result_once() {
             "exactly one settlement was applied for each player"
         );
     }
+    state(&node(&cluster, homes[0]).rpc, viewer_token, "menus").await;
     let host = node(&cluster, 2);
     let pool = wait_pool(host, |state| {
         state.allocations()[&id].phase == Phase::Finished

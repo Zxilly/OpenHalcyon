@@ -2,6 +2,8 @@ mod accounts;
 mod chat;
 mod federation;
 mod notification;
+mod pooled_spectator;
+pub use pooled_spectator::PooledSpectator;
 mod queue;
 mod recovery;
 mod spectator;
@@ -218,6 +220,7 @@ impl AppState {
             federation::initialize(&tx)?;
             notification::initialize(&tx)?;
             spectator::initialize(&tx)?;
+            pooled_spectator::initialize(&tx)?;
             tx.commit()?;
         }
         accounts::initialize(&db)?;
@@ -671,15 +674,16 @@ impl AppState {
 
 const ONLINE_SQL: &str = "s.player IS NOT NULL AND p.last_seen >= unixepoch() - 90";
 const PROFILE_FIELDS: &str =
-    "p.id, p.name, coalesce(t.mode, f.mode, sm.mode), coalesce(m.id, f.match_id, sm.id),
-     coalesce(m.phase, f.phase, CASE WHEN sm.id IS NOT NULL THEN 'spectating' END),
-     coalesce(m.address, f.address, sp.address), coalesce(m.result, f.result), sp.spectator_id";
+    "p.id, p.name, coalesce(t.mode, f.mode, sm.mode, ps.mode), coalesce(m.id, f.match_id, sm.id, ps.match_id),
+     coalesce(m.phase, f.phase, CASE WHEN sm.id IS NOT NULL OR ps.match_id IS NOT NULL THEN 'spectating' END),
+     coalesce(m.address, f.address, sp.address, ps.address), coalesce(m.result, f.result), coalesce(sp.spectator_id, ps.spectator_id)";
 const PROFILE_JOINS: &str = "FROM players p LEFT JOIN sessions s ON s.player=p.id
      LEFT JOIN tickets t ON t.player=p.id LEFT JOIN matches m ON m.id=t.match_id
      LEFT JOIN federated_queue_members fm ON fm.player=p.id AND fm.released=0
      LEFT JOIN federated_queue f ON f.ticket=fm.ticket AND f.phase<>'closed'
      LEFT JOIN spectator_sessions sp ON sp.player=p.id AND sp.spectator_id IS NOT NULL
-     LEFT JOIN matches sm ON sm.id=sp.match_id AND sm.phase='playing'";
+     LEFT JOIN matches sm ON sm.id=sp.match_id AND sm.phase='playing'
+     LEFT JOIN pooled_spectators ps ON ps.player=p.id AND ps.spectator_id IS NOT NULL";
 
 fn read_activity(row: &rusqlite::Row<'_>) -> rusqlite::Result<PlayerActivity> {
     Ok(PlayerActivity {

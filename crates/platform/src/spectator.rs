@@ -71,7 +71,8 @@ impl AppState {
                 }
                 let occupied: bool = tx.query_row(
                     "SELECT EXISTS(SELECT 1 FROM tickets WHERE player=?1)
-                      OR EXISTS(SELECT 1 FROM federated_queue_members WHERE player=?1 AND released=0)",
+                      OR EXISTS(SELECT 1 FROM federated_queue_members WHERE player=?1 AND released=0)
+                      OR EXISTS(SELECT 1 FROM pooled_spectators WHERE player=?1)",
                     [&actor], |row| row.get(0),
                 )?;
                 if occupied {

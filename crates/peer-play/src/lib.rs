@@ -17,6 +17,7 @@ use std::{
 use tokio::sync::watch;
 use uuid::Uuid;
 mod journal;
+mod observation;
 use journal::Journal;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -54,6 +55,7 @@ impl PeerPlay {
             "node identity mismatch"
         );
         ensure!(!config.rules_digest.is_empty(), "empty rules digest");
+        observation::attach(&federation, rooms.clone());
         let journal = Journal::open(&config.database, config.pool_id, config.node_id)?;
         let inner = Arc::new(Inner {
             fed: federation,
@@ -66,13 +68,19 @@ impl PeerPlay {
         let (done_tx, done) = watch::channel(false);
         let worker = inner.clone();
         tokio::spawn(async move {
-            let mut state = Worker::default();
-            loop {
-                tokio::select! {_=stopped.changed()=>break,_=tokio::time::sleep(Duration::from_millis(300))=>{}}
-                if let Err(e) = state.round(&worker).await {
-                    tracing::debug!(%e,"peer matchmaking round deferred");
-                }
-            }
+            let observer_stop = stopped.clone();
+            tokio::join!(
+                async {
+                    let mut state = Worker::default();
+                    loop {
+                        tokio::select! {_=stopped.changed()=>break,_=tokio::time::sleep(Duration::from_millis(300))=>{}}
+                        if let Err(e) = state.round(&worker).await {
+                            tracing::debug!(%e,"peer matchmaking round deferred");
+                        }
+                    }
+                },
+                observation::reconcile(&worker, observer_stop),
+            );
             done_tx.send_replace(true);
         });
         Ok(Self { inner, stop, done })
