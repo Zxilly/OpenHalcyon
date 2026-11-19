@@ -2,7 +2,9 @@
 //! Vision, spawn offsets, windup, attack cadence, retreat and respawn are project rules.
 mod ai;
 mod combat;
+mod layout;
 mod nav;
+use layout::Layout;
 mod progression;
 mod score;
 mod shop;
@@ -24,6 +26,7 @@ pub fn rules_digest(data: Option<&GameData>) -> String {
         include_str!("progression.rs"),
         include_str!("ai.rs"),
         include_str!("nav.rs"),
+        include_str!("layout.rs"),
         include_str!("shop.rs"),
         include_str!("score.rs"),
     ] {
@@ -266,6 +269,7 @@ pub struct World {
     pub winner: Option<u8>,
     pub entities: Vec<Entity>,
     stats: [Stats; 8],
+    layout: Layout,
     next_id: u32,
     next_item: u32,
     seed: u64,
@@ -314,7 +318,7 @@ impl World {
                 self.next_item,
                 self.first_wave,
                 self.wave_interval,
-                &self.stats,
+                (&self.stats, &self.layout),
                 &self.abilities,
                 &self.shop,
                 self.first_blood,
@@ -410,6 +414,7 @@ impl World {
     /// actor IDs for the humans and structures remain unchanged.
     pub fn use_six_human_roster(&mut self) -> Result<(), String> {
         if self.tick != 0
+            || !matches!(self.layout, Layout::Validation)
             || self
                 .entities
                 .iter()
@@ -426,8 +431,8 @@ impl World {
 
     /// Apply team slots from the reserved roster before the first simulation step.
     pub fn assign_teams(&mut self, human_teams: &[u8]) -> Result<(), String> {
-        if self.tick != 0 {
-            return Err("draft has ended".into());
+        if self.tick != 0 || !matches!(self.layout, Layout::Validation) {
+            return Err("team assignment closed".into());
         }
         let heroes = self
             .entities
@@ -503,6 +508,7 @@ impl World {
             winner: None,
             entities: Vec::with_capacity(50),
             next_id: 1,
+            layout: Layout::default(),
             next_item: 40000,
             stats,
             seed,
@@ -590,7 +596,7 @@ impl World {
                     a.team == team
                         && a.hp > 0.
                         && a.position.dist(e.position) <= SIGHT
-                        && nav::clear(a.position, e.position)
+                        && self.layout.clear(a.position, e.position)
                 }))
     }
     pub fn command(&mut self, id: u32, cmd: Command) -> Result<(), &'static str> {
@@ -609,7 +615,7 @@ impl World {
             return Err("dead");
         }
         match cmd {
-            Command::MoveTo(p) if !nav::walkable(p) => {
+            Command::MoveTo(p) if !self.layout.walkable(p) => {
                 return Err("outside lane");
             }
             Command::Buy(item) => return self.buy(i, item).map(|_| ()),
@@ -640,7 +646,11 @@ impl World {
         if e.stats.speed <= 0. {
             return;
         }
-        let Some(waypoint) = e.path.next(e.position, p, &mut self.nav_budget) else {
+        let next = match &self.layout {
+            Layout::Validation => e.path.next(e.position, p, &mut self.nav_budget),
+            Layout::SoloMid { .. } => self.layout.clear(e.position, p).then_some(p),
+        };
+        let Some(waypoint) = next else {
             return;
         };
         let pace = if e.status.slow_until > self.tick {
@@ -697,8 +707,7 @@ impl World {
                     .into_iter()
                     .enumerate()
                 {
-                    let mut p = base(team);
-                    p.y = j as f32 - 1.5;
+                    let p = self.layout.wave(team, j);
                     let id = self.spawn(team, Kind::Minion, slot, p, false);
                     let minion = self.entities.last_mut().unwrap();
                     // Last printed wave level starts at 2, then increases by half a level per minute.
@@ -728,7 +737,7 @@ impl World {
                     e.energy = e.max_energy;
                     e.status = Default::default();
                     e.path = Default::default();
-                    e.position = base(e.team);
+                    e.position = self.layout.home(e);
                     events.push(Event::Spawn { id: e.id });
                     events.push(Event::Respawn {
                         id: e.id,
@@ -737,12 +746,12 @@ impl World {
                 }
                 continue;
             }
-            if e.kind == Kind::Hero && e.position.dist(base(e.team)) < 3. {
+            if e.kind == Kind::Hero && self.layout.at_base(e, false) {
                 e.hp = (e.hp + e.max_hp * 0.003).min(e.max_hp);
             }
             if e.kind == Kind::Hero {
                 e.energy = (e.energy
-                    + if e.position.dist(base(e.team)) < 3. {
+                    + if self.layout.at_base(e, false) {
                         1.2
                     } else {
                         0.10
@@ -759,7 +768,7 @@ impl World {
                     || hero.winding.is_some()
                     || hero.status.channel_until >= self.tick)
             {
-                let _ = self.order(i, Command::MoveTo(base(hero.team)));
+                let _ = self.order(i, Command::MoveTo(self.layout.home(hero)));
             }
             if self.entities[i].status.channel_until >= self.tick {
                 continue;
@@ -773,7 +782,7 @@ impl World {
             let offset = self.tick + u64::from(e.id);
             let decide = automated && offset.is_multiple_of(self.decision_interval(e));
             if automated && e.bot && offset.is_multiple_of(5) {
-                if e.gold >= 300 && e.inventory.len() < 6 && e.position.dist(base(e.team)) <= 3. {
+                if e.gold >= 300 && e.inventory.len() < 6 && self.layout.at_base(e, true) {
                     let item = if e.inventory.len() == 2 {
                         BasicItem::LightArmor
                     } else {
@@ -821,7 +830,7 @@ impl World {
                         continue;
                     }
                     if e.position.dist(t.position) > e.stats.range
-                        || !nav::clear(e.position, t.position)
+                        || !self.layout.clear(e.position, t.position)
                     {
                         let p = t.position;
                         self.entities[i].winding = None;

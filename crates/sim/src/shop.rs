@@ -131,7 +131,7 @@ impl World {
             return Err("item unavailable");
         }
         let h = &mut self.entities[i];
-        if h.kind != Kind::Hero || h.position.dist(base(h.team)) > 3. {
+        if h.kind != Kind::Hero || !self.layout.at_base(h, true) {
             return Err("outside base shop");
         }
         let blade = self.shop.0[BasicItem::WeaponBlade as usize];

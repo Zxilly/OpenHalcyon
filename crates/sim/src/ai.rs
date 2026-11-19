@@ -7,15 +7,17 @@ impl World {
                 continue;
             }
             let p = &mut self.rally[e.team as usize];
-            if p.is_none_or(|old| old.dist(base(e.team)) < e.position.dist(base(e.team))) {
+            if p.is_none_or(|old| {
+                old.dist(self.layout.home(e)) < e.position.dist(self.layout.home(e))
+            }) {
                 *p = Some(e.position)
             }
         }
     }
     pub(super) fn decide(&self, i: usize) -> Command {
         let e = &self.entities[i];
-        let home = base(e.team);
-        let enemy = base(1 - e.team);
+        let home = self.layout.home(e);
+        let enemy = self.layout.objective(1 - e.team);
         if e.kind == Kind::Hero && e.hp < e.max_hp * 0.23 {
             return Command::MoveTo(home);
         }
@@ -31,7 +33,7 @@ impl World {
                 continue;
             }
             let d = e.position.dist(t.position);
-            if d > sensor || !nav::clear(e.position, t.position) {
+            if d > sensor || !self.layout.clear(e.position, t.position) {
                 continue;
             }
             let hit_tick = self.tick + 3 + (d * TICK_HZ as f32 / 18.).ceil() as u64;

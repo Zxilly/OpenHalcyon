@@ -219,10 +219,10 @@ impl World {
             (
                 Skill::Sigil | Skill::Suppress | Skill::Wind | Skill::Strike,
                 CastTarget::Point(p),
-            ) if nav::walkable(p) => p,
+            ) if self.layout.walkable(p) => p,
             _ => return Err("invalid cast target"),
         };
-        if point.dist(e.position) > r.range || !nav::clear(e.position, point) {
+        if point.dist(e.position) > r.range || !self.layout.clear(e.position, point) {
             return Err("cast out of range");
         }
         Ok((s, rank, r))
