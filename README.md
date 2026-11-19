@@ -6,12 +6,11 @@ The workspace targets stable Rust. The MIT license covers the project's original
 
 ## What works today
 
-The original Android client can create or recover a guest, reach the menu,
-enter the 5v5 Solo Bots queue, select a hero and reach **LOCKED IN**.
-The transition from the draft to a rendered battlefield still needs a
-successful CE game-channel exchange. The repository documents which fields
-come from the Android executable, which appeared in recorded traffic, and
-which simulation rules the project supplies. [CE compatibility](docs/protocol-coverage.md)
+The original Android client can create or recover a guest, queue for 5v5 Solo
+Bots, select a hero and skin, and load the battlefield. On build 147219 an
+isolated client displayed the ten-player loading screen, build selection, the
+battlefield and HUD. Moving the touchscreen joystick sent both movement
+opcodes on the original TCP connection. [CE compatibility](docs/protocol-coverage.md)
 
 The Rust game host runs a match through crystal destruction and settlement.
 An integration test starts three independent server processes, signs two CE

@@ -60,14 +60,21 @@ That exchange includes 0x0458, 0x046B, 0x045E and 0x0455 in both directions.
 These counts describe a single recorded exchange. The VGR counts describe
 the in-game timeline and exclude draft traffic.
 
-The Android client selected an actual hero and skin and displayed **LOCKED IN**.
-The local CE capture contains subsequent client hellos, but no matching server
-acknowledgement or initial world snapshot for a successful handoff. Historical
-ARAL logs truncate frames to 48 bytes. A VGR replay starts inside the game and
-does not encode the live CE draft-to-world negotiation. The native transition
-to the battlefield, touchscreen actions there and the return to the menu after
-a complete native match remain open. The isolated emulator run and the scripted
-game-socket tests measure different stages.
+In an isolated Android 147219 Solo Bots run the server sent ten full 0x03EE
+rosters and 0x046C after lock. The client displayed a ten-player VS screen,
+including Dark Parade Adagio in the selected seat. After loading assets it
+sent 0x046E and 0x0471 on the existing connection. The request contained the
+reserved actor and flag 1. The server replied with the native mode, rosters,
+clock, hero spawns, the two acknowledgements and a 0x045C seat table.
+The client opened Choose a Build and rendered the battlefield after selection.
+A touchscreen joystick swipe produced 0x03F4 and 0x03F5 on the same socket.
+The host also supports a separately authenticated data connection.
+
+The nine historical TCP archives supply full-sized encrypted frames, including
+seven ARAL matches. Their decoded text previews only preserve prefixes. The
+offline inventory validated 1,824 client frames and 398,293 server frames after
+the plain handshakes. The archives do not identify the originating build.
+[Live TCP coverage](live-captures.md) · [ARAL scene negotiation](aral.md)
 
 The static iOS inventory was checked against the local HackedGlory research
 archive at commit `cf2cc57016f0460cc9404031f4a2b7653af6ebaf`. Historical

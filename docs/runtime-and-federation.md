@@ -10,7 +10,7 @@
 |---|---|
 | HTTP 引导与 HTTPS 平台 | 200 加一行 host:port；旧客户端 POST 的 Content-Type 可为表单而正文是 JSON。游客首启 createGuestPlayer，再启 getPlayerForGuestAccount，随后 startSessionForPlayer、getPlayerInfo、exitLobby、update 和 manifests。用实际响应信封与 token 轮换验收。 |
 | 状态推送与匹配 | 菜单心跳由 update 维持。notify WebSocket 和 fallback long-poll 共享状态序列及 time/tag 游标；聊天另有通道。joinLobby 后按实测状态推进，区分 bots 自动确认与真人接受/拒绝。playing 下发 host、port、matchId。 |
-| GS 两条 TCP 连接 | 选人/控制与稍后的游戏数据连接归属同一局。长度为 u16 BE；客户端 hello 和首个服务端 ACK 均有明文样本。用两局向量验证 matchId 派生与块字序；参考脚本实际是分别反转每个 32 位字内的字节。先验 setup、模式、目录、5v5 名册和锁人，再单独验第二条连接及世界快照。 |
+| GS 连接 | 147219 的 5v5 Solo Bots 可在选人连接上进入战场。锁定后发送十份完整 0x03EE 名册和 0x046C，依客户端的 0x046E、0x0471 继续载入。同一连接收到了原版摇杆的 0x03F4、0x03F5。独立数据连接也可接入。长度前缀为 u16 BE，hello 与首个 ACK 为明文，每块分别转换两个 32 位字的字节序。 |
 | Bot 名册与实体 | 5v5 选人 0x0459、回放玩家信息 0x03EE 可核对 Bot 占位、名字和英雄映射；0x03F3 出生使用实体类型表与皮肤标识。移动命令 0x03F4 有目标点样本；普通攻击、选技能、施法目标的完整真人输入分别做真机对照。 |
 | 战斗输出与回放 | 位置 0x042E、状态和属性增量与回放按实体及时间对齐。静态 reader 长度、填充后的线上长度、ZB 类型槽分别处理。VGR 每段可重复携带完整开场且有内部事件；逐段初始化不能当成线上反复出生。文档对 0x041D 子类型 8 有两种解释，保留原值直到行为实验区分。 |
 
