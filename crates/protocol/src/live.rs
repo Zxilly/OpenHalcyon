@@ -3,6 +3,8 @@ use super::{ActionWords, EquippedTalent, Fields, TalentSelection};
 
 #[derive(Debug, PartialEq)]
 pub enum LiveFields<'a> {
+    SurrenderRequest(u8),
+    AralSurrenderBoard(super::AralSurrenderBoard),
     AbilityTarget {
         target: u32,
         selector: u8,
@@ -95,7 +97,8 @@ pub(super) fn fields(op: u16, b: &[u8]) -> Option<Fields<'_>> {
                 TalentSelection::from_wire(b[0])?,
             )));
         }
-        0x456 | 0x461 | 0x462 | 0x46b | 0x472 | 0x485 if expected(1) => {
+        0x472 if expected(1) => return Some(Fields::Live(LiveFields::SurrenderRequest(b[0]))),
+        0x456 | 0x461 | 0x462 | 0x46b | 0x485 if expected(1) => {
             return Some(Fields::ControlByte {
                 value: b[0],
                 remaining: &b[1..],
@@ -132,7 +135,10 @@ pub(super) fn fields(op: u16, b: &[u8]) -> Option<Fields<'_>> {
                 words: [word(5), word(9), word(13)],
             }));
         }
-        0x473 if expected(151) => {
+        0x473 if expected(151) || b.len() == 155 => {
+            if let Some(board) = super::AralSurrenderBoard::read(b) {
+                return Some(Fields::Live(LiveFields::AralSurrenderBoard(board)));
+            }
             return Some(Fields::Live(LiveFields::TwoTables {
                 first: word(0),
                 left: b[4..68].as_chunks::<4>().0.try_into().unwrap(),

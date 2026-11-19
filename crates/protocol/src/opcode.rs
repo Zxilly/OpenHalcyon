@@ -75,6 +75,8 @@ opcodes! {
     LockSelection = 0x0463,
     SetupC = 0x046b,
     ModeName = 0x046f,
+    SetSurrenderStateRequest = 0x0472,
+    TeamSurrenderStateChanged = 0x0473,
     CooldownSync = 0x048a,
     AggroState = 0x048c,
 }
