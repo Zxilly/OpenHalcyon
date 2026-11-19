@@ -20,7 +20,7 @@ fn mode_name(queue: &str) -> &'static str {
         "5v5_private_draft" => "*GameMode_5v5_PrivateDraft*",
         "5v5_private_bots" => "*GameMode_5v5_PrivateBots*",
         "5v5_practice" => "*GameMode_5v5_Practice*",
-        "aral_casual" | "aral" => "*GameMode_Aral_Casual*",
+        "aral_casual" | "casual_aral" | "aral" => "*GameMode_Aral_Casual*",
         // Includes Android's 5v5_pvp_casual and operator-defined queues.
         // Only the wire label is resolved here; the queue ID remains intact.
         _ => "*GameMode_5v5_Casual*",
@@ -361,6 +361,7 @@ mod mode_tests {
             ("5v5_private_bots", "*GameMode_5v5_PrivateBots*"),
             ("5v5_practice", "*GameMode_5v5_Practice*"),
             ("aral_casual", "*GameMode_Aral_Casual*"),
+            ("casual_aral", "*GameMode_Aral_Casual*"),
             ("custom_pool", "*GameMode_5v5_Casual*"),
             ("3v3_standard", "*GameMode_5v5_Casual*"),
         ] {
