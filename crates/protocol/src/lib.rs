@@ -18,6 +18,8 @@ pub use statistics::{
 mod aral;
 pub use aral::AralRoster;
 mod abilities;
+mod buff_actions;
+pub use buff_actions::{BuffApplication, BuffExtras, BuffPrefix};
 mod gold;
 mod item_actions;
 pub use item_actions::ItemAction;
@@ -157,6 +159,9 @@ impl Message {
     }
     pub fn fields(&self) -> io::Result<Fields<'_>> {
         let b = &self.body;
+        if let Some(application) = BuffApplication::decode(self.opcode, b) {
+            return Ok(Fields::BuffApplication(application));
+        }
         let float = |i: usize| -> io::Result<f32> {
             Ok(f32::from_be_bytes(
                 b.get(i..i + 4)
@@ -214,20 +219,24 @@ impl Message {
                     &b[8..]
                 },
             },
-            0x441 | 0x445 if b.len() == 14 => Fields::BuffAction {
-                actor: number(0)?,
-                key: number(4)?,
-                duration: if self.opcode == 0x441 {
-                    Some(float(8)?)
-                } else {
-                    None
-                },
-                remaining: if self.opcode == 0x441 {
-                    &b[12..]
-                } else {
-                    &b[8..]
-                },
-            },
+            0x441 | 0x445 | 0x446
+                if b.len() == 14 || b.len() == if self.opcode == 0x441 { 12 } else { 8 } =>
+            {
+                Fields::BuffAction {
+                    actor: number(0)?,
+                    key: number(4)?,
+                    duration: if self.opcode == 0x441 {
+                        Some(float(8)?)
+                    } else {
+                        None
+                    },
+                    remaining: if self.opcode == 0x441 {
+                        &b[12..]
+                    } else {
+                        &b[8..]
+                    },
+                }
+            }
             0x42c if b.len() == 6 => Fields::CampVisibility {
                 actor: number(0)?,
                 bytes: [b[4], b[5]],
@@ -569,6 +578,7 @@ pub enum Fields<'a> {
         replacement: Option<u32>,
         remaining: &'a [u8],
     },
+    BuffApplication(BuffApplication<'a>),
     BuffAction {
         actor: u32,
         key: u32,
@@ -1027,7 +1037,6 @@ mod tests {
             (0x419, 6, false, 0),
             (0x41f, 2, false, 0),
             (0x443, 3, false, 0),
-            (0x446, 2, false, 0),
             (0x478, 2, false, 1),
         ] {
             let words: Vec<_> = (0..n).map(|j| 0xa0123400u32 + j).collect();

@@ -1,0 +1,193 @@
+use super::{Message, invalid};
+use std::io;
+
+/// Native ActionApplyBuff prefix. Actor references and the definition index
+/// are scoped to the recording/build; the duration retains its binary16 bits.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BuffPrefix {
+    pub target: u32,
+    pub source: u32,
+    pub duration_bits: u16,
+    pub instance: u32,
+    pub definition: u16,
+}
+
+impl BuffPrefix {
+    pub fn duration(self) -> f32 {
+        let bits = self.duration_bits;
+        let sign = u32::from(bits & 0x8000) << 16;
+        let exponent = u32::from((bits >> 10) & 31);
+        let fraction = u32::from(bits & 1023);
+        let magnitude = match exponent {
+            0 => (fraction as f32 * 2f32.powi(-24)).to_bits(),
+            31 => 0x7f800000 | (fraction << 13),
+            _ => ((exponent + 112) << 23) | (fraction << 13),
+        };
+        f32::from_bits(sign | magnitude)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BuffExtras {
+    pub stacks: u16,
+    /// Two formatter float operands and two further words. Their gameplay
+    /// meanings are unresolved; preserve all four original bit patterns.
+    pub words: [u32; 4],
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BuffApplication<'a> {
+    pub prefix: BuffPrefix,
+    pub extras: Option<BuffExtras>,
+    /// Longer archive variants carry bytes beyond the native formatter.
+    pub suffix: &'a [u8],
+}
+
+impl<'a> BuffApplication<'a> {
+    pub(super) fn decode(opcode: u16, body: &'a [u8]) -> Option<Self> {
+        let size = match (opcode, body.len()) {
+            (0x43e, 16 | 22) => 16,
+            (0x43f, 34 | 38) => 34,
+            _ => return None,
+        };
+        let word = |i: usize| u32::from_be_bytes(body[i..i + 4].try_into().unwrap());
+        let half = |i: usize| u16::from_be_bytes(body[i..i + 2].try_into().unwrap());
+        Some(Self {
+            prefix: BuffPrefix {
+                target: word(0),
+                source: word(4),
+                duration_bits: half(8),
+                instance: word(10),
+                definition: half(14),
+            },
+            extras: (size == 34).then(|| BuffExtras {
+                stacks: half(16),
+                words: std::array::from_fn(|i| word(18 + 4 * i)),
+            }),
+            suffix: &body[size..],
+        })
+    }
+
+    pub fn to_message(self) -> io::Result<Message> {
+        let (op, size, extended) = if self.extras.is_some() {
+            (0x43f, 34, 4)
+        } else {
+            (0x43e, 16, 6)
+        };
+        if !self.suffix.is_empty() && self.suffix.len() != extended {
+            return Err(invalid("unsupported buff application suffix length"));
+        }
+        let mut body = Vec::with_capacity(size + self.suffix.len());
+        body.extend(self.prefix.target.to_be_bytes());
+        body.extend(self.prefix.source.to_be_bytes());
+        body.extend(self.prefix.duration_bits.to_be_bytes());
+        body.extend(self.prefix.instance.to_be_bytes());
+        body.extend(self.prefix.definition.to_be_bytes());
+        if let Some(extras) = self.extras {
+            body.extend(extras.stacks.to_be_bytes());
+            for word in extras.words {
+                body.extend(word.to_be_bytes());
+            }
+        }
+        body.extend(self.suffix);
+        Ok(Message::new(op, body))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Fields;
+
+    #[test]
+    fn all_four_lengths_preserve_references_half_bits_and_unknown_words() {
+        let prefix = BuffPrefix {
+            target: 0x10203040,
+            source: 0x802030ff,
+            duration_bits: 0x7e51,
+            instance: 0xfe123456,
+            definition: 0x8492,
+        };
+        let extras = BuffExtras {
+            stacks: 0xfedc,
+            words: [0x80000000, 0x7fc04201, 0x01020304, 0xffffffff],
+        };
+        for (ext, suffix) in [
+            (None, &[][..]),
+            (None, &[1, 2, 3, 4, 5, 6]),
+            (Some(extras), &[]),
+            (Some(extras), &[9, 8, 7, 6]),
+        ] {
+            let original = BuffApplication {
+                prefix,
+                extras: ext,
+                suffix,
+            };
+            let message = original.to_message().unwrap();
+            assert_eq!(
+                &message.body[8..16],
+                &[0x7e, 0x51, 0xfe, 0x12, 0x34, 0x56, 0x84, 0x92]
+            );
+            if ext.is_some() {
+                assert_eq!(&message.body[16..22], &[0xfe, 0xdc, 0x80, 0, 0, 0]);
+            }
+            let Fields::BuffApplication(decoded) = message.fields().unwrap() else {
+                panic!()
+            };
+            assert_eq!(decoded, original);
+            assert_eq!(decoded.to_message().unwrap(), message);
+            for suffix in [&[0][..], &[0; 7]] {
+                assert!(BuffApplication { suffix, ..original }.to_message().is_err());
+            }
+            assert!(
+                BuffApplication::decode(message.opcode, &message.body[..message.body.len() - 1])
+                    .is_none()
+            );
+        }
+        for (bits, value) in [
+            (0xbc00, -1.),
+            (0x3e00, 1.5),
+            (0x8000, -0.),
+            (1, 2f32.powi(-24)),
+            (0x7c00, f32::INFINITY),
+        ] {
+            assert_eq!(
+                BuffPrefix {
+                    duration_bits: bits,
+                    ..prefix
+                }
+                .duration()
+                .to_bits(),
+                value.to_bits()
+            );
+        }
+        assert!(prefix.duration().is_nan());
+    }
+
+    #[test]
+    fn duration_cancel_and_timeout_keep_the_actor_instance_key() {
+        for (opcode, prefix) in [(0x441, 12), (0x445, 8), (0x446, 8)] {
+            let mut body = Vec::from(1500u32.to_be_bytes());
+            body.extend(0x12345678u32.to_be_bytes());
+            if prefix == 12 {
+                body.extend(8f32.to_be_bytes());
+            }
+            for size in [prefix, 14] {
+                body.resize(size, 0xab);
+                let message = Message::new(opcode, body.clone());
+                let Fields::BuffAction {
+                    actor,
+                    key,
+                    duration,
+                    remaining,
+                } = message.fields().unwrap()
+                else {
+                    panic!()
+                };
+                assert_eq!((actor, key), (1500, 0x12345678));
+                assert_eq!(duration, (opcode == 0x441).then_some(8.0));
+                assert_eq!(remaining, &body[prefix..]);
+            }
+        }
+    }
+}

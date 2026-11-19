@@ -40,7 +40,8 @@ A full pass over all 43,160 local VGR records using `ReplayReader` and `Message:
 | 0x03ED, 0x046F | Fixed 64-byte leading text. The 0x03ED reader also consumes big-endian words at offsets 64 and 68. The latter participates in a lookup. |
 | 0x03F2, 0x03F3 | The local 0x03F2 replay family contains 1,208 bodies of 122 bytes and 215 of 126 bytes. Its definition, skin and actor are 32-bit big-endian values at body offsets 0, 4 and 8, shared with the longer 0x03F3 spawn. Other 0x03F2 lengths remain opaque. The earlier scoreboard label conflicts with the measured records and native receiver trace. |
 | 0x03F8 | A selector byte followed by two unaligned big-endian floats. The local replay contains both 9- and 14-byte bodies. |
-| 0x042B, 0x043E, 0x043F | Leading big-endian entity reference. The remaining bytes are retained. The second word in 0x043E and 0x043F sometimes differs from the first. Its role is unresolved. |
+| 0x042B | Leading entity reference followed by visibility fields on recognized body lengths. |
+| 0x043E, 0x043F | Buff application prefix with target, source, binary16 duration, instance and definition index. The long form also carries a stack count and four extra words. [Fields and archive checks](#buff-application-records) |
 | 0x045A | Full six-player ARAL rosters use sixteen 161-byte slots, two leading timing floats and a bounded tail. The native archives contain complete frames. [ARAL layouts](aral.md) |
 | 0x045C, 0x0471 | Sixteen six-byte entries in 0x045C, each with a reference and two raw bytes. The 0x0471 prefix contains one reference and one flag byte. The local replay and the Android reader sizes agree on these prefixes. |
 | 0x0458, 0x046D, 0x046E, 0x0470, 0x047C | The receiver/emitter evidence supports one control byte. Its gameplay meaning remains unresolved. |
@@ -245,3 +246,16 @@ socket tests.
 ### Halcyon Fold Ranked draft
 
 The observed queue ID `ranked` selects `*GameMode_HF_Ranked*` and reserves six human seats, three per side. The standard draft keeps those six actor identities and teams across setup requests. The remaining roster rows are inactive. The archived Ranked capture ends in draft. It supplies no active Halcyon Fold spawn positions, navigation geometry or economy values. Hosted play after this draft uses the validation layout. The `ranked_5v5` queue selects `*GameMode_5v5_Ranked*` and retains ten hero slots.
+
+### Buff application records
+
+The Android reader sizes and the independent Windows formatter research agree on 16-byte and 34-byte native bodies. The common big-endian prefix has target and source actor words at +0 and +4, binary16 duration bits at +8, an unaligned instance word at +10 and a 16-bit buff-definition index at +14. The long form adds a 16-bit stack count at +16 and four raw words at +18, +22, +26 and +30. Their numerical meanings remain unresolved. The codec exposes the original duration bits even for negative values, signed zero and NaNs. [Independent buff wire-layout notes](https://github.com/TurnaboutHero/vainglory-replay-decoder/blob/f4743be743564e3aadef1566499fe25d9d0f9ffc/vg/docs/re_dictionary/buff_status/README.md#wire-layout-boundary)
+
+| Source | 043E body 22 | 043F body 34 | 043F body 38 | Later 0441 / 0445 / 0446 |
+| --- | ---: | ---: | ---: | ---: |
+| Seven ARAL server streams | 44,346 | 0 | 17,018 | 385 / 1,398 / 18 |
+| Solo VGR export | 8,038 | 3,111 | 4,136 | 54 / 131 / 1 |
+
+Every duration change (0441), cancellation (0445) and timeout (0446) above matches a previously observed target and instance in its own stream. In one steady ARAL sequence, 043E carried target/source 1501, instance 4992, definition 689 and duration bits 0x4800. The later 0441 carried the same target and instance with f32 value 8.0. A separate application carried target 5131, source 1502, instance 5133 and duration bits 0xBC00. The subsequent 0445 identified target 5131 and instance 5133. These examples establish the join key. Deriving a specific ability effect or assigning a meaning to negative duration requires further evidence.
+
+The longer archive forms have six and four bytes beyond the respective native formatter layouts. All those suffixes in these two corpora were zero. The reader and checked constructor preserve any suffix bytes supplied for the observed lengths, including nonzero bytes. The archive producer build remains unmatched; no equivalence between the long records and the shorter formatter's runtime behavior follows from the common prefix. Repeated VGR chunk snapshots can carry the same instance.
