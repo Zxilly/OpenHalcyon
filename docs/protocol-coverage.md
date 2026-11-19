@@ -2,20 +2,26 @@
 
 ## Platform
 
-The [RPC inventory](ce-rpc.tsv) lists 155 candidate method names from the Android
-call sites, the local protocol specification and the iOS parser inventory. Each
-row records the source of the name, the reported parser family when available,
-and the implementation that handles it. The Android relay recorded 14 distinct
-methods. A captured name establishes use of that method on the wire. A static
-call site or parser family supplies less information about argument order,
-optional fields and return types. Locally defined behaviors for these methods
-need further client comparison.
+The [RPC inventory](ce-rpc.tsv) lists 155 method and alias names. Its evidence
+tags overlap. The iOS-era interceptor archive has 2,946 complete request and
+response pairs across 30 methods. All 14 Android relay names also appear in
+those 30. Another 124 rows have Android callsite or iOS parser evidence only
+for their wire use. The remaining name, `getSkinProgress`, is a local-spec alias.
+A capture establishes the observed request and envelope only to the extent
+that the interceptor preserved them. Static identification establishes a
+name or parser family. Argument order, optional fields and successful behavior
+for those rows still need client comparison.
+
+The implementation column describes local routing. It includes 67 community
+handlers and three local aliases. `charm` and `social_ping_pack` have static
+callsite evidence as names and are supported as local equipment aliases.
+Operator-defined content, attestation and community state are local features
+whose populated replies may differ from original service responses.
 
 Fields found beside an RPC call can also look like methods. For example,
 `startSessionUrl` and `partyMembers` appear in response objects, and
 `production` identifies the environment. The inventory excludes these strings.
-The `charm` and `social_ping_pack` entries are compatibility aliases for
-equipment slots. The catalog test dispatches every listed name through the HTTPS
+The catalog test dispatches every listed name through the HTTPS
 router's handler using an authenticated session. It checks routing and failure
 classification. Focused lifecycle tests exercise successful requests and
 committed state changes.
@@ -27,6 +33,13 @@ committed state changes.
 | Cross-instance parties | Three TLS-authenticated voters, party members on one home and a solo player on another, served by a third node. Integration tests cover individual acceptance, the game socket, team allocation, settlement and independent exits. |
 | Spectators | A confirmed friend on the player's home can watch a local or peer-hosted match through a dedicated read-only listener. A three-voter test covers roster ownership, snapshot delivery, revocation on visibility changes, and cleanup at settlement. Native spectator admission and friendships registered on different homes still need verification. |
 | Items, guilds, quests and accounts | SQLite transactions, permission and retry tests exercise the local rules. Operator-defined exchanges specify actual costs and rewards. Some archived methods have only static schema evidence. |
+
+All 17 archived `joinLobby` successes for the legacy three-per-side queues
+included `state: "pending_auto"` and `numPlayers` with the standard success
+and TTL fields. The captures include 14 `casual_aral` and three `ranked`
+requests, all from solo entrants. When queued, both modes now return the
+current local party size. Malformed JSON in the positional lobby string
+returns the local invalid-parameters envelope.
 
 The archived RPC traffic includes 15 successful `acceptMatch` calls with a second string argument. Eleven used a match UUID and four used an empty string; each returned boolean `true`. The CE handler now passes the supplied match ID to the platform's transactional offer check. A mismatched offer leaves the current match untouched. The observed empty-string form resolves the current offer. The existing session-only local form retains its session-envelope response.
 

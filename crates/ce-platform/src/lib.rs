@@ -389,7 +389,7 @@ async fn dispatch(s: &Platform, m: &str, params: &[Value]) -> Result<(String, Va
             let lobby = params.get(1).ok_or(Error::Invalid)?;
             let parsed;
             let obj = if let Some(raw) = lobby.as_str() {
-                parsed = serde_json::from_str::<Value>(raw)?;
+                parsed = serde_json::from_str::<Value>(raw).map_err(|_| Error::Invalid)?;
                 &parsed
             } else {
                 lobby
@@ -415,7 +415,7 @@ async fn dispatch(s: &Platform, m: &str, params: &[Value]) -> Result<(String, Va
             )
             .await?;
             let mut joined = json!({"success":true,"ttl":100});
-            if mode == "casual_aral" {
+            if matches!(mode, "casual_aral" | "ranked") {
                 let current = state(&s.app.profile(&session).await?);
                 if current["state"] == "pending_auto" {
                     joined["state"] = current["state"].clone();

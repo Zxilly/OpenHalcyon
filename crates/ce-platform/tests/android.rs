@@ -534,9 +534,31 @@ async fn cataloged_names_reach_rpc_handlers() {
     .await;
     let token = &session["sessionToken"];
     let mut names = std::collections::BTreeSet::new();
-    for row in include_str!("../../../docs/ce-rpc.tsv").lines().skip(1) {
-        let method = row.split('\t').next().unwrap();
+    let mut evidence = std::collections::BTreeMap::new();
+    let mut local_aliases = std::collections::BTreeSet::new();
+    let mut rows = include_str!("../../../docs/ce-rpc.tsv").lines();
+    assert_eq!(
+        rows.next(),
+        Some("method\tevidence\tparser_family\timplementation")
+    );
+    for row in rows {
+        let columns: Vec<_> = row.split('\t').collect();
+        let [method, sources, parser, implementation] = columns[..] else {
+            panic!("invalid RPC catalog row");
+        };
+        assert!(!parser.is_empty() && !implementation.is_empty(), "{method}");
         assert!(names.insert(method), "duplicate catalog method {method}");
+        let mut seen = std::collections::BTreeSet::new();
+        for source in sources.split(',') {
+            assert!(
+                seen.insert(source),
+                "duplicate evidence source for {method}"
+            );
+            *evidence.entry(source).or_insert(0) += 1;
+        }
+        if implementation == "local-alias" {
+            local_aliases.insert(method);
+        }
         if method == "endSession" {
             continue;
         }
@@ -544,8 +566,36 @@ async fn cataloged_names_reach_rpc_handlers() {
         let code = response["code"].as_i64().expect("CE RPC status code");
         assert_ne!(code, -32601, "unimplemented route {method}");
         assert_ne!(code, -3, "internal error in {method}");
+        assert!(response.get("returnValue").is_some(), "{method}");
+        assert!(response["sessionToken"].is_string(), "{method}");
+        if code != 0 {
+            assert_eq!(response["sessionToken"], "", "{method}");
+            assert_eq!(response["returnValue"], Value::Null, "{method}");
+            assert!(
+                response["reason"].as_str().is_some_and(|s| !s.is_empty()),
+                "{method}"
+            );
+        }
     }
-    assert_eq!(rpc(&r, "endSession", json!([token])).await["code"], 0);
+    assert_eq!(names.len(), 155);
+    assert_eq!(
+        evidence,
+        [
+            ("android-callsite", 141),
+            ("android-traffic", 14),
+            ("archive-traffic", 30),
+            ("ios-candidate", 139),
+            ("local-spec", 144),
+        ]
+        .into()
+    );
+    assert_eq!(
+        local_aliases,
+        ["charm", "getSkinProgress", "social_ping_pack"].into()
+    );
+    let logout = rpc(&r, "endSession", json!([token])).await;
+    assert_eq!(logout["code"], 0);
+    assert_eq!(logout["sessionToken"], "");
 }
 #[tokio::test]
 async fn aral_offer_projection_is_private_read_only_and_survives_reopen() {
@@ -616,6 +666,25 @@ async fn aral_offer_projection_is_private_read_only_and_survives_reopen() {
         tokens.push(session["sessionToken"].clone());
         players.push(session["returnValue"]["playerUUID"].clone());
     }
+    let malformed = rpc(&r, "joinLobby", json!([tokens[6], "{bad", "147219"])).await;
+    assert_eq!(
+        malformed,
+        json!({
+            "code": -32602, "sessionToken": "", "returnValue": null, "reason": "invalid parameters"
+        })
+    );
+    let ranked = rpc(
+        &r,
+        "joinLobby",
+        json!([tokens[6], "{\"lobby\":\"ranked\"}", "147219"]),
+    )
+    .await;
+    assert_eq!(ranked["code"], 0);
+    assert_eq!(
+        ranked["returnValue"],
+        json!({"success":true,"ttl":100,"state":"pending_auto","numPlayers":1})
+    );
+    assert_eq!(rpc(&r, "exitLobby", json!([tokens[6]])).await["code"], 0);
     for t in &tokens[..6] {
         assert_eq!(
             rpc(&r, "joinLobby", json!([t,{"lobby":"casual_aral"},"147219"])).await["code"],
