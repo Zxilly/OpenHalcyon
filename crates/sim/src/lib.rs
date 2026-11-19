@@ -1,6 +1,7 @@
 //! Deterministic straight-lane validation map. Coordinates are project world units.
 //! Vision, spawn offsets, windup, attack cadence, retreat and respawn are project rules.
 mod ai;
+mod aral;
 mod chakram;
 mod combat;
 mod layout;
@@ -27,6 +28,7 @@ pub fn rules_digest(data: Option<&GameData>) -> String {
         include_str!("chakram.rs"),
         include_str!("progression.rs"),
         include_str!("ai.rs"),
+        include_str!("aral.rs"),
         include_str!("nav.rs"),
         include_str!("layout.rs"),
         include_str!("shop.rs"),
@@ -272,6 +274,7 @@ pub struct World {
     pub entities: Vec<Entity>,
     stats: [Stats; 8],
     layout: Layout,
+    aral_units: aral::Units,
     next_id: u32,
     next_item: u32,
     seed: u64,
@@ -321,7 +324,7 @@ impl World {
                 self.next_item,
                 self.first_wave,
                 self.wave_interval,
-                (&self.stats, &self.layout),
+                (&self.stats, &self.layout, &self.aral_units),
                 &self.abilities,
                 &self.shop,
                 self.first_blood,
@@ -409,6 +412,7 @@ impl World {
             timing("first_spawn_s")?,
             timing("interval_s")?,
         );
+        world.aral_units.load(data);
         world.abilities = AbilityBook::from_data(data)?;
         world.shop = shop::Shop::load(data)?;
         Ok(world)
@@ -512,6 +516,7 @@ impl World {
             entities: Vec::with_capacity(50),
             next_id: 1,
             layout: Layout::default(),
+            aral_units: aral::Units::default(),
             next_item: 40000,
             stats,
             seed,
@@ -552,7 +557,17 @@ impl World {
         w
     }
     fn spawn(&mut self, team: u8, kind: Kind, slot: usize, position: Position, bot: bool) -> u32 {
-        let s = self.stats[slot];
+        self.spawn_with_stats(team, kind, self.stats[slot], position, bot)
+    }
+
+    fn spawn_with_stats(
+        &mut self,
+        team: u8,
+        kind: Kind,
+        s: Stats,
+        position: Position,
+        bot: bool,
+    ) -> u32 {
         let id = self.next_id;
         self.next_id += 1;
         let starting_gold = 0;
@@ -653,7 +668,9 @@ impl World {
         }
         let next = match &self.layout {
             Layout::Validation => e.path.next(e.position, p, &mut self.nav_budget),
-            Layout::SoloMid { .. } => self.layout.clear(e.position, p).then_some(p),
+            Layout::SoloMid { .. } | Layout::Aral { .. } => {
+                self.layout.clear(e.position, p).then_some(p)
+            }
         };
         let Some(waypoint) = next else {
             return;
@@ -697,6 +714,23 @@ impl World {
         events
     }
 
+    fn spawn_lane_minion(
+        &mut self,
+        team: u8,
+        stats: Stats,
+        position: Position,
+        events: &mut Vec<Event>,
+    ) {
+        let id = self.spawn_with_stats(team, Kind::Minion, stats, position, false);
+        let minion = self.entities.last_mut().unwrap();
+        let level = (2 + self.tick.saturating_sub(120 * TICK_HZ) / (120 * TICK_HZ)).min(12) as u8;
+        let extra = f32::from(level - 1);
+        minion.level = level;
+        minion.max_hp += minion.stats.growth.hp * extra;
+        minion.hp = minion.max_hp;
+        minion.stats.weapon += minion.stats.growth.weapon * extra;
+        events.push(Event::Spawn { id });
+    }
     fn step_tick(&mut self, events: &mut Vec<Event>) {
         self.nav_budget = 6;
         self.advance_effects(events);
@@ -704,7 +738,9 @@ impl World {
         if self.winner.is_some() {
             return;
         }
-        if self.tick >= self.first_wave
+        if matches!(self.layout, Layout::Aral { .. }) {
+            self.spawn_aral_wave(events);
+        } else if self.tick >= self.first_wave
             && (self.tick - self.first_wave).is_multiple_of(self.wave_interval)
         {
             let wave = (self.tick - self.first_wave) / self.wave_interval + 1;
@@ -713,18 +749,12 @@ impl World {
                     .into_iter()
                     .enumerate()
                 {
-                    let p = self.layout.wave(team, j);
-                    let id = self.spawn(team, Kind::Minion, slot, p, false);
-                    let minion = self.entities.last_mut().unwrap();
-                    // Last printed wave level starts at 2, then increases by half a level per minute.
-                    let level = (2 + self.tick.saturating_sub(120 * TICK_HZ) / (120 * TICK_HZ))
-                        .min(12) as u8;
-                    let extra = f32::from(level - 1);
-                    minion.level = level;
-                    minion.max_hp += minion.stats.growth.hp * extra;
-                    minion.hp = minion.max_hp;
-                    minion.stats.weapon += minion.stats.growth.weapon * extra;
-                    events.push(Event::Spawn { id });
+                    self.spawn_lane_minion(
+                        team,
+                        self.stats[slot],
+                        self.layout.wave(team, j),
+                        events,
+                    );
                 }
             }
         }

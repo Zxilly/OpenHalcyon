@@ -60,6 +60,7 @@ impl World {
         if t.hp <= 0. || n <= 0. {
             return;
         }
+        let is_outer_tower = self.is_outer_tower(t);
         let amount = n.min(t.hp);
         if team != t.team && matches!(t.kind, Kind::Tower | Kind::Crystal) {
             // Only hero basic attacks and spells can outlive their origin actor's turn.
@@ -105,9 +106,11 @@ impl World {
             match kind {
                 Kind::Tower => {
                     scoring.structure_kills.towers += 1;
-                    scoring
-                        .first_enemy_outer_tower_kill_seconds
-                        .get_or_insert(self.tick as f64 / TICK_HZ as f64);
+                    if is_outer_tower {
+                        scoring
+                            .first_enemy_outer_tower_kill_seconds
+                            .get_or_insert(self.tick as f64 / TICK_HZ as f64);
+                    }
                 }
                 Kind::Crystal => scoring.structure_kills.crystals += 1,
                 _ => {}

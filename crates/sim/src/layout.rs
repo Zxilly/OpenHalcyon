@@ -5,12 +5,15 @@ use super::*;
 pub(super) enum Layout {
     #[default]
     Validation,
+    Aral {
+        hero_starts: [Position; 6],
+    },
     SoloMid {
         hero_starts: [Position; 10],
     },
 }
 
-fn point(team: u8, x: f32, z: f32) -> Position {
+pub(super) fn point(team: u8, x: f32, z: f32) -> Position {
     Position {
         x: if team == 0 { -x } else { x },
         y: z,
@@ -26,6 +29,10 @@ impl Layout {
                 hero_starts[(actor.id - 1) as usize]
             }
             Self::SoloMid { .. } => point(actor.team, 90., 0.),
+            Self::Aral { hero_starts } if actor.kind == Kind::Hero => {
+                hero_starts[(actor.id - 1) as usize]
+            }
+            Self::Aral { .. } => self.wave(actor.team, 0),
             Self::Validation => base(actor.team),
         }
     }
@@ -40,6 +47,9 @@ impl Layout {
             }
         };
         match self {
+            Self::Aral { .. } => aral::PADS[usize::from(actor.team)]
+                .iter()
+                .any(|&(x, z)| inside(Position { x, y: z })),
             Self::Validation => inside(base(actor.team)),
             Self::SoloMid { .. } => STARTS.iter().any(|&(x, z)| inside(point(actor.team, x, z))),
         }
@@ -49,6 +59,7 @@ impl Layout {
         match self {
             Self::Validation => base(team),
             Self::SoloMid { .. } => point(team, 75., 0.),
+            Self::Aral { .. } => point(team, 76.12, 19.9),
         }
     }
 
@@ -59,11 +70,13 @@ impl Layout {
                 ..base(team)
             },
             Self::SoloMid { .. } => point(team, 70., 0.),
+            Self::Aral { .. } => point(team, 71.28, 12.93),
         }
     }
 
     pub fn walkable(&self, p: Position) -> bool {
         match self {
+            Self::Aral { .. } => (-95.0..=95.).contains(&p.x) && (-7.0..=21.).contains(&p.y),
             Self::Validation => nav::walkable(p),
             Self::SoloMid { .. } => (-101.0..=101.).contains(&p.x) && (-6.0..=6.).contains(&p.y),
         }
@@ -72,7 +85,7 @@ impl Layout {
     pub fn clear(&self, a: Position, b: Position) -> bool {
         match self {
             Self::Validation => nav::clear(a, b),
-            Self::SoloMid { .. } => self.walkable(a) && self.walkable(b),
+            Self::SoloMid { .. } | Self::Aral { .. } => self.walkable(a) && self.walkable(b),
         }
     }
 }

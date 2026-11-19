@@ -17,7 +17,11 @@ impl World {
     pub(super) fn decide(&self, i: usize) -> Command {
         let e = &self.entities[i];
         let home = self.layout.home(e);
-        let enemy = self.layout.objective(1 - e.team);
+        let enemy = if matches!(self.layout, Layout::Aral { .. }) {
+            self.aral_march_goal(e)
+        } else {
+            self.layout.objective(1 - e.team)
+        };
         if e.kind == Kind::Hero && e.hp < e.max_hp * 0.23 {
             return Command::MoveTo(home);
         }
