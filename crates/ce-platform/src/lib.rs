@@ -5,6 +5,7 @@ mod community;
 mod content;
 mod meta;
 mod notify;
+mod party_notify;
 mod profile;
 use profile::player_info;
 mod provider;
@@ -68,6 +69,7 @@ pub struct Platform {
     config: Config,
     tokens: Tokens,
     grants: notify::Grants,
+    native_state_updates: bool,
     xmpp: xmpp::Chat,
     versions: Mutex<HashMap<Uuid, (Uuid, u64)>>,
     meta: meta::Meta,
@@ -126,6 +128,7 @@ impl Platform {
             config,
             tokens: Tokens::new(secret)?,
             grants: Default::default(),
+            native_state_updates: false,
             xmpp: Default::default(),
             versions: Default::default(),
             community: halcyon_community::Community::open(database)?,
@@ -136,6 +139,19 @@ impl Platform {
             talents: load("official_getTalentsData.json", json!({}))?,
             skins: load("official_getSkinManifest.json", json!("{}"))?,
         }))
+    }
+
+    /// Opt in to the native client's state subscription.
+    pub fn configure_native_state_updates(
+        platform: &mut Arc<Self>,
+        enabled: bool,
+    ) -> Result<(), Error> {
+        Arc::get_mut(platform)
+            .ok_or(Error::Config(
+                "configure state updates before sharing the platform",
+            ))?
+            .native_state_updates = enabled;
+        Ok(())
     }
 
     pub fn with_peers(
@@ -591,7 +607,7 @@ impl Platform {
         let ws = format!("ws://{}/ws/{grant}", self.config.notify_authority);
         let extras = json!({"playerUUID":p.player_id,"playerInfo":player_info(p),"handle":p.name,
             "platformUrl":format!("https://{}",self.config.authority),"region":"na","country":"US",
-            "platformTime":now(),"enableStateUpdates":false,"missedStateUpdateMessagesThreshold":-1,
+            "platformTime":now(),"enableStateUpdates":self.native_state_updates,"missedStateUpdateMessagesThreshold":-1,
             "notifyUrl":ws,"notifyFallbackUrl":http,"chatUrl":format!("ws://{}/chat/{grant}",self.config.notify_authority),"chatPass":grant,
             "chatUser":p.player_id,"pingPostToAnalytics":false,"pingHostPortInfo":[],
             "unityAdsGameId":"","ironsourceAppId":null,"experimentDetails":[],

@@ -26,7 +26,7 @@ impl MatchHost for Host {
     }
 }
 
-async fn rpc(api: &Router, method: &str, params: Value) -> Value {
+async fn rpc_response(api: &Router, method: &str, params: Value) -> Value {
     let response = api
         .clone()
         .oneshot(
@@ -38,8 +38,11 @@ async fn rpc(api: &Router, method: &str, params: Value) -> Value {
         )
         .await
         .unwrap();
-    let body: Value =
-        serde_json::from_slice(&to_bytes(response.into_body(), 1 << 20).await.unwrap()).unwrap();
+    serde_json::from_slice(&to_bytes(response.into_body(), 1 << 20).await.unwrap()).unwrap()
+}
+
+async fn rpc(api: &Router, method: &str, params: Value) -> Value {
+    let body = rpc_response(api, method, params).await;
     assert_eq!(body["code"], 0, "{method} failed");
     body
 }
@@ -246,4 +249,173 @@ async fn socket_and_long_poll_share_recipient_cursor_and_social_refresh() {
     assert!(platform.contacts(&chat_session).await.is_none());
     assert_eq!(http(addr, &lp_path).await.0, 401);
     listener_task.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 3)]
+async fn party_notices_are_private_replayable_and_revoked_with_membership() {
+    let temp = tempfile::tempdir().unwrap();
+    let database = temp.path().join("party.sqlite");
+    let app = AppState::open(
+        PlatformConfig {
+            database_path: database.clone(),
+            public_address: "localhost:8443".into(),
+            seats_per_match: 3,
+        },
+        Arc::new(Host),
+    )
+    .unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let mut platform = Platform::new(
+        app,
+        Config {
+            authority: "localhost:8443".into(),
+            notify_authority: addr.to_string(),
+        },
+        &[52; 32],
+        &database,
+        None,
+    )
+    .unwrap();
+    Platform::configure_native_state_updates(&mut platform, true).unwrap();
+    let api = platform.rpc();
+    let notify = platform.notifications();
+    let task = tokio::spawn(async move { axum::serve(listener, notify).await.unwrap() });
+
+    let owner = guest(&api, "Captain").await;
+    let member = guest(&api, "Ranger").await;
+    let invited = guest(&api, "Scout").await;
+    let outsider = guest(&api, "Traveler").await;
+    let member_id = &member["returnValue"]["playerUUID"];
+    let invited_id = &invited["returnValue"]["playerUUID"];
+    let owner_lp = path(&owner["returnValue"]["notifyFallbackUrl"]);
+    let member_lp = path(&member["returnValue"]["notifyFallbackUrl"]);
+    let invited_lp = path(&invited["returnValue"]["notifyFallbackUrl"]);
+    let outsider_lp = path(&outsider["returnValue"]["notifyFallbackUrl"]);
+    assert_eq!(owner["returnValue"]["enableStateUpdates"], true);
+    let owner_base = http(addr, &owner_lp).await.1;
+    let member_base = http(addr, &member_lp).await.1;
+    let invited_base = http(addr, &invited_lp).await.1;
+    let outsider_base = http(addr, &outsider_lp).await.1;
+    let ws = path(&member["returnValue"]["notifyUrl"]);
+    let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{addr}{ws}"))
+        .await
+        .unwrap();
+    let mut next = async || {
+        let item = tokio::time::timeout(Duration::from_secs(3), socket.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        serde_json::from_str::<Value>(item.to_text().unwrap()).unwrap()
+    };
+    assert_eq!(next().await["tag"], member_base["tag"]);
+
+    let db = rusqlite::Connection::open(&database).unwrap();
+    db.execute_batch(
+        "CREATE TRIGGER reject_party_notice BEFORE INSERT ON events
+           WHEN json_extract(NEW.body,'$.type')='quintPartyStateUpdate'
+           BEGIN SELECT RAISE(ABORT, 'injected notice write failure'); END;",
+    )
+    .unwrap();
+    let failed = rpc_response(&api, "createQuintParty", json!([owner["sessionToken"]])).await;
+    assert_ne!(failed["code"], 0);
+    assert_eq!(
+        rpc(&api, "queryPartyInfo", json!([owner["sessionToken"]])).await["returnValue"]["partyUUID"],
+        Value::Null
+    );
+    db.execute_batch("DROP TRIGGER reject_party_notice")
+        .unwrap();
+
+    let party = rpc(
+        &api,
+        "createQuintParty",
+        json!([owner["sessionToken"], {"mode":"casual_5v5"}]),
+    )
+    .await;
+    let party_id = &party["returnValue"]["partyUUID"];
+    let created = http(addr, &resume(&owner_lp, &owner_base)).await.1;
+    assert_eq!(
+        created["text"],
+        json!({"code":0,"quintPartyStateUpdate":{}})
+    );
+
+    for _ in 0..2 {
+        rpc(
+            &api,
+            "partyInviteSend",
+            json!([owner["sessionToken"], member_id]),
+        )
+        .await;
+    }
+    let invitation = next().await;
+    assert_eq!(
+        invitation["text"],
+        json!({"code":0,"quintPartyJoinRequest":{}})
+    );
+    let polled = http(addr, &resume(&member_lp, &member_base)).await.1;
+    assert_eq!(polled["tag"], invitation["tag"]);
+    assert_eq!(polled["text"], invitation["text"]);
+    for _ in 0..2 {
+        rpc(
+            &api,
+            "partyInviteConfirm",
+            json!([member["sessionToken"], party_id]),
+        )
+        .await;
+    }
+    let joined = next().await;
+    assert_eq!(joined["tag"], Uuid::from_u128(2).to_string());
+    assert_eq!(joined["text"], json!({"code":0,"quintPartyStateUpdate":{}}));
+    assert_eq!(
+        http(addr, &resume(&member_lp, &member_base)).await.1["text"]["type"],
+        "stateUpdate"
+    );
+    rpc(&api, "leaveQuintParty", json!([member["sessionToken"]])).await;
+    let owner_joined = http(addr, &resume(&owner_lp, &created)).await.1;
+    let left = http(addr, &resume(&owner_lp, &owner_joined)).await.1;
+    assert_eq!(left["text"], json!({"code":0,"quintPartyPlayerLeft":{}}));
+
+    // The old invite and roster cursors remain usable after the member returns and is removed.
+    rpc(
+        &api,
+        "joinQuintParty",
+        json!([member["sessionToken"], party["returnValue"]["quintCode"]]),
+    )
+    .await;
+    let rejoined = next().await;
+    assert_eq!(rejoined["tag"], Uuid::from_u128(3).to_string());
+    rpc(
+        &api,
+        "partyMemberKick",
+        json!([owner["sessionToken"], member_id]),
+    )
+    .await;
+    let kicked = next().await;
+    assert_eq!(kicked["text"], json!({"code":0,"quintPartyMemberKick":{}}));
+    let stale = http(addr, &resume(&member_lp, &joined)).await.1;
+    assert_eq!(stale["tag"], rejoined["tag"]);
+    assert_eq!(stale["text"]["type"], "stateUpdate");
+
+    rpc(
+        &api,
+        "partyInviteSend",
+        json!([owner["sessionToken"], invited_id]),
+    )
+    .await;
+    rpc(&api, "destroyQuintParty", json!([owner["sessionToken"]])).await;
+    let withdrawn = http(addr, &resume(&invited_lp, &invited_base)).await.1;
+    assert_eq!(withdrawn["text"]["type"], "stateUpdate");
+
+    // An unrelated player gets their own first event, with no hidden ordinal increments.
+    rpc(
+        &api,
+        "joinLobby",
+        json!([outsider["sessionToken"], {"lobby":"test"}]),
+    )
+    .await;
+    let outsider_event = http(addr, &resume(&outsider_lp, &outsider_base)).await.1;
+    assert_eq!(outsider_event["tag"], Uuid::from_u128(1).to_string());
+    assert_eq!(outsider_event["text"]["type"], "stateUpdate");
+    task.abort();
 }

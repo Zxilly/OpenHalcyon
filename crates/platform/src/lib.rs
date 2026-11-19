@@ -2,6 +2,7 @@ mod accounts;
 mod chat;
 mod federation;
 mod notification;
+pub use notification::record_external_notification;
 mod pooled_spectator;
 pub use pooled_spectator::PooledSpectator;
 mod queue;

@@ -154,30 +154,40 @@ async fn update(s: &Platform, key: &str, old: Position) -> Result<(Position, Val
         initial: false,
     };
     let tag = Uuid::from_u128(next.after as u128);
-    let text = if !old.initial
-        && event
-            .as_ref()
-            .is_some_and(|event| event.body["type"] == "friends_changed")
-    {
-        json!({"code":0,"type":"friendsListUpdate","friendsListUpdate":true})
-    } else {
-        let profile = s.app.profile(key).await.map_err(platform_status)?;
-        let mut state = super::state(&profile);
-        state["version"] = json!(tag);
-        state["lastVersion"] = json!(Uuid::from_u128(old.after as u128));
-        let states: serde_json::Map<_, _> = state
-            .as_object()
-            .expect("state is an object")
-            .iter()
-            .filter(|(key, _)| key.as_str() != "spectatorId")
-            .map(|(key, value)| {
-                let value = value
-                    .as_str()
-                    .map_or_else(|| value.to_string(), ToOwned::to_owned);
-                (key.clone(), json!(value))
-            })
-            .collect();
-        json!({"type":"stateUpdate","code":0,"states":states,"counts":[1]})
+    let kind = (!old.initial)
+        .then(|| event.as_ref()?.body["type"].as_str())
+        .flatten();
+    let text = match kind {
+        Some("friends_changed") => {
+            json!({"code":0,"type":"friendsListUpdate","friendsListUpdate":true})
+        }
+        Some(
+            kind @ ("quintPartyStateUpdate"
+            | "quintPartyJoinRequest"
+            | "quintPartyPlayerLeft"
+            | "quintPartyMemberKick"),
+        ) => {
+            json!({"code":0,(kind):{}})
+        }
+        _ => {
+            let profile = s.app.profile(key).await.map_err(platform_status)?;
+            let mut state = super::state(&profile);
+            state["version"] = json!(tag);
+            state["lastVersion"] = json!(Uuid::from_u128(old.after as u128));
+            let states: serde_json::Map<_, _> = state
+                .as_object()
+                .expect("state is an object")
+                .iter()
+                .filter(|(key, _)| key.as_str() != "spectatorId")
+                .map(|(key, value)| {
+                    let value = value
+                        .as_str()
+                        .map_or_else(|| value.to_string(), ToOwned::to_owned);
+                    (key.clone(), json!(value))
+                })
+                .collect();
+            json!({"type":"stateUpdate","code":0,"states":states,"counts":[1]})
+        }
     };
     Ok((
         next,

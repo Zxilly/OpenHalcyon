@@ -107,3 +107,11 @@ The standalone Android request log and relay response log contain the following 
 | endSession | 1 | 1 | Menu state with an empty envelope session token |
 
 The local session advertises empty experiments, ad identifiers and support-content location where the instance has no such services configured. These fields preserve the observed JSON types. Production experiment assignments and vendor content are outside the local runtime.
+
+### Party notifications
+
+Set the top-level `native_state_updates = true` in the server TOML to advertise the native state subscription. It defaults to false. Configure `notify_listen` and `public_host` so clients on the intended network can reach the advertised WebSocket and HTTP fallback endpoints. Both URLs include a session-scoped bearer grant minted at bootstrap. Keep these URLs private and obtain fresh URLs by bootstrapping after a server restart. The notification listener uses plaintext HTTP and WebSocket.
+
+WebSocket and HTTP long polling use the same recipient-local SQLite cursor. To resume, send the previous envelope's `time` and `tag` as query parameters. A request without a cursor starts with the current player snapshot. Invitations go to the invitee alone, roster changes go to party members, and kicks go to the removed player. A departure is sent to the remaining members. Dissolving the party sends a state-change notice to its former members. Retries of an existing invitation or an already accepted invitation add no duplicate events. Revoked invitations and obsolete roster notices replay as a generic state snapshot at the original cursor.
+
+The 155-method inventory establishes the available party RPC names. The local protocol notes (§4) and the generated `stateUpdateCallback` analysis identify the envelope and the four `quintParty*` keys in `text`. This server emits those keys as markers with empty objects. The generated reports and demonstration server suggest inner fields, but the original values and native UI behavior remain unverified. Details are available from the authorized party RPCs.

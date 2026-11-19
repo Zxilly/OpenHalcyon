@@ -196,6 +196,7 @@ async fn serve(c: Config) -> Result<()> {
         Some(path) => ce.with_content(&path).await?,
         None => ce,
     };
+    Platform::configure_native_state_updates(&mut ce, c.native_state_updates)?;
     if let Some(provider) = c.provider {
         Platform::configure_provider(&mut ce, provider)?;
     }

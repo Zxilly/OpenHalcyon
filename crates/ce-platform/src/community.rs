@@ -348,6 +348,7 @@ pub(crate) async fn dispatch(
                 &args,
                 GroupKind::Party,
                 method == "partyInviteConfirm",
+                notify,
             )
             .await;
         }
@@ -455,6 +456,7 @@ pub(crate) async fn dispatch(
                 &args,
                 GroupKind::Team,
                 method == "teamInviteConfirm",
+                None,
             )
             .await;
         }
@@ -540,6 +542,7 @@ pub(crate) async fn dispatch(
                 &args,
                 GroupKind::Guild,
                 method == "guildInviteConfirm",
+                None,
             )
             .await;
         }
@@ -672,7 +675,11 @@ pub(crate) async fn dispatch(
         action,
         Action::SetPresence { .. } | Action::SetInvisible { .. }
     );
-    let data = community.execute(actor, action).await?;
+    let data = if crate::party_notify::is_mutation(&action) {
+        crate::party_notify::execute(community, notify, actor, action).await?
+    } else {
+        community.execute(actor, action).await?
+    };
     if let Some(notify) = notify {
         if publish_presence {
             refresh.extend(
@@ -709,6 +716,7 @@ async fn resolve_invite(
     args: &Args<'_>,
     kind: GroupKind,
     accept: bool,
+    notify: Option<&halcyon_platform::AppState>,
 ) -> Result<Value, Error> {
     let id = args.id(0, GROUP_ID)?;
     let observed = community
@@ -717,9 +725,12 @@ async fn resolve_invite(
     if observed["kind"] != json!(kind) {
         return Err(Error::Invalid);
     }
-    let result = community
-        .execute(actor, Action::ResolveInvite { group: id, accept })
-        .await?;
+    let action = Action::ResolveInvite { group: id, accept };
+    let result = if kind == GroupKind::Party {
+        crate::party_notify::execute(community, notify, actor, action).await?
+    } else {
+        community.execute(actor, action).await?
+    };
     let view = match kind {
         GroupKind::Party => View::Party,
         GroupKind::Team => View::Team,

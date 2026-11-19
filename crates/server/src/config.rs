@@ -17,6 +17,8 @@ pub struct Config {
     pub bootstrap_listen: SocketAddr,
     pub platform_listen: SocketAddr,
     pub notify_listen: SocketAddr,
+    #[serde(default)]
+    pub native_state_updates: bool,
     pub xmpp_listen: Option<SocketAddr>,
     pub game_bind: IpAddr,
     pub game_port_range: Option<halcyon_game::PortRange>,
@@ -97,6 +99,7 @@ impl Config {
             bootstrap_listen: SocketAddr::new(bound, 8080),
             platform_listen: SocketAddr::new(bound, 8443),
             notify_listen: SocketAddr::new(bound, 2112),
+            native_state_updates: false,
             xmpp_listen: Some(SocketAddr::new(bound, 5222)),
             game_bind: bound,
             game_port_range: None,

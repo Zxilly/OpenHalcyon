@@ -252,30 +252,46 @@ impl Community {
         .map_err(|_| CommunityError::WorkerUnavailable)?
     }
 
+    /// Run a trusted integration operation in the community database transaction.
+    pub async fn transaction<T, F>(&self, work: F) -> Result<T>
+    where
+        F: FnOnce(&Transaction<'_>) -> Result<T> + Send + 'static,
+        T: Send + 'static,
+    {
+        self.run(work).await
+    }
+
     /// Execute actions as an already-authenticated player.
     pub async fn execute(&self, actor: Uuid, action: Action) -> Result<Value> {
-        self.run(move |tx| {
-            let actor = actor.to_string();
-            ensure_player(tx, &actor)?;
-            match action {
-                Action::Friends
-                | Action::RequestFriend { .. }
-                | Action::ResolveFriend { .. }
-                | Action::RemoveFriend { .. }
-                | Action::FavoriteFriend { .. }
-                | Action::SetInvisible { .. }
-                | Action::SetReceivePresence { .. }
-                | Action::SetPresence { .. } => social::execute(tx, &actor, action),
-                Action::Inventory
-                | Action::Equip { .. }
-                | Action::SetLoadout { .. }
-                | Action::Quests { .. }
-                | Action::ClaimQuest { .. }
-                | Action::SkipQuest { .. } => economy::execute(tx, &actor, action),
-                _ => groups::execute(tx, &actor, action),
-            }
-        })
-        .await
+        self.run(move |tx| Self::execute_in_transaction(tx, actor, action))
+            .await
+    }
+
+    /// Apply an authenticated action alongside other writes in the same database transaction.
+    pub fn execute_in_transaction(
+        tx: &Transaction<'_>,
+        actor: Uuid,
+        action: Action,
+    ) -> Result<Value> {
+        let actor = actor.to_string();
+        ensure_player(tx, &actor)?;
+        match action {
+            Action::Friends
+            | Action::RequestFriend { .. }
+            | Action::ResolveFriend { .. }
+            | Action::RemoveFriend { .. }
+            | Action::FavoriteFriend { .. }
+            | Action::SetInvisible { .. }
+            | Action::SetReceivePresence { .. }
+            | Action::SetPresence { .. } => social::execute(tx, &actor, action),
+            Action::Inventory
+            | Action::Equip { .. }
+            | Action::SetLoadout { .. }
+            | Action::Quests { .. }
+            | Action::ClaimQuest { .. }
+            | Action::SkipQuest { .. } => economy::execute(tx, &actor, action),
+            _ => groups::execute(tx, &actor, action),
+        }
     }
 }
 
