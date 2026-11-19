@@ -291,14 +291,20 @@ mod tests {
         room.tick();
         assert!(drain(&mut recipients[0]).is_empty());
 
-        assert_eq!(room.receive(0, 0, cast.clone()).unwrap(), [cast.clone()]);
+        assert_eq!(
+            room.receive(0, 0, cast.clone()).unwrap().as_slice(),
+            std::slice::from_ref(&cast)
+        );
         room.world.command(1, Command::Stop).unwrap();
         for _ in 0..12 {
             room.tick();
         }
         assert!(drain(&mut recipients[0]).is_empty());
         assert!(drain(&mut recipients[1]).is_empty());
-        assert_eq!(room.receive(0, 0, cast.clone()).unwrap(), [cast.clone()]);
+        assert_eq!(
+            room.receive(0, 0, cast.clone()).unwrap().as_slice(),
+            std::slice::from_ref(&cast)
+        );
         assert!(room.receive(0, 0, cast.clone()).unwrap().is_empty());
         assert!(drain(&mut recipients[0]).is_empty());
         for _ in 0..12 {
