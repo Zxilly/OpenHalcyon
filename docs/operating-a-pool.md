@@ -101,3 +101,24 @@ elections, and the server test drives cross-instance admission through CE calls.
 cargo test --locked -p halcyon-federation
 cargo test --locked -p openhalcyon --test peer_play
 ```
+
+## State storage and upgrade
+
+Each node commits newly applied entries to a SQLite journal before updating its in-memory pool, request outcomes and applied index. A background worker encodes each full CBOR snapshot. The transaction that publishes the snapshot also removes journal entries through its applied index. Entries that arrived during snapshot generation survive this transaction and replay in order at restart. OpenRaft can purge its consensus log independently. Snapshots retain settled matches, rejected requests and idempotency outcomes.
+
+Migration preserves the latest applied state from the older database, including changes since its most recently published snapshot. Peers continue to exchange the same CBOR snapshot format. **Back up each node before upgrading it.** Use the SQLite backup API or stop the node to make a consistent file backup, including any remaining WAL. To roll back to an older binary, stop the node and restore its pre-upgrade backup. The old binary refuses to read a migrated database.
+
+Run the release benchmark on the storage device you intend to use.
+
+```sh
+cargo test --release -p halcyon-federation store_write_amplification -- --ignored --nocapture
+```
+
+The benchmark seeds disposable databases with 128 or 1,024 settled matches. Each match contributes five committed requests for enqueue, allocation, acceptance, host readiness and settlement. It then submits the same 32 new requests individually through the previous full-state CBOR implementation and the incremental implementation. Both use SQLite WAL with FULL synchronization. The test truncates the WAL before measurement, temporarily disables automatic checkpointing, and records the growth of the actual WAL file. Incremental snapshot time is measured separately. The measurement covers state-machine application on one node and excludes consensus traffic, Raft log appends and elections.
+
+| Settled matches / previous requests | Previous apply time | Incremental apply time | Previous WAL growth | Incremental WAL growth | Full snapshot |
+|---|---:|---:|---:|---:|---:|
+| 128 / 640 | 219.0 ms | 67.1 ms | 5,932,832 B | 148,352 B | 4.09 ms |
+| 1,024 / 5,120 | 1,324.4 ms | 65.1 ms | 44,833,872 B | 148,352 B | 19.41 ms |
+
+These Windows 11 measurements on a Ryzen 9 9950X3D show constant WAL growth for the 32 new requests across the two history sizes. The cost of a complete snapshot grows with the retained history.

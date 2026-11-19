@@ -13,7 +13,14 @@ use std::{
 };
 
 #[derive(Clone)]
-pub(crate) struct Store(Arc<Mutex<Connection>>);
+pub(crate) struct Store(Arc<Mutex<Database>>);
+struct Database {
+    db: Connection,
+    machine: Machine,
+}
+mod state;
+#[cfg(test)]
+mod tests;
 type E = StorageError<Uuid>;
 fn maperr(e: anyhow::Error, verb: ErrorVerb) -> E {
     StorageError::from_io_error(
@@ -51,16 +58,18 @@ impl Store {
             ),
             None => put(&tx, "identity", &(pool, node))?,
         }
+        state::initialize(&tx)?;
+        let machine = state::restore(&tx)?;
         tx.commit()?;
-        Ok(Self(Arc::new(Mutex::new(c))))
+        Ok(Self(Arc::new(Mutex::new(Database { db: c, machine }))))
     }
     fn read<T>(&self, f: impl FnOnce(&Connection) -> anyhow::Result<T>) -> Result<T, E> {
-        f(&self.0.lock().unwrap()).map_err(|e| maperr(e, ErrorVerb::Read))
+        f(&self.0.lock().unwrap().db).map_err(|e| maperr(e, ErrorVerb::Read))
     }
     fn write<T>(&self, f: impl FnOnce(&Connection) -> anyhow::Result<T>) -> Result<T, E> {
         let mut c = self.0.lock().unwrap();
         let job = || -> anyhow::Result<T> {
-            let tx = c.transaction()?;
+            let tx = c.db.transaction()?;
             let v = f(&tx)?;
             tx.commit()?;
             Ok(v)
@@ -68,19 +77,15 @@ impl Store {
         job().map_err(|e| maperr(e, ErrorVerb::Write))
     }
     pub fn machine(&self) -> Result<Machine, E> {
-        self.read(|c| Ok(get(c, "machine")?.unwrap_or_default()))
+        Ok(self.0.lock().unwrap().machine.clone())
     }
     pub fn pool_changes(&self, known: Option<u64>) -> Result<(u64, Option<Pool>), E> {
-        self.read(|c| {
-            if let Some(index) = get::<u64>(c, "pool_revision")?
-                && known == Some(index)
-            {
-                return Ok((index, None));
-            }
-            let machine: Machine = get(c, "machine")?.unwrap_or_default();
-            let index = machine.applied.map_or(0, |id| id.index);
-            Ok((index, Some(machine.pool)))
-        })
+        let state = self.0.lock().unwrap();
+        let index = state.machine.applied.map_or(0, |id| id.index);
+        Ok((
+            index,
+            (known != Some(index)).then(|| state.machine.pool.clone()),
+        ))
     }
 }
 impl RaftLogReader<Types> for Store {
@@ -113,20 +118,11 @@ impl RaftLogReader<Types> for Store {
 }
 impl RaftSnapshotBuilder<Types> for Store {
     async fn build_snapshot(&mut self) -> Result<Snapshot<Types>, E> {
-        self.write(|c| {
-            let m: Machine = get(c, "machine")?.unwrap_or_default();
-            let meta = SnapshotMeta {
-                last_log_id: m.applied,
-                last_membership: m.membership.clone(),
-                snapshot_id: Uuid::new_v4().to_string(),
-            };
-            let b = encode(&m)?;
-            put(c, "snapshot", &(&meta, &b))?;
-            Ok(Snapshot {
-                meta,
-                snapshot: Box::new(Cursor::new(b)),
-            })
-        })
+        let store = self.clone();
+        tokio::task::spawn_blocking(move || state::build(&store))
+            .await
+            .map_err(|e| maperr(e.into(), ErrorVerb::Write))?
+            .map_err(|e| maperr(e, ErrorVerb::Write))
     }
 }
 impl RaftStorage<Types> for Store {
@@ -193,45 +189,14 @@ impl RaftStorage<Types> for Store {
     async fn last_applied_state(
         &mut self,
     ) -> Result<(Option<LogId<Uuid>>, StoredMembership<Uuid, BasicNode>), E> {
-        let m = self.machine()?;
-        Ok((m.applied, m.membership))
+        let state = self.0.lock().unwrap();
+        Ok((state.machine.applied, state.machine.membership.clone()))
     }
     async fn apply_to_state_machine(
         &mut self,
         entries: &[Entry<Types>],
     ) -> Result<Vec<Outcome>, E> {
-        self.write(|c| {
-            let mut m: Machine = get(c, "machine")?.unwrap_or_default();
-            let mut out = Vec::new();
-            for e in entries {
-                let r = match &e.payload {
-                    EntryPayload::Blank => Ok(()),
-                    EntryPayload::Membership(v) => {
-                        m.membership = StoredMembership::new(Some(e.log_id), v.clone());
-                        Ok(())
-                    }
-                    EntryPayload::Normal(p) => {
-                        let key = (p.caller, p.request_id);
-                        if let Some((cmd, result)) = m.results.get(&key) {
-                            if cmd == &p.command {
-                                *result
-                            } else {
-                                Err(ApplyError::Conflict)
-                            }
-                        } else {
-                            let result = m.pool.apply(p.caller, p.command.clone());
-                            m.results.insert(key, (p.command.clone(), result));
-                            result
-                        }
-                    }
-                };
-                out.push(r);
-                m.applied = Some(e.log_id);
-            }
-            put(c, "machine", &m)?;
-            put(c, "pool_revision", &m.applied.map_or(0, |id| id.index))?;
-            Ok(out)
-        })
+        state::apply(&mut self.0.lock().unwrap(), entries).map_err(|e| maperr(e, ErrorVerb::Write))
     }
     async fn get_snapshot_builder(&mut self) -> Self {
         self.clone()
@@ -244,28 +209,31 @@ impl RaftStorage<Types> for Store {
         meta: &SnapshotMeta<Uuid, BasicNode>,
         snap: Box<Cursor<Vec<u8>>>,
     ) -> Result<(), E> {
-        self.write(|c| {
-            let b = snap.into_inner();
-            let m: Machine = decode(&b)?;
+        let bytes = snap.into_inner();
+        let meta = meta.clone();
+        let store = self.clone();
+        tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+            let machine: Machine = decode(&bytes)?;
             anyhow::ensure!(
-                m.applied == meta.last_log_id && m.membership == meta.last_membership,
+                machine.applied == meta.last_log_id && machine.membership == meta.last_membership,
                 "snapshot metadata mismatch"
             );
-            put(c, "machine", &m)?;
-            put(c, "pool_revision", &m.applied.map_or(0, |id| id.index))?;
-            put(c, "snapshot", &(meta, b))
+            let mut state = store.0.lock().unwrap();
+            anyhow::ensure!(
+                machine.applied.map(|id| id.index) >= state.machine.applied.map(|id| id.index),
+                "obsolete incoming snapshot"
+            );
+            let tx = state.db.transaction()?;
+            state::checkpoint(&tx, &meta, &bytes)?;
+            tx.commit()?;
+            state.machine = machine;
+            Ok(())
         })
+        .await
+        .map_err(|e| maperr(e.into(), ErrorVerb::Write))?
+        .map_err(|e| maperr(e, ErrorVerb::Write))
     }
     async fn get_current_snapshot(&mut self) -> Result<Option<Snapshot<Types>>, E> {
-        self.read(|c| {
-            Ok(
-                get::<(SnapshotMeta<Uuid, BasicNode>, Vec<u8>)>(c, "snapshot")?.map(|(meta, b)| {
-                    Snapshot {
-                        meta,
-                        snapshot: Box::new(Cursor::new(b)),
-                    }
-                }),
-            )
-        })
+        self.read(state::snapshot)
     }
 }
