@@ -63,9 +63,14 @@ pub(super) fn solo_table(room: &Room) -> Message {
     }
     Message::new(0x045c, body)
 }
-pub(super) fn solo_opening(room: &mut Room, seat: usize) -> Batch {
+pub(super) fn solo_opening(room: &mut Room, seat: usize) -> std::io::Result<Batch> {
     let team = room.world.entities[seat].team;
     let initial = room.phase == "loading" && room.world.tick == 0;
+    if initial {
+        room.world
+            .use_solo_mid_lane()
+            .map_err(std::io::Error::other)?;
+    }
     let mut out = vec![
         messages::scene_mode(&room.queue, 1),
         Message::new(0x0470, [0]),
@@ -97,7 +102,7 @@ pub(super) fn solo_opening(room: &mut Room, seat: usize) -> Batch {
             }
         }
     }
-    out
+    Ok(out)
 }
 
 /// First authoritative tick, before stepping the pristine world. Mark only structures
@@ -240,6 +245,11 @@ mod tests {
                     }
                     let id = u16::from_be_bytes(m.body[10..12].try_into().unwrap());
                     if (1500..1510).contains(&id) {
+                        if !reconnect && id == 1500 {
+                            assert_eq!(m.body[18..22], (-90.0_f32).to_be_bytes());
+                            assert_eq!(f32::from_be_bytes(m.body[26..30].try_into().unwrap()), 0.);
+                            assert_eq!(m.body[745], 14);
+                        }
                         hero_ids.push(id);
                     }
                 }

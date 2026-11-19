@@ -1032,7 +1032,7 @@ impl Room {
                 } else if scene_requested {
                     let team = (self.phase == "running").then_some(self.world.entities[i].team);
                     out = if solo_scene {
-                        scene::solo_opening(self, i)
+                        scene::solo_opening(self, i)?
                     } else {
                         aral::opening(self, team)
                     };
