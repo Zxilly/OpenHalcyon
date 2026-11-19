@@ -72,7 +72,7 @@ impl Delivery {
         })
     }
 
-    fn into_records(self) -> Batch {
+    pub(super) fn into_records(self) -> Batch {
         match self {
             Self::Private(messages) => messages,
             Self::Team(team) => Arc::try_unwrap(team).map_or_else(

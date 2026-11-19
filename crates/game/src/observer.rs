@@ -272,6 +272,43 @@ mod tests {
     use super::*;
 
     #[tokio::test]
+    async fn revoked_observer_receives_no_further_native_abilities() {
+        let rooms = Rooms::new("127.0.0.1".parse().unwrap(), "127.0.0.1".into(), 1, None);
+        let id = Uuid::new_v4();
+        rooms
+            .reserve(Reservation {
+                match_id: id,
+                players: vec![Uuid::new_v4()],
+                teams: vec![0],
+                mode: "solo".into(),
+                difficulty: None,
+            })
+            .unwrap();
+        let shared = rooms.room(id).unwrap();
+        shared.lock().unwrap().phase("running");
+        let (_, grant) = rooms.observe(id, Uuid::new_v4()).unwrap();
+        let (tx, mut rx) = mpsc::channel(4);
+        let cast = Event::Cast {
+            source: 2,
+            slot: halcyon_sim::AbilitySlot::B,
+            target: halcyon_sim::CastTarget::Point(halcyon_sim::Position { x: 2., y: 3. }),
+        };
+        {
+            let mut room = shared.lock().unwrap();
+            room.observers.get_mut(&grant).unwrap().live = Some(tx);
+            room.world.entities[1].type_id = 273;
+            super::super::native_abilities::publish(&mut room, std::slice::from_ref(&cast));
+        }
+        assert_eq!(
+            rx.try_recv().unwrap(),
+            [Message::ability_point_used(1501, [2., 0., 3.], 3)]
+        );
+        rooms.revoke_observer(id, grant).unwrap();
+        super::super::native_abilities::publish(&mut shared.lock().unwrap(), &[cast]);
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
     async fn observer_respawn_and_purchase_emit_one_grant_and_actual_currency() {
         let rooms = Rooms::new("127.0.0.1".parse().unwrap(), "127.0.0.1".into(), 1, None);
         let id = Uuid::new_v4();

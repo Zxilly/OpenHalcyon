@@ -1201,7 +1201,6 @@ impl Room {
             scene::initial_structures(self);
         }
         let events = self.world.step();
-        native_abilities::publish(self, &events);
         self.tick_observers(&events);
         for event in &events {
             match *event {
@@ -1221,6 +1220,7 @@ impl Room {
             }
         }
         self.replicate(&events);
+        native_abilities::publish(self, &events);
         if self.world.winner.is_some() {
             self.reason = Some("completed");
             self.phase("ending");

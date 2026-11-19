@@ -9,6 +9,15 @@ impl Message {
         )
     }
 
+    /// Observed 0x0415 caster, target actor and ability selector.
+    pub fn ability_target_used(actor: u32, target: u32, selector: u8) -> Self {
+        let mut body = [0; 9];
+        body[..4].copy_from_slice(&actor.to_be_bytes());
+        body[4..8].copy_from_slice(&target.to_be_bytes());
+        body[8] = selector;
+        Self::new(0x0415, body)
+    }
+
     /// Observed 0x0416 actor, three world coordinates and ability selector.
     pub fn ability_point_used(actor: u32, coordinates: [f32; 3], selector: u8) -> Self {
         let mut body = [0; 17];
