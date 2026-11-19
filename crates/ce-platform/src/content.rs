@@ -200,11 +200,24 @@ impl Platform {
             .ok_or(Error::Unavailable("offer unavailable"))?;
         let original_receipt = Sha256::digest(serde_json::to_vec(&(m, params))?).into();
         let (receipt, previous) = if m == "upgradeTalent" {
-            // Each RPC response renews the bearer token. Replay identity belongs to the
-            // authenticated player and operation arguments, independently of token rotation.
+            let key = match first.and_then(|arg| arg.get("operationId")) {
+                None => original_receipt,
+                Some(value) => {
+                    let id = value
+                        .as_str()
+                        .and_then(|raw| uuid::Uuid::parse_str(raw).ok())
+                        .filter(|id| !id.is_nil())
+                        .ok_or(Error::Invalid)?;
+                    // Local extension. Reusing the operation ID for a different SKU
+                    // reaches the storage transaction's existing conflict check.
+                    Sha256::digest(serde_json::to_vec(&("talent-upgrade-operation", id))?).into()
+                }
+            };
+            // Recognize an existing bearer-independent receipt once. Moving it to
+            // the new key frees subsequent native actions for the same talent.
             (
-                Sha256::digest(serde_json::to_vec(&(m, &params[1..]))?).into(),
-                Some(original_receipt),
+                key,
+                Some(Sha256::digest(serde_json::to_vec(&(m, &params[1..]))?).into()),
             )
         } else {
             (original_receipt, None)

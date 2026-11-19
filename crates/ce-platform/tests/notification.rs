@@ -553,7 +553,7 @@ async fn talent_catalog_preserves_public_fields_and_projects_only_the_callers_in
             "items":[{"id":"exampleLevel","slot":"progress","name":"Example Level"},
                      {"id":"examplePieces","slot":"progress","name":"Example Pieces"}],
             "talentProgress":{"example_rare":{"levelItem":"exampleLevel","fragmentItem":"examplePieces"}},
-            "exchanges":{"openRewardChest":{"welcome":{"limit":1,"reward":{"examplePieces":5}}},
+            "exchanges":{"openRewardChest":{"welcome":{"limit":1,"reward":{"examplePieces":9}}},
                          "upgradeTalent":{"example_rare":{"cost":{"examplePieces":2},"reward":{"exampleLevel":1}}}}
         }),
     );
@@ -580,11 +580,10 @@ async fn talent_catalog_preserves_public_fields_and_projects_only_the_callers_in
     rpc(&api, "openRewardChest", json!([ta, "welcome"])).await;
     let upgraded = rpc(&api, "upgradeTalent", json!([ta, "example_rare"])).await;
     assert_ne!(upgraded["sessionToken"], *ta);
-    // Simulate an exact receipt committed before bearer-independent upgrade keys.
+    // Simulate a receipt left by the earlier bearer-independent implementation.
     use sha2::{Digest, Sha256};
-    let previous = Sha256::digest(
-        serde_json::to_vec(&("upgradeTalent", json!([ta, "example_rare"]))).unwrap(),
-    );
+    let previous =
+        Sha256::digest(serde_json::to_vec(&("upgradeTalent", json!(["example_rare"]))).unwrap());
     let db = rusqlite::Connection::open(&database).unwrap();
     assert_eq!(
         db.execute(
@@ -595,13 +594,33 @@ async fn talent_catalog_preserves_public_fields_and_projects_only_the_callers_in
         1
     );
     rpc(&api, "upgradeTalent", json!([ta, "example_rare"])).await;
-    rpc(
+    rpc(&api, "upgradeTalent", json!([ta, "example_rare"])).await;
+    assert_eq!(read(ta.clone()).await["returnValue"], stat(1, 7));
+    let next = rpc(
         &api,
         "upgradeTalent",
         json!([upgraded["sessionToken"], "example_rare"]),
     )
     .await;
-    assert_eq!(read(ta.clone()).await["returnValue"], stat(1, 3));
+    assert_eq!(read(ta.clone()).await["returnValue"], stat(2, 5));
+    let stable = json!({"sku":"example_rare","operationId":Uuid::new_v4()});
+    let first = rpc(&api, "upgradeTalent", json!([next["sessionToken"], stable])).await;
+    rpc(
+        &api,
+        "upgradeTalent",
+        json!([first["sessionToken"], stable]),
+    )
+    .await;
+    assert_eq!(read(ta.clone()).await["returnValue"], stat(3, 3));
+    assert_eq!(
+        rpc_response(
+            &api,
+            "upgradeTalent",
+            json!([ta,{"sku":"example_rare","operationId":"bad"}])
+        )
+        .await["code"],
+        -32602
+    );
     assert_eq!(read(tb.clone()).await["returnValue"], stat(0, 0));
     let reopened = open().unwrap().with_content(&content).await.unwrap();
     let a_id = Uuid::parse_str(a["returnValue"]["playerUUID"].as_str().unwrap()).unwrap();
@@ -612,7 +631,7 @@ async fn talent_catalog_preserves_public_fields_and_projects_only_the_callers_in
             .unwrap()
             .unwrap()
             .level,
-        1
+        3
     );
     assert!(
         reopened
