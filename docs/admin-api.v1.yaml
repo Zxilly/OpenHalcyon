@@ -1,0 +1,465 @@
+openapi: 3.1.0
+info:
+  title: OpenHalcyon 管理 API
+  version: 1.0.0-draft.1
+  description: |
+    面向自托管管理面板。游戏客户端继续使用 CE bootstrap、JSONRpc 和对局 TCP。
+    面板与管理 API 同源部署，管理端使用 HTTPS。所有响应发送 Cache-Control: no-store。
+    首版支持服主一个角色，安装时在服务端配置管理账号。管理会话独立于游戏游客凭据。
+    所有写请求（含登录）必须携带与配置的面板源完全匹配的 Origin，否则返回 403。
+    时间均为 UTC RFC 3339 字符串。列表只返回管理 API 可见的数据。
+servers:
+  - url: /api/admin/v1
+security:
+  - adminSession: []
+tags:
+  - name: Session
+  - name: Overview
+  - name: Players
+  - name: Matches
+paths:
+  /session:
+    post:
+      tags: [Session]
+      operationId: login
+      summary: 登录管理面板
+      description: 成功时轮换会话标识。登录失败统一返回 401，过于频繁返回 429。
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/Origin'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [username, password]
+              properties:
+                username: {type: string, minLength: 1, maxLength: 128}
+                password: {type: string, format: password, minLength: 1, maxLength: 1024, writeOnly: true}
+      responses:
+        '200':
+          description: 管理会话已建立
+          headers:
+            Set-Cookie:
+              description: 不透明的管理会话标识，带 Path=/、Secure、HttpOnly、SameSite=Strict，无 Domain。
+              schema: {type: string}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Session'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '429':
+          description: 尝试过于频繁
+          headers:
+            Retry-After:
+              description: 可以重试前的等待秒数
+              schema: {type: integer, minimum: 1}
+          content:
+            application/problem+json:
+              schema: {$ref: '#/components/schemas/Problem'}
+        default: {$ref: '#/components/responses/Error'}
+    get:
+      tags: [Session]
+      operationId: getSession
+      summary: 查询当前管理员和会话过期时间
+      responses:
+        '200':
+          description: 当前会话
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Session'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        default: {$ref: '#/components/responses/Error'}
+    delete:
+      tags: [Session]
+      operationId: logout
+      summary: 注销当前管理会话
+      description: 撤销服务端会话并清除 Cookie。会话已经失效或不存在也返回 204。
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/Origin'
+      responses:
+        '204':
+          description: 已退出
+          headers:
+            Set-Cookie:
+              description: 同名 Cookie，Path=/，Max-Age=0，保留 Secure、HttpOnly、SameSite=Strict。
+              schema: {type: string}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        default: {$ref: '#/components/responses/Error'}
+  /overview:
+    get:
+      tags: [Overview]
+      operationId: getOverview
+      summary: 读取单实例运行概览
+      responses:
+        '200':
+          description: 同一采样时刻的计数
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [sampledAt, startedAt, serverVersion, clientBuild, onlinePlayers, queuedPlayers, activeMatches]
+                properties:
+                  sampledAt: {$ref: '#/components/schemas/Timestamp'}
+                  startedAt: {$ref: '#/components/schemas/Timestamp'}
+                  serverVersion: {type: string}
+                  clientBuild: {type: integer, example: 147219}
+                  onlinePlayers: {type: integer, minimum: 0, description: 归属本实例且在线的去重玩家数，含在远端对局中的本服玩家}
+                  queuedPlayers: {type: integer, minimum: 0, description: 本服处于 pending_auto 或 match_pending 的去重玩家数，含联邦队列}
+                  activeMatches: {type: integer, minimum: 0, description: 本机托管且尚未进入 ended 的房间数}
+                  hosting: {$ref: '#/components/schemas/Hosting'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        default: {$ref: '#/components/responses/Error'}
+  /federation/pools:
+    get:
+      tags: [Overview]
+      operationId: listFederationPools
+      summary: 查看本实例配置的匹配池及连通状态；独立部署返回空列表
+      responses:
+        '200':
+          description: 本服观察到的最近状态，过期容量不计入可用主机
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      required: [poolId, state, localRole, leaderId, voterCount, lastContactAt, eligibleHosts, localTickets]
+                      properties:
+                        poolId: {type: string}
+                        state: {enum: [connecting, online, no_quorum, unreachable, draining], description: 本节点的最近观测；online 表示最近完成多数确认}
+                        localRole: {enum: [learner, follower, candidate, leader], description: 共识角色，不影响对局主机评分}
+                        leaderId: {type: [string, 'null'], format: uuid, description: 本节点最近观测的当选节点，未知为空}
+                        voterCount: {type: integer, minimum: 0, description: 最近已应用成员配置中的投票成员数，联合配置按节点去重}
+                        lastContactAt: {$ref: '#/components/schemas/OptionalTimestamp'}
+                        eligibleHosts: {type: [integer, 'null'], minimum: 0, description: 池内有新鲜容量公告的可选主机数，未知为空}
+                        localTickets: {type: integer, minimum: 0, description: 本服在此池尚未完成的票据数}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        default: {$ref: '#/components/responses/Error'}
+  /players:
+    get:
+      tags: [Players]
+      operationId: listPlayers
+      summary: 按玩家 UUID 分页查看游客账号
+      description: 包括离线游客。按 UUID 升序，游标之后继续读取。online 按查询当时状态筛选。
+      parameters:
+        - {$ref: '#/components/parameters/Cursor'}
+        - {$ref: '#/components/parameters/Limit'}
+        - name: online
+          in: query
+          schema: {type: boolean}
+      responses:
+        '200':
+          description: 玩家列表
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, nextCursor]
+                properties:
+                  items: {type: array, items: {$ref: '#/components/schemas/Player'}}
+                  nextCursor: {$ref: '#/components/schemas/NextCursor'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        default: {$ref: '#/components/responses/Error'}
+  /players/{playerId}:
+    parameters:
+      - name: playerId
+        in: path
+        required: true
+        schema: {$ref: '#/components/schemas/Id'}
+    get:
+      tags: [Players]
+      operationId: getPlayer
+      summary: 通过 UUID 定位玩家及其当前对局
+      responses:
+        '200':
+          description: 玩家资料和最近活动
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Player'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        default: {$ref: '#/components/responses/Error'}
+  /matches:
+    get:
+      tags: [Matches]
+      operationId: listMatches
+      summary: 浏览当前实例的对局
+      description: 按 createdAt 和 id 降序。活动房间全部可见，已结束房间及其事件至少保留 30 分钟，实例重启后重新开始记录。
+      parameters:
+        - {$ref: '#/components/parameters/Cursor'}
+        - {$ref: '#/components/parameters/Limit'}
+        - name: phase
+          in: query
+          schema: {$ref: '#/components/schemas/MatchPhase'}
+      responses:
+        '200':
+          description: 对局列表
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, nextCursor]
+                properties:
+                  items: {type: array, items: {$ref: '#/components/schemas/Match'}}
+                  nextCursor: {$ref: '#/components/schemas/NextCursor'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        default: {$ref: '#/components/responses/Error'}
+  /matches/{matchId}:
+    parameters: [{$ref: '#/components/parameters/MatchId'}]
+    get:
+      tags: [Matches]
+      operationId: getMatch
+      summary: 查看房间及每名玩家的选人、加载和连接状态
+      responses:
+        '200':
+          description: 对局详情
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - {$ref: '#/components/schemas/Match'}
+                  - type: object
+                    required: [participants]
+                    properties:
+                      participants:
+                        type: array
+                        items:
+                          type: object
+                          required: [slot, playerId, displayName, hero, locked, controlConnected, gameConnected, lastEventAt]
+                          properties:
+                            slot: {type: integer, minimum: 0, description: 局内唯一席位}
+                            playerId: {type: [string, 'null'], format: uuid, description: 机器人为空}
+                            homeInstanceId: {type: [string, 'null'], format: uuid, description: 真人的归属实例，Bot 为空}
+                            botProfile: {type: [string, 'null'], description: Bot 策略版本或配置名，真人为空}
+                            displayName: {type: string}
+                            hero: {type: [string, 'null']}
+                            locked: {type: boolean}
+                            controlConnected: {type: boolean}
+                            gameConnected: {type: boolean}
+                            lastEventAt: {$ref: '#/components/schemas/OptionalTimestamp'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        default: {$ref: '#/components/responses/Error'}
+  /matches/{matchId}/events:
+    parameters: [{$ref: '#/components/parameters/MatchId'}]
+    get:
+      tags: [Matches]
+      operationId: listMatchEvents
+      summary: 增量读取对局诊断时间线
+      description: |
+        仅记录阶段变化、关键协议里程碑、连接变化、错误和管理操作。
+        每局序号从 1 单调递增。首次请求从最早事件开始。
+        按序号升序返回，nextAfter 为本页末尾序号，空页沿用请求值。
+        hasMore 表示本次读取时仍有后续事件，为 false 时可稍后用 nextAfter 继续轮询。
+        房间可查期间保留这些事件。事件消息中不包含令牌、密钥或原始载荷。
+      parameters:
+        - name: after
+          in: query
+          schema: {type: integer, minimum: 0, default: 0}
+        - {$ref: '#/components/parameters/Limit'}
+      responses:
+        '200':
+          description: 按事件序号排序的一页结果
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, nextAfter, hasMore]
+                properties:
+                  items: {type: array, items: {$ref: '#/components/schemas/MatchEvent'}}
+                  nextAfter: {type: integer, minimum: 0}
+                  hasMore: {type: boolean}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        default: {$ref: '#/components/responses/Error'}
+  /matches/{matchId}/termination:
+    parameters: [{$ref: '#/components/parameters/MatchId'}]
+    put:
+      tags: [Matches]
+      operationId: terminateMatch
+      summary: 请求结束本实例托管的指定对局
+      description: |
+        每局最多一条终止请求。首次受理时原子地记录管理员、原因和时间，进入 ending。
+        客户端用相同原因重试得到原记录，进行中返回 202，完成后返回 200。
+        已自然结束、正在自然结算，或重试时原因不同，返回 409。
+        对局任务停止模拟、释放监听端口并解除玩家与房间的关联，允许返回菜单重新排队。
+        面板轮询 getMatch，直到 phase=ended 且 endReason=admin_terminated。
+      parameters:
+        - {$ref: '#/components/parameters/Origin'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [reason]
+              properties:
+                reason: {type: string, minLength: 1, maxLength: 256, pattern: '\S'}
+      responses:
+        '202':
+          description: 已受理，或同一请求仍在执行
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Termination'}
+        '200':
+          description: 同一管理终止请求已经执行完成
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Termination'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409':
+          description: 对局状态或终止原因冲突
+          content:
+            application/problem+json:
+              schema: {$ref: '#/components/schemas/Problem'}
+        default: {$ref: '#/components/responses/Error'}
+components:
+  securitySchemes:
+    adminSession:
+      type: apiKey
+      in: cookie
+      name: __Host-oh_admin
+  parameters:
+    Origin:
+      name: Origin
+      in: header
+      required: true
+      schema: {type: string, format: uri}
+    MatchId:
+      name: matchId
+      in: path
+      required: true
+      schema: {$ref: '#/components/schemas/Id'}
+    Cursor:
+      name: cursor
+      in: query
+      description: 上页的 nextCursor，绑定资源和过滤条件。无效或不匹配返回 400。
+      schema: {type: string, minLength: 1}
+    Limit:
+      name: limit
+      in: query
+      schema: {type: integer, minimum: 1, maximum: 100, default: 50}
+  schemas:
+    Id: {type: string, format: uuid}
+    Timestamp: {type: string, format: date-time}
+    OptionalTimestamp: {type: [string, 'null'], format: date-time}
+    NextCursor: {type: [string, 'null'], description: 无后续页时为空}
+    Session:
+      type: object
+      required: [username, expiresAt]
+      properties:
+        username: {type: string}
+        expiresAt: {$ref: '#/components/schemas/Timestamp'}
+    Hosting:
+      type: object
+      description: 本机容量视图。利用率及延迟取最近 60 秒，尚无样本时返回 null。
+      required: [instanceId, admission, humanSeats, botSeats, reservedSeats, tickP99Ms, cpuPercent, rssBytes, outboundBytesPerSecond]
+      properties:
+        instanceId: {$ref: '#/components/schemas/Id'}
+        admission: {enum: [accepting, full, draining, disabled]}
+        humanSeats: {type: integer, minimum: 0, description: 当前已激活房间中分配给真人的席位数，含远端玩家}
+        botSeats: {type: integer, minimum: 0, description: 当前已激活房间中分配给英雄 Bot 的席位数}
+        reservedSeats: {type: integer, minimum: 0, description: 已预留且尚未激活的席位数}
+        tickP99Ms: {type: [number, 'null'], minimum: 0, description: 从计划开始到实际完成的延迟，含 worker 队列等待}
+        cpuPercent: {type: [number, 'null'], minimum: 0, maximum: 100, description: 服务进程占其可用 CPU 配额的百分比}
+        rssBytes: {type: [integer, 'null'], minimum: 0, description: 最近一次采样的服务进程常驻内存}
+        outboundBytesPerSecond: {type: [number, 'null'], minimum: 0, description: 游戏连接应用层写出的字节速率}
+    Player:
+      type: object
+      required: [id, displayName, online, platformState, currentMatchId, lastSeenAt]
+      properties:
+        id: {$ref: '#/components/schemas/Id'}
+        displayName: {type: string}
+        online: {type: boolean}
+        platformState: {enum: [menus, pending_auto, match_pending, playing, post_match, offline]}
+        currentMatchId: {type: [string, 'null'], format: uuid}
+        currentMatchHostId: {type: [string, 'null'], format: uuid, description: 当前对局主机；远端房间由远端服主管理，本地详情接口仅提供本机托管的房间}
+        lastSeenAt: {$ref: '#/components/schemas/Timestamp'}
+    MatchPhase:
+      type: string
+      enum: [allocated, hero_select, loading, running, ending, ended]
+      description: 管理侧房间阶段。平台向客户端下发 playing 时，房间仍可能在选人或加载。
+    Match:
+      type: object
+      required: [id, queue, phase, createdAt, phaseSince, endedAt, endReason, humanPlayers]
+      properties:
+        id: {$ref: '#/components/schemas/Id'}
+        queue: {type: string, example: 5v5_bots_solo}
+        phase: {$ref: '#/components/schemas/MatchPhase'}
+        createdAt: {$ref: '#/components/schemas/Timestamp'}
+        phaseSince: {$ref: '#/components/schemas/Timestamp'}
+        endedAt: {$ref: '#/components/schemas/OptionalTimestamp'}
+        endReason: {enum: [completed, admin_terminated, error, null]}
+        humanPlayers: {type: integer, minimum: 0, description: 房间中分配给真人的席位数}
+        botPlayers: {type: integer, minimum: 0, description: 分配给英雄 Bot 的席位数}
+        poolId: {type: [string, 'null'], description: 负责匹配的池，本地独立匹配为空}
+    MatchEvent:
+      type: object
+      required: [seq, at, kind, message]
+      properties:
+        seq: {type: integer, minimum: 1}
+        at: {$ref: '#/components/schemas/Timestamp'}
+        kind: {enum: [phase_changed, connection, protocol, error, admin_action]}
+        message: {type: string}
+        playerId: {$ref: '#/components/schemas/Id'}
+        channel: {enum: [control, game]}
+        opcode: {type: string, pattern: '^0x[0-9A-F]{4}$'}
+        actor: {type: string, description: 管理操作的发起账号}
+    Termination:
+      type: object
+      required: [matchId, requestedAt, requestedBy, reason]
+      properties:
+        matchId: {$ref: '#/components/schemas/Id'}
+        requestedAt: {$ref: '#/components/schemas/Timestamp'}
+        requestedBy: {type: string}
+        reason: {type: string}
+    Problem:
+      type: object
+      required: [title, status, code, requestId]
+      properties:
+        title: {type: string}
+        status: {type: integer, minimum: 400, maximum: 599}
+        code: {type: string, description: 稳定的机器可读错误码，与展示文本独立。}
+        requestId: {type: string}
+        detail: {type: string}
+  responses:
+    BadRequest:
+      description: 参数错误，code=invalid_request
+      content:
+        application/problem+json:
+          schema: {$ref: '#/components/schemas/Problem'}
+    Unauthorized:
+      description: 管理员凭据或会话无效，code=unauthorized
+      content:
+        application/problem+json:
+          schema: {$ref: '#/components/schemas/Problem'}
+    Forbidden:
+      description: 缺少 Origin 或源不匹配，code=origin_rejected
+      content:
+        application/problem+json:
+          schema: {$ref: '#/components/schemas/Problem'}
+    NotFound:
+      description: 玩家或对局不存在，或对局保留期已过，code=not_found
+      content:
+        application/problem+json:
+          schema: {$ref: '#/components/schemas/Problem'}
+    Error:
+      description: 错误响应，status 与 HTTP 状态码一致
+      content:
+        application/problem+json:
+          schema: {$ref: '#/components/schemas/Problem'}
