@@ -126,6 +126,17 @@ impl Message {
         };
         Ok(match self.opcode {
             0 => Fields::Clock(float(0)?),
+            0x459 => Fields::DraftRoster(DraftRoster::new(b)?),
+            0x43d => Fields::ItemGrant {
+                actor: number(0)?,
+                item: number(4)?,
+                instance: number(8)?,
+            },
+            0x45f => Fields::SkinSelection(number(0)?),
+            0x439 => Fields::ShopRequest {
+                actor: number(0)?,
+                item: number(4)?,
+            },
             0x45e => Fields::HeroSelection {
                 template: number(0)?,
                 skin: number(4)?,
@@ -180,6 +191,17 @@ impl Message {
 }
 #[derive(Debug, PartialEq)]
 pub enum Fields<'a> {
+    DraftRoster(DraftRoster<'a>),
+    ItemGrant {
+        actor: u32,
+        item: u32,
+        instance: u32,
+    },
+    SkinSelection(u32),
+    ShopRequest {
+        actor: u32,
+        item: u32,
+    },
     HeroSelection {
         template: u32,
         skin: u32,
@@ -221,6 +243,54 @@ pub enum Fields<'a> {
     HeroCatalog(&'a str),
     GameMode(&'a str),
     Opaque(&'a [u8]),
+}
+
+/// Five-versus-five selection roster with fixed-stride slots; coordinates
+/// here are relative to the decrypted message body (the opcode is excluded).
+#[derive(Debug, PartialEq)]
+pub struct DraftRoster<'a>(&'a [u8]);
+#[derive(Debug, PartialEq)]
+pub struct DraftSlot<'a> {
+    pub occupied: bool,
+    pub slot: u8,
+    pub selected: bool,
+    pub locked: bool,
+    pub team: u8,
+    pub template: u16,
+    pub entity: u16,
+    pub skin: u32,
+    pub display_name: &'a [u8],
+}
+impl<'a> DraftRoster<'a> {
+    pub fn new(bytes: &'a [u8]) -> io::Result<Self> {
+        if bytes.len() < 16 * 161 + 8 {
+            return Err(invalid("truncated draft roster"));
+        }
+        Ok(Self(bytes))
+    }
+    pub fn remaining_seconds(&self) -> f32 {
+        f32::from_be_bytes(self.0[..4].try_into().unwrap())
+    }
+    pub fn allotted_seconds(&self) -> f32 {
+        f32::from_be_bytes(self.0[4..8].try_into().unwrap())
+    }
+    pub fn slot(&self, i: usize) -> Option<DraftSlot<'a>> {
+        if i >= 16 {
+            return None;
+        }
+        let b = &self.0[i * 161..][..161];
+        Some(DraftSlot {
+            occupied: b[8] != 0,
+            slot: b[9],
+            selected: b[10] != 0,
+            locked: b[11] != 0,
+            team: b[16],
+            template: u16::from_be_bytes(b[17..19].try_into().unwrap()),
+            entity: u16::from_be_bytes(b[19..21].try_into().unwrap()),
+            skin: u32::from_be_bytes(b[21..25].try_into().unwrap()),
+            display_name: b[25..57].split(|v| *v == 0).next().unwrap(),
+        })
+    }
 }
 
 pub fn hello(address: &str) -> io::Result<Vec<u8>> {
@@ -282,7 +352,7 @@ impl MatchCipher {
         frame.extend(msg.opcode.to_be_bytes());
         frame.extend(&msg.body);
         frame.resize(len + 2, 0);
-        for block in frame[2..].chunks_exact_mut(8) {
+        for block in frame[2..].as_chunks_mut::<8>().0 {
             self.0.encrypt_block(block.into());
         }
         Ok(frame)
@@ -292,7 +362,7 @@ impl MatchCipher {
             return Err(invalid("invalid encrypted frame length"));
         }
         let mut plain = payload.to_vec();
-        for block in plain.chunks_exact_mut(8) {
+        for block in plain.as_chunks_mut::<8>().0 {
             self.0.decrypt_block(block.into());
         }
         Message::from_plain(&plain)

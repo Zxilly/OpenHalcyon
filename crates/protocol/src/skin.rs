@@ -13,16 +13,15 @@ pub fn skin_hash(name: &str) -> u32 {
         *c = c.wrapping_sub(*a).wrapping_sub(*b) ^ (*b >> 15);
     }
     let (mut a, mut b, mut c) = (0x9e3779b9u32, 0x9e3779b9u32, 0x12345678u32);
-    let mut chunks = name.as_bytes().chunks_exact(12);
+    let (chunks, rem) = name.as_bytes().as_chunks::<12>();
     let add = |a: u32, bytes: &[u8]| a.wrapping_add(u32::from_le_bytes(bytes.try_into().unwrap()));
-    for chunk in chunks.by_ref() {
+    for chunk in chunks {
         a = add(a, &chunk[..4]);
         b = add(b, &chunk[4..8]);
         c = add(c, &chunk[8..]);
         mix(&mut a, &mut b, &mut c);
     }
     let mut tail = [0; 12];
-    let rem = chunks.remainder();
     tail[..rem.len()].copy_from_slice(rem);
     a = add(a, &tail[..4]);
     b = add(b, &tail[4..8]);
