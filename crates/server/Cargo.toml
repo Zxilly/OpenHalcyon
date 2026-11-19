@@ -1,36 +1,40 @@
 [package]
 name = "openhalcyon"
-edition.workspace = true
 version.workspace = true
+edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
 [dependencies]
 anyhow = "1"
 argon2 = "0.5"
-chrono = "0.4"
-halcyon-admin = {path="../admin"}
-halcyon-federation = {path="../federation"}
-halcyon-peer-play = {path="../peer-play"}
-halcyon-matchmaking = {path="../matchmaking"}
 axum.workspace = true
-axum-server = {version="0.8",features=["tls-rustls-no-provider"]}
-clap = {version="4",features=["derive"]}
-halcyon-ce-platform = {path="../ce-platform"}
-halcyon-data = {path="../data"}
-halcyon-game = {path="../game"}
-halcyon-platform = {path="../platform"}
+axum-server = { version = "0.8", features = ["tls-rustls-no-provider"] }
+chrono = "0.4"
+clap = { version = "4", features = ["derive"] }
+halcyon-admin = { path = "../admin" }
+halcyon-ce-platform = { path = "../ce-platform" }
+halcyon-chat = { path = "../chat" }
+halcyon-data = { path = "../data" }
+halcyon-federation = { path = "../federation" }
+halcyon-game = { path = "../game" }
+halcyon-matchmaking = { path = "../matchmaking" }
+halcyon-peer-play = { path = "../peer-play" }
+halcyon-platform = { path = "../platform" }
+halcyon-sim = { path = "../sim" }
 rcgen = "0.13"
-rustls = {version="0.23",default-features=false,features=["ring","std","tls12"]}
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 toml = "0.9"
 tracing.workspace = true
-tracing-subscriber = {version="0.3",features=["env-filter"]}
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid.workspace = true
 
 [dev-dependencies]
+halcyon-federation = { path = "../federation", features = ["test-hooks"] }
+halcyon-protocol = { path = "../protocol" }
+rusqlite = { version = "0.37", features = ["bundled"] }
 tempfile = "3"
-tower = {version="0.5",features=["util"]}
-halcyon-protocol = {path="../protocol"}
+tower = { version = "0.5", features = ["util"] }

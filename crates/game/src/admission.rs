@@ -238,6 +238,7 @@ impl Rooms {
                                 return None;
                             }
                             let mut tail: Vec<_> = r.latency.recent.iter().copied().collect();
+                            drop(r);
                             let nth = (tail.len() * 99).div_ceil(100) - 1;
                             let (_, p, _) = tail.select_nth_unstable(nth);
                             Some(*p)

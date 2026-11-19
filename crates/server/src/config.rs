@@ -17,7 +17,11 @@ pub struct Config {
     pub bootstrap_listen: SocketAddr,
     pub platform_listen: SocketAddr,
     pub notify_listen: SocketAddr,
+    pub xmpp_listen: Option<SocketAddr>,
     pub game_bind: IpAddr,
+    pub game_port_range: Option<halcyon_game::PortRange>,
+    #[serde(default)]
+    pub admission: halcyon_game::AdmissionPolicy,
     pub max_rooms: usize,
     pub seats_per_match: usize,
     pub database: PathBuf,
@@ -25,7 +29,10 @@ pub struct Config {
     pub certificate: PathBuf,
     pub private_key: PathBuf,
     pub data_dir: Option<PathBuf>,
+    pub replay_dir: Option<PathBuf>,
     pub manifests_dir: Option<PathBuf>,
+    pub content_file: Option<PathBuf>,
+    pub provider: Option<halcyon_ce_platform::ProviderConfig>,
     pub admin: Option<Admin>,
     pub federation: Option<Peers>,
 }
@@ -89,7 +96,10 @@ impl Config {
             bootstrap_listen: SocketAddr::new(bound, 8080),
             platform_listen: SocketAddr::new(bound, 8443),
             notify_listen: SocketAddr::new(bound, 2112),
+            xmpp_listen: Some(SocketAddr::new(bound, 5222)),
             game_bind: bound,
+            game_port_range: None,
+            admission: Default::default(),
             max_rooms: 8,
             seats_per_match: 10,
             database: "platform.sqlite".into(),
@@ -97,7 +107,10 @@ impl Config {
             certificate: "tls.pem".into(),
             private_key: "tls.key".into(),
             data_dir: None,
+            replay_dir: None,
             manifests_dir: None,
+            content_file: None,
+            provider: None,
             federation: None,
             admin: Some(Admin {
                 origin: format!("https://{host}:8443"),
@@ -132,7 +145,9 @@ impl Config {
         ]
         .into_iter()
         .chain(c.data_dir.iter_mut())
+        .chain(c.replay_dir.iter_mut())
         .chain(c.manifests_dir.iter_mut())
+        .chain(c.content_file.iter_mut())
         {
             if dest.is_relative() {
                 *dest = base.join(&*dest);
@@ -145,6 +160,9 @@ impl Config {
         if let Some(peers) = &mut c.federation {
             peers.cluster_file = base.join(&peers.cluster_file);
             peers.journal = base.join(&peers.journal);
+        }
+        if let Some(provider) = &mut c.provider {
+            provider.public_key_pem = base.join(&provider.public_key_pem);
         }
         Ok(c)
     }

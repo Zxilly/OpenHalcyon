@@ -30,6 +30,26 @@ enum Action {
         #[arg(long, default_value = "runtime/server.toml")]
         config: PathBuf,
     },
+    /// Inspect or change the voting membership of a trusted pool.
+    Pool {
+        #[arg(long, default_value = "runtime/server.toml")]
+        config: PathBuf,
+        #[command(subcommand)]
+        action: PoolAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum PoolAction {
+    /// Discover the committed membership through the configured peers.
+    Members,
+    /// Catch up new learners and commit a new equal-vote membership.
+    SetVoters {
+        #[arg(long, value_delimiter = ',', required = true)]
+        expect: Vec<uuid::Uuid>,
+        #[arg(long, value_delimiter = ',', required = true)]
+        voters: Vec<uuid::Uuid>,
+    },
 }
 
 #[tokio::main]
@@ -42,10 +62,47 @@ async fn main() -> Result<()> {
     match Cli::parse().action {
         Action::Init { dir, host } => Config::init(&dir, host),
         Action::Serve { config } => serve(Config::read(&config)?).await,
+        Action::Pool { config, action } => {
+            let local = Config::read(&config)?;
+            let peers = local
+                .federation
+                .context("instance has no federation configuration")?;
+            let config = halcyon_federation::Config::read(&peers.cluster_file)?;
+            anyhow::ensure!(
+                config.node_id == local.instance_id,
+                "federation identity differs from instance"
+            );
+            let client = halcyon_federation::PoolAdmin::new(config)?;
+            match action {
+                PoolAction::Members => println!(
+                    "{}",
+                    serde_json::to_string_pretty(&client.members().await?)?
+                ),
+                PoolAction::SetVoters { expect, voters } => {
+                    client
+                        .change(&halcyon_federation::MemberChange {
+                            expected: expect.into_iter().collect(),
+                            voters: voters.into_iter().collect(),
+                        })
+                        .await?
+                }
+            }
+            Ok(())
+        }
     }
 }
 
 async fn serve(c: Config) -> Result<()> {
+    // An instance owns its local rooms. Two processes sharing a database would
+    // each mistake the other process's active rooms for abandoned games.
+    let owner = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(c.database.with_added_extension("owner"))?;
+    owner
+        .try_lock()
+        .context("platform database already in use")?;
     let _ = rustls::crypto::ring::default_provider().install_default();
     let tls = axum_server::tls_rustls::RustlsConfig::from_pem_file(&c.certificate, &c.private_key)
         .await?;
@@ -55,11 +112,18 @@ async fn serve(c: Config) -> Result<()> {
         .map(GameData::load)
         .transpose()?
         .map(Arc::new);
-    let digest = data
-        .as_ref()
-        .map(|d| d.content_digest.clone())
-        .unwrap_or_else(|| "halcyon-validation-lane".into());
-    let rooms = Rooms::new(c.game_bind, c.public_host.clone(), c.max_rooms, data);
+    let digest = halcyon_sim::rules_digest(data.as_deref());
+    let rooms = Rooms::with_policy(
+        c.game_bind,
+        c.public_host.clone(),
+        c.max_rooms,
+        data,
+        c.admission,
+        c.game_port_range,
+    )?;
+    if let Some(dir) = &c.replay_dir {
+        rooms.set_replay_directory(dir)?;
+    }
     let authority = format!("{}:{}", c.public_host, c.platform_listen.port());
     let state = AppState::open(
         PlatformConfig {
@@ -69,6 +133,10 @@ async fn serve(c: Config) -> Result<()> {
         },
         Arc::new(rooms.clone()),
     )?;
+    let stopped = state.recover_local_rooms(|id| rooms.detail(id).is_some())?;
+    if stopped > 0 {
+        tracing::info!(stopped, "released matches lost on instance restart");
+    }
     let network = match c.federation {
         Some(peers) => Some(
             peers::Network::start(peers, c.instance_id, digest, state.clone(), rooms.clone())
@@ -124,6 +192,24 @@ async fn serve(c: Config) -> Result<()> {
             c.manifests_dir.as_deref(),
         )?,
     };
+    let mut ce = match c.content_file {
+        Some(path) => ce.with_content(&path).await?,
+        None => ce,
+    };
+    if let Some(provider) = c.provider {
+        Platform::configure_provider(&mut ce, provider)?;
+    }
+    let (ce, xmpp) = if let Some(addr) = c.xmpp_listen {
+        let ce = ce.with_xmpp(&format!("{}:{}", c.public_host, addr.port()))?;
+        let mut chat_tls = (*tls.get_inner()).clone();
+        chat_tls.alpn_protocols.clear();
+        let chat =
+            halcyon_chat::Server::new(c.public_host.clone(), ce.clone(), Arc::new(chat_tls))?;
+        let listener = TcpListener::bind(addr).await.context("binding XMPP")?;
+        (ce, Some((chat, listener)))
+    } else {
+        (ce, None)
+    };
     let bootstrap = TcpListener::bind(c.bootstrap_listen)
         .await
         .context("binding bootstrap")?;
@@ -144,7 +230,7 @@ async fn serve(c: Config) -> Result<()> {
                 client_build: 147219,
             },
             state,
-            rooms,
+            rooms.clone(),
             network
                 .as_ref()
                 .map(|n| n.view.clone())
@@ -152,14 +238,22 @@ async fn serve(c: Config) -> Result<()> {
         )?);
     }
     tracing::info!(bootstrap=%c.bootstrap_listen,https=%c.platform_listen,notify=%c.notify_listen,"starting listeners");
-    tokio::select! {
-        result=axum::serve(bootstrap,ce.bootstrap())=>result?,
-        result=axum::serve(notify,ce.notifications())=>result?,
-        result=axum_server::bind_rustls(c.platform_listen,tls).serve(router.into_make_service())=>result?,
-        signal=tokio::signal::ctrl_c()=>signal?,
-    }
+    let chat = async move {
+        match xmpp {
+            Some((server, listener)) => server.serve(listener).await,
+            None => std::future::pending().await,
+        }
+    };
+    let result = tokio::select! {
+        result=axum::serve(bootstrap,ce.bootstrap())=>result,
+        result=axum::serve(notify,ce.notifications())=>result,
+        result=axum_server::bind_rustls(c.platform_listen,tls).serve(router.into_make_service())=>result,
+        result=chat=>result,
+        signal=tokio::signal::ctrl_c()=>signal,
+    };
+    rooms.clear_finish_handler();
     if let Some(n) = network {
         n.shutdown().await?;
     }
-    Ok(())
+    Ok(result?)
 }

@@ -83,6 +83,14 @@ async function overview() {
   select("#online-players").textContent = data.onlinePlayers;
   select("#queued-players").textContent = data.queuedPlayers;
   select("#active-matches").textContent = data.activeMatches;
+  const host = data.hosting;
+  const measure = (value, divisor, unit) => value == null ? "—" : `${(value / divisor).toLocaleString(undefined, { maximumFractionDigits: 1 })} ${unit}`;
+  select("#host-admission").textContent = host.admission;
+  select("#host-seats").textContent = `${host.humanSeats} human · ${host.botSeats} bot · ${host.reservedSeats} reserved`;
+  select("#host-tick").textContent = measure(host.tickP99Ms, 1, "ms");
+  select("#host-cpu").textContent = measure(host.cpuPercent, 1, "%");
+  select("#host-memory").textContent = measure(host.rssBytes, 1024 ** 2, "MiB");
+  select("#host-egress").textContent = measure(host.outboundBytesPerSecond, 1024, "KiB/s");
 }
 
 async function pools() {

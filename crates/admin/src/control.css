@@ -64,3 +64,9 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 @media (max-width: 37rem) {
   .metrics { grid-template-columns: 1fr; }
 }
+.host-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+  gap: 1rem;
+}
+.host-metrics dd { margin: .25rem 0 0; font-variant-numeric: tabular-nums; }

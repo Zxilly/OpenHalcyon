@@ -1,5 +1,5 @@
 use crate::config::Peers;
-use anyhow::{Context, Result, ensure};
+use anyhow::{Result, ensure};
 use halcyon_federation::Federation;
 use halcyon_game::Rooms;
 use halcyon_peer_play::PeerPlay;
@@ -23,22 +23,11 @@ impl Network {
         platform: AppState,
         rooms: Rooms,
     ) -> Result<Self> {
-        let mut cfg: halcyon_federation::Config =
-            serde_json::from_slice(&std::fs::read(&settings.cluster_file)?)?;
+        let cfg = halcyon_federation::Config::read(&settings.cluster_file)?;
         ensure!(
             cfg.node_id == id,
             "federation node_id must match server instance_id"
         );
-        let base = settings
-            .cluster_file
-            .parent()
-            .context("cluster file directory")?;
-        for p in [&mut cfg.database, &mut cfg.ca, &mut cfg.cert, &mut cfg.key]
-            .into_iter()
-            .chain(cfg.peers.values_mut().map(|p| &mut p.cert))
-        {
-            *p = base.join(&*p);
-        }
         let pool_id = cfg.pool_id;
         let node = Federation::start(cfg).await?;
         let worker = PeerPlay::start(
