@@ -47,12 +47,17 @@ pub(super) fn append(
             };
             if previously_declared(id) {
                 append_combat(out, event, |_| true);
-                let mut body = [0; 22];
-                body[..4].copy_from_slice(&u32::from(wire_id(id)).to_be_bytes());
-                body[4..8].copy_from_slice(&u32::MAX.to_be_bytes());
-                body[8..12].copy_from_slice(&required.to_be_bytes());
-                body[12..15].copy_from_slice(&[39, 0, 1]);
-                out.push(Message::new(0x041c, body));
+                out.push(
+                    halcyon_protocol::AttributeChange {
+                        actor: u32::from(wire_id(id)),
+                        source: u32::MAX,
+                        value: required,
+                        index: 39,
+                        layer: 0,
+                        set_mode: 1,
+                    }
+                    .message(),
+                );
             }
         }
         _ => return false,

@@ -316,14 +316,15 @@ pub(super) fn append_purchase(
 }
 
 pub(super) fn modifier(actor: u32, stat: u8, value: f32) -> Message {
-    let mut b = [
-        actor.to_be_bytes(),
-        u32::MAX.to_be_bytes(),
-        value.to_be_bytes(),
-    ]
-    .concat();
-    b.extend([stat, 1]);
-    Message::new(0x41c, b)
+    halcyon_protocol::AttributeChange {
+        actor,
+        source: u32::MAX,
+        value,
+        index: stat,
+        layer: 1,
+        set_mode: 0,
+    }
+    .message()
 }
 
 /// Both references must be known to the recipient. For a lethal tick the victim
@@ -407,12 +408,15 @@ pub(super) fn append_respawn_timer(out: &mut Vec<Message>, world: &World, actor:
 }
 
 fn hero_counter(id: u32, stat: u8) -> Message {
-    let mut body = vec![0; 22];
-    body[..4].copy_from_slice(&u32::from(wire_id(id)).to_be_bytes());
-    body[4..8].copy_from_slice(&u32::MAX.to_be_bytes());
-    body[8..12].copy_from_slice(&1f32.to_be_bytes());
-    body[12] = stat;
-    Message::new(0x41c, body)
+    halcyon_protocol::AttributeChange {
+        actor: u32::from(wire_id(id)),
+        source: u32::MAX,
+        value: 1.,
+        index: stat,
+        layer: 0,
+        set_mode: 0,
+    }
+    .message()
 }
 
 #[cfg(test)]

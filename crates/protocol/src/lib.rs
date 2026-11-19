@@ -23,6 +23,8 @@ mod item_actions;
 pub use item_actions::ItemAction;
 mod live;
 pub use live::LiveFields;
+mod mutations;
+pub use mutations::{AttributeChange, ResourceChange};
 mod metadata;
 mod opcode;
 mod skin;
@@ -115,11 +117,14 @@ impl Message {
         Self::new(0x42e, b)
     }
     pub fn entity_stat(entity: u16, value: f32, stat: u8) -> Self {
-        let mut b = vec![0, 0];
-        b.extend(entity.to_be_bytes());
-        b.extend(value.to_be_bytes());
-        b.push(stat);
-        Self::new(0x41d, b)
+        ResourceChange {
+            actor: u32::from(entity),
+            value,
+            index: stat,
+            set_mode: 0,
+            flags: [0, 0],
+        }
+        .message()
     }
     pub fn actor_respawn_timer(actor: u32, seconds: f32) -> Self {
         let mut body = [0; 14];
