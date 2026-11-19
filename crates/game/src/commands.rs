@@ -130,9 +130,8 @@ mod tests {
             let shared = rooms.room(id).unwrap();
             let mut room = shared.lock().unwrap();
             let mut readers = Vec::new();
-            for seat in 0..6 {
+            for (seat, slot) in room.seats.iter_mut().enumerate() {
                 let (tx, rx) = tokio::sync::mpsc::channel(8);
-                let slot = &mut room.seats[seat];
                 let ch = usize::from(!aral);
                 if aral {
                     let actor = u32::from(wire_id(seat as u32 + 1));
