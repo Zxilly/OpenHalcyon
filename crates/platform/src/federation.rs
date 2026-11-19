@@ -39,6 +39,8 @@ pub(super) fn initialize(tx: &Transaction<'_>) -> Result<()> {
             match_id TEXT, address TEXT, result TEXT, enqueue_schema INTEGER NOT NULL DEFAULT 0
          );
          CREATE INDEX IF NOT EXISTS federated_queue_by_pool ON federated_queue(pool);
+         CREATE INDEX IF NOT EXISTS federated_queue_pending ON federated_queue(pool,ticket)
+         WHERE phase<>'finished';
          CREATE TABLE IF NOT EXISTS federated_queue_members (
             ticket TEXT NOT NULL REFERENCES federated_queue(ticket) ON DELETE CASCADE,
             player TEXT NOT NULL REFERENCES players(id), pos INTEGER NOT NULL,
@@ -214,13 +216,33 @@ impl AppState {
     }
 
     pub async fn federated_intents(&self, pool: Uuid) -> Result<Vec<FederatedIntent>> {
+        self.read_federated_intents(pool, false).await
+    }
+
+    /// Fetch home intents which still need reconciliation. Completed views are
+    /// retained separately until all party members exit post-match.
+    pub async fn pending_federated_intents(&self, pool: Uuid) -> Result<Vec<FederatedIntent>> {
+        self.read_federated_intents(pool, true).await
+    }
+
+    async fn read_federated_intents(
+        &self,
+        pool: Uuid,
+        pending: bool,
+    ) -> Result<Vec<FederatedIntent>> {
         self.run(move |state| {
             let db = state
                 .db
                 .lock()
                 .map_err(|_| PlatformError::WorkerUnavailable)?;
-            let sql =
-                format!("SELECT {FIELDS} FROM federated_queue f WHERE f.pool=? ORDER BY f.ticket");
+            let filter = if pending {
+                "AND f.phase<>'finished'"
+            } else {
+                ""
+            };
+            let sql = format!(
+                "SELECT {FIELDS} FROM federated_queue f WHERE f.pool=? {filter} ORDER BY f.ticket"
+            );
             let mut query = db.prepare(&sql)?;
             query
                 .query_map([pool.to_string()], row_intent)?

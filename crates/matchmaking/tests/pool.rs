@@ -183,3 +183,82 @@ fn cancellation_releases_party_and_rejects_old_generation() {
         Err(Error::Conflict)
     );
 }
+
+#[test]
+fn working_set_keeps_only_active_and_requested_terminal_entries() {
+    let mut pool = Pool::default();
+    let host = id(50);
+    let room = id(60);
+    let old = ticket(1, id(10), &[101, 102, 103, 104]);
+    for command in [
+        Command::Enqueue(old.clone()),
+        Command::Allocate {
+            id: room,
+            host,
+            tickets: vec![key(&old)],
+        },
+        Command::Accept {
+            id: room,
+            ticket: key(&old),
+        },
+    ] {
+        pool.apply(old.home, command).unwrap();
+    }
+    pool.apply(
+        host,
+        Command::HostReady {
+            id: room,
+            endpoint: Endpoint {
+                host: "localhost".into(),
+                port: 8443,
+            },
+        },
+    )
+    .unwrap();
+    pool.apply(
+        host,
+        Command::Finish {
+            id: room,
+            digest: "finished".into(),
+        },
+    )
+    .unwrap();
+
+    let waiting = ticket(2, id(10), &[201, 202, 203, 204]);
+    pool.apply(waiting.home, Command::Enqueue(waiting.clone()))
+        .unwrap();
+    let aborted = id(61);
+    pool.apply(
+        waiting.home,
+        Command::Allocate {
+            id: aborted,
+            host,
+            tickets: vec![key(&waiting)],
+        },
+    )
+    .unwrap();
+    pool.apply(waiting.home, Command::Abort { id: aborted })
+        .unwrap();
+
+    let work = pool.working_set([old.id], [aborted]);
+    assert_eq!(work.allocations.len(), 2);
+    assert_eq!(work.finished(key(&old)).unwrap().id, room);
+    assert_eq!(work.allocations[&aborted].phase, Phase::Aborted);
+    assert_eq!(work.tickets[&waiting.id].phase, TicketPhase::Queued);
+    let only_active = pool.working_set([], []);
+    assert_eq!(only_active.tickets.len(), 1);
+    assert!(only_active.allocations.is_empty());
+    assert_eq!(pool.allocations().len(), 2);
+
+    let newer = Ticket {
+        generation: 2,
+        ..old
+    };
+    pool.apply(newer.home, Command::Enqueue(newer.clone()))
+        .unwrap();
+    pool.apply(newer.home, Command::Cancel(key(&newer)))
+        .unwrap();
+    let work = pool.working_set([newer.id], []);
+    assert!(work.finished(key(&newer)).is_none());
+    assert!(work.allocations.is_empty());
+}

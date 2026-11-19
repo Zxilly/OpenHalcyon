@@ -2,7 +2,7 @@ use anyhow::{Context, ensure};
 use halcyon_federation::{Capacity, Federation};
 use halcyon_game::Rooms;
 use halcyon_matchmaking::{
-    Allocation, Command, Endpoint, Phase, Pool, Queue, Ticket, TicketPhase, TicketRef, plan,
+    Allocation, Command, Endpoint, Phase, Queue, Ticket, TicketPhase, TicketRef, WorkingSet,
     result_digest,
 };
 use halcyon_platform::{AppState, FederatedIntent, PlatformError, Reservation, plan_teams};
@@ -61,9 +61,10 @@ impl PeerPlay {
         let journal = Journal::open(&config.database, config.pool_id, config.node_id)?;
         // A reader of the home journal may restart without the game service.
         // Only a locally recorded room missing from this host can be lost.
-        let lost_rooms = journal
-            .unsettled_rooms()?
-            .into_iter()
+        let hosted: BTreeSet<_> = journal.unsettled_rooms()?.into_iter().collect();
+        let lost_rooms = hosted
+            .iter()
+            .copied()
             .filter(|id| !rooms.contains(*id))
             .collect();
         let inner = Arc::new(Inner {
@@ -83,6 +84,7 @@ impl PeerPlay {
                 async {
                     let mut state = Worker {
                         lost_rooms,
+                        hosted,
                         ..Worker::default()
                     };
                     loop {
@@ -200,19 +202,24 @@ impl Inner {
     async fn ticket(
         &self,
         i: &FederatedIntent,
-        known_pool: Option<&Pool>,
+        known_pool: Option<&WorkingSet>,
     ) -> anyhow::Result<Ticket> {
         let frozen = self.journal.ticket(i.ticket)?;
         if i.pre_freeze {
-            let fresh;
-            let pool = if let Some(pool) = known_pool {
-                pool
+            let committed = if let Some(pool) = known_pool {
+                pool.tickets
+                    .get(&i.ticket)
+                    .map(|entry| entry.ticket.clone())
             } else {
-                fresh = self.fed.read().await?;
-                &fresh
+                self.fed
+                    .inspect(|pool| {
+                        pool.tickets()
+                            .get(&i.ticket)
+                            .map(|entry| entry.ticket.clone())
+                    })
+                    .await?
             };
-            if let Some(entry) = pool.tickets().get(&i.ticket) {
-                let ticket = &entry.ticket;
+            if let Some(ticket) = committed {
                 ensure!(
                     ticket.home == self.cfg.node_id
                         && ticket.id == i.ticket
@@ -222,10 +229,10 @@ impl Inner {
                         && ticket.queue.seats == i.seats,
                     "legacy committed ticket does not match the durable home intent",
                 );
-                if frozen.as_ref() != Some(ticket) {
-                    self.journal.adopt_legacy_ticket(ticket)?;
+                if frozen.as_ref() != Some(&ticket) {
+                    self.journal.adopt_legacy_ticket(&ticket)?;
                 }
-                return Ok(ticket.clone());
+                return Ok(ticket);
             }
         }
         if let Some(ticket) = frozen {
@@ -256,7 +263,11 @@ impl Inner {
         self.fed.submit(req, cmd).await??;
         Ok(())
     }
-    async fn enqueue(&self, i: &FederatedIntent, known_pool: Option<&Pool>) -> anyhow::Result<()> {
+    async fn enqueue(
+        &self,
+        i: &FederatedIntent,
+        known_pool: Option<&WorkingSet>,
+    ) -> anyhow::Result<()> {
         let ticket = self.ticket(i, known_pool).await?;
         self.commit(i.ticket, "enqueue", Command::Enqueue(ticket))
             .await
@@ -302,8 +313,8 @@ impl Inner {
             .await?;
         Ok(())
     }
-    async fn sync_home(&self, p: &Pool, i: &FederatedIntent) -> anyhow::Result<()> {
-        let Some(entry) = p.tickets().get(&i.ticket) else {
+    async fn sync_home(&self, p: &WorkingSet, i: &FederatedIntent) -> anyhow::Result<()> {
+        let Some(entry) = p.tickets.get(&i.ticket) else {
             return self.enqueue(i, Some(p)).await;
         };
         if i.phase == "finished" {
@@ -311,8 +322,9 @@ impl Inner {
         }
         match &entry.phase {
             TicketPhase::Closed => {
-                let prior = p.allocations().values().find(|a| {
-                    a.phase == Phase::Finished && a.tickets.iter().any(|t| t.id == i.ticket)
+                let prior = p.finished(TicketRef {
+                    id: i.ticket,
+                    generation: entry.ticket.generation,
                 });
                 if let Some(room) = prior.filter(|room| {
                     !room
@@ -335,7 +347,7 @@ impl Inner {
                 self.project(i, "queued", None, None, None).await
             }
             TicketPhase::Assigned(id) => {
-                let a = &p.allocations()[id];
+                let a = &p.allocations[id];
                 if a.phase == Phase::Ready {
                     let ep = a
                         .endpoint
@@ -372,8 +384,7 @@ impl Address for Endpoint {
 #[derive(Default)]
 struct Worker {
     lost_rooms: BTreeSet<Uuid>,
-    revision: Option<u64>,
-    pool: Arc<Pool>,
+    hosted: BTreeSet<Uuid>,
     anchors: BTreeMap<Uuid, Instant>,
     preparing: BTreeMap<Uuid, Instant>,
     active: BTreeSet<Uuid>,
@@ -381,13 +392,17 @@ struct Worker {
 }
 impl Worker {
     async fn round(&mut self, s: &Inner) -> anyhow::Result<()> {
-        let (revision, changed) = s.fed.changes(self.revision).await?;
-        if let Some(pool) = changed {
-            self.pool = Arc::new(pool);
-        }
-        self.revision = Some(revision);
-        let pool = self.pool.clone();
-        for i in s.platform.federated_intents(s.cfg.pool_id).await? {
+        let intents = s.platform.pending_federated_intents(s.cfg.pool_id).await?;
+        let pool = s
+            .fed
+            .inspect(|pool| {
+                pool.working_set(
+                    intents.iter().map(|intent| intent.ticket),
+                    self.hosted.iter().copied(),
+                )
+            })
+            .await?;
+        for i in intents {
             if let Err(e) = s.sync_home(&pool, &i).await {
                 tracing::debug!(%e,ticket=%i.ticket,"home reconciliation deferred")
             }
@@ -398,20 +413,32 @@ impl Worker {
                 .await?;
             s.journal.delivered(id)?;
         }
-        for a in pool.allocations().values() {
-            if a.host == s.cfg.node_id
-                && let Err(e) = self.host(s, &pool, a).await
-            {
-                tracing::debug!(%e,room=%a.id,"host reconciliation deferred");
+        for a in pool
+            .allocations
+            .values()
+            .filter(|room| room.host == s.cfg.node_id)
+        {
+            let active = matches!(a.phase, Phase::Preparing | Phase::Ready);
+            if active {
+                self.hosted.insert(a.id);
+            } else if !self.hosted.contains(&a.id) {
+                continue;
+            }
+            match self.host(s, &pool, a).await {
+                Ok(()) if !active => {
+                    self.hosted.remove(&a.id);
+                }
+                Err(e) => tracing::debug!(%e,room=%a.id,"host reconciliation deferred"),
+                _ => {}
             }
         }
         self.preparing.retain(|id, _| {
-            pool.allocations()
+            pool.allocations
                 .get(id)
                 .is_some_and(|a| a.phase == Phase::Preparing)
         });
         for a in pool
-            .allocations()
+            .allocations
             .values()
             .filter(|a| a.phase == Phase::Preparing)
         {
@@ -428,14 +455,14 @@ impl Worker {
         }
         self.plan(s, &pool).await
     }
-    async fn host(&mut self, s: &Inner, p: &Pool, a: &Allocation) -> anyhow::Result<()> {
+    async fn host(&mut self, s: &Inner, p: &WorkingSet, a: &Allocation) -> anyhow::Result<()> {
         match a.phase {
             Phase::Preparing => {
                 let mut players = Vec::new();
                 let mut sizes = Vec::new();
                 let mut mode = None;
                 for key in &a.tickets {
-                    let t = &p.tickets()[&key.id].ticket;
+                    let t = &p.tickets[&key.id].ticket;
                     players.extend_from_slice(&t.players);
                     sizes.push(t.players.len());
                     mode = Some(t.queue.name.clone());
@@ -492,21 +519,21 @@ impl Worker {
             }
             Phase::Aborted => {
                 s.rooms.discard(a.id)?;
-                if self.lost_rooms.remove(&a.id) || self.preparing.contains_key(&a.id) {
-                    s.journal.discard_preparation(a.id)?;
-                }
+                s.journal.discard_preparation(a.id)?;
+                self.lost_rooms.remove(&a.id);
                 self.active.remove(&a.id);
             }
             Phase::Finished => {
+                self.lost_rooms.remove(&a.id);
                 self.active.remove(&a.id);
             }
         }
         Ok(())
     }
-    async fn plan(&mut self, s: &Inner, p: &Pool) -> anyhow::Result<()> {
+    async fn plan(&mut self, s: &Inner, p: &WorkingSet) -> anyhow::Result<()> {
         let mut anchors: BTreeMap<Queue, (u64, Uuid)> = BTreeMap::new();
         for e in p
-            .tickets()
+            .tickets
             .values()
             .filter(|e| e.phase == TicketPhase::Queued)
         {
@@ -517,7 +544,7 @@ impl Worker {
         self.advertised
             .retain(|queue, _| anchors.contains_key(queue));
         self.anchors.retain(|id, _| {
-            p.tickets()
+            p.tickets
                 .get(id)
                 .is_some_and(|e| e.phase == TicketPhase::Queued)
         });
@@ -558,7 +585,7 @@ impl Worker {
             {
                 continue;
             }
-            let Some(group) = plan(p, anchor, &s.fed.host_offers()) else {
+            let Some(group) = p.plan(anchor, &s.fed.host_offers()) else {
                 continue;
             };
             let id = Uuid::new_v4();

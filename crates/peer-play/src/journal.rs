@@ -13,6 +13,8 @@ impl Journal {
         c.execute_batch("pragma journal_mode=WAL; pragma synchronous=FULL;
             create table if not exists peer_identity(singleton integer primary key check(singleton=1),pool text not null,node text not null,sequence integer not null);
             create table if not exists hosted(id text primary key, address text not null, result text, delivered integer not null default 0);
+            create index if not exists hosted_outbox on hosted(id) where result is not null and delivered=0;
+            create index if not exists hosted_unsettled on hosted(id) where result is null;
             create table if not exists enqueue_payloads(id text primary key, payload text not null);")?;
         let tx = c.transaction()?;
         tx.execute(

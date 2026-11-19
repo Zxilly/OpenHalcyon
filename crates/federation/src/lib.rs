@@ -273,6 +273,10 @@ mod tests {
         let alone = nodes.iter().flatten().next().unwrap();
         assert!(alone.submit(Uuid::new_v4(), enqueue).await.is_err());
         assert!(alone.read().await.is_err());
+        let result: anyhow::Result<()> = alone
+            .inspect(|_| panic!("a minority must not expose a working set"))
+            .await;
+        assert!(result.is_err());
         alone.shutdown().await.unwrap();
     }
 }

@@ -510,6 +510,10 @@ async fn federated_party_keeps_roster_and_acknowledges_each_player() {
         .await
         .unwrap();
     assert_ne!(new.ticket, intent.ticket);
+    assert_eq!(state.federated_intents(pool).await.unwrap().len(), 2);
+    let pending = state.pending_federated_intents(pool).await.unwrap();
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].ticket, new.ticket);
     state
         .federated_acknowledge(member, intent.ticket)
         .await

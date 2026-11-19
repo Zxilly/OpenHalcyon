@@ -156,6 +156,17 @@ async fn legacy_upgrade_journal_recovery_retries_and_snapshot_transfer() {
     assert_eq!(count_journal(&s), 0);
     let bytes = snap.snapshot.into_inner();
     let wire: Machine = decode(&bytes).unwrap();
+    let home_ticket = TicketRef {
+        id: Uuid::from_u128(200_000),
+        generation: 1,
+    };
+    assert!(wire.pool.working_set([], []).allocations.is_empty());
+    let work = wire.pool.working_set([home_ticket.id], []);
+    assert_eq!(work.allocations.len(), 1);
+    assert_eq!(
+        work.finished(home_ticket).unwrap().id,
+        Uuid::from_u128(100_000)
+    );
     assert_eq!(wire.results, current.results);
     let mut fresh = Store::open(&tmp.path().join("fresh.db"), POOL, Uuid::from_u128(33)).unwrap();
     fresh

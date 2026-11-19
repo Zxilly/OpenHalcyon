@@ -1,4 +1,4 @@
-use super::{MAX_SEATS, Pool, Queue, TicketPhase, TicketRef};
+use super::{Entry, MAX_SEATS, Pool, Queue, TicketPhase, TicketRef};
 use uuid::Uuid;
 
 /// The caller filters expired offers before invoking the planner.
@@ -19,14 +19,24 @@ pub struct MatchPlan {
 /// Keep parties intact and include the anchor. A bounded subset-sum table
 /// avoids greedily picking parties whose sizes leave an unfillable last seat.
 pub fn plan(pool: &Pool, anchor: Uuid, hosts: &[HostOffer]) -> Option<MatchPlan> {
-    let first = pool.tickets().get(&anchor)?;
+    plan_active(
+        pool.tickets().get(&anchor)?,
+        pool.active_tickets.iter().map(|id| &pool.tickets()[id]),
+        hosts,
+    )
+}
+
+pub(crate) fn plan_active<'a>(
+    first: &'a Entry,
+    entries: impl Iterator<Item = &'a Entry>,
+    hosts: &[HostOffer],
+) -> Option<MatchPlan> {
     if first.phase != TicketPhase::Queued {
         return None;
     }
+    let anchor = first.ticket.id;
     let seats = usize::from(first.ticket.queue.seats);
-    let mut waiting: Vec<_> = pool
-        .tickets()
-        .values()
+    let mut waiting: Vec<_> = entries
         .filter(|entry| {
             entry.phase == TicketPhase::Queued
                 && entry.ticket.queue == first.ticket.queue

@@ -4,7 +4,9 @@
 //! the proposal builder, never to the replicated transition function.
 
 mod proposal;
+mod work;
 pub use proposal::{HostOffer, MatchPlan, plan};
+pub use work::WorkingSet;
 
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -33,7 +35,7 @@ pub struct Ticket {
     pub max_latency_ms: u32,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 pub struct TicketRef {
     pub id: Uuid,
     pub generation: u64,
@@ -124,12 +126,19 @@ pub enum Error {
 }
 
 #[derive(Clone, Default, Debug, Serialize, Deserialize)]
+#[serde(from = "work::PersistedPool")]
 pub struct Pool {
     tickets: BTreeMap<Uuid, Entry>,
     allocations: BTreeMap<Uuid, Allocation>,
     /// A wire UUID can appear at different homes, but only once per roster.
     owners: BTreeMap<(Uuid, Uuid), Uuid>,
     sequence: u64,
+    #[serde(skip)]
+    active_tickets: BTreeSet<Uuid>,
+    #[serde(skip)]
+    active_rooms: BTreeSet<Uuid>,
+    #[serde(skip)]
+    finished_by_ticket: BTreeMap<TicketRef, Uuid>,
 }
 
 impl Pool {
@@ -235,6 +244,7 @@ impl Pool {
         for p in &ticket.players {
             self.owners.insert((caller, *p), ticket.id);
         }
+        self.active_tickets.insert(ticket.id);
         self.tickets.insert(
             ticket.id,
             Entry {
@@ -260,6 +270,7 @@ impl Pool {
     fn close(&mut self, id: Uuid) {
         let entry = self.tickets.get_mut(&id).expect("committed ticket");
         entry.phase = TicketPhase::Closed;
+        self.active_tickets.remove(&id);
         for p in &entry.ticket.players {
             self.owners.remove(&(entry.ticket.home, *p));
         }
@@ -311,6 +322,7 @@ impl Pool {
         for key in &tickets {
             self.tickets.get_mut(&key.id).unwrap().phase = TicketPhase::Assigned(id);
         }
+        self.active_rooms.insert(id);
         self.allocations.insert(
             id,
             Allocation {
@@ -342,6 +354,7 @@ impl Pool {
             return Err(Error::Conflict);
         }
         room.phase = Phase::Aborted;
+        self.active_rooms.remove(&id);
         for key in &room.tickets {
             self.tickets.get_mut(&key.id).unwrap().phase = TicketPhase::Queued;
         }
@@ -380,7 +393,12 @@ impl Pool {
         room.result_digest = Some(digest);
         room.result = result;
         room.phase = Phase::Finished;
+        self.active_rooms.remove(&id);
         for key in room.tickets.clone() {
+            self.finished_by_ticket
+                .entry(key)
+                .and_modify(|room| *room = (*room).min(id))
+                .or_insert(id);
             self.close(key.id);
         }
         Ok(())
