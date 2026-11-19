@@ -18,6 +18,13 @@ The bootstrap endpoint is `http://HOST:8080/kindred/live/147219-status-redirect`
 
 Paths in `server.toml` are relative to that file. For a local research installation set `data_dir` to the directory containing `units.json`, `items.json` and `entity_manifest.json`, and `manifests_dir` to the directory containing the archived talents and skin manifest responses. Place these top-level keys before any TOML section. Only manifest payloads are consumed from those two responses. Keep private captures outside the checkout. With no external data the simulation uses the built-in validation lane.
 
+An operator with a decoded draft trace can export the catalog once. Run
+`openhalcyon export-catalog --trace /private/match_decoded.jsonl > /srv/game-data/catalog.json`.
+Instances load this ordered list of 0x0453 hero and skin names from their
+`data_dir`. It produces the same federation content digest as the original
+catalog records. Older research directories can still supply the adjacent
+decoded trace. Keep the original trace on the research machine.
+
 To forward a fixed range through a firewall, set the top-level value
 `game_port_range = { first = 7100, last = 7131 }`. Forward those TCP ports
 to the same numbers on the host. `max_rooms` limits simultaneous admissions.

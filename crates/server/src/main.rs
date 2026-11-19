@@ -30,6 +30,11 @@ enum Action {
         #[arg(long, default_value = "runtime/server.toml")]
         config: PathBuf,
     },
+    /// Write a portable JSON list of draft catalog names from decoded CE traffic.
+    ExportCatalog {
+        #[arg(long)]
+        trace: PathBuf,
+    },
     /// Inspect or change the voting membership of a trusted pool.
     Pool {
         #[arg(long, default_value = "runtime/server.toml")]
@@ -62,6 +67,16 @@ async fn main() -> Result<()> {
     match Cli::parse().action {
         Action::Init { dir, host } => Config::init(&dir, host),
         Action::Serve { config } => serve(Config::read(&config)?).await,
+        Action::ExportCatalog { trace } => {
+            let file = std::fs::File::open(&trace).with_context(|| trace.display().to_string())?;
+            let names = halcyon_data::catalog_from_trace(std::io::BufReader::new(file))?;
+            anyhow::ensure!(
+                !names.is_empty(),
+                "trace contains no server draft catalog records"
+            );
+            serde_json::to_writer_pretty(std::io::stdout().lock(), &names)?;
+            Ok(())
+        }
         Action::Pool { config, action } => {
             let local = Config::read(&config)?;
             let peers = local

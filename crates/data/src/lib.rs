@@ -98,19 +98,49 @@ impl GameData {
     }
 }
 
-/// Only retain public server-to-client catalog names from the optional reference trace.
 fn read_catalog(dir: &Path, hash: &mut Sha256) -> io::Result<(Vec<String>, Vec<String>)> {
-    use std::io::{BufRead, BufReader};
-    let trace = dir.join("../match_decoded.jsonl");
-    let file = match fs::File::open(trace) {
-        Ok(f) => f,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok((vec![], vec![])),
+    use std::io::BufReader;
+    let names: Vec<String> = match fs::File::open(dir.join("catalog.json")) {
+        Ok(file) => serde_json::from_reader(BufReader::new(file))?,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            match fs::File::open(dir.join("../match_decoded.jsonl")) {
+                Ok(file) => catalog_from_trace(BufReader::new(file))?,
+                Err(e) if e.kind() == io::ErrorKind::NotFound => Vec::new(),
+                Err(e) => return Err(e),
+            }
+        }
         Err(e) => return Err(e),
     };
-    let invalid = || io::Error::new(io::ErrorKind::InvalidData, "invalid 0x0453 catalog name");
     let mut heroes = Vec::new();
     let mut skins = Vec::new();
-    for line in BufReader::new(file).lines() {
+    for name in names {
+        validate_name(&name)?;
+        hash.update([0x04, 0x53, name.len() as u8]);
+        hash.update(name.as_bytes());
+        if let Some(hero) = name.strip_prefix('*').and_then(|s| s.strip_suffix('*')) {
+            heroes.push(hero.to_owned())
+        } else {
+            skins.push(name)
+        }
+    }
+    Ok((heroes, skins))
+}
+
+fn validate_name(name: &str) -> io::Result<()> {
+    if name.is_empty() || name.len() > 32 || !name.bytes().all(|c| c.is_ascii_graphic()) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "invalid 0x0453 catalog name",
+        ));
+    }
+    Ok(())
+}
+
+/// Extract the names advertised in server-to-client 0x0453 records, in order.
+pub fn catalog_from_trace(trace: impl io::BufRead) -> io::Result<Vec<String>> {
+    let invalid = || io::Error::new(io::ErrorKind::InvalidData, "invalid 0x0453 record");
+    let mut names = Vec::new();
+    for line in trace.lines() {
         let row: Value = serde_json::from_str(&line?).map_err(io::Error::other)?;
         if row["dir"] != "S2C" || row["opcode"].as_u64() != Some(0x453) {
             continue;
@@ -130,16 +160,8 @@ fn read_catalog(dir: &Path, hash: &mut Sha256) -> io::Result<(Vec<String>, Vec<S
             .collect::<io::Result<Vec<_>>>()?;
         let end = bytes.iter().position(|b| *b == 0).unwrap_or(bytes.len());
         let name = std::str::from_utf8(&bytes[..end]).map_err(|_| invalid())?;
-        if name.is_empty() || !name.bytes().all(|c| c.is_ascii_graphic()) {
-            return Err(invalid());
-        }
-        hash.update([0x04, 0x53, end as u8]);
-        hash.update(name.as_bytes());
-        if let Some(hero) = name.strip_prefix('*').and_then(|s| s.strip_suffix('*')) {
-            heroes.push(hero.to_owned())
-        } else {
-            skins.push(name.to_owned())
-        }
+        validate_name(name)?;
+        names.push(name.to_owned());
     }
-    Ok((heroes, skins))
+    Ok(names)
 }
