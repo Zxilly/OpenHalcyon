@@ -100,8 +100,11 @@ impl Transport {
             .context("unrecognized peer")
     }
     async fn sender(&self, id: Uuid, addr: &str) -> anyhow::Result<Sender> {
-        if let Some(sender) = self.idle.lock().unwrap().remove(&id)
-            && !sender.is_closed()
+        // A consumed response body does not guarantee the HTTP driver has
+        // returned to its request loop. Reconnect only before dispatch.
+        let cached = self.idle.lock().unwrap().remove(&id);
+        if let Some(mut sender) = cached
+            && sender.ready().await.is_ok()
         {
             return Ok(sender);
         }
@@ -114,8 +117,9 @@ impl Transport {
             self.identity(tls.get_ref().1.peer_certificates())? == id,
             "peer certificate mismatch"
         );
-        let (sender, conn) = hyper::client::conn::http1::handshake(TokioIo::new(tls)).await?;
+        let (mut sender, conn) = hyper::client::conn::http1::handshake(TokioIo::new(tls)).await?;
         tokio::spawn(conn);
+        sender.ready().await?;
         Ok(sender)
     }
     pub async fn post<I: Serialize + Sync, O: DeserializeOwned>(
