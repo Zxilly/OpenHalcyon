@@ -38,6 +38,7 @@ impl Delivery {
         }
     }
 }
+type Encrypted = tokio_rustls::server::TlsStream<tokio::io::BufReader<TcpStream>>;
 type Hub = Arc<Mutex<BTreeMap<String, Resource>>>;
 #[derive(Clone)]
 pub struct Server {
@@ -138,46 +139,135 @@ impl Server {
             .filter(|v| v.len() <= 2048)
             .ok_or_else(invalid)
     }
+    async fn negotiate(
+        &self,
+        sock: TcpStream,
+    ) -> io::Result<(
+        Input<tokio::io::ReadHalf<Encrypted>>,
+        tokio::io::WriteHalf<Encrypted>,
+        mpsc::Receiver<Delivery>,
+        Bound,
+    )> {
+        tracing::debug!("XMPP TCP connection accepted");
+        let mut plain = Input::new(sock);
+        plain.open(&self.domain).await?;
+        send(
+            plain.raw(),
+            &self.features(&format!(
+                "<starttls xmlns='{STARTTLS}'><required/></starttls>"
+            )),
+        )
+        .await?;
+        let frame = plain.stanza().await?.ok_or_else(invalid)?;
+        if !root(&parse(&frame)?)?.has_tag_name((STARTTLS, "starttls")) {
+            return Err(invalid());
+        }
+        send(plain.raw(), &format!("<proceed xmlns='{STARTTLS}'/>")).await?;
+        let tls = self.tls.accept(plain.into_buffer()).await?;
+        tracing::debug!("XMPP STARTTLS negotiated");
+        let (r, mut w) = tokio::io::split(tls);
+        let mut input = Input::new(r);
+        input.open(&self.domain).await?;
+        send(
+            &mut w,
+            &self.features(&format!(
+                "<mechanisms xmlns='{SASL}'><mechanism>PLAIN</mechanism></mechanisms>"
+            )),
+        )
+        .await?;
+        let frame = input.stanza().await?.ok_or_else(invalid)?;
+        let identity = async {
+            let d = parse(&frame).ok()?;
+            let n = root(&d).ok()?;
+            if !n.has_tag_name((SASL, "auth")) || n.attribute("mechanism") != Some("PLAIN") {
+                return None;
+            }
+            let bytes = STANDARD.decode(n.text()?).ok()?;
+            let mut fields = std::str::from_utf8(&bytes).ok()?.split('\0');
+            let authz = fields.next()?;
+            let id = user(fields.next()?, &self.domain)?;
+            let pass = fields.next()?;
+            if fields.next().is_some()
+                || pass.is_empty()
+                || (!authz.is_empty() && user(authz, &self.domain) != Some(id))
+            {
+                return None;
+            }
+            Some((id, self.directory.authenticate(id, pass).await?))
+        }
+        .await;
+        let Some((id, session)) = identity else {
+            send(
+                &mut w,
+                &format!("<failure xmlns='{SASL}'><not-authorized/></failure>"),
+            )
+            .await?;
+            return Err(invalid());
+        };
+        send(&mut w, &format!("<success xmlns='{SASL}'/>")).await?;
+        let mut input = input.restart();
+        input.open(&self.domain).await?;
+        send(&mut w,&self.features(&format!("<bind xmlns='{BIND}'/><session xmlns='urn:ietf:params:xml:ns:xmpp-session'><optional/></session>"))).await?;
+        let frame = input.stanza().await?.ok_or_else(invalid)?;
+        let d = parse(&frame)?;
+        let n = root(&d)?;
+        let bind = n
+            .first_element_child()
+            .filter(|x| x.has_tag_name((BIND, "bind")))
+            .ok_or_else(invalid)?;
+        if !n.has_tag_name((CLIENT, "iq")) || n.attribute("type") != Some("set") {
+            return Err(invalid());
+        }
+        let tag = escape(n.attribute("id").ok_or_else(invalid)?);
+        let resource = bind
+            .children()
+            .find(|x| x.has_tag_name((BIND, "resource")))
+            .and_then(|x| x.text())
+            .map(str::to_owned)
+            .unwrap_or_else(|| Uuid::new_v4().to_string());
+        if resource.is_empty() || resource.len() > 128 || resource.chars().any(char::is_control) {
+            return Err(invalid());
+        }
+        let jid = format!("{id}@{}/{resource}", self.domain);
+        let (tx, rx) = mpsc::channel(32);
+        {
+            let mut hub = self.hub.lock().unwrap();
+            if hub.contains_key(&jid) || hub.values().filter(|e| e.user == id).count() >= 8 {
+                return Err(invalid());
+            }
+            hub.insert(
+                jid.clone(),
+                Resource {
+                    user: id,
+                    session: session.clone(),
+                    available: false,
+                    peers: HashSet::new(),
+                    tx,
+                },
+            );
+        }
+        let bound = Bound {
+            user: id,
+            jid,
+            session,
+            hub: self.hub.clone(),
+        };
+        send(
+            &mut w,
+            &format!(
+                "<iq type='result' id='{tag}'><bind xmlns='{BIND}'><jid>{}</jid></bind></iq>",
+                escape(&bound.jid)
+            ),
+        )
+        .await?;
+        tracing::debug!("XMPP resource bound");
+        Ok((input, w, rx, bound))
+    }
+
     async fn connection(&self, sock: TcpStream) -> io::Result<()> {
-        let (mut input,mut w,mut rx,bound)=timeout(Duration::from_secs(30),async{
-            tracing::debug!("XMPP TCP connection accepted");
-            let mut plain=Input::new(sock);plain.open(&self.domain).await?;
-            send(plain.raw(),&self.features(&format!("<starttls xmlns='{STARTTLS}'><required/></starttls>"))).await?;
-            let frame=plain.stanza().await?.ok_or_else(invalid)?;
-            if !root(&parse(&frame)?)?.has_tag_name((STARTTLS,"starttls")){return Err(invalid())}
-            send(plain.raw(),&format!("<proceed xmlns='{STARTTLS}'/>")).await?;
-            let tls=self.tls.accept(plain.into_buffer()).await?;
-            tracing::debug!("XMPP STARTTLS negotiated");
-            let (r,mut w)=tokio::io::split(tls);let mut input=Input::new(r);
-            input.open(&self.domain).await?;
-            send(&mut w,&self.features(&format!("<mechanisms xmlns='{SASL}'><mechanism>PLAIN</mechanism></mechanisms>"))).await?;
-            let frame=input.stanza().await?.ok_or_else(invalid)?;
-            let identity=async{
-                let d=parse(&frame).ok()?;let n=root(&d).ok()?;
-                if !n.has_tag_name((SASL,"auth"))||n.attribute("mechanism")!=Some("PLAIN"){return None}
-                let bytes=STANDARD.decode(n.text()?).ok()?;let mut fields=std::str::from_utf8(&bytes).ok()?.split('\0');
-                let authz=fields.next()?;let id=user(fields.next()?,&self.domain)?;let pass=fields.next()?;
-                if fields.next().is_some()||pass.is_empty()||(!authz.is_empty()&&user(authz,&self.domain)!=Some(id)){return None}
-                Some((id,self.directory.authenticate(id,pass).await?))
-            }.await;
-            let Some((id,session))=identity else{send(&mut w,&format!("<failure xmlns='{SASL}'><not-authorized/></failure>")).await?;return Err(invalid())};
-            send(&mut w,&format!("<success xmlns='{SASL}'/>")).await?;
-            let mut input=input.restart();input.open(&self.domain).await?;
-            send(&mut w,&self.features(&format!("<bind xmlns='{BIND}'/><session xmlns='urn:ietf:params:xml:ns:xmpp-session'><optional/></session>"))).await?;
-            let frame=input.stanza().await?.ok_or_else(invalid)?;let d=parse(&frame)?;let n=root(&d)?;
-            let bind=n.first_element_child().filter(|x|x.has_tag_name((BIND,"bind"))).ok_or_else(invalid)?;
-            if !n.has_tag_name((CLIENT,"iq"))||n.attribute("type")!=Some("set"){return Err(invalid())}
-            let tag=escape(n.attribute("id").ok_or_else(invalid)?);
-            let resource=bind.children().find(|x|x.has_tag_name((BIND,"resource"))).and_then(|x|x.text()).map(str::to_owned).unwrap_or_else(||Uuid::new_v4().to_string());
-            if resource.is_empty()||resource.len()>128||resource.chars().any(char::is_control){return Err(invalid())}
-            let jid=format!("{id}@{}/{resource}",self.domain);let (tx,rx)=mpsc::channel(32);
-            {let mut hub=self.hub.lock().unwrap();if hub.contains_key(&jid)||hub.values().filter(|e|e.user==id).count()>=8{return Err(invalid())}
-            hub.insert(jid.clone(),Resource{user:id,session:session.clone(),available:false,peers:HashSet::new(),tx});}
-            let bound=Bound{user:id,jid,session,hub:self.hub.clone()};
-            send(&mut w,&format!("<iq type='result' id='{tag}'><bind xmlns='{BIND}'><jid>{}</jid></bind></iq>",escape(&bound.jid))).await?;
-            tracing::debug!("XMPP resource bound");
-            Ok((input,w,rx,bound))
-        }).await??;
+        let (mut input, mut w, mut rx, bound) =
+            timeout(Duration::from_secs(30), self.negotiate(sock)).await??;
+
         let mut start = Instant::now();
         let mut count = 0;
         loop {
