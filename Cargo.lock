@@ -1125,6 +1125,7 @@ name = "halcyon-platform"
 version = "1.0.0-draft.1"
 dependencies = [
  "argon2",
+ "async-trait",
  "axum",
  "halcyon-community",
  "halcyon-data",
@@ -1742,6 +1743,7 @@ dependencies = [
  "halcyon-admin",
  "halcyon-ce-platform",
  "halcyon-chat",
+ "halcyon-community",
  "halcyon-data",
  "halcyon-federation",
  "halcyon-game",

@@ -157,7 +157,7 @@ impl Member {
         )
         .unwrap();
         install_finish_handler(&rooms, &peer_play);
-        let rpc = Platform::with_peers(
+        let platform = Platform::with_peers(
             app.clone(),
             CeConfig {
                 authority: "localhost:8443".into(),
@@ -168,8 +168,8 @@ impl Member {
             None,
             peer_play.clone(),
         )
-        .unwrap()
-        .rpc();
+        .unwrap();
+        let rpc = platform.rpc().merge(platform.public_api());
         Self {
             raft,
             peer_play,
@@ -1201,3 +1201,270 @@ async fn local_friend_spectates_read_only_and_revokes_on_exit() {
 
 #[path = "support/process_pool.rs"]
 mod process_pool;
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn public_and_ce_players_share_a_pool_and_cross_home_match_chat() {
+    use axum::http::StatusCode;
+    async fn rest(
+        router: &Router,
+        method: &str,
+        uri: &str,
+        token: Option<&str>,
+        body: Value,
+        expected: StatusCode,
+    ) -> Value {
+        let mut req = Request::builder()
+            .method(method)
+            .uri(uri)
+            .header("Content-Type", "application/json");
+        if let Some(token) = token {
+            req = req.header("Authorization", format!("Bearer {token}"));
+        }
+        let res = router
+            .clone()
+            .oneshot(req.body(Body::from(body.to_string())).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(res.status(), expected, "{method} {uri}");
+        let bytes = to_bytes(res.into_body(), 1 << 20).await.unwrap();
+        if bytes.is_empty() {
+            Value::Null
+        } else {
+            serde_json::from_slice(&bytes).unwrap()
+        }
+    }
+
+    let tmp = tempfile::tempdir().unwrap();
+    let cfg = pool::configs(tmp.path());
+    let host = cfg[2].node_id;
+    let mut cluster = Vec::new();
+    for (i, config) in cfg.into_iter().enumerate() {
+        cluster.push(Some(Member::start(tmp.path(), i, config, host).await));
+    }
+    let (leader, _) = elected(&cluster, 1).await;
+    wait_replication(&cluster, leader).await;
+    let a = &node(&cluster, 0).rpc;
+    let b = &node(&cluster, 1).rpc;
+    let mut guests = Vec::new();
+    for (router, name) in [(a, "HarborOne"), (b, "HarborTwo"), (a, "Outside")] {
+        guests.push(
+            rest(
+                router,
+                "POST",
+                "/api/v1/guests",
+                None,
+                json!({"name":name}),
+                StatusCode::OK,
+            )
+            .await,
+        );
+    }
+    let token = |i: usize| guests[i]["sessionToken"].as_str().unwrap();
+    let mode = "5v5_pvp_casual";
+    rest(
+        a,
+        "POST",
+        "/api/v1/queue",
+        Some(token(0)),
+        json!({"mode":"cancel_me"}),
+        StatusCode::NO_CONTENT,
+    )
+    .await;
+    rest(
+        a,
+        "DELETE",
+        "/api/v1/queue",
+        Some(token(0)),
+        Value::Null,
+        StatusCode::NO_CONTENT,
+    )
+    .await;
+    timeout(Duration::from_secs(10), async {
+        loop {
+            if node(&cluster, 0)
+                .app
+                .profile(token(0))
+                .await
+                .unwrap()
+                .lobby
+                .is_none()
+            {
+                break;
+            }
+            sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let ce_guest = rpc(
+        b,
+        "createGuestPlayer",
+        json!([
+            "kindred",
+            "en",
+            "US",
+            "production",
+            "en",
+            "BAKLAVA",
+            "android",
+            "",
+            "147219",
+            1,
+            "device",
+            "model",
+            "0"
+        ]),
+    )
+    .await;
+    let ce = rpc(
+        b,
+        "startSessionForPlayer",
+        json!([ce_guest["returnValue"]["playerUUID"]]),
+    )
+    .await;
+    let ce_token = &ce["sessionToken"];
+    // The public API has no party invitation endpoint. Use the same community
+    // service as CE for the REST participant's acceptance.
+    let member = guests[1]["playerId"].as_str().unwrap().parse().unwrap();
+    let community = halcyon_community::Community::open(&node(&cluster, 1).path).unwrap();
+    community
+        .observe_player(member, "HarborTwo".into(), true)
+        .await
+        .unwrap();
+    let party = rpc(b, "createParty", json!([ce_token,{"partyQueueMode":mode}])).await;
+    let group = party["returnValue"]["partyUUID"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    rpc(
+        b,
+        "partyInviteSend",
+        json!([ce_token,{"playerUUID":member}]),
+    )
+    .await;
+    community
+        .execute(
+            member,
+            halcyon_community::Action::ResolveInvite {
+                group,
+                accept: true,
+            },
+        )
+        .await
+        .unwrap();
+    rest(
+        a,
+        "POST",
+        "/api/v1/queue",
+        Some(token(0)),
+        json!({"mode":mode}),
+        StatusCode::NO_CONTENT,
+    )
+    .await;
+    rpc(b, "joinLobby", json!([ce_token,{"lobby":mode}])).await;
+    state(b, ce_token, "match_pending").await;
+    let id = timeout(Duration::from_secs(10), async {
+        loop {
+            let p = rest(
+                a,
+                "GET",
+                "/api/v1/me",
+                Some(token(0)),
+                Value::Null,
+                StatusCode::OK,
+            )
+            .await;
+            if let Some(id) = p["lobby"]["matchId"].as_str() {
+                break id.to_owned();
+            }
+            sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let accept = format!("/api/v1/matches/{id}/accept");
+    for (router, i) in [(a, 0), (b, 1)] {
+        rest(
+            router,
+            "POST",
+            &accept,
+            Some(token(i)),
+            Value::Null,
+            StatusCode::NO_CONTENT,
+        )
+        .await;
+    }
+    rpc(b, "acceptMatch", json!([ce_token])).await;
+    assert_eq!(state(b, ce_token, "playing").await["matchId"], id);
+    let chat = format!("/api/v1/matches/{id}/chat");
+    rest(
+        a,
+        "POST",
+        &chat,
+        Some(token(2)),
+        json!({"text":"outside"}),
+        StatusCode::CONFLICT,
+    )
+    .await;
+    rest(
+        a,
+        "POST",
+        &chat,
+        Some(token(1)),
+        json!({"text":"wrong home"}),
+        StatusCode::UNAUTHORIZED,
+    )
+    .await;
+    rest(
+        b,
+        "POST",
+        &chat,
+        Some(token(1)),
+        json!({"text":"across homes"}),
+        StatusCode::NO_CONTENT,
+    )
+    .await;
+    timeout(Duration::from_secs(12), async {
+        let mut cursor = 0;
+        loop {
+            let events = rest(
+                a,
+                "GET",
+                &format!("/api/v1/events?after={cursor}"),
+                Some(token(0)),
+                Value::Null,
+                StatusCode::OK,
+            )
+            .await;
+            cursor = events["cursor"].as_i64().unwrap();
+            if let Some(chat) = events["events"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|e| &e["body"])
+                .find(|e| e["type"] == "chat")
+            {
+                assert_eq!(chat["playerId"], guests[1]["playerId"]);
+                assert_eq!(chat["matchId"], id);
+                assert_eq!(chat["text"], "across homes");
+                break;
+            }
+        }
+    })
+    .await
+    .expect("chat did not reach the other home");
+    assert!(
+        !node(&cluster, 0)
+            .app
+            .events(token(2), 0, false)
+            .await
+            .unwrap()
+            .events
+            .iter()
+            .any(|e| e.body["type"] == "chat")
+    );
+    for member in cluster.into_iter().flatten() {
+        member.stop().await;
+    }
+}

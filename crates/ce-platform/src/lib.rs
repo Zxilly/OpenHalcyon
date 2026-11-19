@@ -13,6 +13,7 @@ mod profile;
 use profile::player_info;
 mod provider;
 pub use provider::{ProviderConfig, ProviderProduct};
+mod public_api;
 mod spectator;
 mod xmpp;
 use auth::{Scope, Tokens};
@@ -24,7 +25,7 @@ use axum::{
 };
 use halcyon_platform::{
     AppState, BotDifficulty, Guest, LEGACY_ARAL_QUEUE, LEGACY_ARAL_SEATS, PlatformError,
-    PlayerProfile,
+    PlayerProfile, PublicMatches,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -177,10 +178,7 @@ impl Platform {
         Ok(platform)
     }
     async fn accept(&self, session: &str, id: Uuid) -> Result<(), Error> {
-        match &self.peers {
-            Some(peers) => peers.accept(session, id).await?,
-            None => self.app.accept(session, id).await?,
-        }
+        self.accept_offer(session, id).await?;
         Ok(())
     }
     pub fn bootstrap(self: &Arc<Self>) -> Router {
@@ -403,26 +401,13 @@ async fn dispatch(s: &Platform, m: &str, params: &[Value]) -> Result<(String, Va
                 ),
                 _ => None,
             };
-            let seats = match mode {
-                "5v5_bots_solo" => 1,
-                LEGACY_ARAL_QUEUE => LEGACY_ARAL_SEATS,
-                _ => s.app.seats_per_match(),
-            };
-            if let Some(peers) = &s.peers {
-                peers
-                    .join_party_with_site_report(
-                        &session,
-                        mode.to_owned(),
-                        u8::try_from(seats).map_err(|_| Error::Invalid)?,
-                        difficulty,
-                        s.sites.report(&obj["sites"]),
-                    )
-                    .await?;
-            } else {
-                s.app
-                    .join_party_with_difficulty(&session, mode.to_owned(), seats, difficulty)
-                    .await?;
-            }
+            s.enqueue_with_estimates(
+                &session,
+                mode.to_owned(),
+                difficulty,
+                s.sites.report(&obj["sites"]),
+            )
+            .await?;
             let mut joined = json!({"success":true,"ttl":100});
             if mode == "casual_aral" {
                 let current = state(&s.app.profile(&session).await?);
@@ -448,10 +433,7 @@ async fn dispatch(s: &Platform, m: &str, params: &[Value]) -> Result<(String, Va
             if spectator::is_spectating(&profile) || profile.lobby.is_none() {
                 spectator::leave(s, &session).await?;
             } else if profile.lobby.is_some() {
-                match &s.peers {
-                    Some(peers) => peers.leave(&session).await?,
-                    None => s.app.leave(&session).await?,
-                }
+                s.cancel_queue(&session).await?;
             }
             if m == "notifyExitPostMatch" {
                 json!({"success":true})

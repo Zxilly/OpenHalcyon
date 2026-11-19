@@ -20,7 +20,7 @@ use std::{
 };
 
 use axum::{
-    Json, Router,
+    Extension, Json, Router,
     extract::{
         Path, Query, State, WebSocketUpgrade,
         ws::{Message, WebSocket},
@@ -403,6 +403,25 @@ impl AppState {
 }
 
 pub fn router(state: AppState) -> Router {
+    router_with_matches(state.clone(), Arc::new(state))
+}
+
+/// Match operations selected by the home service. The public API authenticates
+/// with the same opaque bearer token regardless of the configured authority.
+#[async_trait::async_trait]
+pub trait PublicMatches: Send + Sync {
+    async fn enqueue(
+        &self,
+        token: &str,
+        mode: String,
+        difficulty: Option<BotDifficulty>,
+    ) -> Result<()>;
+    async fn cancel_queue(&self, token: &str) -> Result<()>;
+    async fn accept_offer(&self, token: &str, id: Uuid) -> Result<()>;
+    async fn match_chat(&self, token: &str, id: Uuid, text: String) -> Result<()>;
+}
+
+pub fn router_with_matches(state: AppState, matches: Arc<dyn PublicMatches>) -> Router {
     Router::new()
         .route("/bootstrap", get(bootstrap))
         .route("/api/v1/guests", post(create_guest))
@@ -413,7 +432,40 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/matches/{id}/chat", post(chat))
         .route("/api/v1/events", get(poll))
         .route("/api/v1/events/ws", get(websocket))
+        .layer(Extension(matches))
         .with_state(state)
+}
+
+#[async_trait::async_trait]
+impl PublicMatches for AppState {
+    async fn enqueue(
+        &self,
+        token: &str,
+        mode: String,
+        difficulty: Option<BotDifficulty>,
+    ) -> Result<()> {
+        if difficulty.is_some() {
+            let seats = if matches!(mode.as_str(), "5v5_bots_solo" | "solo") {
+                1
+            } else {
+                self.seats_per_match()
+            };
+            self.join_with_difficulty(token, mode, seats, difficulty)
+                .await
+        } else {
+            self.join(token, mode).await
+        }
+    }
+
+    async fn cancel_queue(&self, token: &str) -> Result<()> {
+        self.leave(token).await
+    }
+    async fn accept_offer(&self, token: &str, id: Uuid) -> Result<()> {
+        self.accept(token, id).await
+    }
+    async fn match_chat(&self, token: &str, id: Uuid, text: String) -> Result<()> {
+        self.send_chat(token, id, text).await
+    }
 }
 
 async fn bootstrap(State(state): State<AppState>) -> String {
@@ -778,23 +830,14 @@ struct Queue {
 }
 
 async fn queue(
-    State(state): State<AppState>,
+    Extension(matches): Extension<Arc<dyn PublicMatches>>,
     headers: HeaderMap,
     Json(input): Json<Queue>,
 ) -> Result<StatusCode> {
     let session = bearer(&headers)?;
-    if input.difficulty.is_some() {
-        let seats = if matches!(input.mode.as_str(), "5v5_bots_solo" | "solo") {
-            1
-        } else {
-            state.seats_per_match()
-        };
-        state
-            .join_with_difficulty(session, input.mode, seats, input.difficulty)
-            .await?;
-    } else {
-        state.join(session, input.mode).await?;
-    }
+    matches
+        .enqueue(session, input.mode, input.difficulty)
+        .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 impl AppState {
@@ -821,8 +864,11 @@ fn abort(tx: &Transaction<'_>, match_id: &str, reason: &'static str) -> Result<(
     Ok(())
 }
 
-async fn leave(State(state): State<AppState>, headers: HeaderMap) -> Result<StatusCode> {
-    state.leave(bearer(&headers)?).await?;
+async fn leave(
+    Extension(matches): Extension<Arc<dyn PublicMatches>>,
+    headers: HeaderMap,
+) -> Result<StatusCode> {
+    matches.cancel_queue(bearer(&headers)?).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 impl AppState {
@@ -875,11 +921,11 @@ impl AppState {
 }
 
 async fn accept(
-    State(state): State<AppState>,
+    Extension(matches): Extension<Arc<dyn PublicMatches>>,
     headers: HeaderMap,
     Path(match_uuid): Path<Uuid>,
 ) -> Result<StatusCode> {
-    state.accept(bearer(&headers)?, match_uuid).await?;
+    matches.accept_offer(bearer(&headers)?, match_uuid).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 impl AppState {
@@ -921,12 +967,14 @@ struct Chat {
 }
 
 async fn chat(
-    State(state): State<AppState>,
+    Extension(matches): Extension<Arc<dyn PublicMatches>>,
     headers: HeaderMap,
     Path(id): Path<Uuid>,
     Json(input): Json<Chat>,
 ) -> Result<StatusCode> {
-    state.send_chat(bearer(&headers)?, id, input.text).await?;
+    matches
+        .match_chat(bearer(&headers)?, id, input.text)
+        .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 impl AppState {

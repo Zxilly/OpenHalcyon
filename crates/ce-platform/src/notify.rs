@@ -264,7 +264,7 @@ async fn chat(
                         let Ok(item)=serde_json::from_str::<Chat>(&raw) else{break};
                         let Ok(profile)=s.app.profile(&key).await else{break};
                         let Some(room)=profile.lobby.and_then(|l|l.match_id) else{break};
-                        if s.app.send_chat(&key,room,item.message).await.is_err(){break}
+                        if halcyon_platform::PublicMatches::match_chat(&*s,&key,room,item.message).await.is_err(){break}
                     }
                     Some(Ok(Message::Ping(_)|Message::Pong(_)))=>{},
                     _=>break

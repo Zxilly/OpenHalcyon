@@ -711,3 +711,101 @@ async fn rest_difficulty_keeps_queue_variants_separate_and_survives_reopen() {
     assert_eq!(reservations[0].difficulty, Some(BotDifficulty::Easy));
     assert_eq!(reservations[0].mode, "5v5_bots_coop");
 }
+
+#[tokio::test]
+async fn public_match_routes_dispatch_to_the_selected_home_authority() {
+    use halcyon_platform::{BotDifficulty, PublicMatches, Result, router_with_matches};
+    use std::sync::Mutex;
+
+    #[derive(Default)]
+    struct Authority(Mutex<Vec<&'static str>>);
+    const TEST_BEARER: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+    #[async_trait::async_trait]
+    impl PublicMatches for Authority {
+        async fn enqueue(
+            &self,
+            token: &str,
+            mode: String,
+            difficulty: Option<BotDifficulty>,
+        ) -> Result<()> {
+            assert_eq!(token, TEST_BEARER);
+            assert_eq!(mode, "5v5_bots_solo");
+            assert!(difficulty.is_some());
+            self.0.lock().unwrap().push("join");
+            Ok(())
+        }
+        async fn cancel_queue(&self, token: &str) -> Result<()> {
+            assert_eq!(token, TEST_BEARER);
+            self.0.lock().unwrap().push("cancel");
+            Ok(())
+        }
+        async fn accept_offer(&self, token: &str, id: Uuid) -> Result<()> {
+            assert_eq!(token, TEST_BEARER);
+            assert_eq!(id, Uuid::nil());
+            self.0.lock().unwrap().push("accept");
+            Err(PlatformError::Conflict("offer expired"))
+        }
+        async fn match_chat(&self, token: &str, id: Uuid, text: String) -> Result<()> {
+            assert_eq!(token, TEST_BEARER);
+            assert_eq!(id, Uuid::nil());
+            assert_eq!(text, "hello");
+            self.0.lock().unwrap().push("chat");
+            Ok(())
+        }
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let state = AppState::open(
+        PlatformConfig {
+            database_path: dir.path().join("platform.sqlite"),
+            public_address: "localhost:8000".into(),
+            seats_per_match: 2,
+        },
+        Arc::new(Host::default()),
+    )
+    .unwrap();
+    let authority = Arc::new(Authority::default());
+    let app = router_with_matches(state, authority.clone());
+    let room = format!("/api/v1/matches/{}", Uuid::nil());
+    let token = Some(TEST_BEARER);
+    let join = json!({"mode":"5v5_bots_solo","difficulty":"hard"});
+    assert_eq!(
+        request(&app, "POST", "/api/v1/queue", None, join.clone())
+            .await
+            .0,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        request(&app, "POST", "/api/v1/queue", token, join).await.0,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        request(&app, "POST", &format!("{room}/accept"), token, Value::Null)
+            .await
+            .0,
+        StatusCode::CONFLICT
+    );
+    assert_eq!(
+        request(
+            &app,
+            "POST",
+            &format!("{room}/chat"),
+            token,
+            json!({"text":"hello"})
+        )
+        .await
+        .0,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        request(&app, "DELETE", "/api/v1/queue", token, Value::Null)
+            .await
+            .0,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        *authority.0.lock().unwrap(),
+        ["join", "accept", "chat", "cancel"]
+    );
+}

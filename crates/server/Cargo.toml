@@ -33,6 +33,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid.workspace = true
 
 [dev-dependencies]
+halcyon-community = { path = "../community" }
 halcyon-federation = { path = "../federation", features = ["test-hooks"] }
 halcyon-protocol = { path = "../protocol" }
 rusqlite = { version = "0.37", features = ["bundled"] }
