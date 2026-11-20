@@ -44,6 +44,8 @@ The bootstrap endpoint is `http://HOST:8080/kindred/live/147219-status-redirect`
 
 Paths in `server.toml` are relative to that file. For a local research installation set `data_dir` to the directory containing `units.json`, `items.json` and `entity_manifest.json`, and `manifests_dir` to the directory containing the archived talents and skin manifest responses. Place these top-level keys before any TOML section. Only manifest payloads are consumed from those two responses. Keep private captures outside the checkout. With no external data the simulation uses built-in unit statistics. Native Solo uses the three-lane layout. Legacy ARAL uses its measured single lane. Other queues use the validation layout.
 
+For the optional CE supplement, set `data_extra_dir` alongside `data_dir`. This supplies combat, equipment, native map geometry and client manifests. In the operations panel, **Game data** opens the searchable catalog and its localized messages. The installation guide lists the source files, runtime consumers and real-data regression tests. [Supplemental game data](docs/supplemental-data.md)
+
 An operator with a decoded draft trace can export the catalog once. Run
 `openhalcyon export-catalog --trace /private/match_decoded.jsonl > /srv/game-data/catalog.json`.
 Instances load this ordered list of 0x0453 hero and skin names from their
