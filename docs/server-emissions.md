@@ -2,9 +2,9 @@
 
 Nine complete TCP streams contain 398,293 encrypted server frames in 103 opcode classes. The plaintext handshake acknowledgment is outside these counts. Each count includes every captured form of the opcode. The scope column describes the subset the host currently emits.
 
-Of the 103 classes, 86 have a documented host path in at least one scenario. These include 51 authoritative room outputs, 19 setup or draft outputs, and 16 conditional responses. The other 17 have an identified action and a reader.
+All 103 classes have a host send path in at least one scenario. 62 are driven by the authoritative room, 19 by setup or draft, 21 by an accepted request, and one by an administrator terminating a room. The 173-entry opcode registry also includes other directions and actions absent from these recordings. Captured variants and their original triggering conditions are documented separately where known.
 
-**A** is authoritative room output. **H** is setup, draft or scene output. **E** is a conditional response to the originating request. **R** is a read-only class with a documented action role. Action names use the Android build 147219 specification and the independent Windows action table. Counts come from the full captured streams. [Capture method](live-captures.md) · [Independent action labels](https://github.com/TurnaboutHero/vainglory-replay-decoder/blob/f4743be743564e3aadef1566499fe25d9d0f9ffc/vg/docs/vg-binary-event-candidates-2026-09-09-details.md)
+**A** is authoritative room output. **H** is setup, draft or scene output. **E** is a conditional response or relay of an originating request. **O** is an operator action. Action names use the Android build 147219 specification and the independent Windows action table. Counts come from the full captured streams. [Capture method](live-captures.md) · [Independent action labels](https://github.com/TurnaboutHero/vainglory-replay-decoder/blob/f4743be743564e3aadef1566499fe25d9d0f9ffc/vg/docs/vg-binary-event-candidates-2026-09-09-details.md)
 
 The host paths are in [room dispatch](../crates/game/src/lib.rs), [transport](../crates/game/src/transport.rs), [wire messages](../crates/game/src/messages.rs), [ARAL](../crates/game/src/aral.rs), [native abilities](../crates/game/src/native_abilities.rs), [Solo scene loading](../crates/game/src/scene.rs) and [settlement](../crates/game/src/result_frames.rs). The table excludes test fixtures and replay-only encoders.
 
@@ -22,13 +22,13 @@ The host paths are in [room dispatch](../crates/game/src/lib.rs), [transport](..
 | `03F2` | 1,376 | A | ActionEntitySpawn · Known compact spawn profiles for the selected mode |
 | `03F3` | 42 | A | ActionHeroSpawn · Full actor declaration for simulated heroes and fallback profiles |
 | `03F8` | 37,568 | A | ActionMoveTo · Accepted Solo 03F5 destination, visible registered ARAL hero route from 03F4/03F5, and [visible native lane-minion waypoints](native-motion.md#lane-minion-destinations) |
-| `03F9` | 2,548 | R | [ActionMoveToServerAuthoritative](native-motion.md) |
+| `03F9` | 2,548 | A | ActionMoveToServerAuthoritative · A visible Solo bot takes a new waypoint after an earlier order reached that connection. The host chooses when to replace a route. [Bot navigation](native-motion.md) |
 | `03FA` | 1,978 | A | [Ringo facing the target of a released Double Down attack](native-motion.md#ringo-empowered-attacks) |
 | `03FB` | 1,829 | A | [ActionStopActor](native-motion.md#aral-chakram-movement-interruption) for the registered teammate view of an ARAL Idris B release that interrupted walking |
-| `0402` | 25 | R | [ActionAutoActorBounce](aral-orbit.md) |
-| `0403` | 525 | R | ActionAutoMoveTo |
-| `0406` | 25 | R | [ActionAutoOrbit](aral-orbit.md) |
-| `0407` | 25 | R | [ActionCancelAutoOrbit](aral-orbit.md) |
+| `0402` | 25 | A | ActionAutoActorBounce · Amael’s ordinary ARAL Super Kick hits a visible enemy hero. [Recorded profile](aral-orbit.md#amaels-ordinary-super-kick) |
+| `0403` | 525 | A | ActionAutoMoveTo · Karas starts his Twister dash, or Amael releases a Super Kick with a nonzero lunge. [Karas](native-motion.md#aral-karas-twister) · [Amael](aral-orbit.md#amaels-ordinary-super-kick) |
+| `0406` | 25 | A | ActionAutoOrbit · A level-ten Mobile Bulwark begins orbiting Lyra. [Opening sequence](aral-orbit.md#hosted-mobile-bulwark) |
+| `0407` | 25 | A | ActionCancelAutoOrbit · A previously declared Mobile Bulwark stops orbiting. [Cleanup](aral-orbit.md#hosted-mobile-bulwark) |
 | `0409` | 67 | A | ActionTeleportTo · Six ticks before ARAL respawn, a registered viewer sees the hero approach its visible pad, paired with `042E`. The four flag-zero relocations have separate triggers. [Respawn sequence](game-wire.md) |
 | `040B` | 1,111 | A | ActionEntityDestroy · Delayed removal of eligible ARAL lane minions |
 | `040D` | 4,751 | A | [ActionFireProjectile](native-projectiles.md#authored-aral-tracked-fire) · ARAL tower and level-2 ranged lane-minion tracked fire; [Solo outer towers against three minion templates](native-projectiles.md#solo-outer-towers) |
@@ -36,7 +36,7 @@ The host paths are in [room dispatch](../crates/game/src/lib.rs), [transport](..
 | `040F` | 585 | A | ARAL Chakram outgoing flight. [Wire sequence](native-projectiles.md) |
 | `0410` | 376 | A | Chakram catch on a connection that received the launch. [Wire sequence](native-projectiles.md) |
 | `0412` | 842 | E | ActionRequestActivateAbility · Accepted Idris B or Lorelai A/B point request on its originating connection |
-| `0414` | 48 | R | ActionRequestCancelAbility_Client |
+| `0414` | 48 | E | ActionRequestCancelAbility_Client · Private echo after canceling the issuer’s own pending ARAL single-ability windup. The archived shared-group blocks have different triggers. [Cancellation](aral-ability-overrides.md) |
 | `0415` | 9,106 | A | ActionPlayAbility · Released Lorelai C, witnessed Reim and Lyra B self-casts and native lane-minion/tower basic attacks with visible actors |
 | `0416` | 886 | A | ActionPlayAbility · Released Idris B or Lorelai A/B with visible caster |
 | `0419` | 12 | A | [ARAL Reim B area effect after an authoritative release](native-abilities.md#reim-b-chill-winds) |
@@ -46,14 +46,14 @@ The host paths are in [room dispatch](../crates/game/src/lib.rs), [transport](..
 | `041D` | 109,869 | A | ActionModifyActorResource · Simulated resource deltas including earned gold and purchase debits |
 | `041E` | 16,559 | A | ActionImpactHealth · Applied damage or healing with visible participants, including Reim B damage family 74 |
 | `041F` | 42 | H | ActionModifyGameModeVar · Six initial keys after the authenticated native ARAL or Solo scene request. [Wire order](game-wire.md#initial-game-mode-variables) |
-| `0421` | 22 | R | [ActionCreateZoneOfControl](aral-orbit.md#actor-anchored-zones) |
-| `0423` | 22 | R | [ActionDestroyZoneOfControl](aral-orbit.md#actor-anchored-zones) |
+| `0421` | 22 | A | ActionCreateZoneOfControl · Open the Mobile Bulwark zone around its declared anchor. [Lifecycle](aral-orbit.md#hosted-mobile-bulwark) |
+| `0423` | 22 | A | ActionDestroyZoneOfControl · Remove a Mobile Bulwark zone from a connection that received its opening. |
 | `0424` | 2,268 | E | ActionRequestModifyBasicAttackTarget · Accepted ARAL basic attack target |
-| `0425` | 5 | R | ActionModifyBasicAttackTarget |
+| `0425` | 5 | A | ActionModifyBasicAttackTarget · When an ARAL Idris player last-hits their current minion target, select the sole legal visible enemy in range. [Target transfer](aral-ability-overrides.md) |
 | `0428` | 2,000 | A | Gwen A absolute cooldown reset after Skedaddle with the verified Speed Loader talent. [Cast sequence](gwen-skedaddle.md) |
 | `042B` | 53,111 | A | ActionModifyVisibility · [Initial ARAL lane-minion deltas](native-visibility.md) after the first waypoint |
 | `042E` | 62,855 | A | ActionMoveToCorrection · Simulated positions visible to the recipient |
-| `042F` | 3 | R | ActionActorUndead |
+| `042F` | 3 | A | ActionActorUndead · ARAL Alpha takes lethal damage with Infinite Reboot available and enters the targetable reboot state. |
 | `0430` | 1,032 | A | ActionActorDie · Visible death with its authoritative source |
 | `0431` | 958 | A | ActionActorDead · Delayed ARAL hero or minion death lifecycle |
 | `0432` | 63 | A | ActionActorRespawn · Simulated hero respawn |
@@ -64,13 +64,13 @@ The host paths are in [room dispatch](../crates/game/src/lib.rs), [transport](..
 | `0438` | 4 | A | [ActionReorderItem](aral-item-reorder.md) · Authenticated swaps of occupied ARAL slots, notified to visible peers |
 | `0439` | 342 | E | ActionBuyItem · Successful supported purchase |
 | `043A` | 317 | A | ActionGrantAbility · Granted rank for mapped native hero ability |
-| `043C` | 1,351 | R | ActionCancelAbility |
+| `043C` | 1,351 | E | ActionCancelAbility · Confirm the specific actor and selector on the originating connection after an accepted cancellation. [Cancellation](aral-ability-overrides.md) |
 | `043D` | 425 | A | ActionGrantItem · Acquired or restored held item instance |
 | `043E` | 44,346 | A | [Three alternating effect pairs on each declared Solo crystal at match start](solo-lane.md). [ARAL Waterwall on an ally (issuer), Chakram self-application (issuer and registered teammates), and the one-second Chill Winds root (registered teammates)](native-abilities.md) |
 | `043F` | 17,018 | H | [Solo opening applications on visible structures](solo-lane.md). [Three initial self-sourced applications per declared ARAL tower](aral-tower-opening.md). [ActionApplyBuff opening and equipment instances](aral-item-activation.md#extended-applications-at-match-opening-and-on-purchase) |
 | `0440` | 60 | A | CLEANSED on witnessed Gwen Skedaddle. [Flyout and effect order](gwen-skedaddle.md) |
-| `0441` | 385 | R | ActionModifyBuffDuration |
-| `0443` | 1,831 | R | [ActionModifyBuffStack and observed instance counts](aral-item-activation.md#extended-applications-at-match-opening-and-on-purchase) |
+| `0441` | 385 | A | ActionModifyBuffDuration · Set the duration of Alpha’s cooldown effect when Infinite Reboot succeeds. |
+| `0443` | 1,831 | A | ActionModifyBuffStack · Set an active ARAL weapon or crystal infusion instance to the hero’s current level on activation or level-up. [Infusions](aral-item-activation.md) |
 | `0445` | 1,398 | A | [Cancellation of Ringo’s previously delivered Double Down instance](aral-ability-overrides.md#definition-379) |
 | `0446` | 18 | A | Reflex Block natural timeout on an authorized connection that saw the instance. [Item activation](aral-item-activation.md) |
 | `0447` | 41 | A | [ARAL same-side structure stack decrement following a witnessed tower death](aral-tower-opening.md#tower-death-and-structure-stack-decrements) |
@@ -79,13 +79,13 @@ The host paths are in [room dispatch](../crates/game/src/lib.rs), [transport](..
 | `044B` | 150 | A | ActionConsumeItem · Consumed recipe component instance |
 | `044C` | 218 | A | ARAL Healing Flask and Scout Trap mode 2, and Scout Cam mode 1.  [ActionItemActivated](aral-item-activation.md) · All 218 broadcasts link to a prior grant for the same actor and instance |
 | `044D` | 4 | A | ARAL completed sales of Hourglass, Blazing Salvo, Stormcrown or Scout Trap, witnessed by other visible players or an authorized observer. |
-| `044E` | 84 | R | [ActionPing](native-pings.md) · Actor, optional target, map position and two numeric selectors |
-| `044F` | 48 | R | [ActionHUDQuickMessage](native-pings.md) · Actor, message selector, optional target, float and operand |
+| `044E` | 84 | E | ActionPing · Relay an authenticated native tactical map or visible-target ping to eligible teammates. [Accepted selectors](native-pings.md) |
+| `044F` | 48 | E | ActionHUDQuickMessage · Relay supported presets from an authenticated seat. GLHF also reaches opponents. [Scope](native-pings.md) |
 | `0451` | 248 | H | Opening world clock |
 | `0452` | 5 | A | Crystal ending on supported result path |
 | `0453` | 4,125 | H | Catalog entries on setup or supported refresh |
 | `0454` | 15 | H | Mode announcement on setup or supported refresh |
-| `0456` | 26 | R | ARAL paid hero reroll request or echo. Billing and retry semantics remain open. |
+| `0456` | 26 | E | ARAL reroll confirmation to the requesting player when free rerolls are enabled and their unlocked seat has a reroll available. [Free reroll rules](aral.md) |
 | `0458` | 32 | E | Draft refresh request completion |
 | `0459` | 92 | H | Participant selection state for supported full roster modes |
 | `045A` | 1,085 | H | Six-seat ARAL roster |
@@ -103,7 +103,7 @@ The host paths are in [room dispatch](../crates/game/src/lib.rs), [transport](..
 | `0470` | 16 | H | Scene transition marker |
 | `0471` | 25 | E | Scene request with authenticated owner on native opening path |
 | `0473` | 22 | A | ActionTeamSurrenderStateChanged · ARAL team surrender board |
-| `0479` | 1 | R | Targeted disconnect flag by player UUID. Code zero returns the matching client to the main menu. |
+| `0479` | 1 | O | An administrator terminates a room. The host attempts a final encrypted exit frame with the recipient’s own UUID and code zero before closing the connection. |
 | `0480` | 8 | H | First ARAL draft refresh marker |
 | `0481` | 41 | A | ActionEquipTalent · Authorized numeric ARAL talent level or explicit clear |
 | `0484` | 41 | E | ActionRequestEquipTalent · Accepted ARAL talent selection change |
@@ -117,3 +117,15 @@ The host paths are in [room dispatch](../crates/game/src/lib.rs), [transport](..
 All 15 captured originating point-cast requests have a byte-identical server acknowledgment before the actor-bearing release. The 842 server-side point requests include other traffic. A canceled accepted cast can therefore have an acknowledgment without a release in the host. The sole originating target cast has an actor-bearing release and no corresponding target-request echo.
 
 The Android specification identifies all six previously unnamed action roles. Its actor flags address roster seats; the targeted disconnect action compares the supplied UUID with the local player. The three draft requests can appear as server echoes even though the Android inbound dispatcher ignores them. The roster carries the resulting draft state. Of 26 reroll echoes, 17 fall between two skin-selection records when periodic traffic is excluded. [Draft evidence](aral.md)
+
+## Outside the nine encrypted server streams
+
+The remaining 70 registry entries comprise 22 server-to-client, 26 client-to-server, 17 bidirectional and five reserved entries. Three of the 22 server-only entries have named roles in the operator specification.
+
+| Opcode | Evidence and host behavior |
+|---|---|
+| `0006` | The host writes the plaintext handshake acknowledgment before the encrypted stream begins. |
+| `03EB` | Android sets the deserter scoreboard flag. An absent human ARAL seat receives this status after five minutes of simulation time, under an OpenHalcyon rule. Reconnection clears it. [Seat presence](game-wire.md) |
+| `0422` | The native client creates a rectangular control zone. The typed reader and writer preserve both endpoints and the original padding. A specific skill or map event that produces this rectangle has yet to be identified. [Zone actions](../crates/protocol/src/zone.rs) |
+
+The specification assigns placeholder names to the other 19 server-only entries. One of them, `042C`, appears in a separate replay. Its two flag bytes are decoded, and its gameplay trigger remains unresolved. The inputs, bidirectional entries and reserved slots keep their own direction and layout in the [registry](../crates/protocol/src/spec/catalog.rs).

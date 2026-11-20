@@ -9,9 +9,9 @@ The nine complete TCP recordings contain 25 server records each of `0x0402`, `0x
 
 Every orbit start had zero words at +4 and +8. For all 17 Bulwarks, the X/Z words at +20/+28 matched the actor's most recent declaration or position exactly. The float bits at +16 were `0x3e3270a0` for every Bulwark and zero for every Idris. The typed orbit reader and encoder reproduce all 25 starts and 25 cancels byte for byte, including the two unknown start words, coordinate bits and six alignment bytes. All 25 cancels referenced the same actor as their start, each once. Only three final XYZ tuples at +4..+15 repeated the start XYZ. These timings are differences between recorded stream timestamps.
 
-Lyra's authoritative simulation models Imperial Sigil and Bright Bulwark. The recorded orbit uses a separate Bulwark actor. Idris himself orbits a target here; his modeled Chakram has a separate projectile trajectory. Three of the eight Idris starts followed an Idris targeted release with selector 4 within 260 ms. The data do not supply a general start/cancel rule for a currently hosted spell.
+Lyra's authoritative simulation models Imperial Sigil and Bright Bulwark. The recorded orbit uses a separate Bulwark actor. Idris himself orbits a target here; his modeled Chakram has a separate projectile trajectory. Three of the eight Idris starts followed an Idris targeted release with selector 4 within 260 ms. The start and cancellation conditions for Idris’s orbit remain unresolved. Lyra’s level-ten Mobile Bulwark has its own hosted lifecycle below.
 
-For bounce, the first word names the affected actor. The 25 records affected 8 Reim, 4 Ylva, 3 Ringo, 3 ranged minions, 2 lead minions, 2 tank minions, 1 Inara, 1 Lance and 1 Amael. The float at +4 was 10 in 23 records and 6 in two. The third word varied, the fourth was always 1 and all six padding bytes were zero. In 24 of 25 cases `0x0403` for that same actor preceded the bounce within 122 ms and 60 records. In 15 cases an Amael-origin application of definition 62 to that actor also fell in the window. The displacement frame carries no source actor. A nearby release alone cannot assign every bounce to one skill. The bounce attribution remains open. The Mobile Bulwark orbit projection is described below.
+For bounce, the first word names the affected actor. The 25 records affected 8 Reim, 4 Ylva, 3 Ringo, 3 ranged minions, 2 lead minions, 2 tank minions, 1 Inara, 1 Lance and 1 Amael. The float at +4 was 10 in 23 records and 6 in two. The third word varied, the fourth was always 1 and all six padding bytes were zero. In 24 of 25 cases `0x0403` for that same actor preceded the bounce within 122 ms and 60 records. In 15 cases an Amael-origin application of definition 62 to that actor also fell in the window. The displacement frame carries no source actor. A nearby release alone cannot assign every bounce to one skill. Two target releases identify the ordinary Amael Super Kick described below. The remaining bounces have no general attribution.
 
 ## Actor-anchored zones
 
@@ -59,7 +59,7 @@ revealed the victim for 1.5 seconds and the following damage used family
 74, fields 1/0. The preceding caster 0403 destinations were each 1.8 units
 short of the selected hero. Distance from Amael's correction to that
 destination divided by the transmitted speed gives 0.30 seconds in both.
-One victim also had a separate short horizontal displacement.
+Both caster displacements used height bits 3d192e1f and dash flag zero. The host appends 0403 to the 0415 release for a nonzero lunge, using the simulation’s destination and speed. One victim also had a separate short horizontal displacement.
 
 The hosted ordinary branch requires a living, visible enemy hero within
 seven units and a clear route. The Bevy effect advances the caster for six

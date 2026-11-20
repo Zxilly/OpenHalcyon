@@ -87,8 +87,7 @@ followed within 0.5 seconds in 1,832 cases. This establishes the
 move-and-face position and reference. The Ringo comparison below identifies
 one hosted release transition. None of the 525 `0403` actions matched
 the next correction's X/Z when treated as the `03FB` position layout.
-The independent reader converts five words and a byte. The host retains
-this action as read-only pending operand and displacement semantics.
+The independent reader converts five words and a byte. The [Karas Twister profile](#aral-karas-twister) below identifies the speed and destination of a hosted displacement.
 
 ## Ringo empowered attacks
 
