@@ -1346,7 +1346,7 @@ impl Room {
                     }
                 }
             }
-            Fields::HeroSelection { template, skin }
+            Fields::HeroSelection { template, choice }
                 if ch == 0 && !legacy && !self.seats[i].locked =>
             {
                 let name = if template == u32::from(halcyon_data::EntityTemplate::Ringo.as_raw()) {
@@ -1369,7 +1369,16 @@ impl Room {
                         name == "Ringo"
                     };
                     if valid {
-                        let skin = self.validated_skin(&name, skin);
+                        let requested = match choice {
+                            halcyon_protocol::DraftHeroChoice::Skin(skin) => skin,
+                            halcyon_protocol::DraftHeroChoice::Flags(_)
+                                if self.picks[i].name == name =>
+                            {
+                                self.picks[i].skin
+                            }
+                            halcyon_protocol::DraftHeroChoice::Flags(_) => 0,
+                        };
+                        let skin = self.validated_skin(&name, requested);
                         self.picks[i] = Pick {
                             name,
                             skin,

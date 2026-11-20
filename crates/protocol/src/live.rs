@@ -43,9 +43,9 @@ pub enum LiveFields<'a> {
         left: &'a [[u8; 4]; 16],
         right: &'a [[u8; 4]; 16],
     },
-    BlockAndHalf {
-        block: &'a [u8; 64],
-        half: u16,
+    KickPlayer {
+        player_uuid: &'a [u8; 64],
+        disconnect_code: u16,
     },
     UnalignedWord {
         prefix: [u32; 3],
@@ -111,9 +111,9 @@ pub(super) fn fields(op: u16, b: &[u8]) -> Option<Fields<'_>> {
         {
             return Some(Fields::Live(LiveFields::RecommendedBuildPath(path)));
         }
-        crate::wire_opcode::Unresolved0456
-        | crate::wire_opcode::Unresolved0461
-        | crate::wire_opcode::Unresolved0462
+        crate::wire_opcode::DraftRerollHero
+        | crate::wire_opcode::DraftSelectPosition
+        | crate::wire_opcode::DraftSelectBuildPath
         | crate::wire_opcode::SetupC
         | crate::wire_opcode::RequestRecommendedBuildPath
             if expected(1) =>
@@ -124,7 +124,9 @@ pub(super) fn fields(op: u16, b: &[u8]) -> Option<Fields<'_>> {
             });
         }
 
-        crate::wire_opcode::EnterPostgame | crate::wire_opcode::RejectBuyItem
+        crate::wire_opcode::TransportAck
+        | crate::wire_opcode::EnterPostgame
+        | crate::wire_opcode::RejectBuyItem
             if expected(0) && b.iter().all(|&x| x == 0) =>
         {
             return Some(Fields::HeaderOnly { remaining: b });
@@ -166,10 +168,10 @@ pub(super) fn fields(op: u16, b: &[u8]) -> Option<Fields<'_>> {
                 right: b[84..148].as_chunks::<4>().0.try_into().unwrap(),
             }));
         }
-        crate::wire_opcode::Unresolved0479 if expected(66) => {
-            return Some(Fields::Live(LiveFields::BlockAndHalf {
-                block: b[..64].try_into().unwrap(),
-                half: half(64),
+        crate::wire_opcode::KickPlayer if expected(66) => {
+            return Some(Fields::Live(LiveFields::KickPlayer {
+                player_uuid: b[..64].try_into().unwrap(),
+                disconnect_code: half(64),
             }));
         }
         crate::wire_opcode::AralDraftMarker if expected(82) => {
@@ -181,8 +183,8 @@ pub(super) fn fields(op: u16, b: &[u8]) -> Option<Fields<'_>> {
         _ => {}
     }
     let (words, has_halfword, bytes) = match op {
-        crate::wire_opcode::EntityActA
-        | crate::wire_opcode::PosUpdate
+        crate::wire_opcode::PlayerAfk
+        | crate::wire_opcode::PlayerReconnected
         | crate::wire_opcode::DestroyZoneOfControl
         | crate::wire_opcode::ModifyBasicAttackTarget
         | crate::wire_opcode::OpeningWorldClock => (1, false, 0),

@@ -150,8 +150,8 @@ impl Stream {
                     Ok(_)
                         if matches!(
                             m.opcode,
-                            halcyon_protocol::wire_opcode::EntityActA
-                                ..=halcyon_protocol::wire_opcode::PosUpdate
+                            halcyon_protocol::wire_opcode::PlayerAfk
+                                ..=halcyon_protocol::wire_opcode::PlayerReconnected
                         ) =>
                     {
                         let flags = m

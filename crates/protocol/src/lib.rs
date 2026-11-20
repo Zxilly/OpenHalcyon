@@ -13,6 +13,7 @@ mod fixed_body;
 pub use fixed_body::{DeathBody, ImpactBody, MoveCmd, PositionBody, VisibilityBody};
 pub mod ce;
 pub mod player_actions;
+pub mod spec;
 pub use actor_flags::{ActorFlagChange, ActorFlags};
 mod tower_aggro;
 pub use tower_aggro::TowerAggro;
@@ -569,7 +570,11 @@ impl Message {
             },
             Some(Opcode::HeroSelection) => Fields::HeroSelection {
                 template: number(0)?,
-                skin: number(4)?,
+                choice: if b.len() == 6 {
+                    DraftHeroChoice::Flags(u16::from_be_bytes([b[4], b[5]]))
+                } else {
+                    DraftHeroChoice::Skin(number(4)?)
+                },
             },
             Some(Opcode::EntitySpawn) => Fields::Spawn {
                 template: number(0)?,
@@ -686,6 +691,12 @@ impl LaneMinionSpawn {
             health,
         })
     }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum DraftHeroChoice {
+    Skin(u32),
+    Flags(u16),
 }
 
 #[derive(Debug, PartialEq)]
@@ -907,7 +918,7 @@ pub enum Fields<'a> {
     },
     HeroSelection {
         template: u32,
-        skin: u32,
+        choice: DraftHeroChoice,
     },
     Spawn {
         template: u32,

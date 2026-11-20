@@ -1,7 +1,7 @@
 macro_rules! opcodes {
     ($( $name:ident = $raw:literal, )*) => {
         /// CE opcodes. Some identifiers retain early capture labels for API compatibility.
-        /// In particular, `PosUpdate` clears two actor flags. Use `Message::actor_flags`
+        /// In particular, `PlayerReconnected` clears two actor flags. Use `Message::actor_flags`
         /// to decode the receiver operations for 0x03EA through 0x03EC.
         #[derive(Debug, Clone, Copy, Eq, PartialEq)]
         #[repr(u16)]
@@ -28,13 +28,14 @@ macro_rules! opcodes {
 
 opcodes! {
     ClockSync = 0x0000,
+    TransportAck = 0x0001,
     Hello = 0x0005,
     Heartbeat = 0x0006,
     PlayerUuid = 0x03e8,
     GameSetup = 0x03e9,
-    EntityActA = 0x03ea,
-    EntityActB = 0x03eb,
-    PosUpdate = 0x03ec,
+    PlayerAfk = 0x03ea,
+    PlayerDeserter = 0x03eb,
+    PlayerReconnected = 0x03ec,
     PlayerHandle = 0x03ed,
     PlayerInfo = 0x03ee,
     TickSyncA = 0x03ef,
@@ -140,7 +141,7 @@ opcodes! {
     HeroCatalog = 0x0453,
     GameMode = 0x0454,
     HeroLock = 0x0455,
-    Unresolved0456 = 0x0456,
+    DraftRerollHero = 0x0456,
     Unresolved0457 = 0x0457,
     SetupA = 0x0458,
     Snapshot5V5 = 0x0459,
@@ -151,8 +152,8 @@ opcodes! {
     HeroSelection = 0x045e,
     SkinSelection = 0x045f,
     Unresolved0460 = 0x0460,
-    Unresolved0461 = 0x0461,
-    Unresolved0462 = 0x0462,
+    DraftSelectPosition = 0x0461,
+    DraftSelectBuildPath = 0x0462,
     LockSelection = 0x0463,
     Unresolved0464 = 0x0464,
     Unresolved0465 = 0x0465,
@@ -175,7 +176,7 @@ opcodes! {
     SetSimulationSpeed = 0x0476,
     SetPlayerAsSpectator = 0x0477,
     SetMinimapSpawnPhase = 0x0478,
-    Unresolved0479 = 0x0479,
+    KickPlayer = 0x0479,
     Unresolved047A = 0x047a,
     Unresolved047B = 0x047b,
     Unresolved047C = 0x047c,

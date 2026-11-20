@@ -1,11 +1,11 @@
-//! The native receiver exposes two independent actor flags. Their gameplay meanings are unknown.
+//! Scoreboard AFK and deserter flags. Reconnection clears both flags.
 use crate::Message;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ActorFlagChange {
-    SetFirst,
-    SetSecond,
-    ClearBoth,
+    Afk,
+    Deserter,
+    Reconnected,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -18,9 +18,9 @@ pub struct ActorFlags<'a> {
 impl Message {
     pub fn actor_flags(&self) -> Option<ActorFlags<'_>> {
         let change = match self.known_opcode() {
-            Some(crate::Opcode::EntityActA) => ActorFlagChange::SetFirst,
-            Some(crate::Opcode::EntityActB) => ActorFlagChange::SetSecond,
-            Some(crate::Opcode::PosUpdate) => ActorFlagChange::ClearBoth,
+            Some(crate::Opcode::PlayerAfk) => ActorFlagChange::Afk,
+            Some(crate::Opcode::PlayerDeserter) => ActorFlagChange::Deserter,
+            Some(crate::Opcode::PlayerReconnected) => ActorFlagChange::Reconnected,
             _ => return None,
         };
         let (actor, padding) = self.body.split_first_chunk::<4>()?;
@@ -33,11 +33,19 @@ impl Message {
 }
 
 impl ActorFlags<'_> {
+    pub fn new(actor: u32, change: ActorFlagChange) -> Self {
+        Self {
+            actor,
+            change,
+            padding: &[],
+        }
+    }
+
     pub fn to_message(self) -> Message {
         let opcode = match self.change {
-            ActorFlagChange::SetFirst => crate::wire_opcode::EntityActA,
-            ActorFlagChange::SetSecond => crate::wire_opcode::EntityActB,
-            ActorFlagChange::ClearBoth => crate::wire_opcode::PosUpdate,
+            ActorFlagChange::Afk => crate::wire_opcode::PlayerAfk,
+            ActorFlagChange::Deserter => crate::wire_opcode::PlayerDeserter,
+            ActorFlagChange::Reconnected => crate::wire_opcode::PlayerReconnected,
         };
         let mut body = Vec::with_capacity(4 + self.padding.len());
         body.extend_from_slice(&self.actor.to_be_bytes());
@@ -53,9 +61,15 @@ mod tests {
     #[test]
     fn decodes_both_setters_and_the_shared_clear() {
         for (opcode, change) in [
-            (crate::wire_opcode::EntityActA, ActorFlagChange::SetFirst),
-            (crate::wire_opcode::EntityActB, ActorFlagChange::SetSecond),
-            (crate::wire_opcode::PosUpdate, ActorFlagChange::ClearBoth),
+            (crate::wire_opcode::PlayerAfk, ActorFlagChange::Afk),
+            (
+                crate::wire_opcode::PlayerDeserter,
+                ActorFlagChange::Deserter,
+            ),
+            (
+                crate::wire_opcode::PlayerReconnected,
+                ActorFlagChange::Reconnected,
+            ),
         ] {
             for padding in [&[][..], &[0x35, 0x78]] {
                 let message = Message::new(opcode, [&1502u32.to_be_bytes()[..], padding].concat());
@@ -65,7 +79,7 @@ mod tests {
             }
         }
         assert!(
-            Message::known(crate::Opcode::PosUpdate, [0; 5])
+            Message::known(crate::Opcode::PlayerReconnected, [0; 5])
                 .actor_flags()
                 .is_none()
         );

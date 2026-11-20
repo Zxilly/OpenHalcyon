@@ -165,7 +165,7 @@ use Primitive::{Be16 as H, Be32 as W, Byte as B, Float as F};
 pub const STATIC_ACTIONS: &[StaticActionLayout] = &[
     entry(crate::wire_opcode::Hello, None, &[]),
     entry(crate::wire_opcode::Heartbeat, None, &[]),
-    entry(crate::wire_opcode::EntityActB, None, &[at(W, 0)]),
+    entry(crate::wire_opcode::PlayerDeserter, None, &[at(W, 0)]),
     entry(
         crate::wire_opcode::TickSyncB,
         Some("ActionShowMatchPrepSequence"),
