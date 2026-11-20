@@ -15,6 +15,27 @@ impl Room<'_> {
         }
     }
 
+    pub(super) fn armory_protected(&self, node: &Entity) -> bool {
+        if !matches!(self.layout, Layout::SoloMid { .. }) {
+            return false;
+        }
+        // Static actor order is home top/mid/bottom, then away top/mid/bottom.
+        const BASE_TURRETS: [u32; 6] = [2051, 2065, 2079, 2093, 2107, 2121];
+        let Some(slot) = node.id.checked_sub(2000 - 1499) else {
+            return false;
+        };
+        let Some(&wire) = BASE_TURRETS.get(slot as usize) else {
+            return false;
+        };
+        self.index(wire - 1499).is_some_and(|i| {
+            let tower = &self.entities[i];
+            tower.team == node.team
+                && tower.kind == Kind::Tower
+                && tower.type_id == EntityTemplate::ArmoryTurret5v5.as_raw()
+                && tower.hp > 0.
+        })
+    }
+
     pub(super) fn living_armories(&self, team: u8) -> usize {
         let first = 501 + 3 * u32::from(team);
         (first..first + 3)
@@ -41,6 +62,45 @@ impl Room<'_> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn only_the_same_side_and_lane_base_turret_protects_each_node() {
+        for (wire_node, wire_tower) in [
+            (2000, 2051),
+            (2001, 2065),
+            (2002, 2079),
+            (2003, 2093),
+            (2004, 2107),
+            (2005, 2121),
+        ] {
+            let mut room = World::new(23, 10);
+            room.use_solo_mid_lane().unwrap();
+            let node = room.index(wire_node - 1499).unwrap();
+            let guard = room.index(wire_tower - 1499).unwrap();
+            let team = 1 - room.entities[node].team;
+            let source = room
+                .entities
+                .iter()
+                .find(|e| e.kind == Kind::Hero && e.team == team)
+                .unwrap()
+                .id;
+            for i in 0..room.entities.len() {
+                if i != guard && room.entities[i].kind == Kind::Tower {
+                    room.entities[i].hp = 0.;
+                }
+            }
+            let mut events = Vec::new();
+            room.hurt(source, team, node, 20., DamageSchool::True, &mut events);
+            assert!(events.is_empty());
+            assert_eq!(
+                (room.entities[node].hp, room.entities[node].respawn),
+                (4350., 0)
+            );
+            room.entities[guard].hp = 0.;
+            room.hurt(source, team, node, 20., DamageSchool::True, &mut events);
+            assert_eq!(room.entities[node].hp, 4330.);
+            assert!(matches!(events.as_slice(), [Event::Damage { .. }]));
+        }
+    }
     #[test]
     fn solo_crystal_resumes_shooting_after_an_armory_returns() {
         let mut w = World::new(10, 10);
@@ -96,6 +156,10 @@ mod tests {
             assert_eq!((e.stats.speed, e.stats.weapon, e.stats.range), (0., 0., 0.));
         }
         let i = world.index(504).unwrap();
+        for wire in [2093, 2107, 2121] {
+            let guard = world.index(wire - 1499).unwrap();
+            world.entities[guard].hp = 0.;
+        }
         let (gold, xp) = (world.entities[0].gold, world.entities[0].xp);
         let mut events = vec![];
         world.tick = 125;
