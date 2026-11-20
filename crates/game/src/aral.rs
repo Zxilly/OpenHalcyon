@@ -1,4 +1,5 @@
 pub(super) mod announcements;
+pub(crate) mod tower_opening;
 use super::{Batch, Message, Room, messages};
 
 pub(super) use halcyon_data::LEGACY_ARAL_SEATS as SEATS;
@@ -175,9 +176,24 @@ pub(super) fn opening(room: &mut Room, team: Option<u8>) -> Batch {
         }
     }
     map_objects.sort_unstable_by_key(|m| std::cmp::Reverse(m.body[116]));
+    let initial = room.world.tick == 0 && team.is_none();
+    let slots: u16 = if initial {
+        map_objects
+            .iter()
+            .filter_map(|message| 1_u16.checked_shl(u32::from(message.body[116])))
+            .fold(0, |map, mask| map | mask)
+    } else {
+        0
+    };
     batch.extend(map_objects);
     batch.extend(lane_minions);
-    if room.world.tick == 0 && team.is_none() {
+    if initial {
+        batch.extend(
+            (0..16)
+                .rev()
+                .filter(|slot| slots & (1 << slot) != 0)
+                .flat_map(tower_opening::messages),
+        );
         batch.extend(super::scene::mode_variables::Opening::Aral.messages());
     }
     batch.extend(room.recommended_paths(team));
@@ -279,6 +295,7 @@ mod tests {
         let mut structures = Vec::new();
         let mut talents = Vec::new();
         let mut variables = Vec::new();
+        let mut tower_effects = Vec::new();
         let pads = [
             (-78.18_f32, 0.88_f32),
             (79.66, -0.91),
@@ -297,6 +314,19 @@ mod tests {
             }
             if frame.is(crate::Opcode::ModifyGameModeVar) {
                 variables.push(frame.clone());
+            }
+            if frame.is(crate::Opcode::EntityData) {
+                assert!(tower_opening::recordable(&frame));
+                assert!(variables.is_empty(), "tower effects precede mode variables");
+                let Ok(Fields::BuffApplication(effect)) = frame.fields() else {
+                    panic!("missing typed ARAL tower effect");
+                };
+                assert!(structures.contains(&((effect.prefix.target - 2000) as u8)));
+                tower_effects.push((
+                    effect.prefix.target,
+                    effect.prefix.definition,
+                    effect.prefix.instance,
+                ));
             }
             if frame.is(crate::Opcode::EntitySpawn) {
                 let id = u32::from_be_bytes(frame.body[8..12].try_into().unwrap());
@@ -327,6 +357,30 @@ mod tests {
             }
         }
         if initial {
+            assert_eq!(tower_effects.len(), 30);
+            assert_eq!(
+                tower_effects
+                    .iter()
+                    .map(|effect| effect.2)
+                    .collect::<std::collections::HashSet<_>>()
+                    .len(),
+                30
+            );
+            for (rows, slot) in tower_effects
+                .as_chunks::<3>()
+                .0
+                .iter()
+                .zip([15, 14, 13, 12, 11, 7, 6, 5, 4, 3])
+            {
+                assert_eq!(
+                    rows.iter().map(|e| e.0).collect::<Vec<_>>(),
+                    [2000 + slot; 3]
+                );
+                assert_eq!(
+                    rows.iter().map(|e| e.1).collect::<Vec<_>>(),
+                    [194, 198, 204]
+                );
+            }
             assert_eq!(
                 variables,
                 crate::scene::mode_variables::Opening::Aral
@@ -336,6 +390,7 @@ mod tests {
             assert!(talents.is_empty());
         } else {
             assert!(variables.is_empty());
+            assert!(tower_effects.is_empty());
             assert_eq!(
                 talents,
                 [vec![0, 0, 5, 220, 0, 1], vec![0, 0, 5, 223, 255, 0]]

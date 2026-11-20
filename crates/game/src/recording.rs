@@ -152,6 +152,7 @@ fn sanitize(m: &mut Message) -> bool {
         Some(crate::Opcode::GrantAbility)
             if matches!(m.body.as_slice(), [0, 0, 5, 220..=229, 0, 0, 0, operand]
             if halcyon_sim::known_native_learn_operand(*operand)) => {}
+        Some(crate::Opcode::EntityData) if super::aral::tower_opening::recordable(m) => {}
         Some(crate::Opcode::FireProjectile) if super::npc_projectile::recordable(m) => {}
         Some(crate::Opcode::EntityProp)
             if matches!(m.fields(), Ok(halcyon_protocol::Fields::BuffApplication(effect))
