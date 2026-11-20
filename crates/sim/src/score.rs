@@ -70,7 +70,7 @@ pub struct TeamScore {
 pub struct PlayerScore {
     pub gold_income: GoldIncome,
     pub turret_deaths: u32,
-    #[serde(skip_serializing_if = "scout_cam_unused")]
+    #[serde(skip_serializing_if = "is_zero")]
     pub scout_cam_uses: u32,
     pub damage_to_heroes: f64,
     pub damage_to_structures: f64,
@@ -78,14 +78,18 @@ pub struct PlayerScore {
     pub crystal_damage_to_heroes: f64,
     pub true_damage_to_heroes: f64,
     pub lane_last_hits: u32,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub jungle_last_hits: u32,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub jungle_last_hits_at_five: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub lane_last_hits_at_five: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub net_worth_at_five: Option<u64>,
 }
 
-fn scout_cam_unused(uses: &u32) -> bool {
-    *uses == 0
+fn is_zero(value: &u32) -> bool {
+    *value == 0
 }
 
 impl PlayerScore {
@@ -102,6 +106,7 @@ impl PlayerScore {
             }
             Kind::Armory | Kind::Tower | Kind::Crystal => self.damage_to_structures += hp,
             Kind::Minion if lethal => self.lane_last_hits += 1,
+            Kind::Neutral if lethal => self.jungle_last_hits += 1,
             Kind::Minion | Kind::Neutral => {}
         }
     }
@@ -160,6 +165,7 @@ impl Room<'_> {
             if five {
                 let score = &mut self.state.scores[(hero.id - 1) as usize];
                 score.lane_last_hits_at_five = Some(score.lane_last_hits);
+                score.jungle_last_hits_at_five = score.jungle_last_hits;
                 score.net_worth_at_five = Some(worth);
             }
         }
@@ -362,6 +368,40 @@ mod tests {
             w.team_scores()[1].structure_damage.towers,
             SourceDamage::default()
         );
+    }
+
+    #[test]
+    fn jungle_farm_at_five_freezes_after_the_boundary_hit() {
+        let mut world = World::new(5, 10);
+        let due = 300 * TICK_HZ;
+        for tick in [due, due + 1] {
+            let neutral = world.spawn(
+                crate::native_camps::NEUTRAL_TEAM,
+                Kind::Neutral,
+                0,
+                base(0),
+                false,
+            );
+            world.entities.spawn_spell(SpellEffect::impact(
+                tick,
+                1,
+                0,
+                neutral,
+                100000.,
+                DamageSchool::Weapon,
+            ));
+        }
+        world.tick = due - 1;
+        world.step();
+        assert_eq!(world.player_score(1).unwrap().jungle_last_hits_at_five, 1);
+        world.step();
+        let hero = world.player_score(1).unwrap();
+        assert_eq!(
+            (hero.jungle_last_hits, hero.jungle_last_hits_at_five),
+            (2, 1)
+        );
+        assert_eq!(hero.lane_last_hits, 0);
+        assert_eq!(world.player_score(2).unwrap().jungle_last_hits, 0);
     }
 
     #[test]

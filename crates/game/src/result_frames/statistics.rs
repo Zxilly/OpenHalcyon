@@ -32,7 +32,7 @@ pub(super) fn snapshot(world: &World) -> io::Result<Message> {
             net_worth_at_five: u16::try_from(score.net_worth_at_five.unwrap_or(0))
                 .unwrap_or(u16::MAX),
             deaths_by_turret: u8::try_from(score.turret_deaths).unwrap_or(u8::MAX),
-            jungle_farm_at_five: 0,
+            jungle_farm_at_five: u16::try_from(score.jungle_last_hits_at_five).unwrap_or(u16::MAX),
             counter_jungle_farm: 0,
             scout_cam_uses: u8::try_from(score.scout_cam_uses).unwrap_or(u8::MAX),
             smurf_score: 0.,
