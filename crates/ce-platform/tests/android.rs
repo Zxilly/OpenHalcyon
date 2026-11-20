@@ -97,6 +97,11 @@ async fn android_guest_lobby_notifications_and_recovery() {
     assert_eq!(session["returnValue"]["state"], "menus");
     let token = &session["sessionToken"];
     let bootstrap = &session["returnValue"];
+    for field in ["version", "lastVersion"] {
+        let id: uuid::Uuid = serde_json::from_value(bootstrap[field].clone()).unwrap();
+        assert_eq!(id.get_version_num(), 4);
+    }
+    assert_ne!(bootstrap["version"], bootstrap["lastVersion"]);
     assert_eq!(
         bootstrap["pingHostPortInfo"],
         json!([{"site":"lab","host":"127.0.0.1","port":41119}])
@@ -295,9 +300,28 @@ async fn android_guest_lobby_notifications_and_recovery() {
     );
     let exit = rpc(&r, "exitLobby", json!([resumed["sessionToken"]])).await;
     assert_eq!(exit["returnValue"]["state"], "menus");
+    let before = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs_f64();
     let ended = rpc(&r, "endSession", json!([resumed["sessionToken"]])).await;
     assert_eq!(ended["sessionToken"], "");
     assert_eq!(ended["returnValue"]["state"], "menus");
+    let after = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs_f64();
+    let snapshot = &ended["returnValue"];
+    assert!(snapshot["ttl"].is_f64());
+    assert_eq!(snapshot["ttl"].as_f64(), Some(5.0));
+    assert!(snapshot["expiry"].is_f64());
+    assert!((before + 600.0..=after + 600.0).contains(&snapshot["expiry"].as_f64().unwrap()));
+    assert_eq!(snapshot["lastVersion"], exit["returnValue"]["version"]);
+    assert_ne!(snapshot["version"], snapshot["lastVersion"]);
+    assert_ne!(
+        rpc(&r, "endSession", json!([resumed["sessionToken"]])).await["code"],
+        0
+    );
 }
 
 #[tokio::test]
@@ -836,6 +860,7 @@ async fn aral_offer_projection_is_private_read_only_and_survives_reopen() {
     assert_eq!(logout["returnValue"]["matchId"], offer["matchId"]);
     assert_eq!(logout["returnValue"]["state"], "playing");
     assert_eq!(logout["returnValue"]["port"], 7012);
+    assert!(logout["returnValue"]["ttl"].is_i64());
     assert_ne!(rpc(&r, "update", json!([tokens[5]])).await["code"], 0);
     let room = offer["matchId"].as_str().unwrap().parse().unwrap();
     let result = json!({"winner":0,"players":players[..6].iter().map(|p|(p.as_str().unwrap().to_owned(),json!({"team":0}))).collect::<serde_json::Map<_,_>>()});

@@ -533,12 +533,17 @@ async fn dispatch(s: &Platform, m: &str, params: &[Value]) -> Result<(String, Va
         m if content::Content::handles(m) => s.content_rpc(&profile, m, params).await?,
         "getLeaderboardData" => s.meta.ranking().await?,
         "endSession" => {
-            let snapshot = s.projected_state(&session, &profile).await?;
+            let mut snapshot = s.projected_state(&session, &profile).await?;
             spectator::leave(s, &session).await?;
             s.app.end_session(&session).await?;
             s.community
                 .observe_player(id, profile.name.clone(), false)
                 .await?;
+            if snapshot["state"] == "menus" {
+                snapshot["ttl"] = json!(5.0);
+                snapshot["expiry"] = json!(expiry_in(600));
+            }
+            s.stamp_state_version(id, &mut snapshot)?;
             return Ok((String::new(), snapshot));
         }
         _ => {
@@ -602,18 +607,7 @@ async fn dispatch(s: &Platform, m: &str, params: &[Value]) -> Result<(String, Va
         }
     }
     if rv.get("version").is_some() {
-        let mut versions = s.versions.lock().map_err(|_| Error::Internal)?;
-        let current = now();
-        if versions.len() >= 8192 {
-            versions.retain(|_, (_, expiry)| *expiry > current);
-        }
-        let version = Uuid::new_v4();
-        let previous = versions
-            .insert(id, (version, current + 3600))
-            .map(|p| p.0)
-            .unwrap_or_default();
-        rv["version"] = json!(version);
-        rv["lastVersion"] = json!(previous);
+        s.stamp_state_version(id, &mut rv)?;
     }
     Ok((s.tokens.sign(id, &session, Scope::Session)?, rv))
 }
@@ -648,6 +642,24 @@ fn state(p: &PlayerProfile) -> Value {
 }
 
 impl Platform {
+    /// Link consecutive RPC snapshots for this local player. The first
+    /// predecessor is a fresh local version when no prior response is known.
+    fn stamp_state_version(&self, id: Uuid, state: &mut Value) -> Result<(), Error> {
+        let mut versions = self.versions.lock().map_err(|_| Error::Internal)?;
+        let current = now();
+        if versions.len() >= 8192 {
+            versions.retain(|_, (_, expiry)| *expiry > current);
+        }
+        let version = Uuid::new_v4();
+        let previous = versions
+            .insert(id, (version, current + 3600))
+            .map(|p| p.0)
+            .unwrap_or_else(Uuid::new_v4);
+        state["version"] = json!(version);
+        state["lastVersion"] = json!(previous);
+        Ok(())
+    }
+
     async fn start_session(&self, session: &str, p: &PlayerProfile) -> Result<Value, Error> {
         let mut rv = self.projected_state(session, p).await?;
         let grant = self.grants.issue(session)?;
