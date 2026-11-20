@@ -1622,6 +1622,9 @@ impl Room {
         let events = self.world.step();
         self.solo_structure_snapshot.observe(&events);
         if legacy {
+            if self.world.winner.is_none() {
+                self.advance_absences();
+            }
             aral_death::flush(self, self.world.tick);
             aral_death::schedule(self, &events);
             aral_death::publish_approaches(self, &events);

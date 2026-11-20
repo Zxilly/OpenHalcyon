@@ -4,8 +4,20 @@ use halcyon_protocol::{ActorFlagChange, ActorFlags};
 #[derive(Default)]
 pub(super) struct Presence {
     world_channels: [bool; 2],
-    afk: bool,
+    absence: Absence,
 }
+
+#[derive(Clone, Copy, Default)]
+enum Absence {
+    #[default]
+    Present,
+    Afk {
+        since: u64,
+    },
+    Deserter,
+}
+
+const DESERTER_TICKS: u64 = 5 * 60 * halcyon_sim::TICK_HZ;
 
 impl Seat {
     fn presence_peer(&self) -> Option<&super::Peer> {
@@ -23,12 +35,30 @@ impl Room {
     }
 
     pub(super) fn absent_players(&self) -> Batch {
-        self.seats
-            .iter()
-            .enumerate()
-            .filter(|(_, seat)| seat.presence.afk)
-            .map(|(i, _)| self.presence_message(i, ActorFlagChange::Afk))
-            .collect()
+        let mut batch = Batch::new();
+        for (i, seat) in self.seats.iter().enumerate() {
+            if matches!(seat.presence.absence, Absence::Present) {
+                continue;
+            }
+            batch.push(self.presence_message(i, ActorFlagChange::Afk));
+            if matches!(seat.presence.absence, Absence::Deserter) {
+                batch.push(self.presence_message(i, ActorFlagChange::Deserter));
+            }
+        }
+        batch
+    }
+
+    /// Called after a running ARAL world advances on the simulation clock.
+    pub(super) fn advance_absences(&mut self) {
+        for i in 0..self.seats.len() {
+            let presence = &mut self.seats[i].presence;
+            if let Absence::Afk { since } = presence.absence
+                && self.world.tick.saturating_sub(since) >= DESERTER_TICKS
+            {
+                presence.absence = Absence::Deserter;
+                self.announce_presence(i, ActorFlagChange::Deserter);
+            }
+        }
     }
 
     /// The scoreboard addresses roster seats, including dead or out-of-sight heroes.
@@ -47,7 +77,9 @@ impl Room {
     pub(super) fn world_connected(&mut self, seat: usize, channel: usize) {
         let presence = &mut self.seats[seat].presence;
         presence.world_channels[channel] = true;
-        if std::mem::take(&mut presence.afk) && self.phase == RoomPhase::Running {
+        if !matches!(std::mem::take(&mut presence.absence), Absence::Present)
+            && self.phase == RoomPhase::Running
+        {
             self.announce_presence(seat, ActorFlagChange::Reconnected);
         }
         let snapshot = self.absent_players();
@@ -64,7 +96,9 @@ impl Room {
             && self.phase == RoomPhase::Running
             && !presence.world_channels.contains(&true)
         {
-            presence.afk = true;
+            presence.absence = Absence::Afk {
+                since: self.world.tick,
+            };
             self.announce_presence(seat, ActorFlagChange::Afk);
         }
     }
@@ -77,6 +111,38 @@ mod tests {
     use halcyon_platform::{MatchHost, Reservation};
     use tokio::sync::{mpsc, watch};
     use uuid::Uuid;
+
+    #[tokio::test]
+    async fn only_running_aral_ticks_promote_an_absent_player() {
+        for (mode, count, expected) in [("casual_aral", 6, true), ("ranked", 6, false)] {
+            let rooms = Rooms::new("127.0.0.1".parse().unwrap(), "127.0.0.1".into(), 1, None);
+            let id = Uuid::new_v4();
+            rooms
+                .reserve(Reservation {
+                    match_id: id,
+                    players: (0..count).map(|_| Uuid::new_v4()).collect(),
+                    teams: vec![],
+                    mode: mode.into(),
+                    talent_levels: vec![],
+                    difficulty: None,
+                })
+                .unwrap();
+            let shared = rooms.room(id).unwrap();
+            let mut room = shared.lock().unwrap();
+            room.phase = RoomPhase::Running;
+            room.world_connected(0, 0);
+            room.world_disconnected(0, 0);
+            room.world.tick = DESERTER_TICKS - 1;
+            room.tick();
+            assert_eq!(room.world.tick, DESERTER_TICKS);
+            assert_eq!(
+                room.absent_players()
+                    .iter()
+                    .any(|m| m.is(crate::Opcode::PlayerDeserter)),
+                expected
+            );
+        }
+    }
 
     #[tokio::test]
     async fn last_world_close_sets_afk_and_only_a_restored_world_clears_it() {
@@ -127,6 +193,27 @@ mod tests {
         let mut late = attach(&mut room, 2, 0, 4);
         room.world_connected(2, 0);
         assert_eq!(read(&mut late), ActorFlagChange::Afk);
+        room.world.tick = DESERTER_TICKS - 1;
+        room.advance_absences();
+        assert!(witness.try_recv().is_err());
+        room.world.tick += 1;
+        room.advance_absences();
+        assert_eq!(read(&mut witness), ActorFlagChange::Deserter);
+        assert_eq!(read(&mut late), ActorFlagChange::Deserter);
+        room.advance_absences();
+        assert!(witness.try_recv().is_err());
+        let mut later = attach(&mut room, 3, 0, 6);
+        room.world_connected(3, 0);
+        let Delivery::Private(batch) = later.try_recv().unwrap() else {
+            panic!()
+        };
+        assert_eq!(
+            batch
+                .iter()
+                .map(|m| m.actor_flags().unwrap().change)
+                .collect::<Vec<_>>(),
+            [ActorFlagChange::Afk, ActorFlagChange::Deserter]
+        );
         let _fresh = attach(&mut room, 0, 0, 5);
         room.detach(0, 0, 2);
         assert!(witness.try_recv().is_err());
@@ -135,6 +222,11 @@ mod tests {
         assert_eq!(read(&mut late), ActorFlagChange::Reconnected);
         assert!(room.absent_players().is_empty());
         room.world_connected(0, 0);
+        assert!(witness.try_recv().is_err());
+        room.detach(0, 0, 5);
+        assert_eq!(read(&mut witness), ActorFlagChange::Afk);
+        room.world.tick += DESERTER_TICKS - 1;
+        room.advance_absences();
         assert!(witness.try_recv().is_err());
     }
 }
