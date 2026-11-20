@@ -289,6 +289,37 @@ impl Actors<'_> {
     }
 }
 
+/// Dead heroes and buildings remain addressable. Minions and neutral units
+/// leave the ordered index before their ECS entities are despawned.
+pub(super) fn remove_defeated_units(
+    actors: bevy_ecs::prelude::Query<&Entity>,
+    mut meta: bevy_ecs::prelude::ResMut<ActorMetadata>,
+    mut commands: bevy_ecs::prelude::Commands,
+) {
+    let survives = |actor: &Entity| {
+        !matches!(actor.kind, super::Kind::Minion | super::Kind::Neutral) || actor.hp > 0.
+    };
+    if actors.iter().all(survives) {
+        return;
+    }
+    let ActorMetadata {
+        order,
+        gameplay_ids,
+        ..
+    } = &mut *meta;
+    gameplay_ids.clear();
+    order.retain(|&id| {
+        let actor = actors.get(id).expect("live actor handle");
+        if survives(actor) {
+            gameplay_ids.push(actor.id);
+            true
+        } else {
+            commands.entity(id).despawn();
+            false
+        }
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -296,6 +327,37 @@ mod tests {
 
     #[derive(Component)]
     struct Marker;
+    #[test]
+    fn cleanup_keeps_dead_heroes_and_removes_defeated_units_from_both_indexes() {
+        use bevy_ecs::system::RunSystemOnce;
+        let mut world = crate::World::new(2, 10);
+        let actors = &mut world.entities;
+        actors.truncate(1);
+        actors[0].hp = 0.;
+        let hero = actors[0].id;
+        for (id, kind, hp) in [
+            (hero + 1, crate::Kind::Minion, 0.),
+            (hero + 2, crate::Kind::Neutral, -1.),
+            (hero + 3, crate::Kind::Minion, 1.),
+        ] {
+            let mut unit = actors[0].clone();
+            (unit.id, unit.kind, unit.hp) = (id, kind, hp);
+            actors.push(unit);
+        }
+        let removed = [actors.meta.order[1], actors.meta.order[2]];
+        actors.with_scoped_schedule(|ecs| ecs.run_system_once(remove_defeated_units).unwrap());
+        assert_eq!(actors.meta.gameplay_ids, [hero, hero + 3]);
+        assert_eq!(
+            actors.iter().map(|e| e.id).collect::<Vec<_>>(),
+            [hero, hero + 3]
+        );
+        assert!(
+            removed
+                .into_iter()
+                .all(|handle| actors.ecs.get::<Entity>(handle).is_none())
+        );
+    }
+
     #[test]
     fn gameplay_index_checks_public_edits_sorted_rebuild_and_generation_reuse() {
         let mut world = crate::World::new(7, 2);

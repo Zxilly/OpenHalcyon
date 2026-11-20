@@ -1,4 +1,4 @@
-use super::{Actors, BotDiagnostics, Event, Kind, Room, RoomState, TICK_HZ};
+use super::{Actors, BotDiagnostics, Event, Room, RoomState, TICK_HZ};
 use bevy_ecs::prelude::{
     IntoScheduleConfigs, Mut, Res, Resource, Schedule, Schedules, World as Ecs,
 };
@@ -102,7 +102,12 @@ fn install(ecs: &mut Ecs) {
             begin,
             projectiles,
             fields,
-            (spawn, upkeep, actor_turns, cleanup)
+            (
+                spawn,
+                upkeep,
+                actor_turns,
+                super::actors::remove_defeated_units,
+            )
                 .chain()
                 .run_if(contested),
             milestones.run_if(milestone_due),
@@ -171,11 +176,6 @@ fn actor_turns(ecs: &mut Ecs) {
     with_room(ecs, |room, events, diagnostics| match diagnostics {
         Some(d) => room.resolve_actor_turns::<true>(events, Some(d)),
         None => room.resolve_actor_turns::<false>(events, None),
-    });
-}
-fn cleanup(ecs: &mut Ecs) {
-    Actors::scope(ecs, |mut actors| {
-        actors.retain(|e| !matches!(e.kind, Kind::Minion | Kind::Neutral) || e.hp > 0.)
     });
 }
 fn milestones(ecs: &mut Ecs) {
