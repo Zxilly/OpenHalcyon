@@ -130,6 +130,79 @@ pub(super) fn append_crystal_start(batch: &mut Batch, declared: &[Opening]) {
     }
 }
 
+/// The last complete three-stack snapshot was 124.905 simulated seconds after start.
+const LAST_INTACT_SAMPLE_TICK: u64 = 2498;
+
+#[derive(Default, Clone, Copy)]
+pub(super) struct SoloSnapshot {
+    intact: bool,
+}
+
+impl SoloSnapshot {
+    pub fn start(&mut self) {
+        self.intact = true;
+    }
+
+    pub fn advance(&mut self, tick: u64, events: &[halcyon_sim::Event]) {
+        if !self.intact {
+            return;
+        }
+        let structure_died = |event: &halcyon_sim::Event| match *event {
+            halcyon_sim::Event::Death { id, .. } => id
+                .checked_add(1499)
+                .and_then(SoloStructure::at_actor)
+                .is_some(),
+            _ => false,
+        };
+        self.intact = tick <= LAST_INTACT_SAMPLE_TICK && !events.iter().any(structure_died);
+    }
+
+    pub fn append(self, batch: &mut Batch) {
+        if !self.intact {
+            return;
+        }
+        let mut groups = Vec::new();
+        for message in batch.iter() {
+            let slot = match message.known_opcode() {
+                Some(Opcode::Snapshot) => message.body.get(116),
+                Some(Opcode::EntitySpawn) => message.body.get(745),
+                _ => continue,
+            };
+            let Some(profile) = slot.copied().and_then(SoloStructure::at_slot) else {
+                continue;
+            };
+            if message.body[8..12] == profile.actor().to_be_bytes()
+                && message.body[..4] == u32::from(profile.template()).to_be_bytes()
+            {
+                groups.push(Opening::solo(profile.slot()).expect("known Solo structure"));
+            }
+        }
+        groups.sort_unstable_by_key(|g| g.first_instance);
+        for group in groups {
+            batch.extend(group.messages());
+            if matches!(group.actor, 2006 | 2007) {
+                for prefix in crystal_start_prefixes()
+                    .filter(|p| p.target == group.actor)
+                    .take(2)
+                {
+                    batch.push(
+                        BuffApplication {
+                            prefix,
+                            extras: Some(BuffExtras {
+                                stacks: 3,
+                                ..EXTRAS
+                            }),
+                            suffix: &[],
+                        }
+                        .to_message()
+                        .expect("verified crystal snapshot"),
+                    );
+                }
+            }
+        }
+    }
+}
+
 pub(super) fn recordable(message: &Message) -> bool {
     if message.is(Opcode::EntityProp) {
         return matches!(message.fields(), Ok(Fields::BuffApplication(effect))
@@ -143,6 +216,18 @@ pub(super) fn recordable(message: &Message) -> bool {
         return false;
     };
     let p = effect.prefix;
+    if effect.extras
+        == Some(BuffExtras {
+            stacks: 3,
+            ..EXTRAS
+        })
+    {
+        return matches!(effect.suffix, [] | [0, 0, 0, 0])
+            && crystal_start_prefixes()
+                .filter(|row| row.target == p.target)
+                .take(2)
+                .any(|row| row == p);
+    }
     if p.duration_bits != DURATION
         || effect.extras != Some(EXTRAS)
         || !matches!(effect.suffix, [] | [0, 0, 0, 0])
@@ -163,6 +248,53 @@ pub(super) fn recordable(message: &Message) -> bool {
 mod tests {
     use super::*;
     use sha2::{Digest, Sha256};
+
+    #[test]
+    fn intact_solo_restore_matches_the_thirteen_late_sections_and_stops_after_loss() {
+        let declarations: Vec<_> = (0..36)
+            .rev()
+            .filter_map(SoloStructure::at_slot)
+            .map(|s| s.message(s.actor()))
+            .collect();
+        let mut current = SoloSnapshot::default();
+        let mut b = declarations.clone();
+        current.append(&mut b);
+        assert_eq!(b, declarations);
+        current.start();
+        current.advance(
+            LAST_INTACT_SAMPLE_TICK,
+            &[halcyon_sim::Event::Death { id: 1, killer: 2 }],
+        );
+        current.append(&mut b);
+        let effects = &b[declarations.len()..];
+        assert_eq!(effects.len(), 98);
+        let mut digest = Sha256::new();
+        for m in effects {
+            assert!(recordable(m));
+            digest.update(&m.body);
+        }
+        assert_eq!(
+            format!("{:x}", digest.finalize()),
+            "4760604432928414b12617ade328441d2631620326f06d4adfb5359cac0603e3"
+        );
+        for (tick, events) in [
+            (
+                2,
+                vec![halcyon_sim::Event::Death {
+                    id: 2005 - 1499,
+                    killer: 1,
+                }],
+            ),
+            (LAST_INTACT_SAMPLE_TICK + 1, vec![]),
+        ] {
+            let mut invalid = current;
+            invalid.advance(tick, &events);
+            invalid.advance(tick + 1, &[]);
+            let mut b = declarations.clone();
+            invalid.append(&mut b);
+            assert_eq!(b, declarations);
+        }
+    }
 
     #[test]
     fn crystal_start_only_addresses_newly_declared_crystals_in_capture_order() {

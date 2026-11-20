@@ -179,6 +179,7 @@ async fn client(
                 false,
             );
         }
+        r.solo_structure_snapshot.append(&mut b);
         let o = r.observers.get_mut(&grant).unwrap();
         o.scene = scene;
         o.view = view;

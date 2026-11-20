@@ -54,6 +54,20 @@ these instances again. Sections 1–13 retain the first 205 instance on each
 crystal with three stacks. The recording contains no associated removal or
 structure death from which to infer a later stack transition.
 
+All 13 later sections contain the same 98 extended structure applications in
+ascending first-instance order after the declarations. On both crystals, 178
+and 179 precede the three-stack 205 and 180 rows. The two rows retain the
+first instance of each definition: 6574/6575 on home and 6568/6569 on away
+(host equivalents 2176/2177 and 2170/2171). The SHA-256 of the 98 concatenated
+34-byte bodies is `d45a673c6ff58d5dc50d1ed48c7a8c3acee4b0b404ad81579be42332e71dcabe`.
+
+The host restores this state after actual structure declarations on native Solo
+reconnect, visibility entry and authorized observer attachment. It reuses the
+original room instances. The verified projection ends at the first structure
+death, including a node that later rebuilds, or after tick 2498 (the last
+sample at 130.021 s minus the 5.116 s start marker). The archive supplies
+neither post-destruction stacks nor a post-destruction cancellation.
+
 ### Mid-lane waves
 
 The Solo replay's `03EF` start marker is at replay time 5.116 s. Routes 1

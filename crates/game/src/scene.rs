@@ -180,6 +180,8 @@ pub(super) fn solo_opening(room: &mut Room, seat: usize) -> std::io::Result<Batc
     }
     if initial {
         out.extend(mode_variables::Opening::Solo.messages());
+    } else {
+        room.solo_structure_snapshot.append(&mut out);
     }
     out.extend(room.recommended_paths(Some(team)));
     Ok(out)
@@ -536,6 +538,7 @@ mod tests {
                 crate::wire_opcode::OpeningWorldClock
             );
             let mut hero_ids = Vec::new();
+            let mut restored = Vec::new();
             let mut variables = Vec::new();
             let mut full_structures = Vec::new();
             let mut compact_structures = Vec::new();
@@ -550,6 +553,17 @@ mod tests {
                 }
                 if m.is(crate::Opcode::Snapshot) {
                     compact_structures.push(u32::from_be_bytes(m.body[..4].try_into().unwrap()));
+                }
+                if m.is(crate::Opcode::EntityData) {
+                    assert!(crate::structure_effects::recordable(&m));
+                    let Fields::BuffApplication(effect) = m.fields().unwrap() else {
+                        panic!("expected structure state");
+                    };
+                    restored.push((
+                        effect.prefix.target,
+                        effect.prefix.definition,
+                        effect.extras.unwrap().stacks,
+                    ));
                 }
                 if m.is(crate::Opcode::ModifyGameModeVar) {
                     variables.push(m.clone());
@@ -590,6 +604,16 @@ mod tests {
             }
             if reconnect {
                 assert!(variables.is_empty());
+                assert_eq!(restored.len(), 49);
+                assert_eq!(
+                    restored
+                        .iter()
+                        .copied()
+                        .filter(|row| row.2 == 3)
+                        .collect::<Vec<_>>(),
+                    [(2006, 205, 3), (2006, 180, 3)]
+                );
+                assert!(!restored.iter().any(|row| row.0 == 2007));
                 assert!(hero_ids.len() < 10 && hero_ids.contains(&1500));
                 full_structures.sort_unstable();
                 assert_eq!(
@@ -781,6 +805,49 @@ mod tests {
                 );
             }
         }
+        // Bring the previously hidden away crystal into live vision and run two
+        // replication passes before the clock barrier on the same TCP stream.
+        {
+            let mut room = shared.lock().unwrap();
+            let away = room
+                .world
+                .entities
+                .iter()
+                .find(|e| e.id == 2007 - 1499)
+                .unwrap()
+                .position;
+            room.world.entities[0].position = away;
+            room.replicate(&[]);
+            room.replicate(&[]);
+        }
+        send(&mut socket, &cipher, Message::clock(88.0)).await;
+        let mut declared = false;
+        let mut crystal = Vec::new();
+        for m in read_until(&mut socket, &cipher, crate::wire_opcode::ClockSync).await {
+            if m.is(crate::Opcode::Snapshot) && m.body[8..12] == 2007_u32.to_be_bytes() {
+                declared = true;
+            }
+            if let Ok(Fields::BuffApplication(effect)) = m.fields()
+                && effect.prefix.target == 2007
+            {
+                assert!(declared);
+                assert!(m.is(crate::Opcode::EntityData));
+                crystal.push((
+                    effect.prefix.instance,
+                    effect.prefix.definition,
+                    effect.extras.unwrap().stacks,
+                ));
+            }
+        }
+        assert_eq!(
+            crystal,
+            [
+                (2040, 178, 1),
+                (2041, 179, 1),
+                (2170, 205, 3),
+                (2171, 180, 3)
+            ]
+        );
         drop(socket);
         tokio::time::timeout(Duration::from_secs(3), async {
             loop {

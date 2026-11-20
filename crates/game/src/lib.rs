@@ -142,6 +142,7 @@ struct Room {
     scene_views: Vec<tower_aggro::View>,
     ringo_attacks: ringo::AttackHistory,
     solo_slots: actor_slots::ActorSlots,
+    solo_structure_snapshot: structure_effects::SoloSnapshot,
     aral_slots: aral_spawn::WaveSlots,
     dead_actors: Vec<aral_death::Pending>,
     aral_announcements: aral::announcements::Announcements,
@@ -668,6 +669,7 @@ impl Rooms {
             ringo_attacks: Default::default(),
             scene_views: (0..req.players.len()).map(|_| Default::default()).collect(),
             solo_slots: actor_slots::ActorSlots::from_roster(&world.entities),
+            solo_structure_snapshot: Default::default(),
             aral_slots: Default::default(),
             dead_actors: Vec::new(),
             aral_announcements: Default::default(),
@@ -1527,9 +1529,12 @@ impl Room {
             return;
         }
         if self.world.tick == 0 && self.solo_scene() && self.seats[0].control_world {
+            self.solo_structure_snapshot.start();
             scene::initial_structures(self);
         }
         let events = self.world.step();
+        self.solo_structure_snapshot
+            .advance(self.world.tick, &events);
         if legacy {
             aral_death::flush(self, self.world.tick);
             aral_death::schedule(self, &events);
@@ -1695,6 +1700,7 @@ impl Room {
                     current.insert(e.id);
                 }
             }
+            self.solo_structure_snapshot.append(&mut out);
             if control_stream && !out.is_empty() {
                 for (i, (seat, actor)) in self.seats.iter().zip(&self.world.entities).enumerate() {
                     if usize::from(actor.team) == team
