@@ -174,15 +174,23 @@ impl Platform {
                 Ok(serde_json::to_value(Success { success: true })?)
             }
             RpcMethod::QueryPlayerInboxMessages => self.meta.transaction(move|tx|{
-                let mut q=tx.prepare("SELECT id,body,sender,created FROM ce_messages WHERE recipient=? AND dismissed=0 ORDER BY created,id LIMIT 100")?;
+                let mut q=tx.prepare("SELECT id,body,sender,created FROM ce_messages WHERE recipient=? AND dismissed=0 ORDER BY created,rowid,id LIMIT 100")?;
                 let entries=q.query_map([actor],|r|Ok(InboxMessage { message_id: r.get(0)?, message: r.get(1)?, player_uuid: r.get(2)?, time: r.get(3)? }))?.collect::<rusqlite::Result<Vec<_>>>()?;
                 Ok(serde_json::to_value(Inbox { pending_messages: !entries.is_empty(), messages: entries })?)
             }).await,
             RpcMethod::ProcessMessage | RpcMethod::DismissReliableMessage => {
                 let message=id(params,1,&["messageId","id"])?.to_string();
-                self.meta.transaction(move|tx|{
-                    if tx.execute("UPDATE ce_messages SET dismissed=1 WHERE recipient=? AND id=?",params![actor,message])? == 0 {
-                        return Err(Error::Unavailable("no such message"));
+                self.meta.with_behavior(rusqlite::TransactionBehavior::Immediate, move|tx|{
+                    let changed=tx.execute("UPDATE ce_messages SET dismissed=1 WHERE recipient=? AND id=? AND dismissed=0",params![actor,message])?;
+                    if changed == 0 {
+                        let already_dismissed:bool=tx.query_row(
+                            "SELECT EXISTS(SELECT 1 FROM ce_messages WHERE recipient=? AND id=? AND dismissed=1)",
+                            params![actor,message],
+                            |r|r.get(0),
+                        )?;
+                        if !already_dismissed {
+                            return Err(Error::Unavailable("no such message"));
+                        }
                     }
                     Ok(serde_json::to_value(Success { success: true })?)
                 }).await
@@ -190,15 +198,19 @@ impl Platform {
             RpcMethod::FriendNotify | RpcMethod::AskInGameFriendToPlay | RpcMethod::FriendReplyFromInGame => {
                 let target=id(params,1,&["playerUUID","targetUUID"])?.to_string();
                 let message=if m==RpcMethod::AskInGameFriendToPlay{m.as_str().to_owned()}else{text(params,2,&["message","text"],512)?};
-                self.meta.transaction(move|tx|{
+                let notice=serde_json::to_string(&InboxNotice { kind: "inbox_message" })?;
+                let sent=self.meta.with_behavior(rusqlite::TransactionBehavior::Immediate, move|tx|{
                     let friends:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM community_friends WHERE player=? AND friend=?)",params![actor,target],|r|r.get(0))?;
                     if !friends { return Err(Error::Community(halcyon_community::CommunityError::Forbidden)); }
                     let pending:u32=tx.query_row("SELECT COUNT(*) FROM ce_messages WHERE recipient=? AND dismissed=0",[&target],|r|r.get(0))?;
                     if pending>=100 { return Err(Error::Unavailable("inbox full")); }
                     let id=Uuid::new_v4();
                     tx.execute("INSERT INTO ce_messages(id,sender,recipient,body) VALUES(?,?,?,?)",params![id.to_string(),actor,target,message])?;
+                    tx.execute("INSERT INTO events(player,body) VALUES(?,?)",params![target,notice])?;
                     Ok(serde_json::to_value(MessageSent { message_id: id, success: true })?)
-                }).await
+                }).await?;
+                self.app.wake_notification_readers();
+                Ok(sent)
             }
             RpcMethod::StoreRecordPendingGift | RpcMethod::StoreCancelPendingGift => {
                 let target=id(params,1,&["recipient","playerUUID"])?;
@@ -331,6 +343,12 @@ struct WaitEstimate {
 struct AchievementScore {
     achievement_id: String,
     score: i64,
+}
+
+#[derive(Serialize)]
+struct InboxNotice {
+    #[serde(rename = "type")]
+    kind: &'static str,
 }
 
 #[derive(Serialize)]

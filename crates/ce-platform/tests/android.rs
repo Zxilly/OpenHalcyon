@@ -789,14 +789,14 @@ async fn cataloged_names_reach_rpc_handlers() {
             );
         }
     }
-    assert_eq!(names.len(), 155);
+    assert_eq!(names.len(), 156);
     assert_eq!(
         evidence,
         [
             ("android-callsite", 141),
             ("android-traffic", 14),
             ("archive-traffic", 30),
-            ("ios-candidate", 139),
+            ("ios-candidate", 140),
             ("local-spec", 144),
         ]
         .into()
