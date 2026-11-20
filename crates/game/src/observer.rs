@@ -384,9 +384,15 @@ impl Room {
         });
     }
     pub(super) fn publish_observer_actor(&mut self, actor: u32, batch: &Batch) {
+        self.publish_observer_actors(&[actor], batch);
+    }
+    pub(super) fn publish_observer_actors(&mut self, actors: &[u32], batch: &[Message]) {
         self.observers.retain(|_, o| {
             let Some(tx) = &o.live else { return true };
-            if o.scene.is_some() && o.view.knows(actor) && tx.try_send(batch.clone()).is_err() {
+            if o.scene.is_some()
+                && actors.iter().all(|&actor| o.view.knows(actor))
+                && tx.try_send(batch.to_vec()).is_err()
+            {
                 o.stop.send_replace(true);
                 return false;
             }
@@ -539,6 +545,87 @@ mod tests {
         r.visible[1].remove(&1);
         crate::native_abilities::publish_before_impacts(&mut r, &[cast]);
         assert!(seats[2].try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn chill_winds_observers_need_declarations_for_each_referenced_actor() {
+        let rooms = Rooms::new("127.0.0.1".parse().unwrap(), "127.0.0.1".into(), 1, None);
+        let id = Uuid::new_v4();
+        rooms
+            .reserve(Reservation {
+                talent_levels: Vec::new(),
+                match_id: id,
+                players: (0..6).map(|_| Uuid::new_v4()).collect(),
+                mode: halcyon_protocol::ce::KnownQueue::CasualAral.as_str().into(),
+                teams: vec![],
+                difficulty: None,
+            })
+            .unwrap();
+        let shared = rooms.room(id).unwrap();
+        let mut room = shared.lock().unwrap();
+        room.world.entities[0].type_id = halcyon_data::EntityTemplate::Reim.as_raw();
+        let mut caster = crate::messages::spawn(&room.world.entities[0], &room.picks, None);
+        caster.body[745] = 16;
+        let mut target = crate::messages::spawn(&room.world.entities[1], &room.picks, None);
+        target.body[745] = 19;
+
+        let mut viewers = Vec::new();
+        for (ready, declared) in [
+            (true, vec![caster.clone(), target.clone()]),
+            (true, vec![caster.clone()]),
+            (true, vec![target.clone()]),
+            (false, vec![caster, target]),
+        ] {
+            let (tx, rx) = mpsc::channel(4);
+            let mut view = tower_aggro::View::default();
+            view.declarations(&declared);
+            let scene = ready
+                .then(|| tower_aggro::ObserverScene::new(&room))
+                .flatten();
+            room.observers.insert(
+                Uuid::new_v4(),
+                Observer {
+                    view,
+                    scene,
+                    exit: None,
+                    viewer: Uuid::new_v4(),
+                    address: String::new(),
+                    stop: watch::channel(false).0,
+                    live: Some(tx),
+                    expires: Instant::now() + Duration::from_secs(60),
+                },
+            );
+            viewers.push(rx);
+        }
+
+        crate::native_abilities::publish_before_impacts(
+            &mut room,
+            &[Event::ChillWinds {
+                source: 1,
+                position: Position { x: 4., y: 2. },
+                heading: Some(1.),
+            }],
+        );
+        crate::native_abilities::publish(
+            &mut room,
+            &[Event::ChillWindsRoot {
+                source: 1,
+                target: 2,
+                instance: 700,
+            }],
+        );
+
+        for index in [0, 1] {
+            let release = viewers[index].try_recv().unwrap();
+            assert_eq!(release[0], Message::ability_target_used(1500, u32::MAX, 1));
+            assert_eq!(release[1].play_pfx_at_location().unwrap().actor, 1500);
+        }
+        let root = viewers[0].try_recv().unwrap();
+        let halcyon_protocol::Fields::BuffApplication(buff) = root[0].fields().unwrap() else {
+            panic!("expected root application");
+        };
+        assert_eq!((buff.prefix.source, buff.prefix.target), (1500, 1501));
+        assert!(viewers.iter_mut().all(|rx| rx.try_recv().is_err()));
     }
 
     #[tokio::test]

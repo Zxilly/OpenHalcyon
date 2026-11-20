@@ -31,7 +31,7 @@ pub(super) fn publish(room: &mut Room, source: u32, position: Position, heading:
         );
     }
     deliver_registered(room, source, team, None, &out);
-    room.publish_observers(&out);
+    room.publish_observer_actor(source, &out);
 }
 
 pub(super) fn root(room: &mut Room, source: u32, target: u32, instance: u32) {
@@ -68,7 +68,7 @@ pub(super) fn root(room: &mut Room, source: u32, target: u32, instance: u32) {
         Some(target),
         std::slice::from_ref(&buff),
     );
-    room.publish_observers(&[buff]);
+    room.publish_observer_actors(&[source, target], &[buff]);
 }
 pub(in crate::native_abilities) fn recordable_pfx(m: &Message) -> bool {
     m.play_pfx_at_location().is_some_and(|p| {
