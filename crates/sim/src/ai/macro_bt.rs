@@ -290,8 +290,13 @@ impl Room<'_> {
     /// avoiding O(allies) fallback scans when `observer` itself has direct sight.
     #[inline]
     pub(crate) fn hero_sees(&self, observer: &Entity, target: &Entity, dist: f32) -> bool {
-        if dist <= observer.stats.sight()
-            && self.combat_clear(observer, target)
+        let stealthed = target
+            .hero_kit
+            .as_deref()
+            .is_some_and(|k| self.tick < k.stealth_until);
+        if !stealthed
+            && dist <= observer.stats.sight()
+            && (self.map_5v5.is_some() || self.combat_clear(observer, target))
             && self
                 .native_navigation
                 .as_ref()

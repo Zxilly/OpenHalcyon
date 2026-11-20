@@ -66,6 +66,7 @@ impl Room<'_> {
         p.x.is_finite()
             && p.y.is_finite()
             && (self.layout.walkable(p)
+                || (self.map_5v5.is_some() && map_5v5::in_5v5_bounds(p))
                 || self
                     .native_navigation
                     .as_ref()
@@ -77,7 +78,7 @@ impl Room<'_> {
         if !self.is_position_walkable(to) {
             return false;
         }
-        if self.native_navigation.is_some() {
+        if self.native_navigation.is_some() || self.map_5v5.is_some() {
             return true;
         }
         match self.layout {
@@ -332,14 +333,14 @@ impl Room<'_> {
         let mut preferred = turret_pos;
         preferred.x += (if hero.team == 0 { -1.0 } else { 1.0 }) * (turret_range + 1.0);
         if self.is_position_walkable(preferred)
-            && self.layout.clear(hero.position, preferred)
+            && (self.map_5v5.is_some() || self.layout.clear(hero.position, preferred))
             && hero.position.dist(preferred) > 0.05
         {
             return preferred;
         }
         let radial = turret_pos.advance(home, turret_range + 1.25);
         if self.is_position_walkable(radial)
-            && self.layout.clear(hero.position, radial)
+            && (self.map_5v5.is_some() || self.layout.clear(hero.position, radial))
             && hero.position.dist(radial) > 0.05
         {
             return radial;
@@ -364,7 +365,7 @@ impl Room<'_> {
                     y: hero.position.y + (ry / mag) * 1.5,
                 };
                 if self.is_position_walkable(candidate)
-                    && self.layout.clear(hero.position, candidate)
+                    && (self.map_5v5.is_some() || self.layout.clear(hero.position, candidate))
                     && !self.point_inside_undefended_enemy_turret(hero.team, candidate)
                 {
                     return candidate;

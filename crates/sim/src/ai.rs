@@ -32,7 +32,7 @@ impl Room<'_> {
     }
 
     fn retreat_step(&self, e: &Entity, home: Position) -> Position {
-        let waypoint = if matches!(self.layout, Layout::SoloMid { .. }) {
+        let waypoint = if self.map_5v5.is_none() && matches!(self.layout, Layout::SoloMid { .. }) {
             solo_side::steer(e.position, home).unwrap_or(e.position)
         } else {
             home
@@ -71,6 +71,24 @@ impl Room<'_> {
         }
 
         if bb.mode == MacroMode::Retreat {
+            if self.map_5v5.is_some()
+                && !threat.in_enemy_turret_range
+                && threat.nearby_enemy_heroes == 0
+            {
+                if self
+                    .hero_5v5_status(e.id)
+                    .is_some_and(|s| s.recalling_until.is_some())
+                {
+                    return Command::Stop;
+                }
+                if bb.recall_started_tick.is_some()
+                    && e.status.stun_until <= self.tick
+                    && e.status.root_until <= self.tick
+                    && e.status.silence_until <= self.tick
+                {
+                    return Command::Recall;
+                }
+            }
             if let Some(t) = self.choose_target_modern(i, bb.mode, bb.focus_entity, threat) {
                 if let Some(cast) = self.hero_utility_cast_order(i, Some(t), threat, bb) {
                     return cast;
@@ -385,5 +403,113 @@ mod tests {
             elapsed < std::time::Duration::from_secs(10),
             "1000 VeryHard SoloMid ticks took {elapsed:?}"
         );
+    }
+
+    #[test]
+    fn cross_feature_61_hero_kits_active_items_5v5_recall_and_objectives_work_deterministically() {
+        // 1. Batch B HeroKit (61-hero kit + level-1 C) + AI utility + Command::ActivateItem (`Aegis`).
+        let run_hero_and_item = || {
+            let mut w = World::new(31, 0);
+            w.use_solo_mid_lane().unwrap();
+            w.set_bot_difficulty(Some(BotDifficulty::VeryHard));
+            w.enable_builtin_hero_kits();
+
+            w.entities[0].type_id = EntityTemplate::Malene.as_raw();
+            w.entities[0].ability_ranks = [1, 1, 0];
+            w.entities[0].energy = 400.0;
+            w.entities[0].max_energy = 400.0;
+            w.entities[0].hp = w.entities[0].max_hp * 0.50;
+            w.entities[0].status.slow_until = 50;
+            w.entities[0].status.slow_factor = 0.75;
+            w.entities[0].gold = 5000;
+            w.shop.enable_all_store_for_test();
+            w.purchase(1, BasicItem::Aegis).unwrap();
+            w.entities[0].position = Position { x: 17.0, y: 0.0 };
+            w.entities[1].position = Position { x: 20.0, y: 0.0 };
+            // Place a second enemy hero close by to guarantee high teamfight threat for Aegis.
+            w.entities[3].position = Position { x: 20.5, y: 0.5 };
+
+            let mut saw_cast = false;
+            let mut saw_item = false;
+            for _ in 0..20 {
+                for ev in w.step() {
+                    if matches!(ev, Event::Cast { source: 1, .. }) {
+                        saw_cast = true;
+                    }
+                    if matches!(
+                        ev,
+                        Event::ItemActivated {
+                            actor: 1,
+                            kind: BasicItem::Aegis,
+                            ..
+                        }
+                    ) {
+                        saw_item = true;
+                    }
+                }
+            }
+            (saw_cast, saw_item, w.state_digest())
+        };
+        let (cast_a, item_a, dig_a) = run_hero_and_item();
+        let (cast_b, item_b, dig_b) = run_hero_and_item();
+        assert!(cast_a, "expected AI + HeroKit cast for Batch B hero");
+        assert!(item_a, "expected AI + item_actives Aegis activation");
+        assert_eq!((cast_a, item_a, dig_a), (cast_b, item_b, dig_b));
+
+        // 2. 5v5 free-roam AI bounds (Blackclaw/Ghostwing pits) + safe Recall channel completion.
+        let mut w5 = World::new(37, 0);
+        w5.use_sovereigns_rise_5v5(None).unwrap();
+        w5.set_bot_difficulty(Some(BotDifficulty::VeryHard));
+        assert!(w5.is_position_walkable(Position { x: 2.85, y: -29.77 }));
+        assert!(w5.is_position_reachable(w5.entities[0].position, Position { x: -2.85, y: 29.77 }));
+        w5.entities[0].position = Position { x: -2.85, y: 29.77 };
+        w5.entities[0].hp = w5.entities[0].max_hp * 0.20;
+        let mut recall_started = false;
+        let mut recall_completed = false;
+        for _ in 0..200 {
+            let events = w5.step();
+            if w5
+                .hero_5v5_status(1)
+                .is_some_and(|st| st.recalling_until.is_some())
+            {
+                recall_started = true;
+            }
+            if events
+                .iter()
+                .any(|ev| matches!(ev, Event::RecallComplete { id: 1, .. }))
+            {
+                recall_completed = true;
+                break;
+            }
+        }
+        assert!(
+            recall_started,
+            "expected 5v5 bot to initiate Command::Recall"
+        );
+        assert!(
+            recall_completed,
+            "expected 5v5 bot to complete Command::Recall"
+        );
+        assert!(w5.hero_5v5_status(1).unwrap().homeguard_active);
+
+        // 3. Mode-agnostic objective template classification across 5v5, 3v3, and Blitz.
+        assert_eq!(
+            World::classify_objective(332),
+            Some(ObjectiveKind::Blackclaw)
+        );
+        assert_eq!(
+            World::classify_objective(331),
+            Some(ObjectiveKind::Ghostwing)
+        );
+        assert_eq!(World::classify_objective(363), Some(ObjectiveKind::Kraken));
+        assert_eq!(
+            World::classify_objective(362),
+            Some(ObjectiveKind::GoldMine)
+        );
+        assert_eq!(
+            World::classify_objective(361),
+            Some(ObjectiveKind::MinionMine)
+        );
+        assert_eq!(World::classify_objective(311), Some(ObjectiveKind::Sentry));
     }
 }

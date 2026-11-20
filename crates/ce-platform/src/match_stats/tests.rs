@@ -356,6 +356,10 @@ async fn diesel_settlement_and_federated_projection_drive_match_stats_and_quests
 
     let player_a = app_a.create_guest("Alpha".into()).await.unwrap();
     let opponent_a = app_a.create_guest("Bravo".into()).await.unwrap();
+    let mut aral_fillers = Vec::with_capacity(4);
+    for idx in 0..4 {
+        aral_fillers.push(app_a.create_guest(format!("Filler{idx}")).await.unwrap());
+    }
     let player_b = app_b.create_guest("Charlie".into()).await.unwrap();
 
     for (comm, guest, name) in [
@@ -386,7 +390,9 @@ async fn diesel_settlement_and_federated_projection_drive_match_stats_and_quests
     }
 
     // 1. Local match settlement via Diesel finish_match, including rollback & retry & duplicate checks.
-    for guest in [&player_a, &opponent_a] {
+    let mut aral_guests = vec![&player_a, &opponent_a];
+    aral_guests.extend(aral_fillers.iter());
+    for guest in &aral_guests {
         app_a
             .join(&guest.session_token, "aral_casual".into())
             .await
@@ -400,31 +406,41 @@ async fn diesel_settlement_and_federated_projection_drive_match_stats_and_quests
         .unwrap()
         .match_id
         .unwrap();
-    for guest in [&player_a, &opponent_a] {
+    for guest in &aral_guests {
         app_a
             .accept(&guest.session_token, local_room)
             .await
             .unwrap();
     }
 
+    let mut local_players = std::collections::BTreeMap::from([
+        (
+            player_a.player_id,
+            HeroVictory {
+                hero: "Ringo",
+                victory: &Value::Bool(true),
+            },
+        ),
+        (
+            opponent_a.player_id,
+            HeroVictory {
+                hero: "Catherine",
+                victory: &Value::Bool(false),
+            },
+        ),
+    ]);
+    for guest in &aral_fillers {
+        local_players.insert(
+            guest.player_id,
+            HeroVictory {
+                hero: "Ringo",
+                victory: &Value::Bool(false),
+            },
+        );
+    }
     let local_outcome = serde_json::to_value(HeroOutcome {
         reason: "completed",
-        players: std::collections::BTreeMap::from([
-            (
-                player_a.player_id,
-                HeroVictory {
-                    hero: "Ringo",
-                    victory: &Value::Bool(true),
-                },
-            ),
-            (
-                opponent_a.player_id,
-                HeroVictory {
-                    hero: "Catherine",
-                    victory: &Value::Bool(false),
-                },
-            ),
-        ]),
+        players: local_players,
     })
     .unwrap();
     let conflicting_outcome = serde_json::to_value(HeroOutcome {
@@ -474,7 +490,7 @@ async fn diesel_settlement_and_federated_projection_drive_match_stats_and_quests
         app_a.finish_match(local_room, conflicting_outcome.clone()),
         Err(PlatformError::Conflict(_))
     ));
-    for guest in [&player_a, &opponent_a] {
+    for guest in &aral_guests {
         app_a
             .acknowledge_post_match(&guest.session_token)
             .await

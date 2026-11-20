@@ -84,7 +84,16 @@ impl Room<'_> {
         let mut best_cast: Option<(f32, u8, Command)> = None;
         for classified in &kit.primary {
             let slot = classified.slot;
-            if hero.ability_ranks[slot.idx()] == 0 || hero.cooldown[slot.idx()] > self.tick {
+            let kit_recast = hero
+                .hero_kit
+                .as_deref()
+                .is_some_and(|k| self.tick < k.recast_until[slot.idx()]);
+            let allow_lvl1_ult = slot == AbilitySlot::C
+                && self.hero_kit_enabled()
+                && crate::hero_kits::kit_spec(hero.type_id).is_some_and(|s| s.ult_from_level_one);
+            if (hero.ability_ranks[slot.idx()] == 0 && !allow_lvl1_ult)
+                || (hero.cooldown[slot.idx()] > self.tick && !kit_recast)
+            {
                 continue;
             }
             let Some(target) =

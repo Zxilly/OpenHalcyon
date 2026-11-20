@@ -1792,8 +1792,14 @@ impl Room<'_> {
                         Command::MoveTo(goal) => self.entities[i].position.dist(goal),
                         _ => 0.0,
                     };
-                    if let Some(item_cmd) =
-                        self.best_executable_active_item(i, &threat, bb.mode, move_goal_dist)
+                    let quiet_recall = matches!(cmd, Command::Recall)
+                        || (self
+                            .hero_5v5_status(self.entities[i].id)
+                            .is_some_and(|s| s.recalling_until.is_some())
+                            && threat.nearby_enemy_heroes == 0);
+                    if !quiet_recall
+                        && let Some(item_cmd) =
+                            self.best_executable_active_item(i, &threat, bb.mode, move_goal_dist)
                         && self.order(i, item_cmd).is_ok()
                     {
                         events.append(&mut self.pending_item_events);
