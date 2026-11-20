@@ -2,6 +2,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     fmt,
     ops::Range,
+    sync::{Arc, OnceLock},
 };
 
 #[path = "navmesh_route.rs"]
@@ -14,8 +15,8 @@ const TILE_HEADER_BYTES: usize = 100;
 const MAX_VERTICES_PER_POLYGON: usize = 6;
 const EDGE_TOLERANCE: f64 = 1e-6;
 
-#[derive(Debug)]
-pub struct NavMeshError(&'static str);
+#[derive(Clone, Copy, Debug)]
+pub struct NavMeshError(pub(crate) &'static str);
 
 impl fmt::Display for NavMeshError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -36,25 +37,26 @@ pub struct NavMesh {
     origin: Vertex,
     tile_width: f32,
     tile_depth: f32,
-    tiles: BTreeMap<(i32, i32), Tile>,
+    pub(crate) tiles: BTreeMap<(i32, i32), Tile>,
     graph: route::Graph,
+    polyanya: OnceLock<std::result::Result<Arc<polyanya::Mesh>, NavMeshError>>,
 }
 
 #[derive(Debug)]
-struct Tile {
+pub(crate) struct Tile {
     climb: f32,
     bounds: [Vertex; 2],
-    vertices: Vec<Vertex>,
-    polygons: Vec<Polygon>,
+    pub(crate) vertices: Vec<Vertex>,
+    pub(crate) polygons: Vec<Polygon>,
     detail: Vec<Triangle>,
 }
 
 #[derive(Debug)]
-struct Polygon {
+pub(crate) struct Polygon {
     row: u16,
     neighbors: [u16; MAX_VERTICES_PER_POLYGON],
-    vertices: [u16; MAX_VERTICES_PER_POLYGON],
-    count: usize,
+    pub(crate) vertices: [u16; MAX_VERTICES_PER_POLYGON],
+    pub(crate) count: usize,
     detail: Range<usize>,
 }
 
@@ -190,6 +192,7 @@ impl NavMesh {
             tile_depth,
             tiles: BTreeMap::new(),
             graph: route::Graph::default(),
+            polyanya: OnceLock::new(),
         };
         let mut references = BTreeSet::new();
         for _ in 0..count {
@@ -225,6 +228,25 @@ impl NavMesh {
 
     pub fn tile_count(&self) -> usize {
         self.tiles.len()
+    }
+
+    /// Returns the shared cached `polyanya::Mesh` built lazily from the Detour ground tiles.
+    pub fn polyanya(&self) -> std::result::Result<&Arc<polyanya::Mesh>, NavMeshError> {
+        self.polyanya
+            .get_or_init(|| crate::navmesh_polyanya::build_polyanya_mesh(self).map(Arc::new))
+            .as_ref()
+            .map_err(|e| *e)
+    }
+
+    /// Computes an any-angle path via `polyanya::Mesh` after projecting endpoints onto ground.
+    pub fn polyanya_route(
+        &self,
+        start: [f32; 2],
+        destination: [f32; 2],
+        radius: f32,
+    ) -> Option<Vec<[f32; 2]>> {
+        let mesh = self.polyanya().ok()?;
+        crate::navmesh_polyanya::polyanya_route(self, mesh, start, destination, radius)
     }
 
     /// Query the horizontal game coordinates (X/Z) and return the native Y.

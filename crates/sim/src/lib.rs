@@ -44,6 +44,7 @@ mod score;
 mod shop;
 mod solo_route;
 mod solo_side;
+mod steering;
 mod world_rules;
 pub use world_rules::WorldRules;
 mod sigil;
@@ -591,6 +592,7 @@ pub struct RoomState {
     abilities: std::sync::Arc<AbilityBook>,
     shop: shop::Shop,
     nav_budget: u8,
+    steering_override: Option<bool>,
     native_navigation: Option<Box<native_navigation::NativeNavigation>>,
     native_camps: Option<Vec<native_camps::NativeCampUnit>>,
     first_blood: bool,
@@ -680,6 +682,9 @@ impl Room<'_> {
         if let Some(difficulty) = self.bot_difficulty {
             hash.update(difficulty.as_str().as_bytes());
         }
+        if self.steering_active() {
+            self.entities.steering_digest(&mut hash);
+        }
         for (i, e) in self.entities.iter().enumerate() {
             serde_json::to_writer(
                 &mut hash,
@@ -710,6 +715,19 @@ impl Room<'_> {
     }
     pub fn set_bot_difficulty(&mut self, difficulty: Option<halcyon_data::BotDifficulty>) {
         self.bot_difficulty = difficulty;
+    }
+
+    /// Explicitly enable or disable deterministic Layer-2 ORCA steering.
+    /// By default, steering is active on `SoloMid`, `Aral`, and native maps,
+    /// while `Layout::Validation` stays on the legacy baseline unless opted in.
+    pub fn set_steering(&mut self, enabled: bool) {
+        self.steering_override = Some(enabled);
+    }
+
+    fn steering_active(&self) -> bool {
+        self.steering_override.unwrap_or_else(|| {
+            !matches!(self.layout, Layout::Validation) || self.native_navigation.is_some()
+        })
     }
 
     fn basic_attack_interval(&self, e: &Entity) -> u64 {
@@ -861,6 +879,7 @@ impl Room<'_> {
                 shop: rules.shop.clone(),
                 pending_item_events: Vec::new(),
                 nav_budget: 0,
+                steering_override: None,
                 native_navigation: None,
                 native_camps: None,
                 first_blood: false,
@@ -1078,8 +1097,12 @@ impl Room<'_> {
     }
 
     fn walk(&mut self, i: usize, p: Position, events: &mut Vec<Event>) {
+        let steering_active = self.steering_active();
+        if steering_active {
+            self.entities.prepare_steering_if_needed(self.state.tick);
+        }
         let state = &mut *self.state;
-        let e = &mut self.entities[i];
+        let (e, steering) = self.entities.get_mut_with_steering(i);
         if e.stats.speed <= 0. || e.status.root_until > state.tick {
             return;
         }
@@ -1136,40 +1159,81 @@ impl Room<'_> {
         } else {
             1.
         };
-        let pos = e.position.advance(
-            waypoint,
-            (e.stats.speed
-                + skedaddle::speed(&e.status, state.tick)
-                + e.status
-                    .water_speed_bonus
-                    .filter(|_| e.status.water_speed_until > state.tick)
-                    .unwrap_or(0.)
-                + e.status
-                    .captain_effects
-                    .read()
-                    .pursuit
-                    .filter(|p| state.tick < p.speed_until)
-                    .map_or(0., |p| p.speed)
-                + twirl.map_or(0., |(b, r)| b.move_speed[r])
-                + e.status.sigil_speed
-                    * e.status.sigil_speed_until.saturating_sub(state.tick) as f32
-                    / e.status.sigil_speed_duration.max(1) as f32
-                + e.item_stats.boot_speed
-                + if state.tick < e.item_stats.sprint_until {
-                    e.item_stats.sprint_speed
+        let move_speed = (e.stats.speed
+            + skedaddle::speed(&e.status, state.tick)
+            + e.status
+                .water_speed_bonus
+                .filter(|_| e.status.water_speed_until > state.tick)
+                .unwrap_or(0.)
+            + e.status
+                .captain_effects
+                .read()
+                .pursuit
+                .filter(|p| state.tick < p.speed_until)
+                .map_or(0., |p| p.speed)
+            + twirl.map_or(0., |(b, r)| b.move_speed[r])
+            + e.status.sigil_speed * e.status.sigil_speed_until.saturating_sub(state.tick) as f32
+                / e.status.sigil_speed_duration.max(1) as f32
+            + e.item_stats.boot_speed
+            + if state.tick < e.item_stats.sprint_until {
+                e.item_stats.sprint_speed
+            } else {
+                0.
+            })
+            * (1. + e.item_stats.move_speed_amp)
+            * pace;
+        let step_dist = move_speed / TICK_HZ as f32;
+        let old_pos = e.position;
+        let mut ground_ok = |pt: Position| -> bool {
+            if let Some(map) = &state.native_navigation {
+                map.has_ground(pt)
+            } else {
+                state.layout.walkable(pt)
+            }
+        };
+        let pos = if steering_active {
+            let candidate = steering.steer(
+                steering::SteerRequest {
+                    id: e.id,
+                    position: old_pos,
+                    waypoint,
+                    speed: move_speed,
+                    radius: steering::agent_radius(e),
+                    responsibility: steering::agent_responsibility(e),
+                    attack_target: match e.order {
+                        Command::Attack(id) => Some(id),
+                        _ => None,
+                    },
+                    attack_range: e.stats.range,
+                },
+                &mut ground_ok,
+            );
+            if ground_ok(candidate) {
+                candidate
+            } else {
+                let unsteered = old_pos.advance(waypoint, step_dist);
+                if ground_ok(unsteered) {
+                    unsteered
+                } else if let Some(map) = &state.native_navigation {
+                    map.project_within(candidate, 0.5)
+                        .or_else(|| map.project_within(unsteered, 0.5))
+                        .unwrap_or(old_pos)
                 } else {
-                    0.
-                })
-                * (1. + e.item_stats.move_speed_amp)
-                * pace
-                / TICK_HZ as f32,
-        );
-        if pos != e.position {
+                    old_pos
+                }
+            }
+        } else {
+            old_pos.advance(waypoint, step_dist)
+        };
+        if pos != old_pos {
+            if steering_active {
+                steering.record_move(e.id, old_pos, pos);
+            }
             if e.type_id == EntityTemplate::Reim.as_raw()
                 || (e.type_id == EntityTemplate::Lyra.as_raw()
                     && e.mobile_bulwark_bonus == Some(5.0))
             {
-                e.status.motion_heading = Some((pos.y - e.position.y).atan2(pos.x - e.position.x));
+                e.status.motion_heading = Some((pos.y - old_pos.y).atan2(pos.x - old_pos.x));
             }
             if e.kind == Kind::Minion {
                 let followed = match e.order {
@@ -1260,6 +1324,10 @@ impl Room<'_> {
         mut diagnostics: Option<&mut BotDiagnostics>,
     ) {
         let n = self.entities.len();
+        let steering_active = self.steering_active();
+        if steering_active {
+            self.entities.begin_steering_step(self.state.tick);
+        }
         // Rotate priority when actions coincide. Stable indices and the match seed determine all ties.
         let first = (self.tick.wrapping_add(self.seed) % n as u64) as usize;
         for offset in 0..n {
@@ -1294,14 +1362,18 @@ impl Room<'_> {
                     e.status = Default::default();
                     e.path = Default::default();
                     e.position = self.state.layout.home(e);
+                    let respawned_id = e.id;
                     if let Some(map) = &mut self.state.native_navigation {
-                        map.forget_route(e.id);
+                        map.forget_route(respawned_id);
                     }
-                    events.push(Event::Spawn { id: e.id });
+                    events.push(Event::Spawn { id: respawned_id });
                     events.push(Event::Respawn {
-                        id: e.id,
+                        id: respawned_id,
                         position: e.position,
                     });
+                    if steering_active {
+                        self.entities.forget_steering(respawned_id);
+                    }
                 }
                 continue;
             }
@@ -1713,6 +1785,9 @@ impl Room<'_> {
                     }
                 }
             }
+        }
+        if steering_active {
+            self.entities.end_steering_step();
         }
     }
 }

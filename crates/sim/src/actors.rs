@@ -35,6 +35,7 @@ pub(super) struct ActorMetadata {
     gameplay_ids: Vec<u32>,
     scan: Option<(usize, bevy_ecs::query::QueryState<&'static Entity>)>,
     pub(super) spell_jobs: Vec<Handle>,
+    pub(super) steering: crate::steering::SteeringState,
 }
 impl Default for Actors<'static> {
     fn default() -> Self {
@@ -45,6 +46,7 @@ impl Default for Actors<'static> {
                 gameplay_ids: Vec::with_capacity(50),
                 scan: None,
                 spell_jobs: Vec::new(),
+                steering: Default::default(),
             })),
         }
     }
@@ -143,6 +145,45 @@ impl Actors<'_> {
         if self.ecs.get::<LastSeenTarget>(actor).is_some() {
             self.ecs.entity_mut(actor).remove::<LastSeenTarget>();
         }
+    }
+
+    pub(super) fn begin_steering_step(&mut self, tick: u64) {
+        let meta = &mut *self.meta;
+        meta.steering
+            .begin_step(&self.ecs, &meta.order, &meta.gameplay_ids, tick);
+    }
+
+    pub(super) fn end_steering_step(&mut self) {
+        self.meta.steering.end_step();
+    }
+
+    pub(super) fn prepare_steering_if_needed(&mut self, tick: u64) {
+        let meta = &mut *self.meta;
+        if !meta.steering.in_step() {
+            meta.steering
+                .prepare(&self.ecs, &meta.order, &meta.gameplay_ids, tick);
+        }
+    }
+
+    pub(super) fn get_mut_with_steering(
+        &mut self,
+        i: usize,
+    ) -> (&mut Entity, &mut crate::steering::SteeringState) {
+        let handle = self.meta.order[i];
+        let entity = self
+            .ecs
+            .get_mut::<Entity>(handle)
+            .expect("live actor handle")
+            .into_inner();
+        (entity, &mut self.meta.steering)
+    }
+
+    pub(super) fn forget_steering(&mut self, id: u32) {
+        self.meta.steering.forget(id);
+    }
+
+    pub(super) fn steering_digest(&self, hash: &mut impl std::io::Write) {
+        self.meta.steering.digest(hash);
     }
 }
 

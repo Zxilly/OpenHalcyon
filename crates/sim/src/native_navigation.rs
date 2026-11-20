@@ -48,6 +48,7 @@ struct Route {
 
 pub(super) struct NativeNavigation {
     walk: Arc<NavMesh>,
+    polyanya: Option<Arc<halcyon_data::polyanya::Mesh>>,
     search: RouteSearch,
     routes: [Route; 10],
     brushes: Vec<Brush>,
@@ -82,8 +83,10 @@ fn contains(area: &[[[f32; 2]; 3]], p: Position) -> bool {
 
 impl NativeNavigation {
     fn build(walk: Arc<NavMesh>, level: &halcyon_data::LevelLayout, aral: bool) -> Self {
+        let polyanya = walk.polyanya().ok().cloned();
         Self {
             walk,
+            polyanya,
             search: RouteSearch::default(),
             routes: std::array::from_fn(|_| Route::default()),
             brushes: level
@@ -143,6 +146,14 @@ impl NativeNavigation {
             .map(point)
     }
 
+    pub(super) fn has_ground(&self, p: Position) -> bool {
+        self.walk.height_at(p.x, p.y).is_some()
+    }
+
+    pub(super) fn project_within(&self, p: Position, radius: f32) -> Option<Position> {
+        self.walk.nearest_ground(horizontal(p), radius).map(point)
+    }
+
     pub(super) fn ground_segment(&self, start: Position, end: Position) -> bool {
         self.walk.ground_segment(horizontal(start), horizontal(end))
     }
@@ -187,20 +198,43 @@ impl NativeNavigation {
             cache.goal = Some(goal);
             cache.retry_at = tick + 10;
             cache.steps = self
-                .walk
-                .route_with(
-                    horizontal(actor.position),
-                    horizontal(goal),
-                    PROJECT_RADIUS,
-                    &mut self.search,
-                )
+                .polyanya
+                .as_deref()
+                .and_then(|poly| {
+                    halcyon_data::navmesh_polyanya::polyanya_route(
+                        &self.walk,
+                        poly,
+                        horizontal(actor.position),
+                        horizontal(goal),
+                        PROJECT_RADIUS,
+                    )
+                })
+                .or_else(|| {
+                    self.walk.route_with_graph(
+                        horizontal(actor.position),
+                        horizontal(goal),
+                        PROJECT_RADIUS,
+                        &mut self.search,
+                    )
+                })
                 .into_iter()
                 .flatten()
                 .map(|[x, y]| Position { x, y })
                 .collect();
         }
-        while cache.steps.front().is_some_and(|p| *p == actor.position) {
-            cache.steps.pop_front();
+        while let Some(&front) = cache.steps.front() {
+            if front == actor.position || actor.position.dist(front) <= 1e-4 {
+                cache.steps.pop_front();
+            } else if let Some(&second) = cache.steps.get(1)
+                && actor.position.dist(front) <= 0.45
+                && self
+                    .walk
+                    .ground_segment(horizontal(actor.position), horizontal(second))
+            {
+                cache.steps.pop_front();
+            } else {
+                break;
+            }
         }
         cache.steps.front().copied()
     }
@@ -423,6 +457,129 @@ mod tests {
                 start.dist(end) > 4. && end.dist(goal) < 1.5,
                 "{aral}: {start:?} {end:?}"
             );
+        }
+    }
+
+    #[test]
+    #[ignore = "requires the local base delivery and server-data supplement"]
+    fn polyanya_and_dodgy_steering_navigate_f002_a001_f003_crowd_deterministically() {
+        let base = std::env::var_os("HALCYON_DELIVERY").unwrap();
+        let extra = std::path::PathBuf::from(std::env::var_os("HALCYON_DATA_EXTRA").unwrap());
+        let data = GameData::load_with_extra(base, Some(&extra)).unwrap();
+        let maps = data.native_maps().unwrap();
+
+        let run_crowd = |aral: bool| {
+            let mut world = World::from_data(7, 6, &data).unwrap();
+            if aral {
+                world.use_six_human_roster().unwrap();
+                world.use_aral_lane().unwrap();
+            } else {
+                world.use_solo_mid_lane().unwrap();
+            }
+            world.install_native_navigation(maps).unwrap();
+            assert!(
+                world
+                    .native_navigation
+                    .as_ref()
+                    .and_then(|n| n.polyanya.as_ref())
+                    .is_some()
+            );
+
+            let team0: Vec<usize> = world
+                .entities
+                .iter()
+                .enumerate()
+                .filter(|(_, e)| e.kind == Kind::Hero && e.team == 0)
+                .map(|(i, _)| i)
+                .take(3)
+                .collect();
+            for idx in 0..world.entities.len() {
+                let e = &mut world.entities[idx];
+                if e.kind == Kind::Hero && !team0.contains(&idx) {
+                    e.hp = 0.0;
+                }
+            }
+            let (starts, goal) = if aral {
+                (
+                    [
+                        Position { x: -64.0, y: 0.0 },
+                        Position { x: -64.4, y: 0.25 },
+                        Position { x: -64.4, y: -0.25 },
+                    ],
+                    Position { x: -24.0, y: 0.0 },
+                )
+            } else {
+                (
+                    [
+                        Position { x: -66.0, y: 0.0 },
+                        Position { x: -66.4, y: 0.25 },
+                        Position { x: -66.4, y: -0.25 },
+                    ],
+                    Position { x: -38.0, y: 0.0 },
+                )
+            };
+            let ids: Vec<u32> = team0
+                .iter()
+                .enumerate()
+                .map(|(k, &idx)| {
+                    world.entities[idx].position = starts[k];
+                    world.entities[idx].id
+                })
+                .collect();
+            for &id in &ids {
+                world.command(id, Command::MoveTo(goal)).unwrap();
+            }
+
+            for _ in 0..240 {
+                world.step();
+                let walk = &world.native_navigation.as_ref().unwrap().walk;
+                for &idx in &team0 {
+                    let p = world.entities[idx].position;
+                    assert!(walk.height_at(p.x, p.y).is_some(), "off navmesh: {p:?}");
+                }
+            }
+
+            let positions: Vec<Position> = team0
+                .iter()
+                .map(|&idx| world.entities[idx].position)
+                .collect();
+            for (k, p) in positions.iter().enumerate() {
+                assert!(
+                    p.dist(goal) < starts[k].dist(goal) - 10.0,
+                    "aral={aral} hero {k} failed to progress: {p:?}"
+                );
+            }
+            for a in 0..positions.len() {
+                for b in (a + 1)..positions.len() {
+                    let d = positions[a].dist(positions[b]);
+                    assert!(d > 0.45, "aral={aral} crowd stacked at {d}");
+                }
+            }
+            world.state_digest()
+        };
+
+        for aral in [false, true] {
+            let d1 = run_crowd(aral);
+            let d2 = run_crowd(aral);
+            assert_eq!(d1, d2, "non-deterministic digest for aral={aral}");
+        }
+
+        // Verify F003 (ARAL 5v5) NavMesh caches polyanya and produces deterministic ground routes.
+        let f003_path =
+            "build://Environment/F003/navMeshes/ARAL_5v5_W_Platforms_andMidJungle.navmesh";
+        let f003_nav = maps.mesh(f003_path).unwrap().unwrap();
+        let f003_poly = maps.polyanya_mesh(f003_path).unwrap().unwrap();
+        assert!(Arc::ptr_eq(&f003_poly, f003_nav.polyanya().unwrap()));
+        let r1 = f003_nav
+            .polyanya_route([-90.0, 0.0], [0.0, 8.0], 8.0)
+            .unwrap();
+        let r2 = f003_nav
+            .polyanya_route([-90.0, 0.0], [0.0, 8.0], 8.0)
+            .unwrap();
+        assert_eq!(r1, r2);
+        assert!(!r1.is_empty());
+        for pt in r1 {
+            assert!(f003_nav.height_at(pt[0], pt[1]).is_some());
         }
     }
 }

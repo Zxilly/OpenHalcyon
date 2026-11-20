@@ -230,6 +230,17 @@ impl NativeMaps {
             .transpose()
     }
 
+    /// Returns the shared cached `polyanya::Mesh` for `source_path`, building it lazily on first query.
+    pub fn polyanya_mesh(&self, source_path: &str) -> io::Result<Option<Arc<polyanya::Mesh>>> {
+        let Some(mesh) = self.mesh(source_path)? else {
+            return Ok(None);
+        };
+        mesh.polyanya()
+            .cloned()
+            .map(Some)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))
+    }
+
     pub fn solo(&self) -> Option<&LevelLayout> {
         self.levels.get("SovereignsRiseLevel_Base")
     }

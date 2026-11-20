@@ -16,6 +16,7 @@ mod item_bonuses;
 pub mod items;
 mod native_maps;
 mod navmesh;
+pub mod navmesh_polyanya;
 pub use polyanya;
 pub mod reference;
 pub use native_maps::{
