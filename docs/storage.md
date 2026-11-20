@@ -8,6 +8,8 @@ Account lookup uses a typed Diesel query. Account linking validates the session 
 
 Composite lobby profiles and matchmaking code continue to use the existing connection to the same underlying database. Their authorization checks stay in their own transactions until the relevant lobby tables migrate together. There is one authoritative copy of each identity table.
 
+The community crate uses typed Diesel queries for friends, presence, parties, guilds, equipment, inventory, quests and redemptions. Native party mutations share this implementation. Membership changes, invalidation of old invites and insertion into the platform notification outbox commit in one transaction. Provider receipts still share a legacy transaction with reward grants. The matchmaking and spectator services likewise keep their party locks and authorization reads inside the transactions that consume them.
+
 The storage connection enables foreign keys and a five-second busy timeout. The platform owns its WAL setup. Schema adoption runs under an immediate transaction so concurrent startups contend at the writer lock before deciding which migration to run. Two private in-memory platform instances use different shared-memory URIs. Within an instance the legacy and ORM connections open the same URI.
 
 The peer-play crate owns a separate Diesel journal for hosted matches, pending results and cross-instance chat delivery. The migration adopts the existing tables and delivery indexes. Allocating the next sender sequence and inserting the intended recipients run under one immediate transaction. Acknowledgements and recovery use the same journal after restart.
@@ -18,6 +20,7 @@ Build and test with the repository's normal bundled SQLite toolchain.
 
 ```powershell
 cargo test --locked -p halcyon-platform --test accounts
+cargo test --locked -p halcyon-community -p halcyon-ce-platform
 cargo test --locked -p halcyon-peer-play --lib journal
 cargo test --locked -p halcyon-federation
 cargo tree -i libsqlite3-sys

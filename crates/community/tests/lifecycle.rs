@@ -562,3 +562,86 @@ async fn quint_state_is_owner_only_and_updates_atomically() {
     assert_eq!(updated["lobbyOpen"], true);
     assert_eq!(updated["mode"], "practice");
 }
+
+#[tokio::test]
+async fn opens_existing_community_rows_and_retains_privacy_and_receipt_idempotence() {
+    let dir = tempfile::tempdir().unwrap();
+    let database = dir.path().join("existing.sqlite");
+    let owner = Uuid::new_v4();
+    let guest = Uuid::new_v4();
+    let group = Uuid::new_v4();
+    let grant = Uuid::new_v4();
+    let prior = rusqlite::Connection::open(&database).unwrap();
+    prior
+        .execute_batch(include_str!("fixtures/legacy_identity_and_inventory.sql"))
+        .unwrap();
+    for (player, handle) in [(owner, "OriginalOwner"), (guest, "OriginalGuest")] {
+        prior
+            .execute(
+                "INSERT INTO community_players(id,handle,online) VALUES (?1,?2,1)",
+                (player.to_string(), handle),
+            )
+            .unwrap();
+    }
+    prior
+        .execute(
+            "INSERT INTO community_groups(id,kind,name,code) VALUES (?1,'party','Old party','OLD')",
+            [group.to_string()],
+        )
+        .unwrap();
+    prior.execute(
+        "INSERT INTO community_members(group_id,kind,player,role) VALUES (?1,'party',?2,'owner')",
+        (group.to_string(),owner.to_string()),
+    ).unwrap();
+    prior
+        .execute_batch("INSERT INTO community_items VALUES ('badge', 'icon', 'Old badge');")
+        .unwrap();
+    prior
+        .execute(
+            "INSERT INTO community_inventory VALUES (?1,'badge',2)",
+            [owner.to_string()],
+        )
+        .unwrap();
+    prior
+        .execute(
+            "INSERT INTO community_item_grants VALUES (?1,?2,'badge',2)",
+            (grant.to_string(), owner.to_string()),
+        )
+        .unwrap();
+    drop(prior);
+
+    let store = Community::open(&database).unwrap();
+    assert_eq!(
+        store.resolve_handle("originalowner".into()).await.unwrap(),
+        owner
+    );
+    assert!(matches!(
+        store.execute(guest, Action::GroupById { group }).await,
+        Err(CommunityError::Forbidden)
+    ));
+    assert_eq!(
+        store
+            .execute(owner, Action::GroupById { group })
+            .await
+            .unwrap()["name"],
+        "Old party"
+    );
+    let second = Community::open(&database).unwrap();
+    let (a, b) = tokio::join!(
+        store.award_item(grant, owner, "badge".into(), 2),
+        second.award_item(grant, owner, "badge".into(), 2),
+    );
+    a.unwrap();
+    b.unwrap();
+    assert_eq!(
+        store.execute(owner, Action::Inventory).await.unwrap()["items"][0]["count"],
+        2
+    );
+    assert_eq!(
+        store.execute(guest, Action::Inventory).await.unwrap()["items"]
+            .as_array()
+            .unwrap()
+            .len(),
+        0
+    );
+}

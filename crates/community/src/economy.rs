@@ -1,10 +1,10 @@
-use crate::views::{Inventory, InventoryItem, Items, Quest, QuestStatus, enum_column};
+pub(crate) mod store;
+
 use rusqlite::{OptionalExtension, Transaction, params};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use uuid::Uuid;
 
-use crate::{Action, Community, CommunityError, Result, ensure_player, optional_row, validated};
+use crate::{Community, CommunityError, Result, ensure_player, validated};
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -25,7 +25,7 @@ pub struct QuestDefinition {
     pub reward: Option<(String, u32)>,
 }
 
-fn key(value: String) -> Result<String> {
+pub(crate) fn key(value: String) -> Result<String> {
     let value = validated(value, 80, true)?;
     if !value
         .bytes()
@@ -42,24 +42,8 @@ impl Community {
         let id = key(definition.id)?;
         let slot = key(definition.slot)?;
         let name = validated(definition.name, 64, true)?;
-        self.run(move |tx| {
-            tx.execute(
-                "INSERT INTO community_items(id,slot,name) VALUES(?,?,?) ON CONFLICT DO NOTHING",
-                params![id, slot, name],
-            )?;
-            let same: bool = tx.query_row(
-                "SELECT slot=? AND name=? FROM community_items WHERE id=?",
-                params![slot, name, id],
-                |row| row.get(0),
-            )?;
-            if !same {
-                return Err(CommunityError::Conflict(
-                    "item id has a different definition",
-                ));
-            }
-            Ok(())
-        })
-        .await
+        self.orm_transaction(move |db| store::define_item(db, &id, &slot, &name))
+            .await
     }
 
     pub async fn define_quest(&self, definition: QuestDefinition) -> Result<()> {
@@ -82,25 +66,21 @@ impl Community {
             Some((item, count)) => (Some(key(item)?), Some(count)),
             None => (None, None),
         };
-        self.run(move |tx| {
-            if let Some(item) = &item {
-                item_slot(tx, item)?;
-            }
-            tx.execute(
-                "INSERT INTO community_quests(id,category,title,goal,skippable,reward_item,reward_count)
-                 VALUES(?,?,?,?,?,?,?) ON CONFLICT DO NOTHING",
-                params![id, category, title, goal, skippable, item, count],
-            )?;
-            let same: bool = tx.query_row(
-                "SELECT category=? AND title=? AND goal=? AND skippable=? AND reward_item IS ? AND reward_count IS ?
-                 FROM community_quests WHERE id=?",
-                params![category, title, goal, skippable, item, count, id], |row| row.get(0),
-            )?;
-            if !same {
-                return Err(CommunityError::Conflict("quest id has a different definition"));
-            }
-            Ok(())
-        }).await
+        self.orm_transaction(move |db| {
+            store::define_quest(
+                db,
+                &store::QuestRow {
+                    id,
+                    category,
+                    title,
+                    goal: i64::from(goal),
+                    skippable,
+                    reward_item: item,
+                    reward_count: count.map(i64::from),
+                },
+            )
+        })
+        .await
     }
 
     /// Grant an earned item exactly once per trusted grant id.
@@ -111,7 +91,7 @@ impl Community {
         item: String,
         count: u32,
     ) -> Result<()> {
-        self.run(move |tx| Self::award_item_in_transaction(tx, grant, player, &item, count))
+        self.orm_transaction(move |db| store::award_item(db, grant, player, &item, count))
             .await
     }
 
@@ -162,46 +142,19 @@ impl Community {
         if amount == 0 {
             return Err(CommunityError::Invalid("progress must be positive"));
         }
-        self.run(move |tx| {
-            let event = event.to_string();
-            let player = player.to_string();
-            ensure_player(tx, &player)?;
-            let goal: u32 = optional_row(tx.query_row(
-                "SELECT goal FROM community_quests WHERE id=?", [&quest], |row| row.get(0),
-            ), "quest does not exist")?;
-            let inserted = tx.execute(
-                "INSERT INTO community_quest_progress(id,player,quest,amount) VALUES(?,?,?,?) ON CONFLICT DO NOTHING",
-                params![event, player, quest, amount],
-            )?;
-            if inserted == 0 {
-                let same: bool = tx.query_row(
-                    "SELECT player=? AND quest=? AND amount=? FROM community_quest_progress WHERE id=?",
-                    params![player, quest, amount, event], |row| row.get(0),
-                )?;
-                if !same {
-                    return Err(CommunityError::Conflict("progress event id is already in use"));
-                }
-            } else {
-                tx.execute(
-                    "INSERT INTO community_quest_states(player,quest,progress) VALUES(?1,?2,min(?3,?4))
-                     ON CONFLICT(player,quest) DO UPDATE SET progress=min(progress + ?3,?4) WHERE state='active'",
-                    params![player, quest, amount, goal],
-                )?;
-            }
-            Ok(())
-        }).await
+        self.orm_transaction(move |db| store::record_progress(db, event, player, &quest, amount))
+            .await
     }
 }
 
 fn item_slot(tx: &Transaction<'_>, item: &str) -> Result<String> {
-    optional_row(
-        tx.query_row(
-            "SELECT slot FROM community_items WHERE id=?",
-            [item],
-            |row| row.get(0),
-        ),
-        "item does not exist",
+    tx.query_row(
+        "SELECT slot FROM community_items WHERE id=?",
+        [item],
+        |row| row.get(0),
     )
+    .optional()?
+    .ok_or(CommunityError::Missing("item does not exist"))
 }
 
 pub(super) fn add_item(tx: &Transaction<'_>, player: &str, item: &str, count: u32) -> Result<()> {
@@ -216,161 +169,4 @@ pub(super) fn add_item(tx: &Transaction<'_>, player: &str, item: &str, count: u3
         ));
     }
     Ok(())
-}
-
-fn inventory(tx: &Transaction<'_>, player: &str) -> Result<Value> {
-    let mut query = tx.prepare(
-        "SELECT i.item, d.name, d.slot, i.count, e.item IS NOT NULL
-         FROM community_inventory i JOIN community_items d ON d.id=i.item
-         LEFT JOIN community_equipment e ON e.player=i.player AND e.item=i.item AND e.slot=d.slot
-         WHERE i.player=? ORDER BY d.slot,i.item",
-    )?;
-    let items = query
-        .query_map([player], |row| {
-            Ok(InventoryItem {
-                id: row.get(0)?,
-                name: row.get(1)?,
-                slot: row.get(2)?,
-                count: row.get(3)?,
-                equipped: row.get(4)?,
-            })
-        })?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    let equipped = items
-        .iter()
-        .filter(|item| item.equipped)
-        .map(|item| (item.slot.clone(), item.id.clone()))
-        .collect();
-    Ok(serde_json::to_value(Inventory { items, equipped })?)
-}
-
-fn quests(tx: &Transaction<'_>, player: &str, category: Option<String>) -> Result<Value> {
-    let category = category.map(key).transpose()?;
-    let mut query = tx.prepare(
-        "SELECT q.id,q.category,q.title,q.goal,q.skippable,q.reward_item,q.reward_count,
-                coalesce(s.progress,0),coalesce(s.state,'active')
-         FROM community_quests q LEFT JOIN community_quest_states s ON s.quest=q.id AND s.player=?1
-         WHERE ?2 IS NULL OR q.category=?2 ORDER BY q.id",
-    )?;
-    let items = query
-        .query_map(params![player, category], |row| {
-            Ok(Quest {
-                id: row.get(0)?,
-                category: row.get(1)?,
-                title: row.get(2)?,
-                goal: row.get(3)?,
-                skippable: row.get(4)?,
-                reward_item: row.get(5)?,
-                reward_count: row.get(6)?,
-                progress: row.get(7)?,
-                state: enum_column(row, 8)?,
-            })
-        })?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    Ok(serde_json::to_value(Items { items })?)
-}
-
-struct QuestState {
-    goal: u32,
-    skippable: bool,
-    reward: Option<(String, u32)>,
-    progress: u32,
-    state: QuestStatus,
-}
-
-fn quest_state(tx: &Transaction<'_>, player: &str, quest: &str) -> Result<QuestState> {
-    optional_row(tx.query_row(
-        "SELECT q.goal,q.skippable,q.reward_item,q.reward_count,coalesce(s.progress,0),coalesce(s.state,'active')
-         FROM community_quests q LEFT JOIN community_quest_states s ON s.quest=q.id AND s.player=?1 WHERE q.id=?2",
-        params![player, quest], |row| {
-            Ok(QuestState {
-                goal:row.get(0)?, skippable:row.get(1)?,
-                reward:row.get::<_, Option<String>>(2)?.zip(row.get::<_, Option<u32>>(3)?),
-                progress:row.get(4)?, state:enum_column(row,5)?,
-            })
-        },
-    ), "quest does not exist")
-}
-
-fn equip(tx: &Transaction<'_>, player: &str, slot: String, item: Option<String>) -> Result<()> {
-    let slot = key(slot)?;
-    if let Some(item) = item {
-        let item = key(item)?;
-        if item_slot(tx, &item)? != slot {
-            return Err(CommunityError::Invalid("item belongs to a different slot"));
-        }
-        let owned = tx
-            .query_row(
-                "SELECT count FROM community_inventory WHERE player=? AND item=?",
-                params![player, item],
-                |row| row.get::<_, u32>(0),
-            )
-            .optional()?
-            .unwrap_or(0);
-        if owned == 0 {
-            return Err(CommunityError::Forbidden);
-        }
-        tx.execute(
-            "INSERT INTO community_equipment(player,slot,item) VALUES(?,?,?)
-             ON CONFLICT(player,slot) DO UPDATE SET item=excluded.item",
-            params![player, slot, item],
-        )?;
-    } else {
-        tx.execute(
-            "DELETE FROM community_equipment WHERE player=? AND slot=?",
-            params![player, slot],
-        )?;
-    }
-    Ok(())
-}
-
-pub(crate) fn execute(tx: &Transaction<'_>, player: &str, action: Action) -> Result<Value> {
-    match action {
-        Action::Inventory => inventory(tx, player),
-        Action::Equip { slot, item } => {
-            equip(tx, player, slot, item)?;
-            inventory(tx, player)
-        }
-        Action::SetLoadout { slots } => {
-            if slots.len() > 64 {
-                return Err(CommunityError::Invalid("too many equipment slots"));
-            }
-            for (slot, item) in slots {
-                equip(tx, player, slot, item)?;
-            }
-            inventory(tx, player)
-        }
-        Action::Quests { category } => quests(tx, player, category),
-        Action::ClaimQuest { quest } => {
-            let quest = key(quest)?;
-            let state = quest_state(tx, player, &quest)?;
-            if state.state != QuestStatus::Claimed {
-                if state.state != QuestStatus::Active || state.progress < state.goal {
-                    return Err(CommunityError::Conflict("quest is not claimable"));
-                }
-                tx.execute(
-                    "UPDATE community_quest_states SET state='claimed' WHERE player=? AND quest=?",
-                    params![player, quest],
-                )?;
-                if let Some((item, count)) = state.reward {
-                    add_item(tx, player, &item, count)?;
-                }
-            }
-            quests(tx, player, None)
-        }
-        Action::SkipQuest { quest } => {
-            let quest = key(quest)?;
-            let state = quest_state(tx, player, &quest)?;
-            if !state.skippable || state.state == QuestStatus::Claimed {
-                return Err(CommunityError::Conflict("quest cannot be skipped"));
-            }
-            tx.execute(
-                "INSERT INTO community_quest_states(player,quest,state) VALUES(?,?,'skipped')
-                 ON CONFLICT(player,quest) DO UPDATE SET state='skipped'",
-                params![player, quest],
-            )?;
-            quests(tx, player, None)
-        }
-        _ => Err(CommunityError::Invalid("invalid inventory action")),
-    }
 }

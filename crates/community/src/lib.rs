@@ -1,13 +1,18 @@
 mod economy;
 mod exchange;
 mod groups;
+mod orm;
 pub mod queue;
+mod schema;
 mod social;
 pub mod views;
 
 pub use economy::{ItemDefinition, QuestDefinition};
 pub use exchange::Recipe;
-pub use groups::{GroupKind, GroupSettings, Role};
+pub use groups::{
+    GroupKind, GroupSettings, Role,
+    store::{PartySnapshot, party_invited, party_snapshot},
+};
 pub use social::may_spectate;
 
 use std::{
@@ -15,7 +20,9 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use rusqlite::{Connection, OptionalExtension, Transaction};
+use diesel::SqliteConnection;
+use diesel_migrations::MigrationHarness;
+use rusqlite::{Connection, Transaction};
 use serde_json::Value;
 use uuid::Uuid;
 
@@ -158,87 +165,26 @@ pub enum Action {
 }
 
 #[derive(Clone)]
-pub struct Community(Arc<Mutex<Connection>>);
+pub struct Community(Arc<Mutex<Connections>>);
+
+struct Connections {
+    legacy: Connection,
+    orm: SqliteConnection,
+}
 
 impl Community {
     /// Can share a SQLite path with the platform. Only community tables are used.
     pub fn open(path: &Path) -> Result<Self> {
-        let db = Connection::open(path)?;
-        db.execute_batch(
-            "PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;
-             CREATE TABLE IF NOT EXISTS community_players (
-                id TEXT PRIMARY KEY, handle TEXT NOT NULL, online INTEGER NOT NULL,
-                invisible INTEGER NOT NULL DEFAULT 0, receive_presence INTEGER NOT NULL DEFAULT 1,
-                status TEXT NOT NULL DEFAULT '', last_seen INTEGER NOT NULL DEFAULT (unixepoch())
-             );
-             CREATE INDEX IF NOT EXISTS community_handles ON community_players(handle COLLATE NOCASE);
-             CREATE TABLE IF NOT EXISTS community_friend_requests (
-                requester TEXT NOT NULL REFERENCES community_players(id),
-                recipient TEXT NOT NULL REFERENCES community_players(id),
-                created INTEGER NOT NULL DEFAULT (unixepoch()),
-                PRIMARY KEY(requester, recipient)
-             );
-             CREATE TABLE IF NOT EXISTS community_friends (
-                player TEXT NOT NULL REFERENCES community_players(id),
-                friend TEXT NOT NULL REFERENCES community_players(id),
-                favorite INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(player, friend)
-             );
-             CREATE TABLE IF NOT EXISTS community_groups (
-                id TEXT PRIMARY KEY, kind TEXT NOT NULL, name TEXT NOT NULL,
-                tag TEXT NOT NULL DEFAULT '', motto TEXT NOT NULL DEFAULT '',
-                mode TEXT NOT NULL DEFAULT '', invite_only INTEGER NOT NULL DEFAULT 1,
-                lobby_open INTEGER NOT NULL DEFAULT 0, code TEXT UNIQUE,
-                created INTEGER NOT NULL DEFAULT (unixepoch())
-             );
-             CREATE TABLE IF NOT EXISTS community_members (
-                group_id TEXT NOT NULL REFERENCES community_groups(id) ON DELETE CASCADE,
-                kind TEXT NOT NULL, player TEXT NOT NULL REFERENCES community_players(id),
-                role TEXT NOT NULL, side INTEGER NOT NULL DEFAULT 0,
-                PRIMARY KEY(group_id, player), UNIQUE(kind, player)
-             );
-             CREATE TABLE IF NOT EXISTS community_invites (
-                group_id TEXT NOT NULL REFERENCES community_groups(id) ON DELETE CASCADE,
-                player TEXT NOT NULL REFERENCES community_players(id),
-                inviter TEXT NOT NULL REFERENCES community_players(id),
-                created INTEGER NOT NULL DEFAULT (unixepoch()),
-                PRIMARY KEY(group_id, player)
-             );
-             CREATE TABLE IF NOT EXISTS community_items (
-                id TEXT PRIMARY KEY, slot TEXT NOT NULL, name TEXT NOT NULL
-             );
-             CREATE TABLE IF NOT EXISTS community_inventory (
-                player TEXT NOT NULL REFERENCES community_players(id),
-                item TEXT NOT NULL REFERENCES community_items(id), count INTEGER NOT NULL CHECK(count > 0),
-                PRIMARY KEY(player, item)
-             );
-             CREATE TABLE IF NOT EXISTS community_equipment (
-                player TEXT NOT NULL REFERENCES community_players(id),
-                slot TEXT NOT NULL, item TEXT NOT NULL REFERENCES community_items(id),
-                PRIMARY KEY(player, slot)
-             );
-             CREATE TABLE IF NOT EXISTS community_item_grants (
-                id TEXT PRIMARY KEY, player TEXT NOT NULL REFERENCES community_players(id),
-                item TEXT NOT NULL REFERENCES community_items(id), count INTEGER NOT NULL
-             );
-             CREATE TABLE IF NOT EXISTS community_quests (
-                id TEXT PRIMARY KEY, category TEXT NOT NULL, title TEXT NOT NULL,
-                goal INTEGER NOT NULL CHECK(goal > 0), skippable INTEGER NOT NULL,
-                reward_item TEXT REFERENCES community_items(id),
-                reward_count INTEGER
-             );
-             CREATE TABLE IF NOT EXISTS community_quest_states (
-                player TEXT NOT NULL REFERENCES community_players(id),
-                quest TEXT NOT NULL REFERENCES community_quests(id), progress INTEGER NOT NULL DEFAULT 0,
-                state TEXT NOT NULL DEFAULT 'active', PRIMARY KEY(player, quest)
-             );
-             CREATE TABLE IF NOT EXISTS community_quest_progress (
-                id TEXT PRIMARY KEY, player TEXT NOT NULL REFERENCES community_players(id),
-                quest TEXT NOT NULL REFERENCES community_quests(id), amount INTEGER NOT NULL
-             );",
-        )?;
-        queue::initialize(&db)?;
-        exchange::initialize(&db)?;
-        Ok(Self(Arc::new(Mutex::new(db))))
+        let address = halcyon_storage::DatabaseAddress::new(path);
+        let db = Connection::open(address.path())?;
+        db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")?;
+        let mut orm = address.connect().map_err(orm::connection_error)?;
+        orm.immediate_transaction(|db| {
+            db.run_pending_migrations(orm::MIGRATIONS)
+                .map_err(orm::connection_error)?;
+            Ok::<_, CommunityError>(())
+        })?;
+        Ok(Self(Arc::new(Mutex::new(Connections { legacy: db, orm }))))
     }
 
     async fn run<T, F>(&self, work: F) -> Result<T>
@@ -249,10 +195,27 @@ impl Community {
         let db = self.0.clone();
         tokio::task::spawn_blocking(move || {
             let mut db = db.lock().map_err(|_| CommunityError::WorkerUnavailable)?;
-            let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+            let tx = db
+                .legacy
+                .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
             let value = work(&tx)?;
             tx.commit()?;
             Ok(value)
+        })
+        .await
+        .map_err(|_| CommunityError::WorkerUnavailable)?
+    }
+
+    /// Run a trusted integration operation inside a single Diesel transaction.
+    pub async fn orm_transaction<T, F>(&self, work: F) -> Result<T>
+    where
+        F: FnOnce(&mut SqliteConnection) -> Result<T> + Send + 'static,
+        T: Send + 'static,
+    {
+        let db = self.0.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut db = db.lock().map_err(|_| CommunityError::WorkerUnavailable)?;
+            db.orm.immediate_transaction(work)
         })
         .await
         .map_err(|_| CommunityError::WorkerUnavailable)?
@@ -269,18 +232,18 @@ impl Community {
 
     /// Execute actions as an already-authenticated player.
     pub async fn execute(&self, actor: Uuid, action: Action) -> Result<Value> {
-        self.run(move |tx| Self::execute_in_transaction(tx, actor, action))
+        self.orm_transaction(move |db| Self::execute_in_transaction(db, actor, action))
             .await
     }
 
-    /// Apply an authenticated action alongside other writes in the same database transaction.
+    /// Apply an authenticated action alongside integration writes using the same transaction.
     pub fn execute_in_transaction(
-        tx: &Transaction<'_>,
+        db: &mut SqliteConnection,
         actor: Uuid,
         action: Action,
     ) -> Result<Value> {
         let actor = actor.to_string();
-        ensure_player(tx, &actor)?;
+        orm::ensure_player(db, &actor)?;
         match action {
             Action::Friends
             | Action::RequestFriend { .. }
@@ -289,14 +252,14 @@ impl Community {
             | Action::FavoriteFriend { .. }
             | Action::SetInvisible { .. }
             | Action::SetReceivePresence { .. }
-            | Action::SetPresence { .. } => social::execute(tx, &actor, action),
+            | Action::SetPresence { .. } => social::execute(db, &actor, action),
             Action::Inventory
             | Action::Equip { .. }
             | Action::SetLoadout { .. }
             | Action::Quests { .. }
             | Action::ClaimQuest { .. }
-            | Action::SkipQuest { .. } => economy::execute(tx, &actor, action),
-            _ => groups::execute(tx, &actor, action),
+            | Action::SkipQuest { .. } => economy::store::execute(db, &actor, action),
+            _ => groups::store::execute(db, &actor, action),
         }
     }
 }
@@ -321,8 +284,4 @@ fn validated(value: String, max: usize, required: bool) -> Result<String> {
         return Err(CommunityError::Invalid("invalid text"));
     }
     Ok(value)
-}
-
-fn optional_row<T>(result: rusqlite::Result<T>, message: &'static str) -> Result<T> {
-    result.optional()?.ok_or(CommunityError::Missing(message))
 }

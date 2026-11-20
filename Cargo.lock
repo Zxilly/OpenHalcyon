@@ -1121,6 +1121,7 @@ dependencies = [
  "async-trait",
  "axum",
  "chrono",
+ "diesel",
  "ed25519-dalek",
  "futures-util",
  "halcyon-chat",
@@ -1165,13 +1166,17 @@ dependencies = [
 name = "halcyon-community"
 version = "1.0.0-draft.1"
 dependencies = [
+ "diesel",
+ "diesel_migrations",
  "halcyon-protocol",
+ "halcyon-storage",
  "rusqlite",
  "serde",
  "serde_json",
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
+ "tracing",
  "uuid",
 ]
 

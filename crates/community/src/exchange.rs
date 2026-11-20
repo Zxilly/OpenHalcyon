@@ -1,6 +1,14 @@
-use crate::{Community, CommunityError, Result, economy::add_item, ensure_player};
+use crate::{
+    Community, CommunityError, GroupKind, Result,
+    economy::store::{add_item, held},
+    orm::ensure_player,
+    schema::{
+        community_equipment as equipment, community_inventory as inventory,
+        community_members as members, community_redemptions as receipts,
+    },
+};
+use diesel::{dsl::exists, prelude::*};
 use halcyon_protocol::ce::RpcMethod;
-use rusqlite::{Connection, OptionalExtension, params};
 use serde::Deserialize;
 use std::collections::BTreeMap;
 use uuid::Uuid;
@@ -34,15 +42,6 @@ impl Recipe {
     }
 }
 
-pub(super) fn initialize(db: &Connection) -> Result<()> {
-    db.execute_batch("CREATE TABLE IF NOT EXISTS community_redemptions(
-        player TEXT NOT NULL REFERENCES community_players(id),
-        operation TEXT NOT NULL, sku TEXT NOT NULL, request BLOB NOT NULL,
-        PRIMARY KEY(player, request));
-        CREATE INDEX IF NOT EXISTS redemptions_by_offer ON community_redemptions(player,operation,sku);")?;
-    Ok(())
-}
-
 impl Community {
     /// Spend and grant atomically. An exact transport retry has no side effects.
     pub async fn redeem(
@@ -74,62 +73,103 @@ impl Community {
                 "guild join bonus must have a one-claim limit",
             ));
         }
-        self.run(move |tx| {
+        self.orm_transaction(move |db| {
             let player = player.to_string();
-            ensure_player(tx, &player)?;
-            if matches!(method, RpcMethod::GuildRedeemChest | RpcMethod::GuildCollectJoinBonus) {
-                let member = tx.query_row(
-                    "SELECT EXISTS(SELECT 1 FROM community_members WHERE player=? AND kind='guild')",
-                    [&player], |row| row.get::<_, bool>(0),
-                )?;
+            ensure_player(db, &player)?;
+            if matches!(
+                method,
+                RpcMethod::GuildRedeemChest | RpcMethod::GuildCollectJoinBonus
+            ) {
+                let member = diesel::select(exists(
+                    members::table
+                        .filter(members::player.eq(&player))
+                        .filter(members::kind.eq(GroupKind::Guild.as_str())),
+                ))
+                .get_result::<bool>(db)?;
                 if !member {
                     return Err(CommunityError::Forbidden);
                 }
             }
-            let prior: Option<(bool, String, String)> = tx.query_row(
-                "SELECT request=?1, operation, sku FROM community_redemptions
-                 WHERE player=?2 AND request IN (?1,?3) ORDER BY (request=?1) DESC LIMIT 1",
-                params![request, player, previous], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).optional()?;
-            if let Some((current, old_operation, old_sku)) = prior {
+            let request = request.as_slice();
+            let prior_query = |receipt| {
+                receipts::table
+                    .find((&player, receipt))
+                    .select((receipts::operation, receipts::sku))
+            };
+            let mut prior = prior_query(request)
+                .first::<(String, String)>(db)
+                .optional()?
+                .map(|row| (true, row));
+            if prior.is_none()
+                && let Some(previous) = previous.as_ref()
+            {
+                prior = prior_query(previous.as_slice())
+                    .first::<(String, String)>(db)
+                    .optional()?
+                    .map(|row| (false, row));
+            }
+            if let Some((current, (old_operation, old_sku))) = prior {
                 if old_operation != operation || old_sku != sku {
                     return Err(CommunityError::Conflict("receipt already used"));
                 }
-                if !current {
-                    tx.execute("UPDATE community_redemptions SET request=? WHERE player=? AND request=?",
-                        params![request, player, previous])?;
+                if !current && let Some(previous) = previous.as_ref() {
+                    diesel::update(receipts::table.find((&player, previous.as_slice())))
+                        .set(receipts::request.eq(request))
+                        .execute(db)?;
                 }
                 return Ok(());
             }
-            if method == RpcMethod::GuildCollectJoinBonus && tx.query_row(
-                "SELECT EXISTS(SELECT 1 FROM community_redemptions WHERE player=? AND operation=?)",
-                params![player, operation], |row| row.get::<_, bool>(0),
-            )? {
-                return Err(CommunityError::Conflict("guild join bonus was already collected"));
+            let offers = receipts::table
+                .filter(receipts::player.eq(&player))
+                .filter(receipts::operation.eq(&operation));
+            if method == RpcMethod::GuildCollectJoinBonus
+                && diesel::select(exists(offers)).get_result::<bool>(db)?
+            {
+                return Err(CommunityError::Conflict(
+                    "guild join bonus was already collected",
+                ));
             }
             if let Some(limit) = recipe.limit {
-                let used: u64 = tx.query_row("SELECT COUNT(*) FROM community_redemptions WHERE player=? AND operation=? AND sku=?",
-                    params![player,operation,sku],|r|r.get(0))?;
-                if used >= u64::from(limit) { return Err(CommunityError::Conflict("offer limit reached")); }
+                let used = offers
+                    .filter(receipts::sku.eq(&sku))
+                    .count()
+                    .get_result::<i64>(db)?;
+                if used >= i64::from(limit) {
+                    return Err(CommunityError::Conflict("offer limit reached"));
+                }
             }
             for (item, cost) in &recipe.cost {
-                let held: Option<u32> = tx.query_row("SELECT count FROM community_inventory WHERE player=? AND item=?",
-                    params![player,item],|r|r.get(0)).optional()?;
-                match held.unwrap_or(0).checked_sub(*cost) {
+                match held(db, &player, item)?.checked_sub(*cost) {
                     None => return Err(CommunityError::Conflict("insufficient inventory")),
                     Some(0) => {
-                        tx.execute("DELETE FROM community_equipment WHERE player=? AND item=?", params![player,item])?;
-                        tx.execute("DELETE FROM community_inventory WHERE player=? AND item=?", params![player,item])?;
+                        diesel::delete(
+                            equipment::table
+                                .filter(equipment::player.eq(&player))
+                                .filter(equipment::item.eq(item)),
+                        )
+                        .execute(db)?;
+                        diesel::delete(inventory::table.find((&player, item))).execute(db)?;
                     }
                     Some(remaining) => {
-                        tx.execute("UPDATE community_inventory SET count=? WHERE player=? AND item=?",params![remaining,player,item])?;
+                        diesel::update(inventory::table.find((&player, item)))
+                            .set(inventory::count.eq(i64::from(remaining)))
+                            .execute(db)?;
                     }
                 }
             }
-            for (item,count) in &recipe.reward {
-                add_item(tx, &player, item, *count)?;
+            for (item, count) in &recipe.reward {
+                add_item(db, &player, item, *count)?;
             }
-            tx.execute("INSERT INTO community_redemptions VALUES(?,?,?,?)",params![player,operation,sku,request])?;
+            diesel::insert_into(receipts::table)
+                .values((
+                    receipts::player.eq(&player),
+                    receipts::operation.eq(operation),
+                    receipts::sku.eq(sku),
+                    receipts::request.eq(request),
+                ))
+                .execute(db)?;
             Ok(())
-        }).await
+        })
+        .await
     }
 }

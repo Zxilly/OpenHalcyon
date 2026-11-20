@@ -1,211 +1,259 @@
-use crate::views::{Contact, FriendRequest, Friends};
-use rusqlite::{Transaction, params};
+use crate::{
+    Action, Community, CommunityError, Result,
+    orm::{ensure_player, nocase_handle, unixepoch, unixepoch_after},
+    schema::{
+        community_friend_requests as requests, community_friends as friends,
+        community_players as players,
+    },
+    validated,
+    views::{Contact, FriendRequest, Friends},
+};
+use diesel::{
+    dsl::{exists, not},
+    prelude::*,
+    upsert::excluded,
+};
 use serde_json::Value;
 use uuid::Uuid;
-
-use crate::{Action, Community, CommunityError, Result, ensure_player, validated};
 
 impl Community {
     /// Update the community identity from an authenticated platform profile.
     pub async fn observe_player(&self, id: Uuid, handle: String, online: bool) -> Result<()> {
         let handle = validated(handle, 32, true)?;
-        self.run(move |tx| {
-            tx.execute(
-                "INSERT INTO community_players(id, handle, online) VALUES(?, ?, ?)
-                 ON CONFLICT(id) DO UPDATE SET handle=excluded.handle, online=excluded.online, last_seen=unixepoch()
-                 WHERE handle<>excluded.handle OR online<>excluded.online OR last_seen < unixepoch() - 15",
-                params![id.to_string(), handle, online],
-            )?;
+        self.orm_transaction(move |db| {
+            let upsert = diesel::insert_into(players::table)
+                .values((
+                    players::id.eq(id.to_string()),
+                    players::handle.eq(&handle),
+                    players::online.eq(online),
+                ))
+                .on_conflict(players::id)
+                .do_update()
+                .set((
+                    players::handle.eq(excluded(players::handle)),
+                    players::online.eq(excluded(players::online)),
+                    players::last_seen.eq(unixepoch()),
+                ));
+            diesel::query_dsl::methods::FilterDsl::filter(
+                upsert,
+                players::handle
+                    .ne(&handle)
+                    .or(players::online.ne(online))
+                    .or(players::last_seen.lt(unixepoch_after("now", "-15 seconds"))),
+            )
+            .execute(db)?;
             Ok(())
-        }).await
+        })
+        .await
     }
 
     pub async fn resolve_handle(&self, handle: String) -> Result<Uuid> {
         let handle = validated(handle, 32, true)?;
-        self.run(move |tx| {
-            let mut lookup = tx.prepare(
-                "SELECT id FROM community_players WHERE handle=? COLLATE NOCASE ORDER BY id LIMIT 2",
-            )?;
-            let rows = lookup.query_map([handle], |row| row.get::<_, String>(0))?
-                .collect::<rusqlite::Result<Vec<_>>>()?;
-            match rows.as_slice() {
+        self.orm_transaction(move |db| {
+            let users = players::table
+                .filter(nocase_handle().eq(&handle))
+                .order(players::id)
+                .limit(2)
+                .select(players::id)
+                .load::<String>(db)?;
+            match users.as_slice() {
                 [id] => Uuid::parse_str(id).map_err(|_| CommunityError::WorkerUnavailable),
                 [] => Err(CommunityError::Missing("player does not exist")),
-                _ => Err(CommunityError::Conflict("handle identifies multiple players")),
+                _ => Err(CommunityError::Conflict(
+                    "handle identifies multiple players",
+                )),
             }
-        }).await
+        })
+        .await
+    }
+
+    /// Presence visibility is independent from a player's direct-message permissions.
+    pub async fn presence_preferences(&self, player: Uuid) -> Result<(bool, bool)> {
+        self.orm_transaction(move |db| {
+            players::table
+                .find(player.to_string())
+                .select((not(players::invisible), players::receive_presence))
+                .first(db)
+                .map_err(Into::into)
+        })
+        .await
     }
 }
 
-fn check_peer(tx: &Transaction<'_>, actor: &str, target: Uuid) -> Result<String> {
+fn check_peer(db: &mut SqliteConnection, actor: &str, target: Uuid) -> Result<String> {
     let target = target.to_string();
     if actor == target {
         return Err(CommunityError::Invalid("player must differ from target"));
     }
-    ensure_player(tx, &target)?;
+    ensure_player(db, &target)?;
     Ok(target)
 }
 
-pub(crate) fn execute(tx: &Transaction<'_>, actor: &str, action: Action) -> Result<Value> {
+fn are_friends(db: &mut SqliteConnection, actor: &str, peer: &str) -> Result<bool> {
+    Ok(diesel::select(exists(friends::table.find((actor, peer)))).get_result(db)?)
+}
+
+pub(crate) fn execute(db: &mut SqliteConnection, actor: &str, action: Action) -> Result<Value> {
     match action {
         Action::Friends => {}
         Action::RequestFriend { target } => {
-            let target = check_peer(tx, actor, target)?;
-            if !tx.query_row(
-                "SELECT EXISTS(SELECT 1 FROM community_friends WHERE player=? AND friend=?)",
-                params![actor, target],
-                |row| row.get(0),
-            )? {
-                tx.execute(
-                    "INSERT INTO community_friend_requests(requester, recipient) VALUES(?, ?)
-                     ON CONFLICT DO NOTHING",
-                    params![actor, target],
-                )?;
+            let target = check_peer(db, actor, target)?;
+            if !are_friends(db, actor, &target)? {
+                diesel::insert_into(requests::table)
+                    .values((
+                        requests::requester.eq(actor),
+                        requests::recipient.eq(&target),
+                    ))
+                    .on_conflict_do_nothing()
+                    .execute(db)?;
             }
         }
         Action::ResolveFriend { requester, accept } => {
-            let requester = check_peer(tx, actor, requester)?;
-            let affected = tx.execute(
-                "DELETE FROM community_friend_requests WHERE requester=? AND recipient=?",
-                params![requester, actor],
-            )?;
+            let asker = check_peer(db, actor, requester)?;
+            let affected = diesel::delete(requests::table.find((&asker, actor))).execute(db)?;
             if affected == 0 {
-                let existing: bool = tx.query_row(
-                    "SELECT EXISTS(SELECT 1 FROM community_friends WHERE player=? AND friend=?)",
-                    params![actor, requester],
-                    |row| row.get(0),
-                )?;
-                if !accept || !existing {
+                if !accept || !are_friends(db, actor, &asker)? {
                     return Err(CommunityError::Missing("friend request does not exist"));
                 }
             } else if accept {
-                tx.execute(
-                    "DELETE FROM community_friend_requests WHERE requester=? AND recipient=?",
-                    params![actor, requester],
-                )?;
-                tx.execute(
-                    "INSERT INTO community_friends(player, friend) VALUES(?1, ?2), (?2, ?1)
-                     ON CONFLICT DO NOTHING",
-                    params![actor, requester],
-                )?;
+                diesel::delete(requests::table.find((actor, &asker))).execute(db)?;
+                for (viewer, peer) in [(actor, asker.as_str()), (asker.as_str(), actor)] {
+                    diesel::insert_into(friends::table)
+                        .values((friends::player.eq(viewer), friends::friend.eq(peer)))
+                        .on_conflict_do_nothing()
+                        .execute(db)?;
+                }
             }
         }
         Action::RemoveFriend { target } => {
-            let target = check_peer(tx, actor, target)?;
-            tx.execute(
-                "DELETE FROM community_friends WHERE (player=?1 AND friend=?2) OR (player=?2 AND friend=?1)",
-                params![actor, target],
-            )?;
-            tx.execute(
-                "DELETE FROM community_friend_requests
-                 WHERE (requester=?1 AND recipient=?2) OR (requester=?2 AND recipient=?1)",
-                params![actor, target],
-            )?;
+            let target = check_peer(db, actor, target)?;
+            diesel::delete(
+                friends::table.filter(
+                    friends::player
+                        .eq(actor)
+                        .and(friends::friend.eq(&target))
+                        .or(friends::player.eq(&target).and(friends::friend.eq(actor))),
+                ),
+            )
+            .execute(db)?;
+            diesel::delete(
+                requests::table.filter(
+                    requests::requester
+                        .eq(actor)
+                        .and(requests::recipient.eq(&target))
+                        .or(requests::requester
+                            .eq(&target)
+                            .and(requests::recipient.eq(actor))),
+                ),
+            )
+            .execute(db)?;
         }
         Action::FavoriteFriend { target, favorite } => {
-            let target = check_peer(tx, actor, target)?;
-            if tx.execute(
-                "UPDATE community_friends SET favorite=? WHERE player=? AND friend=?",
-                params![favorite, actor, target],
-            )? == 0
+            let target = check_peer(db, actor, target)?;
+            if diesel::update(friends::table.find((actor, &target)))
+                .set(friends::favorite.eq(favorite))
+                .execute(db)?
+                == 0
             {
                 return Err(CommunityError::Missing("friend does not exist"));
             }
         }
         Action::SetInvisible { invisible } => {
-            tx.execute(
-                "UPDATE community_players SET invisible=? WHERE id=?",
-                params![invisible, actor],
-            )?;
+            diesel::update(players::table.find(actor))
+                .set(players::invisible.eq(invisible))
+                .execute(db)?;
         }
         Action::SetReceivePresence { receive } => {
-            tx.execute(
-                "UPDATE community_players SET receive_presence=? WHERE id=?",
-                params![receive, actor],
-            )?;
+            diesel::update(players::table.find(actor))
+                .set(players::receive_presence.eq(receive))
+                .execute(db)?;
         }
         Action::SetPresence { status } => {
             let status = validated(status, 64, false)?;
-            tx.execute(
-                "UPDATE community_players SET status=? WHERE id=?",
-                params![status, actor],
-            )?;
+            diesel::update(players::table.find(actor))
+                .set(players::status.eq(status))
+                .execute(db)?;
         }
         _ => return Err(CommunityError::Invalid("invalid friend action")),
     }
-    friends(tx, actor)
+    friend_view(db, actor)
 }
 
-fn friends(tx: &Transaction<'_>, actor: &str) -> Result<Value> {
-    let receive: bool = tx.query_row(
-        "SELECT receive_presence FROM community_players WHERE id=?",
-        [actor],
-        |row| row.get(0),
-    )?;
-    let mut query = tx.prepare(
-        "SELECT p.id, p.handle, f.favorite, p.status,
-                p.online AND NOT p.invisible AND p.last_seen >= unixepoch() - 90
-         FROM community_friends f JOIN community_players p ON p.id=f.friend
-         WHERE f.player=? ORDER BY f.favorite DESC, p.handle COLLATE NOCASE, p.id",
-    )?;
-    let contacts = query
-        .query_map([actor], |row| {
-            let online = receive && row.get::<_, bool>(4)?;
-            Ok(Contact {
-                player_id: row.get(0)?,
-                handle: row.get(1)?,
-                favorite: row.get(2)?,
+fn friend_view(db: &mut SqliteConnection, actor: &str) -> Result<Value> {
+    let receive = players::table
+        .find(actor)
+        .select(players::receive_presence)
+        .first::<bool>(db)?;
+    let contacts = friends::table
+        .inner_join(players::table.on(players::id.eq(friends::friend)))
+        .filter(friends::player.eq(actor))
+        .order((friends::favorite.desc(), nocase_handle(), players::id))
+        .select((
+            players::id,
+            players::handle,
+            friends::favorite,
+            players::status,
+            players::online
+                .and(not(players::invisible))
+                .and(players::last_seen.ge(unixepoch_after("now", "-90 seconds"))),
+        ))
+        .load::<(String, String, bool, String, bool)>(db)?
+        .into_iter()
+        .map(|(player_id, handle, favorite, status, available)| {
+            let online = receive && available;
+            Contact {
+                player_id,
+                handle,
+                favorite,
                 online,
-                status: if online { Some(row.get(3)?) } else { None },
-            })
-        })?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    let mut query = tx.prepare(
-        "SELECT p.id, p.handle, r.created, r.recipient = ?1
-         FROM community_friend_requests r JOIN community_players p
-           ON p.id=CASE WHEN r.recipient=?1 THEN r.requester ELSE r.recipient END
-         WHERE r.requester=?1 OR r.recipient=?1 ORDER BY r.created, p.id",
-    )?;
-    let requests = query
-        .query_map([actor], |row| {
-            Ok(FriendRequest {
-                player_id: row.get(0)?,
-                handle: row.get(1)?,
-                created: row.get(2)?,
-                incoming: row.get(3)?,
-            })
-        })?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
+                status: online.then_some(status),
+            }
+        })
+        .collect();
+
+    let incoming = requests::table
+        .inner_join(players::table.on(players::id.eq(requests::requester)))
+        .filter(requests::recipient.eq(actor))
+        .select((players::id, players::handle, requests::created));
+    let outgoing = requests::table
+        .inner_join(players::table.on(players::id.eq(requests::recipient)))
+        .filter(requests::requester.eq(actor))
+        .select((players::id, players::handle, requests::created));
+    let mut pending = Vec::new();
+    for (rows, incoming) in [
+        (incoming.load::<(String, String, i64)>(db)?, true),
+        (outgoing.load(db)?, false),
+    ] {
+        pending.extend(
+            rows.into_iter()
+                .map(|(player_id, handle, created)| FriendRequest {
+                    player_id,
+                    handle,
+                    created,
+                    incoming,
+                }),
+        );
+    }
+    pending.sort_by(|a, b| {
+        a.created
+            .cmp(&b.created)
+            .then_with(|| a.player_id.cmp(&b.player_id))
+    });
     Ok(serde_json::to_value(Friends {
         friends: contacts,
-        requests,
+        requests: pending,
     })?)
 }
 
-/// Check friendship and the target's opt-out on the platform's current transaction.
+/// Verify friendship and presence in the caller's spectator admission transaction.
 pub fn may_spectate(db: &rusqlite::Connection, viewer: &str, friend: &str) -> Result<bool> {
     db.query_row(
         "SELECT EXISTS(
             SELECT 1 FROM community_friends f JOIN community_players p ON p.id=f.friend
             WHERE f.player=? AND f.friend=? AND p.invisible=0
          )",
-        params![viewer, friend],
+        [viewer, friend],
         |row| row.get(0),
     )
     .map_err(Into::into)
-}
-
-impl Community {
-    /// Presence visibility is independent from a player's direct-message permissions.
-    pub async fn presence_preferences(&self, player: Uuid) -> Result<(bool, bool)> {
-        self.run(move |tx| {
-            tx.query_row(
-                "SELECT NOT invisible, receive_presence FROM community_players WHERE id=?",
-                [player.to_string()],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .map_err(Into::into)
-        })
-        .await
-    }
 }

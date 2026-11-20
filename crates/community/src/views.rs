@@ -1,16 +1,7 @@
 //! Community response schemas shared by the SQLite projections and CE adapter.
 use crate::{GroupKind, Role};
-use rusqlite::{Row, types::Type};
-use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-
-pub(super) fn enum_column<T: DeserializeOwned>(row: &Row<'_>, index: usize) -> rusqlite::Result<T> {
-    let value = row.get_ref(index)?.as_str()?;
-    T::deserialize(serde::de::value::StrDeserializer::<serde::de::value::Error>::new(value))
-        .map_err(|error| {
-            rusqlite::Error::FromSqlConversionFailure(index, Type::Text, Box::new(error))
-        })
-}
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -18,6 +9,16 @@ pub enum QuestStatus {
     Active,
     Claimed,
     Skipped,
+}
+
+impl QuestStatus {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Active => "active",
+            Self::Claimed => "claimed",
+            Self::Skipped => "skipped",
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize)]

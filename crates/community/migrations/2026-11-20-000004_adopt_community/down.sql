@@ -1,0 +1,1 @@
+-- Adoption preserves the tables and their existing data on rollback.
