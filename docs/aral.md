@@ -124,3 +124,5 @@ successful control registration of a different reserved seat. It never
 replays past registrations to a newcomer. Rejected, duplicate and resumed
 registrations do not produce a new draft notification. Spectators and seats
 in other rooms do not receive it.
+
+The original clock continues through the postgame delay. In the five crystal endings, 14 client clocks arrived between the postgame marker and 250 ms before the statistics report. In the two surrender endings, the final 14.5 seconds before the report contained 14 more clocks with the same cutoff. All 28 had a byte-identical reply within 300 ms. The host accepts finite nonnegative, six-byte clock bodies on the authenticated connection during this delay. Gameplay input remains closed, and the ordered statistics/result batch closes the stream.

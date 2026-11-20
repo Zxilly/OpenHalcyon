@@ -318,10 +318,21 @@ async fn connection(mut sock: TcpStream, room: Shared, manager: Rooms) -> io::Re
             }
             let m = cipher.decode_owned(raw)?;
             let mut state = room.lock().unwrap();
-            if matches!(state.phase, "ending" | "ended") {
-                continue;
-            }
-            let out = state.receive(seat, ch, m)?;
+            let out = match state.phase {
+                // ARAL keeps its authenticated connections open between the
+                // crystal defeat or surrender and the final statistics report.
+                "ending"
+                    if state.reason == Some("completed")
+                        && !*state.stop.borrow()
+                        && m.opcode == 0
+                        && m.body.len() == 6
+                        && matches!(m.fields(), Ok(Fields::Clock(t)) if t.is_finite() && t >= 0.) =>
+                {
+                    vec![m]
+                }
+                "ending" | "ended" => continue,
+                _ => state.receive(seat, ch, m)?,
+            };
             if !out.is_empty() {
                 tx.try_send(Delivery::Private(out))
                     .map_err(|_| bad("output queue full"))?;

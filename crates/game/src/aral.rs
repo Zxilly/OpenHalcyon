@@ -1017,6 +1017,23 @@ mod tests {
                     );
                 }
             }
+            let postgame_clock = Message::clock(123.5);
+            clients[1]
+                .write_all(&cipher.encode(&point(75.0, -5.06)).unwrap())
+                .await
+                .unwrap();
+            clients[1]
+                .write_all(&cipher.encode(&postgame_clock).unwrap())
+                .await
+                .unwrap();
+            loop {
+                let response = next(&mut clients[1], &cipher).await;
+                assert_ne!(response.opcode, 0x03f8);
+                if response.opcode == 0 {
+                    assert_eq!(response.body[..4], 123.5_f32.to_be_bytes());
+                    break;
+                }
+            }
             let mut room = room.lock().unwrap();
             assert_eq!(room.phase, "ending");
             assert!(
