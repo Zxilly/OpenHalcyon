@@ -60,6 +60,34 @@ Both had 100% sampled active room-time, zero slow-client disconnects and zero cl
 
 Server executable SHA-256 was `ea758a52f1de4ca2e174a278fe2cc8c7d75c82665968b79b892a073e3af3a257` at 08cc383 and `f7996cee70bd0ab732271ee9aeef9350738b67152d4a921ae27edcc8457ca2b5` at 510c218. Both used the 08cc383 driver with SHA-256 `928dd8074e8318c16e0f5b333bd70f83e7a1130116891eeff8ae2adbfe46507f`. Use the Solo reproduction command below with `--seconds 60`.
 
+## Interleaved 32-room and room-scaling check (`4bc4da6`)
+
+Eight quiet-machine trials ran serially on Windows 11 (`AMD Ryzen 9 9950X3D`) using release binaries from commit `4bc4da63e9eef49b058eccd2b5cecf0a268e6d74` (`openhalcyon.exe` SHA-256 `88f54e83071668147044537eef0a4c11d416ef3aca53a28625020a4e2cb59f25`, `halcyon-loadtest.exe` SHA-256 `6b06ab68a29e5f20627588ea944e2292c0dd163f86dd6261632cdb8983d15a0c`). Every run used full delivery and supplemental data, one Tokio worker pinned to logical CPU `14`, a `1 GiB` Job commit limit, three client workers on CPUs `26`, `28`, and `30`, a `45 s` login ramp, and a `120 s` steady window (`--room-capacity` = rooms + 1). Two interleaved 32-room rounds ran first, followed by single-variable room scaling to `48` and `64` rooms for both native Solo (`1` human + `9` bots per room) and native 6-seat ARAL (`6` humans + `0` bots per room).
+
+| Run | Mode & rooms | Clients / bots | Active room-time | CPU, one core (60 s max) | Peak RSS (MiB) | Mean `roomWork` / `wakeDelay` / `lockWait` (µs/tick) | Worst window / last-sample p99 (ms) | Ticks >40 ms (startup / steady) |
+| --- | --- | ---: | ---: | ---: | ---: | --- | ---: | ---: |
+| Solo 32 r1 | Solo, 32 | 32 / 288 | 100.0% | 10.71% (11.69%) | 56.41 | 111.73 / 7,565.26 / 0.07 | 15.982 / 15.714 | 0 / 16,382 · 0 / 77,339 |
+| ARAL 32 r1 | ARAL, 32 | 192 / 0 | 100.0% | 16.46% (17.31%) | 57.01 | 41.03 / 6,554.86 / 0.08 | 16.112 / 15.546 | 0 / 17,367 · 0 / 77,438 |
+| Solo 32 r2 | Solo, 32 | 32 / 288 | 100.0% | 12.38% (14.10%) | 56.22 | 113.02 / 7,540.03 / 0.07 | 16.391 / 15.779 | 0 / 16,428 · 0 / 77,403 |
+| ARAL 32 r2 | ARAL, 32 | 192 / 0 | 100.0% | 18.15% (19.58%) | 56.64 | 42.04 / 6,447.68 / 0.08 | 15.409 / 15.259 | 0 / 17,252 · 0 / 77,448 |
+| Solo 48 | Solo, 48 | 48 / 432 | 100.0% | 14.77% (16.48%) | 67.89 | 100.90 / 7,247.35 / 0.07 | 17.646 / 15.567 | 0 / 24,832 · 0 / 116,184 |
+| ARAL 48 | ARAL, 48 | 288 / 0 | 100.0% | 25.03% (27.38%) | 70.79 | 35.96 / 5,860.14 / 0.08 | 15.720 / 15.120 | 0 / 21,588 · 0 / 116,367 |
+| Solo 64 | Solo, 64 | 64 / 576 | 100.0% | 19.27% (21.75%) | 78.64 | 97.72 / 7,062.01 / 0.07 | 16.156 / 15.117 | 0 / 32,986 · 0 / 154,984 |
+| ARAL 64 | ARAL, 64 | 384 / 0 | 100.0% | 32.98% (33.38%) | 84.77 | 35.82 / 5,029.58 / 0.09 | 15.072 / 13.726 | 0 / 36,931 · 0 / 155,211 |
+
+| Run | Decoded GS frames | Server CPU (µs/frame) | Dominant >40 ms (wake / lock / work) | Peak `fanoutQueueFull` | Steady clock echoes / sent | Total clock echoes / sent | Sequence errors | Slow disconnects | 120 s tier status |
+| --- | ---: | ---: | --- | ---: | ---: | ---: | ---: | ---: | --- |
+| Solo 32 r1 | 2,658,175 | 4.867 | 0 / 0 / 0 | 0 | 1,920 / 1,920 | 2,298 / 2,298 | 0 | 0 | Pass |
+| ARAL 32 r1 | 4,587,220 | 4.343 | 0 / 0 / 0 | 0 | 11,328 / 11,328 | 13,806 / 13,806 | 0 | 0 | Pass |
+| Solo 32 r2 | 2,687,783 | 5.569 | 0 / 0 / 0 | 0 | 1,951 / 1,951 | 2,328 / 2,328 | 0 | 0 | Pass |
+| ARAL 32 r2 | 4,574,406 | 4.803 | 0 / 0 / 0 | 0 | 11,328 / 11,328 | 13,794 / 13,794 | 0 | 0 | Pass |
+| Solo 48 | 4,098,411 | 4.361 | 0 / 0 / 0 | 0 | 2,928 / 2,928 | 3,494 / 3,494 | 0 | 0 | Pass |
+| ARAL 48 | 6,854,445 | 4.427 | 0 / 0 / 0 | 0 | 17,280 / 17,286 | 20,232 / 20,238 | 0 | 0 | Pass |
+| Solo 64 | 5,410,415 | 4.312 | 0 / 0 / 0 | 0 | 3,904 / 3,904 | 4,663 / 4,663 | 0 | 0 | Pass |
+| ARAL 64 | 9,490,560 | 4.215 | 0 / 0 / 0 | 0 | 23,424 / 23,430 | 28,698 / 28,704 | 0 | 0 | Pass |
+
+Every trial passed all `120 s` steady regression and scaling criteria (CPU <= 75%, RSS <= 768 MiB, worst room-window P99 <= 40 ms, >40 ms <= 1%, zero `fanoutQueueFull`, zero clock sequence errors, and zero slow disconnects) up to **64 native Solo rooms** (64 humans + 576 bots) and **64 native 6-seat ARAL rooms** (384 humans). Formal `30 min` and `2 hr` critical endurance acceptance tiers remain separate long-duration runs.
+
 ## Reproduction
 
 Tests ran serially on Windows on a Ryzen 9 9950X3D, one server worker on logical CPU 14 and a separate load process on CPUs 26, 28 and 30. Every trial used a fresh instance and dynamic loopback ports, full base and supplementary game data, a 33-room configured cap, a 45-second login ramp and the standard host admission policy. Other processes shared the physical machine. The final release compilation overlapped the intermediate Solo trial on different logical CPUs. The intermediate run was already underway when the final candidate became available.
