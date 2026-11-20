@@ -37,10 +37,12 @@ impl ExtraData {
         hero_names: &[String],
         skin_names: &[String],
     ) -> io::Result<Self> {
-        let combat = crate::combat_content::CombatContent::load(dir, hash)?;
+        let references = crate::reference::References::load(dir)?;
+        let mut combat = crate::combat_content::CombatContent::load(dir, hash)?;
+        combat.resolve_tooltip_operands(&references);
         let items = crate::items::ItemCatalog::load(dir, hash)?;
         Ok(Self {
-            references: Some(crate::reference::References::load(dir)?),
+            references: Some(references),
             native_maps: dir
                 .join("maps/navmesh_index.json")
                 .try_exists()?

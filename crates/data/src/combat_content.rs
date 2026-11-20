@@ -58,6 +58,9 @@ pub struct AbilityVariable {
 pub struct DamageVariable {
     pub name: Option<String>,
     pub header_u32: u32,
+    /// Case-sensitive operand found in this ability's own English tooltip.
+    #[serde(skip_deserializing, skip_serializing_if = "Option::is_none")]
+    pub tooltip_operand: Option<String>,
     pub base: f32,
     pub per_rank: f32,
     pub f2: f32,
@@ -151,6 +154,50 @@ pub struct CombatContent {
 }
 
 impl CombatContent {
+    pub(super) fn resolve_tooltip_operands(&mut self, references: &crate::reference::References) {
+        for ability in self
+            .heroes
+            .values_mut()
+            .flat_map(|hero| &mut hero.abilities)
+        {
+            if ability.damage_variables.is_empty() {
+                continue;
+            }
+            let dictionary = |key: Option<&str>| references.translate("en", key?).map(|t| t.value);
+            let sources = [
+                ability.short_desc_en.as_deref(),
+                dictionary(ability.short_desc_key.as_deref()),
+                dictionary(ability.desc_key.as_deref()),
+            ];
+            let mut operands = BTreeMap::new();
+            for text in sources.into_iter().flatten() {
+                for bracket in text.split('[').skip(1) {
+                    let Some((token, _)) = bracket.split_once(']') else {
+                        continue;
+                    };
+                    let operand = token.split('|').next().unwrap_or_default();
+                    if operand.is_empty() {
+                        continue;
+                    }
+                    operands
+                        .entry(operand_hash(operand))
+                        .and_modify(|name| {
+                            if *name != Some(operand) {
+                                *name = None;
+                            }
+                        })
+                        .or_insert(Some(operand));
+                }
+            }
+            for block in &mut ability.damage_variables {
+                block.tooltip_operand = operands
+                    .get(&block.header_u32)
+                    .copied()
+                    .flatten()
+                    .map(str::to_owned);
+            }
+        }
+    }
     pub(crate) fn load(dir: &Path, hash: &mut Sha256) -> io::Result<Self> {
         fn indexed<T>(rows: Vec<T>, key: impl Fn(&T) -> &str) -> io::Result<BTreeMap<String, T>> {
             let mut index = BTreeMap::new();
@@ -303,9 +350,7 @@ impl Ability {
 impl Ability {
     /// Damage block headers use 32-bit FNV-1a of the exact tooltip operand (including case).
     pub fn damage(&self, operand: &str) -> Option<&DamageVariable> {
-        let header = operand.bytes().fold(0x811c9dc5_u32, |h, byte| {
-            (h ^ u32::from(byte)).wrapping_mul(0x01000193)
-        });
+        let header = operand_hash(operand);
         let mut found = self
             .damage_variables
             .iter()
@@ -313,6 +358,12 @@ impl Ability {
         let first = found.next()?;
         found.next().is_none().then_some(first)
     }
+}
+
+fn operand_hash(label: &str) -> u32 {
+    label.bytes().fold(0x811c9dc5_u32, |h, byte| {
+        (h ^ u32::from(byte)).wrapping_mul(0x01000193)
+    })
 }
 
 #[cfg(test)]
@@ -357,6 +408,14 @@ mod tests {
             .flat_map(|h| h.abilities.iter())
             .collect::<Vec<_>>();
         assert_eq!(skills.len(), 277);
+        assert_eq!(
+            skills
+                .iter()
+                .flat_map(|a| &a.damage_variables)
+                .filter(|block| block.tooltip_operand.is_some())
+                .count(),
+            154
+        );
         assert_eq!(
             skills
                 .iter()

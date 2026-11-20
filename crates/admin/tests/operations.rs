@@ -637,6 +637,22 @@ async fn content_catalog_queries_the_complete_operator_supplement() {
     assert_eq!(fallback["items"][0]["data"]["language"], "en");
 
     let (_, meshes) = content_get(&app, "/content/meshes?limit=50", session).await;
+    let (_, abilities) = content_get(
+        &app,
+        "/content/abilities?q=Ability__Ringo__C&language=zh-CN",
+        session,
+    )
+    .await;
+    let ability = &abilities["items"][0]["data"];
+    assert_eq!(ability["hero"], "Ringo");
+    assert_eq!(ability["description"]["language"], "zh_CN");
+    assert!(
+        ability["damage_variables"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry["tooltip_operand"] == "BurnDamagePerSecond")
+    );
     let entries = meshes["items"].as_array().unwrap();
     assert_eq!(entries.len(), 16);
     assert!(meshes["nextOffset"].is_null());

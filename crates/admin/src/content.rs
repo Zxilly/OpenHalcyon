@@ -153,11 +153,39 @@ pub(super) async fn browse(
                 )
             }))
         }
-        Collection::Abilities => f.page(
-            combat
-                .heroes()
-                .flat_map(|h| h.abilities.iter().map(|a| (&a.ability_id, a))),
-        ),
+        Collection::Abilities => {
+            #[derive(Serialize)]
+            struct AbilityDetail<'a> {
+                hero: &'a str,
+                #[serde(flatten)]
+                definition: &'a halcyon_data::combat_content::Ability,
+                description: Option<halcyon_data::reference::Translation<'a>>,
+            }
+            let entries = combat.heroes().flat_map(|hero| {
+                hero.abilities.iter().map(|ability| {
+                    (
+                        &ability.ability_id,
+                        AbilityDetail {
+                            hero: &hero.hero_id,
+                            definition: ability,
+                            description: ability
+                                .desc_key
+                                .as_deref()
+                                .and_then(|key| r.translate(&f.language, key)),
+                        },
+                    )
+                })
+            });
+            f.page_matching(entries, |detail, q| {
+                [
+                    detail.definition.name_en.as_deref(),
+                    detail.definition.name_zh.as_deref(),
+                ]
+                .into_iter()
+                .flatten()
+                .any(|name| name.to_ascii_lowercase().contains(q))
+            })
+        }
         Collection::Units => f.page(combat.units().map(|u| (&u.name, u))),
         Collection::Talents => f.page(combat.talents().map(|t| (&t.id, t))),
         Collection::Items => f.page(items()?.items()),
