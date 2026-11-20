@@ -12,12 +12,14 @@ mod net;
 pub use chat::MatchChat;
 mod observation;
 pub use observation::{ObserverReply, ObserverRequest};
+mod genesis;
 mod rtt;
 mod service;
 mod store;
 pub use service::Federation;
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Config {
+    #[serde(default, skip_serializing_if = "Uuid::is_nil")]
     pub pool_id: Uuid,
     pub node_id: Uuid,
     pub listen: SocketAddr,
@@ -26,8 +28,25 @@ pub struct Config {
     pub cert: PathBuf,
     pub key: PathBuf,
     pub peers: BTreeMap<Uuid, Peer>,
-    pub bootstrap: bool,
+    pub bootstrap: Bootstrap,
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum Bootstrap {
+    Manual(bool),
+    Automatic(AutomaticBootstrap),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AutomaticBootstrap {
+    Auto,
+}
+
+impl Bootstrap {
+    pub const AUTO: Self = Self::Automatic(AutomaticBootstrap::Auto);
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Peer {
     pub address: String,
@@ -43,6 +62,7 @@ impl Config {
         {
             *dest = base.join(&*dest);
         }
+        genesis::resolve(&mut cfg)?;
         Ok(cfg)
     }
 }

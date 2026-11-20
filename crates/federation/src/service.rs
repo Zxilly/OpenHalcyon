@@ -73,7 +73,7 @@ impl Federation {
         .validate()?;
         let (logs, machine) = Adaptor::new(store.clone());
         let raft = Raft::new(cfg.node_id, Arc::new(settings), net.clone(), logs, machine).await?;
-        if cfg.bootstrap && !raft.is_initialized().await? {
+        if cfg.bootstrap == Bootstrap::Manual(true) && !raft.is_initialized().await? {
             let members = cfg
                 .peers
                 .iter()
@@ -95,6 +95,20 @@ impl Federation {
             listener_closed,
         };
         let server = fed.clone();
+        let mut discovering = fed.stop.subscribe();
+        if fed.net.genesis.is_some() {
+            let automatic = fed.clone();
+            tokio::spawn(async move {
+                tokio::select! {
+                    _ = discovering.wait_for(|stop| *stop) => {}
+                    result = crate::genesis::discover(&automatic) => {
+                        if let Err(error) = result {
+                            tracing::error!(%error, "automatic pool initialization stopped");
+                        }
+                    }
+                }
+            });
+        }
         tokio::spawn(async move {
             let mut connections = tokio::task::JoinSet::new();
             loop {
@@ -327,7 +341,9 @@ impl Federation {
         }
         let (parts, body) = req.into_parts();
         let path = parts.uri.path();
-        let limit = if path == "/internal/rtt" {
+        let limit = if path == "/internal/genesis" {
+            128
+        } else if path == "/internal/rtt" {
             16
         } else if path == "/internal/chat" {
             1024
@@ -337,6 +353,16 @@ impl Federation {
         let body = to_bytes(body, limit).await?;
         if parts.method == Method::POST {
             match path {
+                "/internal/genesis" => {
+                    let peer_genesis: [u8; 32] = decode(&body)?;
+                    return if self.net.genesis == Some(peer_genesis)
+                        && !self.raft.is_initialized().await?
+                    {
+                        cbor(&peer_genesis)
+                    } else {
+                        Ok(StatusCode::CONFLICT.into_response())
+                    };
+                }
                 "/internal/append" => {
                     let r: AppendEntriesRequest<Types> = decode(&body)?;
                     ensure!(r.vote.leader_id.node_id == peer, "leader identity mismatch");

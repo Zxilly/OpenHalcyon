@@ -31,7 +31,7 @@ impl std::error::Error for PeerStatus {}
 type Sender = hyper::client::conn::http1::SendRequest<Full<Bytes>>;
 type Rpc<T, E = openraft::error::Infallible> =
     Result<T, RPCError<Uuid, BasicNode, RaftError<Uuid, E>>>;
-fn certs(path: &Path) -> anyhow::Result<Vec<CertificateDer<'static>>> {
+pub(crate) fn certs(path: &Path) -> anyhow::Result<Vec<CertificateDer<'static>>> {
     let certs = rustls_pemfile::certs(&mut BufReader::new(File::open(path)?))
         .collect::<Result<Vec<_>, _>>()?;
     ensure!(
@@ -49,6 +49,7 @@ fn key(path: &Path) -> anyhow::Result<PrivateKeyDer<'static>> {
 pub(crate) struct Transport {
     pub cfg: Arc<Config>,
     pub accept: TlsAcceptor,
+    pub genesis: Option<[u8; 32]>,
     connect: TlsConnector,
     pins: Arc<BTreeMap<Vec<u8>, Uuid>>,
     // One idle HTTP connection per peer. Concurrent votes and capacity reads
@@ -56,7 +57,8 @@ pub(crate) struct Transport {
     idle: Arc<std::sync::Mutex<BTreeMap<Uuid, Sender>>>,
 }
 impl Transport {
-    pub fn new(cfg: Config) -> anyhow::Result<Self> {
+    pub fn new(mut cfg: Config) -> anyhow::Result<Self> {
+        let genesis = crate::genesis::resolve(&mut cfg)?;
         let provider = Arc::new(rustls::crypto::ring::default_provider());
         let mut roots = RootCertStore::empty();
         for c in certs(&cfg.ca)? {
@@ -86,6 +88,7 @@ impl Transport {
         );
         Ok(Self {
             cfg: Arc::new(cfg),
+            genesis,
             connect: TlsConnector::from(Arc::new(client)),
             accept: TlsAcceptor::from(Arc::new(server)),
             pins: Arc::new(pins),

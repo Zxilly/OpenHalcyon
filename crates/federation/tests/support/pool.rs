@@ -1,4 +1,4 @@
-use halcyon_federation::{Config as FederationConfig, Peer};
+use halcyon_federation::{Bootstrap, Config as FederationConfig, Peer};
 use rcgen::{BasicConstraints, CertificateParams, IsCa, KeyPair};
 use std::{collections::BTreeMap, fs, net::TcpListener};
 use uuid::Uuid;
@@ -43,7 +43,7 @@ pub fn configs(path: &std::path::Path) -> (Vec<FederationConfig>, Vec<TcpListene
             key: privkey,
             database: path.join(format!("{i}.db")),
             peers: BTreeMap::new(),
-            bootstrap: i == 0,
+            bootstrap: Bootstrap::Manual(i == 0),
         });
     }
     for c in &mut configs {

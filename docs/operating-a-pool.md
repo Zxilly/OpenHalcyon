@@ -10,7 +10,7 @@ a match. Movement and combat stay on the room host.
 
 1. Run `openhalcyon init` in an empty instance directory on each machine. Use each
    machine's reachable public hostname. Keep the three generated `instance_id` values.
-2. Agree on a pool UUID, a voting membership and a pool CA. Issue each node a distinct
+2. Agree on the complete initial voting membership and a pool CA. Issue each node a distinct
    TLS leaf certificate covering the DNS name or IP in its advertised peer address.
    If the leaf includes extended key usages, include both client and server authentication.
    Each operator keeps its own leaf private key. Exchange the CA and public leaf
@@ -26,20 +26,20 @@ max_latency_ms = 120
 ```
 
 4. Write `pool.json` on each node. The example below belongs to node A. On nodes B
-   and C, select their own `node_id`, `cert` and `key`, and set `bootstrap` to
-   `false`. The full `peers` map and pool UUID are identical on all three nodes.
-   The TLS and Raft paths are relative to this JSON file.
+   and C, use their own `node_id`, `cert` and `key`. All three use `"bootstrap": "auto"`
+   and the same complete `peers` map, including themselves. Each certificate path can
+   differ as long as it contains the same pinned public leaf. The TLS and Raft paths
+   are relative to this JSON file. Omit `pool_id` for a new automatic pool.
 
 ```json
 {
-  "pool_id": "aaaaaaaa-aaaa-4000-8000-aaaaaaaaaaaa",
   "node_id": "00000000-0000-4000-8000-000000000001",
   "listen": "0.0.0.0:9443",
   "database": "raft.sqlite",
   "ca": "pool-ca.pem",
   "cert": "node-a.pem",
   "key": "node-a.key",
-  "bootstrap": true,
+  "bootstrap": "auto",
   "peers": {
     "00000000-0000-4000-8000-000000000001": {"address":"a.example.org:9443","cert":"node-a.pem"},
     "00000000-0000-4000-8000-000000000002": {"address":"b.example.org:9443","cert":"node-b.pem"},
@@ -48,15 +48,39 @@ max_latency_ms = 120
 }
 ```
 
-5. Start the three instances and allow the configured peer port between them. The
-   bootstrap flag initializes the first durable membership on a fresh database.
-   Subsequent starts load the committed membership. The first election determines
-   leadership. A three-voter pool needs two reachable voters to commit or perform
-   a linearizable read. Running games continue on their hosts during a quorum loss.
+5. Start the instances in any order and allow the configured peer port between them.
+   A fresh node waits until a majority of the configured certificate-pinned
+   peers, including itself, attest over mTLS to the same initial topology and
+   pristine Raft state. It then initializes Raft with the entire agreed set,
+   including any offline node. An initialized peer follows the existing Raft path.
+   Any two of the three can form the pool and elect a leader. A lone node cannot
+   form the example pool on its own. Running games continue on their hosts
+   during a quorum loss.
 6. Check the pool in the instance dashboard. Verify the expected voter count, an
    elected leader and eligible hosts. Connect test players to different home
    instances using the same client build, queue and simulation data. A compatible
    host must advertise enough capacity and meet each ticket's latency budget.
+
+Automatic mode derives a pool UUID from the complete sorted initial set of
+node IDs, advertised peer addresses and pinned leaf certificate fingerprints.
+Different initial sets therefore do not authenticate as the same pool. All
+peers must agree on the exact advertised address strings. An explicitly supplied
+`pool_id` in automatic mode must match that derived value. Reopening a Raft
+database checks its stored pool and node UUIDs, so changing an automatic-mode
+address or leaf cannot silently initialize replacement membership over durable data.
+
+The application relies on OpenRaft 0.9.26's `Raft::initialize` rule that
+multiple pristine nodes can initialize concurrently with the same configuration.
+OpenRaft's engine writes the initial membership at the default log ID, starts
+an election, and refuses initialization once a log or vote exists. Later
+elections, quorum and membership changes use Raft's committed state. Discovery
+is transient and requires no designated voter.
+[OpenRaft 0.9.26 initialization contract](https://docs.rs/openraft/0.9.26/openraft/raft/struct.Raft.html#method.initialize)
+
+Existing boolean configurations remain supported. Use the configured
+`pool_id` with `"bootstrap": true` on the designated initial node and
+`"bootstrap": false` on the other nodes. Keep existing databases and UUIDs
+when upgrading those pools.
 
 Preparing allocations have a 35-second confirmation window. The leader
 writes its timestamp into the committed allocation command. The absolute
@@ -138,10 +162,18 @@ committed voter sets and addresses. A peer with a pinned certificate can also
 read `GET /federation/v1/membership` on the peer listener using mTLS and the
 `x-halcyon-pool` header.
 
+Before editing an automatically initialized pool's trust list, advertised
+addresses or pinned leaf certificates, read and save its current UUID with
+the `members` command or dashboard. Set that UUID as explicit `pool_id`
+and set `"bootstrap": false` on every member. This preserves the initial
+identity while Raft manages subsequent membership. Keep the original
+databases, then apply coordinated trust and topology changes. A node started
+against an existing pool should use this explicit non-bootstrap configuration.
+
 To admit a new operator, distribute its public certificate and address to
 the existing members' `peers` maps, then roll the instances one at a time.
 Start the new node with the same pool identity, the complete trust list and
-`bootstrap = false`. A voting operator can submit the expected old voter set
+`"bootstrap": false`. A voting operator can submit the expected old voter set
 and the desired set as comma-separated UUIDs:
 
 ```sh
