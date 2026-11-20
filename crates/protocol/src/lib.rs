@@ -35,9 +35,11 @@ pub use mutations::{AttributeChange, ResourceChange};
 mod metadata;
 mod opcode;
 mod skin;
+mod static_actions;
 pub use metadata::{AndroidLayout, READ_SIZES};
 pub use opcode::Opcode;
 pub use skin::skin_hash;
+pub use static_actions::{STATIC_ACTIONS, StaticAction, StaticActionLayout, StaticValue};
 pub const MAX_PAYLOAD: usize = 0x2800 - 2;
 pub const ACK_FRAME: [u8; 5] = [0, 3, 0, 6, 0];
 
@@ -510,7 +512,9 @@ impl Message {
                     _ => Fields::GameMode(name),
                 }
             }
-            _ => live::fields(self.opcode, b).unwrap_or(Fields::Opaque(b)),
+            _ => live::fields(self.opcode, b)
+                .or_else(|| static_actions::fields(self.opcode, b))
+                .unwrap_or(Fields::Opaque(b)),
         })
     }
 }
@@ -573,6 +577,7 @@ impl LaneMinionSpawn {
 #[derive(Debug, PartialEq)]
 pub enum Fields<'a> {
     Live(LiveFields<'a>),
+    StaticAction(StaticAction<'a>),
     HeaderOnly {
         remaining: &'a [u8],
     },
