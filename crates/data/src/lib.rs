@@ -1,11 +1,19 @@
 //! Read the separately supplied 4.13.4 delivery. Unknown fields retain their original names and values.
+pub mod combat_content;
 mod difficulty;
 mod entity_template;
 mod extra;
 mod item_bonuses;
+pub mod items;
+mod native_maps;
 mod navmesh;
+pub mod reference;
+pub use native_maps::{
+    Area, CampOrMode, CampSpawn, ExtractedParameter, LevelLayout, MeshHeader, MeshInfo, NativeMaps,
+    PlacedCamp, Placement,
+};
 pub use navmesh::{NavMesh, NavMeshError};
-mod skins;
+pub mod skins;
 mod unit_rewards;
 pub use difficulty::BotDifficulty;
 pub use entity_template::EntityTemplate;
@@ -286,6 +294,9 @@ pub struct GameData {
     pub skin_names: Vec<String>,
 }
 impl GameData {
+    pub fn references(&self) -> Option<&reference::References> {
+        self.extra.references.as_ref()
+    }
     pub fn load(dir: impl AsRef<Path>) -> io::Result<Self> {
         Self::load_with_extra(dir, None)
     }
@@ -315,6 +326,9 @@ impl GameData {
     pub fn ability_ranks(&self, hero: &str, ability: &str, variable: &str) -> Option<&[f32]> {
         self.extra.ranks(hero, ability, variable)
     }
+    pub fn item_catalog(&self) -> Option<&items::ItemCatalog> {
+        self.extra.items.as_ref()
+    }
     pub fn standard_5v5_items(&self) -> Option<&std::collections::BTreeSet<String>> {
         self.extra.standard_five()
     }
@@ -323,6 +337,9 @@ impl GameData {
     }
     pub fn unit(&self, name: &str) -> Option<&Unit> {
         self.units.iter().find(|v| v.name == name)
+    }
+    pub fn native_maps(&self) -> Option<&NativeMaps> {
+        self.extra.native_maps.as_ref()
     }
     pub fn type_id(&self, name: &str) -> Option<u16> {
         self.manifest

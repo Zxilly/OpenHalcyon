@@ -1,12 +1,6 @@
 //! Startup indexes for the separately distributed CE data supplement.
-use super::read;
-use serde::Deserialize;
 use sha2::Sha256;
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    io,
-    path::Path,
-};
+use std::{collections::BTreeSet, io, path::Path};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AbilityParameter {
@@ -25,31 +19,15 @@ impl AbilityParameter {
     }
 }
 
-#[derive(Debug, Deserialize)]
-struct RankedVariable {
-    name: String,
-    ranks: Box<[f32]>,
-}
-
-#[derive(Deserialize)]
-struct Ability {
-    ability_id: String,
-    variables: Vec<RankedVariable>,
-}
-
-#[derive(Deserialize)]
-struct Hero {
-    hero_id: String,
-    abilities: Vec<Ability>,
-}
-
 #[derive(Default, Debug)]
 pub struct ExtraData {
+    pub(crate) references: Option<crate::reference::References>,
+    pub(crate) native_maps: Option<crate::NativeMaps>,
     pub(crate) solo_lane_rewards: Option<crate::SoloLaneRewards>,
     pub(crate) item_bonuses: crate::item_bonuses::ItemBonuses,
     pub(crate) skins: Option<crate::skins::SkinIndex>,
-    heroes: BTreeMap<String, BTreeMap<String, Vec<RankedVariable>>>,
-    standard_five: Option<BTreeSet<String>>,
+    combat: crate::combat_content::CombatContent,
+    pub(crate) items: Option<crate::items::ItemCatalog>,
 }
 
 impl ExtraData {
@@ -59,101 +37,64 @@ impl ExtraData {
         hero_names: &[String],
         skin_names: &[String],
     ) -> io::Result<Self> {
-        let mut heroes = BTreeMap::new();
-        for hero in read::<Vec<Hero>>(dir, "abilities.json", hash)? {
-            let mut abilities = BTreeMap::new();
-            for ability in hero.abilities {
-                if ability.variables.iter().any(|v| {
-                    v.name.is_empty()
-                        || v.ranks.is_empty()
-                        || v.ranks.iter().any(|r| !r.is_finite())
-                }) {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        format!("invalid ranks for {} in abilities.json", ability.ability_id),
-                    ));
-                }
-                if abilities
-                    .insert(ability.ability_id, ability.variables)
-                    .is_some()
-                {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "duplicate ability ID for one hero in abilities.json",
-                    ));
-                }
-            }
-            if heroes.insert(hero.hero_id, abilities).is_some() {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "duplicate hero ID in abilities.json",
-                ));
-            }
-        }
-        #[derive(Deserialize)]
-        struct Stores {
-            #[serde(rename = "ItemStore_Standard_5v5")]
-            standard_five: BTreeSet<String>,
-        }
-        let stores: Stores = read(dir, "item_stores.json", hash)?;
+        let combat = crate::combat_content::CombatContent::load(dir, hash)?;
+        let items = crate::items::ItemCatalog::load(dir, hash)?;
         Ok(Self {
-            solo_lane_rewards: Some(crate::SoloLaneRewards::load(dir, hash)?),
-            item_bonuses: crate::item_bonuses::ItemBonuses::load(dir, hash)?,
+            references: Some(crate::reference::References::load(dir)?),
+            native_maps: dir
+                .join("maps/navmesh_index.json")
+                .try_exists()?
+                .then(|| crate::NativeMaps::load(dir, hash))
+                .transpose()?,
+            solo_lane_rewards: Some(crate::SoloLaneRewards::from_rows(combat.units())?),
+            item_bonuses: crate::item_bonuses::ItemBonuses::from_catalog(&items)?,
             skins: Some(crate::skins::SkinIndex::load(
                 dir, hash, hero_names, skin_names,
             )?),
-            heroes,
-            standard_five: Some(stores.standard_five),
+            combat,
+            items: Some(items),
         })
     }
 
     pub(super) fn ranks(&self, hero: &str, ability: &str, name: &str) -> Option<&[f32]> {
-        let variables = self.heroes.get(hero)?.get(ability)?;
-        let mut matches = variables
-            .iter()
-            .filter(|v| v.name.eq_ignore_ascii_case(name));
-        let first = matches.next()?;
-        // Some extracted abilities attach two different variables with the same label.
-        matches.next().is_none().then_some(first.ranks.as_ref())
+        self.combat
+            .ability(hero, ability)?
+            .variable(name)?
+            .ranks
+            .as_deref()
+    }
+    pub fn combat_content(&self) -> &crate::combat_content::CombatContent {
+        &self.combat
     }
 
     pub(super) fn standard_five(&self) -> Option<&BTreeSet<String>> {
-        self.standard_five.as_ref()
+        self.items.as_ref().map(|i| i.standard_five())
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
 
     #[test]
     fn ambiguous_labels_do_not_select_an_arbitrary_rank_table() {
-        let variable = |name: &str, first| RankedVariable {
+        use crate::combat_content::{Ability, AbilityVariable};
+        let variable = |name: &str, first| AbilityVariable {
             name: name.into(),
-            ranks: Box::new([first, first + 1.]),
+            ranks: Some(vec![first, first + 1.]),
+            ..Default::default()
         };
-        let data = ExtraData {
-            heroes: BTreeMap::from([(
-                "FixtureHero".into(),
-                BTreeMap::from([(
-                    "AbilityA".into(),
-                    vec![
-                        variable("Range", 12.),
-                        variable("Energy Cost", 30.),
-                        variable("ENERGY COST", 45.),
-                    ],
-                )]),
-            )]),
+        let ability = Ability {
+            variables: vec![
+                variable("Range", 12.),
+                variable("Energy Cost", 30.),
+                variable("ENERGY COST", 45.),
+            ],
             ..Default::default()
         };
         assert_eq!(
-            data.ranks("FixtureHero", "AbilityA", "range"),
+            ability.variable("range").unwrap().ranks.as_deref(),
             Some([12., 13.].as_slice())
         );
-        assert!(
-            data.ranks("FixtureHero", "AbilityA", "energy cost")
-                .is_none()
-        );
-        assert!(data.ranks("FixtureHero", "AbilityB", "Range").is_none());
+        assert!(ability.variable("energy cost").is_none());
     }
 }

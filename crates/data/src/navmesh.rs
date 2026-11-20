@@ -4,6 +4,9 @@ use std::{
     ops::Range,
 };
 
+#[path = "navmesh_route.rs"]
+mod route;
+
 const NAV_MAGIC: u32 = 0x444e_4156;
 const NAV_VERSION: u32 = 7;
 const TILE_HEADER_BYTES: usize = 100;
@@ -25,18 +28,20 @@ type Result<T> = std::result::Result<T, NavMeshError>;
 type Vertex = [f32; 3];
 type Triangle = [Vertex; 3];
 
-/// A local, single-layer 32-bit Detour mesh. This index gives ground
-/// containment and height, without routing, LOS or dynamic obstacles.
+/// A single-layer 32-bit Detour mesh with ground containment and routing.
+/// The graph excludes off-mesh links and dynamic obstacles.
 #[derive(Debug)]
 pub struct NavMesh {
     origin: Vertex,
     tile_width: f32,
     tile_depth: f32,
     tiles: BTreeMap<(i32, i32), Tile>,
+    graph: route::Graph,
 }
 
 #[derive(Debug)]
 struct Tile {
+    climb: f32,
     bounds: [Vertex; 2],
     vertices: Vec<Vertex>,
     polygons: Vec<Polygon>,
@@ -45,6 +50,8 @@ struct Tile {
 
 #[derive(Debug)]
 struct Polygon {
+    row: u16,
+    neighbors: [u16; MAX_VERTICES_PER_POLYGON],
     vertices: [u16; MAX_VERTICES_PER_POLYGON],
     count: usize,
     detail: Range<usize>,
@@ -122,6 +129,7 @@ impl NavMesh {
             tile_width,
             tile_depth,
             tiles: BTreeMap::new(),
+            graph: route::Graph::default(),
         };
         let mut references = BTreeSet::new();
         for _ in 0..count {
@@ -138,6 +146,7 @@ impl NavMesh {
         if !file.0.is_empty() {
             return Err(NavMeshError("trailing navmesh data"));
         }
+        mesh.graph = route::Graph::build(&mesh.tiles);
         Ok(mesh)
     }
 
@@ -203,8 +212,10 @@ impl Tile {
         let x = u32_at(header, 8) as i32;
         let z = u32_at(header, 12) as i32;
         let bounds = [vertex_at(header, 72)?, vertex_at(header, 84)?];
-        if (0..3).any(|axis| bounds[0][axis] > bounds[1][axis]) {
-            return Err(NavMeshError("inverted Detour tile bounds"));
+        let climb = float_at(header, 68);
+        if (0..3).any(|axis| bounds[0][axis] > bounds[1][axis]) || !climb.is_finite() || climb < 0.
+        {
+            return Err(NavMeshError("invalid Detour tile bounds or climb"));
         }
 
         let count = |offset| u32_at(header, offset) as usize;
@@ -245,6 +256,7 @@ impl Tile {
         }
 
         let mut tile = Self {
+            climb,
             bounds,
             vertices,
             polygons: Vec::with_capacity(detail_count),
@@ -289,6 +301,10 @@ impl Tile {
             )?;
             if flags != 0 {
                 tile.polygons.push(Polygon {
+                    row: i as u16,
+                    neighbors: std::array::from_fn(|i| {
+                        u16::from_le_bytes([row[16 + i * 2], row[17 + i * 2]])
+                    }),
                     vertices: indices,
                     count,
                     detail,
@@ -509,6 +525,13 @@ mod tests {
         assert_eq!(mesh.height_at(2.5, 0.5), Some(3.));
         assert_eq!(mesh.height_at(2., 0.), Some(1.));
         assert_eq!(mesh.height_at(1.5, 1.5), None);
+        assert!(mesh.nearest_ground([1.5, 1.5], 0.1).is_none());
+        let [x, _, z] = mesh.nearest_ground([1.5, 1.5], 1.).unwrap();
+        assert_eq!([x, z], [2., 1.5]);
+        assert!(mesh.route([0.1, 0.1], [2.1, 0.1], 0.).is_none());
+        let route = mesh.route([0.1, 0.1], [2.1, 0.1], 1.2).unwrap();
+        assert_eq!(route.len(), 1);
+        assert!((route[0][0] - 2.).abs() < 0.001 && route[0][1].abs() < 0.001);
         assert_eq!(mesh.height_at(1., 1.5), None);
         assert_eq!(mesh.height_at(f32::NAN, 0.), None);
         assert_eq!(mesh.height_at(f32::MAX, 0.), None);
@@ -542,6 +565,8 @@ mod tests {
         let aral_without_pads = open("A001__navMesh_aramWOSpawn.navmesh");
         assert_eq!(solo.tile_count(), 1_777);
         assert_eq!(aral.tile_count(), 511);
+        assert!(solo.route([-90., 0.], [90., 0.], 1.).is_some());
+        assert!(aral.route([-78.18, 0.88], [79.66, -0.91], 1.).is_some());
         for (x, z) in [(90., 0.), (94., -6.), (101., -3.), (101., 3.), (94., 6.)] {
             assert!(solo.height_at(-x, z).is_some());
             assert!(solo.height_at(x, z).is_some());

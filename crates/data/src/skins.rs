@@ -1,6 +1,6 @@
 use crate::GameData;
 use halcyon_protocol::skin_hash;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -8,30 +8,73 @@ use std::{
     path::Path,
 };
 
-#[derive(Deserialize)]
-struct Catalog {
-    heroes: Vec<Hero>,
-    official_skins: Vec<OfficialSkin>,
+#[derive(Debug, Default, Deserialize, Serialize)]
+pub struct Catalog {
+    pub heroes: Vec<Hero>,
+    pub official_skins: Vec<OfficialSkin>,
+    pub official_themes: Vec<Theme>,
+    pub cff0_skin_manifest: Vec<Skin>,
+    pub lobby_manifests: BTreeMap<String, Vec<String>>,
+    pub skin_hash_algorithm: String,
 }
-#[derive(Deserialize)]
-struct Hero {
-    hero_id: String,
-    default_skin: String,
-    default_skin_hash_u32: u32,
-    skins: Vec<Skin>,
+#[derive(Debug, Default, Deserialize, Serialize)]
+pub struct Hero {
+    pub hero_id: String,
+    pub entity_type_id: Option<u16>,
+    pub name_en: String,
+    pub name_zh: Option<String>,
+    pub role_en: Option<String>,
+    pub tagline_en: Option<String>,
+    pub default_skin: String,
+    pub default_skin_hash_u32: u32,
+    pub default_skin_hash_hex: String,
+    pub skins: Vec<Skin>,
 }
-#[derive(Deserialize)]
-struct Skin {
+#[derive(Debug, Default, Deserialize, Serialize)]
+pub struct Skin {
     #[serde(rename = "skinKey")]
-    name: String,
-    skin_hash_u32: u32,
+    pub name: String,
+    pub skin_hash_u32: u32,
+    pub skin_hash_hex: String,
+    pub tier: Option<u16>,
+    #[serde(rename = "themeKey")]
+    pub theme_key: Option<String>,
 }
-#[derive(Deserialize)]
-struct OfficialSkin {
+#[derive(Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Theme {
+    pub theme_key: String,
+    pub hero_key: String,
+}
+#[derive(Debug, Default, Deserialize, Serialize)]
+pub struct CardCost {
+    #[serde(rename = "cardID")]
+    pub card_id: String,
+    pub amount: u32,
+}
+#[derive(Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OfficialSkin {
     #[serde(rename = "heroKey")]
-    owner: String,
-    #[serde(flatten)]
-    skin: Skin,
+    pub owner: String,
+    pub skin_key: String,
+    #[serde(rename = "skin_hash_u32", skip_serializing)]
+    pub skin_hash_u32: u32,
+    pub image_name: String,
+    pub tier: u16,
+    pub priority: i32,
+    pub theme_key: Option<String>,
+    pub obtainable: bool,
+    pub available_on_epoch: i64,
+    pub advertise_coming_soon: bool,
+    pub prereq: String,
+    pub can_prorate: bool,
+    pub single_card: bool,
+    pub card_costs: Vec<CardCost>,
+    pub allow_weave: bool,
+    pub season_chest_unlock: bool,
+    pub visible: bool,
+    pub limited_edition_end_epoch: i64,
 }
 
 #[derive(Debug)]
@@ -40,7 +83,7 @@ struct Choices {
     advertised: BTreeSet<u32>,
 }
 #[derive(Debug)]
-pub(crate) struct SkinIndex(BTreeMap<String, Choices>);
+pub(crate) struct SkinIndex(BTreeMap<String, Choices>, Catalog);
 
 impl SkinIndex {
     pub(crate) fn load(
@@ -69,15 +112,15 @@ impl SkinIndex {
                 .strip_prefix('*')
                 .and_then(|h| h.strip_suffix('*'))
                 .ok_or_else(invalid)?;
-            if skin_hash(&record.skin.name) != record.skin.skin_hash_u32
-                || owners.insert(record.skin.name.as_str(), owner).is_some()
+            if skin_hash(&record.skin_key) != record.skin_hash_u32
+                || owners.insert(record.skin_key.as_str(), owner).is_some()
             {
                 return Err(invalid());
             }
         }
         let mut attached = BTreeSet::new();
         let mut index = BTreeMap::new();
-        for hero in catalog.heroes {
+        for hero in &catalog.heroes {
             if skin_hash(&hero.default_skin) != hero.default_skin_hash_u32 {
                 return Err(invalid());
             }
@@ -88,7 +131,7 @@ impl SkinIndex {
                 return Err(invalid());
             }
             let mut allowed = BTreeSet::new();
-            for skin in hero.skins {
+            for skin in &hero.skins {
                 if owners.get(skin.name.as_str()).copied() != Some(hero.hero_id.as_str())
                     || skin_hash(&skin.name) != skin.skin_hash_u32
                 {
@@ -111,7 +154,7 @@ impl SkinIndex {
                 }
                 if index
                     .insert(
-                        hero.hero_id,
+                        hero.hero_id.clone(),
                         Choices {
                             default: hero.default_skin_hash_u32,
                             advertised: allowed,
@@ -126,7 +169,14 @@ impl SkinIndex {
         if attached.len() != owners.len() {
             return Err(invalid());
         }
-        Ok(Self(index))
+        if catalog
+            .cff0_skin_manifest
+            .iter()
+            .any(|s| skin_hash(&s.name) != s.skin_hash_u32)
+        {
+            return Err(invalid());
+        }
+        Ok(Self(index, catalog))
     }
 
     fn select(&self, hero: &str, requested: Option<u32>) -> Option<u32> {
@@ -140,6 +190,9 @@ impl SkinIndex {
 }
 
 impl GameData {
+    pub fn cosmetics(&self) -> Option<&Catalog> {
+        self.extra.skins.as_ref().map(|index| &index.1)
+    }
     /// Resolves a selection against the optional attached ownership and advertised draft catalog.
     pub fn indexed_skin(&self, hero: &str, requested: Option<u32>) -> Option<u32> {
         self.extra.skins.as_ref()?.select(hero, requested)
@@ -153,6 +206,7 @@ mod tests {
         Skin {
             name: name.into(),
             skin_hash_u32: skin_hash(name),
+            ..Default::default()
         }
     }
     fn catalog() -> Catalog {
@@ -163,14 +217,18 @@ mod tests {
                 default_skin: names[0].into(),
                 default_skin_hash_u32: skin_hash(names[0]),
                 skins: names.map(skin).into(),
+                ..Default::default()
             }],
             official_skins: names
                 .into_iter()
                 .map(|s| OfficialSkin {
                     owner: "*Hero009*".into(),
-                    skin: skin(s),
+                    skin_key: s.into(),
+                    skin_hash_u32: skin_hash(s),
+                    ..Default::default()
                 })
                 .collect(),
+            ..Default::default()
         }
     }
     #[test]
