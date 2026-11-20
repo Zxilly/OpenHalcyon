@@ -107,6 +107,18 @@ impl Stream {
                         e.typed += 1;
                     }
                     Ok(Fields::ActionWords(_))
+                        if m.is(halcyon_protocol::Opcode::AutoOrbit)
+                            || m.is(halcyon_protocol::Opcode::CancelAutoOrbit) =>
+                    {
+                        let orbit = m
+                            .orbit_action()
+                            .ok_or_else(|| invalid("invalid orbit action"))?;
+                        if orbit.to_message() != m {
+                            return Err(invalid("orbit action did not reproduce the frame"));
+                        }
+                        e.typed += 1;
+                    }
+                    Ok(Fields::ActionWords(_))
                         if m.is(halcyon_protocol::Opcode::PlayPfxAtLocation) =>
                     {
                         let effect = m

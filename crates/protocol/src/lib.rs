@@ -16,6 +16,8 @@ pub mod player_actions;
 pub use actor_flags::{ActorFlagChange, ActorFlags};
 mod tower_aggro;
 pub use tower_aggro::TowerAggro;
+mod orbit;
+pub use orbit::{OrbitAction, OrbitPosition};
 mod zone;
 pub use zone::ZoneAction;
 mod solo_structure;
