@@ -1,4 +1,4 @@
-"""Compare two release native_nav_bench binaries on the same full Solo Bot match."""
+"""Compare release builds on a deterministic native Solo Bot match."""
 
 import argparse
 import csv
@@ -8,17 +8,22 @@ import sys
 
 
 def run(binary, args):
-    command = [binary, args.delivery, args.extra, "room-effects"]
+    command = [binary, args.delivery, args.extra, args.scenario]
     output = subprocess.run(command, capture_output=True, text=True, check=True).stdout
-    room, effects = csv.reader(output.splitlines())
+    room, *extra = csv.reader(output.splitlines())
     label, tick, winner, seconds, trace, state = room
-    cast_label, gift_name, gifts, bulwark_name, bulwarks = effects
-    if (label, cast_label, gift_name, bulwark_name) != (
-        "room", "effect_casts", "gift_of_fire", "bright_bulwark"
-    ):
+    if label != "room":
         raise ValueError(f"Unexpected match output: {output}")
-    if min(int(gifts), int(bulwarks)) <= 0:
-        raise ValueError(f"Match did not exercise both spells: {effects}")
+    gifts = bulwarks = ""
+    if args.scenario == "room-effects":
+        [effects] = extra
+        cast_label, gift_name, gifts, bulwark_name, bulwarks = effects
+        if (cast_label, gift_name, bulwark_name) != (
+            "effect_casts", "gift_of_fire", "bright_bulwark"
+        ) or min(int(gifts), int(bulwarks)) <= 0:
+            raise ValueError(f"Expected both benchmark spells: {effects}")
+    elif extra:
+        raise ValueError(f"Unexpected match output: {output}")
     return float(seconds), (tick, winner, trace, state, gifts, bulwarks)
 
 
@@ -26,6 +31,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ("baseline", "candidate", "delivery", "extra"):
         parser.add_argument(name)
+    parser.add_argument("--scenario", choices=("room", "room-effects"), default="room-effects")
     parser.add_argument("--pairs", type=int, default=7)
     args = parser.parse_args()
     if args.pairs < 1:
