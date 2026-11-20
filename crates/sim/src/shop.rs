@@ -551,6 +551,7 @@ impl BasicItem {
 
 #[derive(Serialize)]
 struct Offer {
+    standard_5v5: bool,
     combine: u32,
     bonuses: Vec<(u8, f32)>,
 }
@@ -564,6 +565,7 @@ impl Default for Shop {
             offers: OFFERS
                 .iter()
                 .map(|d| Offer {
+                    standard_5v5: true,
                     combine: d.combine,
                     bonuses: d.bonuses.to_vec(),
                 })
@@ -574,6 +576,9 @@ impl Default for Shop {
 impl Shop {
     pub fn load(data: &GameData) -> Result<Self, String> {
         let mut shop = Self::default();
+        if let Some(names) = data.standard_5v5_items() {
+            shop.set_standard_5v5(names);
+        }
         for d in &OFFERS {
             let offer = &mut shop.offers[d.kind as usize];
             let Some(row) = data.items.iter().find(|row| row.id == d.name) else {
@@ -608,6 +613,12 @@ impl Shop {
             }
         }
         Ok(shop)
+    }
+
+    fn set_standard_5v5(&mut self, names: &std::collections::BTreeSet<String>) {
+        for (offer, definition) in self.offers.iter_mut().zip(&OFFERS) {
+            offer.standard_5v5 = names.contains(definition.name);
+        }
     }
 
     fn cost(&self, item: BasicItem) -> u64 {
@@ -674,7 +685,10 @@ impl World {
         if h.kind != Kind::Hero || !self.layout.at_base(h, true) {
             return Err("outside base shop");
         }
-        if self.shop.offers[item as usize].combine == 0 {
+        let offer = &self.shop.offers[item as usize];
+        if offer.combine == 0
+            || (matches!(self.layout, Layout::SoloMid { .. }) && !offer.standard_5v5)
+        {
             return Err("item unavailable");
         }
         let mut consumed = Vec::new();
@@ -784,6 +798,41 @@ pub(super) fn mitigated(raw: f32, defense: f32, pierce: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn standard_store_filters_supported_solo_purchases_before_consuming_anything() {
+        let names = [
+            WeaponBlade.definition().name.to_owned(),
+            "Item_Cheater".to_owned(),
+        ]
+        .into();
+        let mut world = World::new(1, 1);
+        world.use_solo_mid_lane().unwrap();
+        world.shop.set_standard_5v5(&names);
+        world.entities[0].gold = 20_000;
+        let id = world.entities[0].id;
+        let blade = world.purchase(id, WeaponBlade).unwrap();
+        let balance = world.entities[0].gold;
+        assert_eq!(world.try_purchase(id, HeavySteel), Err("item unavailable"));
+        assert_eq!(world.entities[0].inventory, [blade.granted]);
+        assert_eq!(world.entities[0].gold, balance);
+        world.shop.set_standard_5v5(&Default::default());
+        assert_eq!(world.try_purchase(id, WeaponBlade), Err("item unavailable"));
+        for aral in [false, true] {
+            let mut other = World::new(2, if aral { 6 } else { 1 });
+            if aral {
+                other.use_six_human_roster().unwrap();
+                other.use_aral_lane().unwrap();
+            } else {
+                other.use_solo_mid_lane().unwrap();
+            }
+            if aral {
+                other.shop.set_standard_5v5(&Default::default());
+            }
+            let actor = other.entities[0].id;
+            assert!(other.purchase(actor, WeaponBlade).is_ok());
+        }
+    }
+
     #[test]
     fn every_recorded_supported_recipe_debits_and_consumes_the_correct_instances() {
         for (index, definition) in OFFERS.iter().enumerate() {
