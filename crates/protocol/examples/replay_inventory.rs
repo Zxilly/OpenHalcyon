@@ -1,4 +1,6 @@
 //! Print aggregate coverage for a directory containing private VGR chunks.
+#[path = "support/fixed_bodies.rs"]
+mod fixed_bodies;
 use halcyon_protocol::{AndroidLayout, Fields, READ_SIZES, ReplayReader, ReplayWriter};
 use std::{
     collections::BTreeMap,
@@ -42,6 +44,7 @@ fn inspect(path: &Path, inventory: &mut BTreeMap<u16, Counts>) -> io::Result<()>
             )));
         }
         let message = record.message;
+        fixed_bodies::verify(&message)?;
         let counts = inventory.entry(message.opcode).or_default();
         let context = |error: io::Error| {
             io::Error::new(

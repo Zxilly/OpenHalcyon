@@ -1,4 +1,6 @@
 //! Offline inventory of length-prefixed CE frames inside proxy segment archives.
+#[path = "support/fixed_bodies.rs"]
+mod fixed_bodies;
 use halcyon_protocol::{
     ACK_FRAME, AndroidLayout, Fields, MAX_PAYLOAD, MatchCipher, parse_hello, read_frame,
 };
@@ -74,6 +76,7 @@ impl Stream {
                 if self.reencoded != left[..n + 2] {
                     return Err(invalid("encrypted frame did not reproduce its input bytes"));
                 }
+                fixed_bodies::verify(&m)?;
                 let e = ops.entry(m.opcode).or_default();
                 e.min = if e.frames == 0 {
                     m.body.len()

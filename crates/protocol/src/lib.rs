@@ -9,6 +9,8 @@ use std::io::{self, Read, Write};
 
 mod actor_flags;
 pub mod async_frame;
+mod fixed_body;
+pub use fixed_body::{DeathBody, ImpactBody, MoveCmd, PositionBody, VisibilityBody};
 pub mod ce;
 pub use actor_flags::{ActorFlagChange, ActorFlags};
 mod tower_aggro;
@@ -123,10 +125,13 @@ impl Message {
         ))
     }
     pub fn actor_visibility(actor: u32, index: u8, state: u8, masks: [u8; 2]) -> Self {
-        let mut body = [0; 14];
-        body[..4].copy_from_slice(&actor.to_be_bytes());
-        body[4..8].copy_from_slice(&[index, state, masks[0], masks[1]]);
-        Self::new(Opcode::EntityState as u16, body)
+        VisibilityBody {
+            actor,
+            index,
+            state,
+            masks,
+        }
+        .message(Opcode::EntityState, 14)
     }
     /// The charge operand is an unsigned wire word; its interpretation depends on the mode.
     pub fn modify_ability_charges(owner: u32, ability_slot: u32, operand: u32, mode: u8) -> Self {
@@ -146,17 +151,15 @@ impl Message {
         Self::known(crate::Opcode::ClockSync, time.to_be_bytes())
     }
     pub fn movement(x: f32, y: f32) -> Self {
-        Self::known(
-            crate::Opcode::MoveCmd,
-            [x.to_be_bytes(), y.to_be_bytes()].concat(),
-        )
+        MoveCmd { x, y }.message(Opcode::MoveCmd, MoveCmd::BODY_LEN)
     }
     pub fn position(entity: u16, x: f32, y: f32) -> Self {
-        let mut b = vec![0, 0];
-        b.extend(entity.to_be_bytes());
-        b.extend(x.to_be_bytes());
-        b.extend(y.to_be_bytes());
-        Self::known(crate::Opcode::Position, b)
+        PositionBody {
+            actor: entity.into(),
+            x,
+            y,
+        }
+        .message(Opcode::Position, 12)
     }
     pub fn entity_stat(entity: u16, value: f32, stat: u8) -> Self {
         ResourceChange {
@@ -184,10 +187,7 @@ impl Message {
         Self::known(crate::Opcode::ActorRespawnTimer, body)
     }
     pub fn actor_death(victim: u32, source: u32) -> Self {
-        let mut body = vec![0; 14];
-        body[..4].copy_from_slice(&victim.to_be_bytes());
-        body[4..8].copy_from_slice(&source.to_be_bytes());
-        Self::known(crate::Opcode::ActorDeath, body)
+        DeathBody { victim, source }.message(Opcode::ActorDeath, 14)
     }
     pub fn health_impact(
         target: u32,
@@ -197,14 +197,15 @@ impl Message {
         byte: u8,
         flag: u8,
     ) -> Self {
-        let mut body = vec![0; 22];
-        body[..4].copy_from_slice(&target.to_be_bytes());
-        body[4..8].copy_from_slice(&source.to_be_bytes());
-        body[8..12].copy_from_slice(&operand.to_be_bytes());
-        body[12..14].copy_from_slice(&word.to_be_bytes());
-        body[14] = byte;
-        body[15] = flag;
-        Self::known(crate::Opcode::HealthImpact, body)
+        ImpactBody {
+            target,
+            source,
+            operand,
+            word,
+            byte,
+            flag,
+        }
+        .message(Opcode::HealthImpact, 22)
     }
     pub fn fields(&self) -> io::Result<Fields<'_>> {
         let b = &self.body;
@@ -358,12 +359,11 @@ impl Message {
                 }
             }
             Some(
-                Opcode::FireProjectile
+                op @ (Opcode::FireProjectile
                 | Opcode::FirePointProjectile
                 | Opcode::FireDirectedProjectile
-                | Opcode::DetonateProjectile,
-            ) => ProjectileAction::decode(self.opcode, b)
-                .map_or(Fields::Opaque(b), Fields::Projectile),
+                | Opcode::DetonateProjectile),
+            ) => ProjectileAction::read_body(op, b).map_or(Fields::Opaque(b), Fields::Projectile),
             Some(Opcode::PlayAbility) if matches!(b.len(), 9 | 14) => Fields::AbilityAction {
                 actor: number(0)?,
                 reference: number(4)?,
@@ -393,20 +393,33 @@ impl Message {
                 config_value: float(12)?,
                 raw: b[16..22].try_into().unwrap(),
             },
-            Some(Opcode::ActorDeath) => Fields::ActorDeath {
-                victim: number(0)?,
-                source: number(4)?,
-                remaining: &b[8..],
-            },
-            Some(Opcode::HealthImpact) => Fields::HealthImpact {
-                target: number(0)?,
-                source: number(4)?,
-                operand: float(8)?,
-                word: word(12)?,
-                byte: *b.get(14).ok_or(invalid("missing impact byte"))?,
-                flag: *b.get(15).ok_or(invalid("missing impact flag"))?,
-                remaining: &b[16..],
-            },
+            Some(Opcode::ActorDeath) => {
+                let fixed_body::DeathBody { victim, source } = DeathBody::read_body(b)?;
+                Fields::ActorDeath {
+                    victim,
+                    source,
+                    remaining: &b[8..],
+                }
+            }
+            Some(Opcode::HealthImpact) => {
+                let fixed_body::ImpactBody {
+                    target,
+                    source,
+                    operand,
+                    word,
+                    byte,
+                    flag,
+                } = ImpactBody::read_body(b)?;
+                Fields::HealthImpact {
+                    target,
+                    source,
+                    operand,
+                    word,
+                    byte,
+                    flag,
+                    remaining: &b[16..],
+                }
+            }
             Some(Opcode::GameSetup) => Fields::GameSetup {
                 first_word: number(0)?,
                 state_input: number(4)?,
@@ -427,13 +440,21 @@ impl Message {
                 y: float(5)?,
                 remaining: &b[9..],
             },
-            Some(Opcode::EntityState) if matches!(b.len(), 8 | 14) => Fields::ActorVisibility {
-                actor: number(0)?,
-                index: b[4],
-                state: b[5],
-                masks: [b[6], b[7]],
-                remaining: &b[8..],
-            },
+            Some(Opcode::EntityState) if matches!(b.len(), 8 | 14) => {
+                let VisibilityBody {
+                    actor,
+                    index,
+                    state,
+                    masks,
+                } = VisibilityBody::read_body(b)?;
+                Fields::ActorVisibility {
+                    actor,
+                    index,
+                    state,
+                    masks,
+                    remaining: &b[VisibilityBody::BODY_LEN..],
+                }
+            }
             Some(Opcode::EntityState | Opcode::EntityProp | Opcode::EntityData) => {
                 Fields::EntityPrefix {
                     kind: Opcode::try_from(self.opcode).expect("matched known opcode"),
@@ -556,15 +577,19 @@ impl Message {
 
             Some(Opcode::Heartbeat) => Fields::Heartbeat,
             Some(Opcode::HeroLock | Opcode::LockSelection) => Fields::HeroLock,
-            Some(Opcode::MoveCmd) => Fields::Movement {
-                x: float(0)?,
-                y: float(4)?,
-            },
-            Some(Opcode::Position) => Fields::Position {
-                entity: eid()?,
-                x: float(4)?,
-                y: float(8)?,
-            },
+            Some(Opcode::MoveCmd) => {
+                let MoveCmd { x, y } = MoveCmd::read_body(b)?;
+                Fields::Movement { x, y }
+            }
+            Some(Opcode::Position) => {
+                let fixed_body::PositionBody { actor, x, y } = PositionBody::read_body(b)?;
+                // The public Fields projection has always reported the low halfword.
+                Fields::Position {
+                    entity: actor as u16,
+                    x,
+                    y,
+                }
+            }
             Some(Opcode::EntityStat) => Fields::EntityStat {
                 entity: eid()?,
                 value: float(4)?,
