@@ -898,6 +898,20 @@ mod tests {
             }
             body[..4].copy_from_slice(&(-74.0_f32).to_be_bytes());
             let cast = Message::known(crate::Opcode::RequestPointAbility, body);
+            let cancel = Message::known(crate::Opcode::RequestCancelAbility, [3, 0, 0, 0, 0, 0]);
+            let packet = [
+                cipher.encode(&cast).unwrap(),
+                cipher.encode(&cancel).unwrap(),
+            ]
+            .concat();
+            socket.write_all(&packet).await.unwrap();
+            assert_eq!(
+                until(socket, &cipher, crate::wire_opcode::RequestCancelAbility).await,
+                cancel
+            );
+            let confirmed = next(socket, &cipher).await;
+            assert!(confirmed.is(crate::Opcode::CancelAbility));
+            assert_eq!(&confirmed.body[..10], &[0, 0, 5, 220, 0, 0, 0, 3, 0, 0]);
             socket
                 .write_all(&cipher.encode(&cast).unwrap())
                 .await

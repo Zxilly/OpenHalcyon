@@ -77,7 +77,7 @@ pub(super) fn receive(room: &mut Room, seat: usize, channel: usize, m: Message) 
             let mut body = [0; 10];
             body[..4].copy_from_slice(&u32::from(wire_id(id)).to_be_bytes());
             body[4..8].copy_from_slice(&u32::from(selector).to_be_bytes());
-            vec![Message::known(crate::Opcode::CancelAbility, body)]
+            vec![m, Message::known(crate::Opcode::CancelAbility, body)]
         }
         Some(crate::Opcode::RequestUpgradeAbility)
             if m.body.len() == 6 && m.body[1..] == [0; 5] =>
@@ -758,10 +758,13 @@ mod tests {
         assert!(room.receive(1, 0, cancel(3, 0)).unwrap().is_empty());
         assert_eq!(
             room.receive(0, 0, cancel(3, 0)).unwrap(),
-            [Message::known(
-                crate::Opcode::CancelAbility,
-                [0, 0, 5, 220, 0, 0, 0, 3, 0, 0]
-            )]
+            [
+                cancel(3, 0),
+                Message::known(
+                    crate::Opcode::CancelAbility,
+                    [0, 0, 5, 220, 0, 0, 0, 3, 0, 0]
+                )
+            ]
         );
         assert!(room.receive(0, 0, cancel(3, 0)).unwrap().is_empty());
         for _ in 0..12 {
