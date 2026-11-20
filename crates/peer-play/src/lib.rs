@@ -1,15 +1,11 @@
 use anyhow::{Context, ensure};
-use halcyon_platform::{AbortReason, LobbyPhase};
-#[derive(serde::Serialize, serde::Deserialize)]
-struct AbortedRoom {
-    reason: AbortReason,
-}
 use halcyon_federation::{Capacity, Federation};
 use halcyon_game::Rooms;
 use halcyon_matchmaking::{
     Allocation, Command, Endpoint, Phase, Queue, Ticket, TicketPhase, TicketRef, WorkingSet,
     result_digest,
 };
+use halcyon_platform::{AbortReason, LobbyPhase};
 use halcyon_platform::{
     AppState, BotDifficulty, FederatedIntent, PlatformError, Reservation, plan_teams_for_mode,
 };
@@ -28,6 +24,11 @@ mod journal;
 mod latency;
 mod observation;
 use journal::Journal;
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct AbortedRoom {
+    reason: AbortReason,
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Config {

@@ -8,7 +8,7 @@ mod event_body;
 mod federation;
 mod native_offer;
 use event_body::EventBody;
-pub use event_body::{AbortReason, LobbyPhase};
+pub use event_body::{AbortReason, EventKind, LobbyPhase};
 mod notification;
 pub use native_offer::{NativeOffer, NativeSeat};
 pub use notification::record_external_notification;
@@ -574,9 +574,9 @@ fn issue_session(tx: &Transaction<'_>, id: &str) -> Result<String> {
     Ok(token)
 }
 
-#[derive(Deserialize)]
-struct CreateGuest {
-    name: String,
+#[derive(Deserialize, Serialize)]
+pub struct CreateGuest {
+    pub name: String,
 }
 
 async fn create_guest(
@@ -608,10 +608,10 @@ impl AppState {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct ResumeGuest {
-    recovery_token: String,
+pub struct ResumeGuest {
+    pub recovery_token: String,
 }
 
 async fn resume_guest(
@@ -875,10 +875,11 @@ fn announce(tx: &Transaction<'_>, match_id: &str, body: EventBody<'_>) -> Result
     Ok(())
 }
 
-#[derive(Deserialize)]
-struct Queue {
-    mode: String,
-    difficulty: Option<BotDifficulty>,
+#[derive(Deserialize, Serialize)]
+pub struct Queue {
+    pub mode: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub difficulty: Option<BotDifficulty>,
 }
 
 async fn queue(
@@ -1014,9 +1015,9 @@ impl AppState {
     }
 }
 
-#[derive(Deserialize)]
-struct Chat {
-    text: String,
+#[derive(Deserialize, Serialize)]
+pub struct Chat {
+    pub text: String,
 }
 
 async fn chat(

@@ -1,3 +1,4 @@
+use halcyon_platform::{Chat, CreateGuest, Queue, ResumeGuest};
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
@@ -11,7 +12,7 @@ use axum::{
 use halcyon_platform::{
     AppState, HostedMatch, MatchHost, PlatformConfig, PlatformError, Reservation, router,
 };
-use serde_json::{Value, json};
+use serde_json::Value;
 use tower::ServiceExt;
 use uuid::Uuid;
 
@@ -74,7 +75,10 @@ async fn guest_rotation_match_acceptance_and_result_survive_reopen() {
         "POST",
         "/api/v1/guests",
         None,
-        json!({"name":"First"}),
+        serde_json::to_value(CreateGuest {
+            name: "First".to_string(),
+        })
+        .unwrap(),
     )
     .await;
     let (_, second) = request(
@@ -82,7 +86,10 @@ async fn guest_rotation_match_acceptance_and_result_survive_reopen() {
         "POST",
         "/api/v1/guests",
         None,
-        json!({"name":"Second"}),
+        serde_json::to_value(CreateGuest {
+            name: "Second".to_string(),
+        })
+        .unwrap(),
     )
     .await;
     let (_, resumed) = request(
@@ -90,7 +97,10 @@ async fn guest_rotation_match_acceptance_and_result_survive_reopen() {
         "POST",
         "/api/v1/sessions",
         None,
-        json!({"recoveryToken":first["recoveryToken"]}),
+        serde_json::to_value(ResumeGuest {
+            recovery_token: first["recoveryToken"].as_str().unwrap().to_owned(),
+        })
+        .unwrap(),
     )
     .await;
     assert_eq!(first["playerId"], resumed["playerId"]);
@@ -111,9 +121,19 @@ async fn guest_rotation_match_acceptance_and_result_survive_reopen() {
     let second_key = second["sessionToken"].as_str();
     for key in [first_key, second_key] {
         assert_eq!(
-            request(&app, "POST", "/api/v1/queue", key, json!({"mode":"duo"}))
-                .await
-                .0,
+            request(
+                &app,
+                "POST",
+                "/api/v1/queue",
+                key,
+                serde_json::to_value(Queue {
+                    mode: "duo".to_string(),
+                    difficulty: None
+                })
+                .unwrap()
+            )
+            .await
+            .0,
             StatusCode::NO_CONTENT
         );
     }
@@ -129,13 +149,31 @@ async fn guest_rotation_match_acceptance_and_result_survive_reopen() {
     assert_eq!(host.0.load(Ordering::SeqCst), 1);
     let match_id = Uuid::parse_str(match_id).unwrap();
     state
-        .finish_match(match_id, json!({"winner":"blue"}))
+        .finish_match(
+            match_id,
+            serde_json::to_value(Winner {
+                winner: TestTeam::Blue,
+            })
+            .unwrap(),
+        )
         .unwrap();
     state
-        .finish_match(match_id, json!({"winner":"blue"}))
+        .finish_match(
+            match_id,
+            serde_json::to_value(Winner {
+                winner: TestTeam::Blue,
+            })
+            .unwrap(),
+        )
         .unwrap();
     assert!(matches!(
-        state.finish_match(match_id, json!({"winner":"red"})),
+        state.finish_match(
+            match_id,
+            serde_json::to_value(Winner {
+                winner: TestTeam::Red
+            })
+            .unwrap()
+        ),
         Err(PlatformError::Conflict(_))
     ));
     drop(app);
@@ -243,7 +281,12 @@ async fn federation_intent_reopens_and_excludes_local_queue_until_confirmed_rele
             "finished",
             Some(match_id),
             None,
-            Some(json!({"winner":"blue"})),
+            Some(
+                serde_json::to_value(Winner {
+                    winner: TestTeam::Blue,
+                })
+                .unwrap(),
+            ),
         )
         .await
         .unwrap();
@@ -262,14 +305,27 @@ async fn federation_intent_reopens_and_excludes_local_queue_until_confirmed_rele
             "finished",
             Some(match_id),
             None,
-            Some(json!({"winner":"blue"})),
+            Some(
+                serde_json::to_value(Winner {
+                    winner: TestTeam::Blue,
+                })
+                .unwrap(),
+            ),
         )
         .await
         .unwrap();
     let lobby = reopened.profile(key).await.unwrap().lobby.unwrap();
     assert_eq!(lobby.settled_at_ms, Some(settled));
     assert_eq!(lobby.match_id, Some(match_id));
-    assert_eq!(lobby.result, Some(json!({"winner":"blue"})));
+    assert_eq!(
+        lobby.result,
+        Some(
+            serde_json::to_value(Winner {
+                winner: TestTeam::Blue
+            })
+            .unwrap()
+        )
+    );
     state.federated_release(intent.ticket).await.unwrap();
     assert!(state.federated_intent(key).await.unwrap().is_none());
     assert!(state.profile(key).await.unwrap().lobby.is_none());
@@ -408,7 +464,15 @@ async fn local_party_claim_is_atomic_and_every_player_confirms() {
         state.profile(captain).await.unwrap().lobby.unwrap().phase,
         "playing"
     );
-    state.finish_match(game, json!({"winner":"blue"})).unwrap();
+    state
+        .finish_match(
+            game,
+            serde_json::to_value(Winner {
+                winner: TestTeam::Blue,
+            })
+            .unwrap(),
+        )
+        .unwrap();
     state.leave(captain).await.unwrap();
     assert!(state.profile(captain).await.unwrap().lobby.is_none());
     assert_eq!(
@@ -530,7 +594,12 @@ async fn federated_party_keeps_roster_and_acknowledges_each_player() {
             "finished",
             Some(id),
             None,
-            Some(json!({"winner":"blue"})),
+            Some(
+                serde_json::to_value(Winner {
+                    winner: TestTeam::Blue,
+                })
+                .unwrap(),
+            ),
         )
         .await
         .unwrap();
@@ -695,7 +764,13 @@ async fn rest_difficulty_keeps_queue_variants_separate_and_survives_reopen() {
                 "POST",
                 "/api/v1/queue",
                 Some(&guest.session_token),
-                json!({"mode":"5v5_bots_coop","difficulty":difficulty})
+                serde_json::to_value(Queue {
+                    mode: "5v5_bots_coop".to_string(),
+                    difficulty: Some(
+                        halcyon_platform::BotDifficulty::from_wire(difficulty).unwrap()
+                    )
+                })
+                .unwrap()
             )
             .await
             .0,
@@ -722,7 +797,11 @@ async fn rest_difficulty_keeps_queue_variants_separate_and_survives_reopen() {
             "POST",
             "/api/v1/queue",
             Some(&c.session_token),
-            json!({"mode":"5v5_bots_coop","difficulty":"easy"})
+            serde_json::to_value(Queue {
+                mode: "5v5_bots_coop".to_string(),
+                difficulty: Some(halcyon_platform::BotDifficulty::Easy)
+            })
+            .unwrap()
         )
         .await
         .0,
@@ -812,7 +891,11 @@ async fn public_match_routes_dispatch_to_the_selected_home_authority() {
     let app = router_with_matches(state, authority.clone());
     let room = format!("/api/v1/matches/{}", Uuid::nil());
     let token = Some(TEST_BEARER);
-    let join = json!({"mode":"5v5_bots_solo","difficulty":"hard"});
+    let join = serde_json::to_value(Queue {
+        mode: "5v5_bots_solo".to_string(),
+        difficulty: Some(halcyon_platform::BotDifficulty::Hard),
+    })
+    .unwrap();
     assert_eq!(
         request(&app, "POST", "/api/v1/queue", None, join.clone())
             .await
@@ -835,7 +918,10 @@ async fn public_match_routes_dispatch_to_the_selected_home_authority() {
             "POST",
             &format!("{room}/chat"),
             token,
-            json!({"text":"hello"})
+            serde_json::to_value(Chat {
+                text: "hello".to_string()
+            })
+            .unwrap()
         )
         .await
         .0,
@@ -941,5 +1027,41 @@ async fn legacy_waiting_tickets_gain_one_persistent_timestamp_on_migration() {
             assert_eq!(lobby.phase, "queued");
             assert_eq!(lobby.queued_at_ms, Some(stamp));
         }
+    }
+}
+
+#[derive(serde::Serialize)]
+struct Winner {
+    winner: TestTeam,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+enum TestTeam {
+    Blue,
+    Red,
+}
+
+#[test]
+fn rest_request_wire_forms_preserve_spelling_and_optional_difficulty() {
+    let resume = ResumeGuest {
+        recovery_token: "example".into(),
+    };
+    assert_eq!(
+        serde_json::to_string(&resume).unwrap(),
+        r#"{"recoveryToken":"example"}"#
+    );
+    let queue = Queue {
+        mode: "duo".into(),
+        difficulty: None,
+    };
+    assert_eq!(serde_json::to_string(&queue).unwrap(), r#"{"mode":"duo"}"#);
+    for raw in [r#"{"mode":"duo"}"#, r#"{"mode":"duo","difficulty":null}"#] {
+        assert!(
+            serde_json::from_str::<Queue>(raw)
+                .unwrap()
+                .difficulty
+                .is_none()
+        );
     }
 }

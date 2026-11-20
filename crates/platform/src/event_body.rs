@@ -110,3 +110,27 @@ impl LobbyPhase {
         }
     }
 }
+
+/// Standard platform event tags. Extensions can retain their own event bodies.
+#[derive(Debug, Copy, Clone, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EventKind {
+    Queued,
+    QueueLeft,
+    MatchOffered,
+    MatchPlaying,
+    MatchFinished,
+    MatchAborted,
+    PostMatchLeft,
+    Chat,
+    SpectatorEntered,
+    SpectatorLeft,
+    FriendsChanged,
+}
+
+impl crate::Event {
+    pub fn kind(&self) -> Option<EventKind> {
+        use serde::Deserialize;
+        EventKind::deserialize(self.body.get("type")?).ok()
+    }
+}

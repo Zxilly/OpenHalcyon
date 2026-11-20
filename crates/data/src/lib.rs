@@ -353,11 +353,23 @@ fn validate_name(name: &str) -> io::Result<()> {
 
 /// Extract the names advertised in server-to-client 0x0453 records, in order.
 pub fn catalog_from_trace(trace: impl io::BufRead) -> io::Result<Vec<String>> {
+    #[derive(Deserialize)]
+    enum Direction {
+        #[serde(rename = "S2C")]
+        ServerToClient,
+        #[serde(other)]
+        Other,
+    }
     let invalid = || io::Error::new(io::ErrorKind::InvalidData, "invalid 0x0453 record");
     let mut names = Vec::new();
     for line in trace.lines() {
         let row: Value = serde_json::from_str(&line?).map_err(io::Error::other)?;
-        if row["dir"] != "S2C" || row["opcode"].as_u64() != Some(0x453) {
+        if !matches!(
+            Direction::deserialize(&row["dir"]),
+            Ok(Direction::ServerToClient)
+        ) || row["opcode"].as_u64()
+            != Some(u64::from(halcyon_protocol::Opcode::HeroCatalog.raw()))
+        {
             continue;
         }
         let hex = row["payload"].as_str().ok_or_else(invalid)?;

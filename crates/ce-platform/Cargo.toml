@@ -9,6 +9,7 @@ repository.workspace = true
 async-trait = "0.1"
 axum.workspace = true
 chrono = "0.4"
+halcyon-protocol = { path = "../protocol" }
 halcyon-chat = { path = "../chat" }
 halcyon-community = { path = "../community" }
 halcyon-peer-play = { path = "../peer-play" }
