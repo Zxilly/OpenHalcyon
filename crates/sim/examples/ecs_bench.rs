@@ -48,6 +48,47 @@ fn main() {
     let args: Vec<_> = std::env::args().collect();
     let d = GameData::load_with_extra(&args[1], Some(Path::new(&args[2]))).unwrap();
     let iterations = args.get(3).map_or(2000, |x| x.parse().unwrap());
+    #[cfg(feature = "bevy-visibility-bench")]
+    if let Some(mode @ ("cpu-direct" | "cpu-compact" | "cpu-bevy")) =
+        args.get(4).map(String::as_str)
+    {
+        for solo in [false, true] {
+            for seed in [1, 2] {
+                let mut ecs =
+                    halcyon_sim::ecs_experiment::bevy::Projection::new(make(&d, solo, seed));
+                let mut direct = Matrix::default();
+                let mut masks = Vec::with_capacity(256);
+                for _ in 0..iterations {
+                    ecs.step();
+                    match mode {
+                        "cpu-bevy" => {
+                            ecs.run();
+                            black_box(ecs.masks());
+                        }
+                        _ => {
+                            ecs.direct(
+                                &mut direct,
+                                if mode == "cpu-direct" { 0 } else { 3 },
+                                &mut masks,
+                            );
+                            black_box(&masks);
+                        }
+                    }
+                }
+                println!(
+                    "{} {seed} {}",
+                    if solo { "solo" } else { "validation" },
+                    ecs.digest()
+                );
+            }
+        }
+        return;
+    }
+    #[cfg(feature = "bevy-visibility-bench")]
+    if args.get(4).is_some_and(|a| a == "bevy") {
+        bevy_paired(&d, iterations);
+        return;
+    }
     println!("sizes {:?}", Matrix::sizes());
     if args.get(4).is_some_and(|a| a == "paired") {
         paired(&d, iterations);
@@ -164,6 +205,56 @@ fn paired(d: &GameData, nticks: usize) {
                     retained[m],
                     allocations[m],
                     w.state_digest()
+                );
+            }
+        }
+    }
+}
+#[cfg(feature = "bevy-visibility-bench")]
+fn bevy_paired(d: &GameData, ticks: usize) {
+    use halcyon_sim::ecs_experiment::bevy::Projection;
+    for solo in [false, true] {
+        for seed in [1, 2] {
+            let sim = make(d, solo, seed);
+            let before = BYTES.load(Relaxed);
+            let mut ecs = Projection::new(sim);
+            let setup = BYTES.load(Relaxed) - before;
+            let mut direct = Matrix::default();
+            let mut compact = Matrix::default();
+            let mut masks = [Vec::with_capacity(256), Vec::with_capacity(256)];
+            let mut durations: [Vec<u128>; 3] = std::array::from_fn(|_| Vec::with_capacity(ticks));
+            let mut retained = [0i64; 3];
+            let mut allocations = [0u64; 3];
+            for tick in 0..ticks {
+                ecs.step();
+                for offset in 0..3 {
+                    let m = (tick + offset) % 3;
+                    let b = BYTES.load(Relaxed);
+                    let c = CALLS.load(Relaxed);
+                    let start = Instant::now();
+                    match m {
+                        0 => ecs.direct(&mut direct, 0, black_box(&mut masks[0])),
+                        1 => ecs.direct(&mut compact, 3, black_box(&mut masks[1])),
+                        _ => ecs.run(),
+                    }
+                    durations[m].push(start.elapsed().as_nanos());
+                    retained[m] += BYTES.load(Relaxed) as i64 - b as i64;
+                    allocations[m] += CALLS.load(Relaxed) - c;
+                }
+                assert_eq!(masks[0], masks[1]);
+                assert_eq!(masks[0], ecs.masks());
+            }
+            for (m, times) in durations.iter_mut().enumerate() {
+                times.sort_unstable();
+                println!(
+                    "bevy {} {seed} {m} {ticks} {} {} {} {} {} {}",
+                    if solo { "solo" } else { "validation" },
+                    times.iter().sum::<u128>(),
+                    times[times.len() * 99 / 100],
+                    retained[m],
+                    allocations[m],
+                    if m == 2 { setup } else { 0 },
+                    ecs.digest()
                 );
             }
         }

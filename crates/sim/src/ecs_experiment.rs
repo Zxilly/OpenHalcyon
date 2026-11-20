@@ -1,5 +1,7 @@
 //! Isolated experiment; this module is not part of the project.
 use super::*;
+#[cfg(feature = "bevy-visibility-bench")]
+pub mod bevy;
 struct West;
 struct East;
 #[derive(Clone, Copy)]
