@@ -138,11 +138,7 @@ impl World {
                 return Command::MoveTo(point);
             }
             if matches!(self.layout, Layout::SoloMid { .. }) {
-                let side = match ((e.id - 1) / 2) % 3 {
-                    0 => 0,
-                    1 => -1,
-                    _ => 1,
-                };
+                let side = e.solo_side;
                 if let Some(front) = self
                     .entities
                     .iter()

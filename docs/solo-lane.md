@@ -78,3 +78,18 @@ The 14 Solo chunks contain 80 side-lane births, 20 each on routes 0, 2, 3 and 5.
 All 20 minions on each route agree on the first eight directed destinations. The two west routes share a longer 22-point sequence with opposite signs for Z. The east routes share the reflected first 17. Beyond the observed movement, the host continues along the opposite recorded road in reverse. A five-unit corridor around each polyline is a local movement and sight rule. It keeps lane fights reachable without opening paths through the unmeasured interior. Heroes can click ahead on either road. Bot heroes split across lanes and rally to a living minion on their assigned lane.
 
 The 12 side towers use their own original actors, slots and tower tier. Each team has outer towers at absolute X/Z (21.30, 57.50), middle towers at (49.24, 37.84) and armory towers at (63.00, 22.41), on both sides of mid. All 12 can fire, take damage and be destroyed. Opening declarations use the measured poses. Reconnection carries current health for each visible tower.
+
+### Reproducing the Solo bot side comparison
+
+Run `cargo run --locked --release -p halcyon-sim --example solo_sides -- ../vg/_ana/delivery` with the local 147219 delivery. The command writes one CSV row per match with seed, winner, ending tick, each side's enemy tower kills, and the actor ID and tick of the first destroyed tower. All 128 matches use Medium difficulty, alternating seats, 10 bots and seeds 0 through 31 inclusive in each group. The clock runs at 20 Hz.
+
+| Roster at west / east | West wins | East wins | Ending tick, min / median / max |
+| --- | ---: | ---: | --- |
+| Built-in Ringo / Ringo | 16 | 16 | 20,500 / 25,863.5 / 35,211 |
+| Delivery west five / same five | 21 | 11 | 18,717 / 23,696 / 30,941 |
+| Recorded west five / recorded east five | 17 | 15 | 17,589 / 27,312.5 / 32,969 |
+| Recorded east five / recorded west five | 16 | 16 | 17,741 / 25,845.5 / 33,626 |
+
+Native team slots 14–18 contained Amael, Inara, Ardan, Tony and Varya. Slots 19–23 contained Skye, Alpha, Tony, Idris and Baron. Recorded picks here use local bot logic and the host's implemented skills. In fallback seed 0, at 30 s both teams' leading side heroes reached absolute X/Z near (56, 31), then around (20, 61) at 45 s. Mid heroes had already engaged around X ±3 at 45 s. All 128 games ended by crystal destruction. In the recorded-roster run, the first tower fell on the negative-Z road 17 times, mid 7 and positive-Z 8. Swapping those rosters yielded 25, 3 and 4 first tower losses respectively.
+
+Team-local seats determine the host's lane assignments (mid, negative Z, positive Z, mid, negative Z). The former global actor-ID formula could pair different heroes with the same lane or concentrate a side's heroes there after party-based team assignment. The alternating-seat controls already had equivalent assignments. The native mid-lane routes differ near center, actor IDs stagger decisions, and simultaneous actions use deterministic scheduling. Exact left/right trajectories need not coincide. These four samples characterize the measured rosters and seeds and establish no general win-rate target.

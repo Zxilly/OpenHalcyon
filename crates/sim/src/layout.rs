@@ -175,12 +175,14 @@ impl World {
         }
         let mut counts = [0usize; 2];
         let mut starts = [Position::default(); 10];
+        let mut lanes = [0i8; 10];
         for hero in self.entities.iter().filter(|e| e.kind == Kind::Hero) {
             let seat = &mut counts[usize::from(hero.team)];
             let &(x, z) = STARTS
                 .get(*seat)
                 .ok_or("Solo layout requires five heroes on each team")?;
             starts[(hero.id - 1) as usize] = point(hero.team, x, z);
+            lanes[(hero.id - 1) as usize] = [0, -1, 1, 0, -1][*seat];
             *seat += 1;
         }
         if counts != [5, 5] {
@@ -191,6 +193,7 @@ impl World {
         };
         self.entities.retain(|e| e.kind == Kind::Hero);
         for e in &mut self.entities {
+            e.solo_side = lanes[(e.id - 1) as usize];
             e.gold = 600;
             self.scores[(e.id - 1) as usize]
                 .gold_income
@@ -449,5 +452,32 @@ mod tests {
                 .iter()
                 .any(|e| e.kind == Kind::Crystal && e.team != winner && e.hp == 0.)
         );
+    }
+}
+
+#[cfg(test)]
+mod assignments {
+    use super::*;
+
+    #[test]
+    fn solo_lane_assignments_follow_team_slot_with_grouped_or_alternating_actors() {
+        for teams in [
+            [0, 0, 0, 0, 0, 1, 1, 1, 1, 1],
+            [1, 0, 1, 0, 1, 0, 1, 0, 1, 0],
+            [0, 0, 0, 1, 1, 1, 0, 0, 1, 1],
+        ] {
+            let mut w = World::new(19, 10);
+            w.assign_teams(&teams).unwrap();
+            w.use_solo_mid_lane().unwrap();
+            for team in 0..2 {
+                let lanes: Vec<_> = w
+                    .entities
+                    .iter()
+                    .filter(|e| e.kind == Kind::Hero && e.team == team)
+                    .map(|e| e.solo_side)
+                    .collect();
+                assert_eq!(lanes, [0, -1, 1, 0, -1]);
+            }
+        }
     }
 }
