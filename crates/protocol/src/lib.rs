@@ -39,7 +39,7 @@ mod abilities;
 pub use abilities::CooldownMode;
 mod buff_actions;
 pub use buff_actions::{
-    BuffApplication, BuffChange, BuffExtras, BuffMutation, BuffPrefix, BuffStack,
+    BuffApplication, BuffChange, BuffDefinition, BuffExtras, BuffMutation, BuffPrefix, BuffStack,
 };
 mod flyout;
 pub use flyout::{Flyout, FlyoutText};

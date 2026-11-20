@@ -12,7 +12,27 @@ pub struct BuffPrefix {
     pub definition: u16,
 }
 
+/// Build 147219 effect definitions used by the native infusion and reboot lifecycles.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u16)]
+pub enum BuffDefinition {
+    WeaponInfusion = 283,
+    CrystalInfusion = 284,
+    Rebooting = 683,
+    RebootCooldown = 684,
+}
+
 impl BuffPrefix {
+    pub fn timed_self(actor: u32, instance: u32, definition: BuffDefinition, seconds: f32) -> Self {
+        Self {
+            target: actor,
+            source: actor,
+            duration_bits: half::f16::from_f32(seconds).to_bits(),
+            instance,
+            definition: definition as u16,
+        }
+    }
+
     pub fn duration(self) -> f32 {
         half::f16::from_bits(self.duration_bits).to_f32()
     }

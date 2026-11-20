@@ -10,6 +10,7 @@ mod chakram_motion;
 mod chill_winds;
 mod projectile;
 pub(super) use projectile::recordable as recordable_spell_projectile;
+mod reboot;
 mod skedaddle;
 pub(super) fn recordable_skedaddle(m: &Message) -> bool {
     skedaddle::recordable(m)
@@ -372,6 +373,17 @@ pub(super) fn publish(room: &mut Room, events: &[Event]) {
     }
     let aral = room.legacy_aral();
     for (event_index, event) in events.iter().enumerate() {
+        if aral
+            && let Event::RebootRecovered {
+                actor,
+                instance,
+                cooldown_seconds,
+                hp,
+            } = *event
+        {
+            reboot::publish(room, actor, instance, cooldown_seconds, hp);
+            continue;
+        }
         if aral && let Event::BasicTargetChanged { actor, target } = *event {
             if let Some(i) = actor.checked_sub(1).map(|n| n as usize)
                 && let Some(seat) = room.seats.get(i)

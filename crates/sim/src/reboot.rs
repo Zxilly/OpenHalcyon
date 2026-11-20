@@ -52,7 +52,8 @@ pub(super) fn on_lethal(
     actor.order = Command::Stop;
     actor.status = Default::default();
     let instance = *next_id;
-    *next_id += 1;
+    // The reboot and its following cooldown are separate native instances.
+    *next_id += 2;
     actor.reboot = Some(Phase::Rebooting {
         until: tick + DURATION,
         instance,
@@ -78,7 +79,7 @@ pub(super) fn advance(actor: &mut Entity, tick: u64, events: &mut Vec<Event>) ->
             actor.hp = actor.max_hp * 0.4;
             events.push(Event::RebootRecovered {
                 actor: actor.id,
-                instance,
+                instance: instance + 1,
                 cooldown_seconds,
                 hp: actor.hp,
             });
