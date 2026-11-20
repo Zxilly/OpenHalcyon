@@ -6,6 +6,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+strum = { version = "0.27", features = ["derive"] }
 async-trait = "0.1"
 halcyon-data = { path = "../data" }
 argon2 = "0.5"

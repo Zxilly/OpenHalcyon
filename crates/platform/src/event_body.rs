@@ -64,8 +64,9 @@ impl EventBody<'_> {
 }
 
 /// Local and replicated phases stored in a platform lobby.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, strum::EnumString, strum::IntoStaticStr)]
 #[serde(rename_all = "snake_case")]
+#[strum(serialize_all = "snake_case")]
 pub enum LobbyPhase {
     Pending,
     Queued,
@@ -81,33 +82,11 @@ pub enum LobbyPhase {
 
 impl LobbyPhase {
     pub fn parse(raw: &str) -> Option<Self> {
-        match raw {
-            "pending" => Some(Self::Pending),
-            "queued" => Some(Self::Queued),
-            "offered" => Some(Self::Offered),
-            "reserving" => Some(Self::Reserving),
-            "playing" => Some(Self::Playing),
-            "spectating" => Some(Self::Spectating),
-            "finished" => Some(Self::Finished),
-            "post_match" => Some(Self::PostMatch),
-            "closed" => Some(Self::Closed),
-            "aborted" => Some(Self::Aborted),
-            _ => None,
-        }
+        raw.parse().ok()
     }
+
     pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Pending => "pending",
-            Self::Queued => "queued",
-            Self::Offered => "offered",
-            Self::Reserving => "reserving",
-            Self::Playing => "playing",
-            Self::Spectating => "spectating",
-            Self::Finished => "finished",
-            Self::PostMatch => "post_match",
-            Self::Closed => "closed",
-            Self::Aborted => "aborted",
-        }
+        self.into()
     }
 }
 
@@ -132,5 +111,34 @@ impl crate::Event {
     pub fn kind(&self) -> Option<EventKind> {
         use serde::Deserialize;
         EventKind::deserialize(self.body.get("type")?).ok()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::LobbyPhase;
+
+    #[test]
+    fn lobby_phase_strings_match_serde_and_preserve_unknown_handling() {
+        for phase in [
+            LobbyPhase::Pending,
+            LobbyPhase::Queued,
+            LobbyPhase::Offered,
+            LobbyPhase::Reserving,
+            LobbyPhase::Playing,
+            LobbyPhase::Spectating,
+            LobbyPhase::Finished,
+            LobbyPhase::PostMatch,
+            LobbyPhase::Closed,
+            LobbyPhase::Aborted,
+        ] {
+            let name = phase.as_str();
+            assert_eq!(LobbyPhase::parse(name), Some(phase));
+            assert_eq!(serde_json::to_value(phase).unwrap(), name);
+        }
+        assert_eq!(LobbyPhase::PostMatch.as_str(), "post_match");
+        for unknown in ["", "Playing", "postMatch", " playing", "unknown"] {
+            assert_eq!(LobbyPhase::parse(unknown), None);
+        }
     }
 }
