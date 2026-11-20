@@ -52,3 +52,21 @@ use mask 1 at X −70 or +70, Z 0. An already moving or wounded minion first
 seen later, or restored after reconnect, instead receives mask 0 with its
 current position, HP and maximum HP. A nonstandard maximum HP also requires
 explicit values at birth. The two routes consume no side-lane spawn slots.
+
+### Mid-lane march destinations
+
+All 25 recorded minions per team received the same first eight directed
+`03F8` destinations. Both start from X ±70 and first aim at ±69. Team 0
+turns to Z +2.11, then +3 around its towers. Team 1 turns to −2.11 and −3.
+Both encode center-line Z as positive zero. The host follows the first 16
+repeated home-side destinations through (−13.17, 0), observed in sequence
+for nine home units. For the away side, 20 units continued to (+6.26, 0)
+and (0, 0), and 15 continued to (−6.26, 0). At those evidence limits the
+units resume the hosted objective approach.
+
+Enemy acquisition and pursuit take precedence over marching. Each living
+minion keeps its next waypoint in the authoritative world. Resuming after
+combat skips markers it has passed, and reconnecting uses its current state.
+A march step reads one destination in steady state. Each waypoint can be
+retired only once, at most 16 or 19 per actor over its lifetime; marching
+spends no pathfinding search budget.

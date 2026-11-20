@@ -14,6 +14,7 @@ use layout::Layout;
 mod progression;
 mod score;
 mod shop;
+mod solo_route;
 use combat::{AbilityBook, Cast, SpellEffect, Status};
 pub use combat::{AbilitySlot, CastTarget};
 use halcyon_data::{GameData, Unit};
@@ -277,6 +278,8 @@ pub struct Entity {
     #[serde(skip)]
     lane_step: Option<(Position, Option<u32>)>,
     #[serde(skip)]
+    solo_route_index: u8,
+    #[serde(skip)]
     stats: Stats,
     #[serde(skip)]
     order: Command,
@@ -298,6 +301,7 @@ pub struct World {
     next_id: u32,
     next_item: u32,
     seed: u64,
+    crit_rng: u64,
     bot_difficulty: Option<halcyon_data::BotDifficulty>,
     first_wave: u64,
     wave_interval: u64,
@@ -350,7 +354,7 @@ impl World {
             &(
                 self.tick,
                 self.winner,
-                self.seed,
+                (self.seed, self.crit_rng),
                 self.next_id,
                 self.next_item,
                 self.first_wave,
@@ -388,6 +392,9 @@ impl World {
                 ),
             )
             .expect("finite simulation entity");
+            if e.solo_route_index != 0 {
+                hash.update([e.solo_route_index]);
+            }
         }
         format!("{:x}", hash.finalize())
     }
@@ -554,6 +561,7 @@ impl World {
             next_item: 40000,
             stats,
             seed,
+            crit_rng: seed,
             bot_difficulty: None,
             first_wave,
             wave_interval,
@@ -634,6 +642,7 @@ impl World {
             status: Status::default(),
             last_seen: None,
             lane_step: None,
+            solo_route_index: 0,
             path: Default::default(),
             stats: s,
             order: Command::Stop,
@@ -714,6 +723,13 @@ impl World {
         }
         let next = match &self.layout {
             Layout::Validation => e.path.next(e.position, p, &mut self.nav_budget),
+            Layout::SoloMid { .. }
+                if e.kind == Kind::Minion
+                    && e.order == Command::MoveTo(p)
+                    && p == self.layout.objective(1 - e.team) =>
+            {
+                Some(solo_route::march(e, p))
+            }
             Layout::SoloMid { .. } | Layout::Aral { .. } => {
                 self.layout.clear(e.position, p).then_some(p)
             }
@@ -980,8 +996,13 @@ impl World {
                     } else if e.kind == Kind::Crystal {
                         t.max_hp * 0.04
                     } else {
+                        let multiplier = if e.kind == Kind::Hero && matches!(t.kind, Kind::Hero | Kind::Minion) {
+                            shop::weapon_multiplier(&mut self.crit_rng, e.item_stats)
+                        } else {
+                            1.
+                        };
                         shop::mitigated(
-                            e.stats.weapon + bonus,
+                            e.stats.weapon * multiplier + bonus,
                             t.stats.armor,
                             e.item_stats.armor_pierce,
                         )
