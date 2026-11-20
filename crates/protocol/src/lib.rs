@@ -9,6 +9,8 @@ use std::io::{self, Read, Write};
 
 mod tower_aggro;
 pub use tower_aggro::TowerAggro;
+mod solo_structure;
+pub use solo_structure::SoloStructure;
 mod surrender;
 pub use surrender::AralSurrenderBoard;
 mod talent;

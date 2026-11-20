@@ -43,6 +43,22 @@ health field. The same comparison on the two mid-lane towers shows changing
 words at offsets 76 and 80 on both teams. The home tower also changes heading,
 health and several flags. The tower encoder covers the opening state.
 
+## All 26 opening structure slots
+
+The [Solo opening codec](../crates/protocol/src/solo_structure.rs) encodes one
+122-byte declaration for each of the six VainNodes (slots 0–5), two crystals
+(6–7), six outer towers (8–13) and twelve inner and armory towers (24–35).
+Slots 14–23 belong to heroes. The four-byte actor identity comes from the
+host. With this field normalized, the 26 encoded bodies match the original
+opening byte for byte. The nodes use skin word `0x4a2eed42` and the towers
+and crystals use `0xc10b41da`. The recorded vertical coordinate of slot 8 is
+positive zero. The other 25 structures use bits `0x3d75be29`. The forward
+vectors preserve signed zero and asymmetric angle rounding.
+
+All 26 slots occur in each of the 14 chunks. The codec describes the opening.
+For example, later VainNode snapshots vary at offsets 76 and 80. Side-lane
+structure behavior and VainNode combat are outside the mid-lane simulation.
+
 ## Lane minions in the Solo recording
 
 Across all 14 VGR chunks of one Android 147219 match, template 335 appears
