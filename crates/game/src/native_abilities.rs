@@ -193,14 +193,13 @@ fn witness(
     source: u32,
     target: Option<u32>,
     message: &Message,
-    chakram_stop: Option<(u8, [Message; 2])>,
+    ally_release: Option<(u8, std::sync::Arc<super::transport::TeamBatch>)>,
 ) {
     let needs_spire_registration = source
         .checked_sub(1)
         .and_then(|seat| room.world.entities.get(seat as usize))
         .is_some_and(|e| e.id == source && e.type_id == EntityTemplate::Reim.as_raw());
     let mut shared = None;
-    let mut walking = None;
     for (index, (seat, actor)) in room.seats.iter().zip(&room.world.entities).enumerate() {
         let visible = &room.visible[actor.team as usize];
         if actor.id != source
@@ -210,17 +209,11 @@ fn witness(
             && target.is_none_or(|id| visible.contains(&id))
             && let Some(peer) = seat.gameplay_peer()
         {
-            let batch = if let Some((team, [stop, correction])) = &chakram_stop
+            let batch = if let Some((team, release)) = &ally_release
                 && *team == actor.team
                 && room.scene_views[index].knows(source)
             {
-                walking.get_or_insert_with(|| {
-                    super::transport::TeamBatch::new(vec![
-                        stop.clone(),
-                        message.clone(),
-                        correction.clone(),
-                    ])
-                })
+                release
             } else {
                 shared
                     .get_or_insert_with(|| super::transport::TeamBatch::new(vec![message.clone()]))
@@ -395,23 +388,29 @@ pub(super) fn publish(room: &mut Room, events: &[Event]) {
             && slot == AbilitySlot::B
             && let Some(Event::ChakramApplied { source: caster, id }) = events.get(event_index + 1)
             && *caster == source
-            && let Some(instance) = id.checked_add(1499)
+            && let Some(first) = id.checked_add(1499)
+            && let Some(second) = first.checked_add(1)
         {
-            Some(
+            let [first, second] = [(61, first), (820, second)].map(|(definition, instance)| {
                 halcyon_protocol::BuffApplication {
                     prefix: halcyon_protocol::BuffPrefix {
                         target: actor_wire,
                         source: actor_wire,
                         duration_bits: 0x4066,
                         instance,
-                        definition: 820,
+                        definition,
                     },
                     extras: None,
                     suffix: &[0; 6],
                 }
                 .to_message()
-                .expect("fixed Chakram application"),
-            )
+                .expect("fixed Chakram effect pair")
+            });
+            Some([
+                Message::position(wire_id(source), actor.position.x, actor.position.y),
+                first,
+                second,
+            ])
         } else {
             None
         };
@@ -428,7 +427,7 @@ pub(super) fn publish(room: &mut Room, events: &[Event]) {
                 .filter(|p| p.generation == pending.generation)
         {
             if chakram.is_some() && pending.interrupted_walk == Some(position) {
-                stop = chakram_motion::stop(actor_wire, position).map(|messages| (team, messages));
+                stop = chakram_motion::stop(actor_wire, position);
             }
             message = pending.reply;
             let mut batch = vec![message.clone()];
@@ -458,32 +457,19 @@ pub(super) fn publish(room: &mut Room, events: &[Event]) {
                 };
                 batch.push(apply.to_message().expect("fixed Waterwall format"));
             }
-            batch.extend(chakram.iter().cloned());
+            batch.extend(chakram.iter().flatten().cloned());
             peer.send(Delivery::Private(batch));
         }
-        witness(room, source, target_id, &message, stop);
-        if let Some(effect) = chakram {
-            let mut shared = None;
-            for (recipient, seat) in room.seats.iter().enumerate() {
-                if recipient == index
-                    || room.world.entities[recipient].team != team
-                    || !room.visible[usize::from(team)].contains(&source)
-                    || !room.scene_views[recipient].knows(source)
-                    || !(seat.world_actor_written || seat.peers[1].is_some())
-                {
-                    continue;
-                }
-                if let Some(peer) = seat.gameplay_peer() {
-                    peer.send(Delivery::Team(
-                        shared
-                            .get_or_insert_with(|| {
-                                super::transport::TeamBatch::new(vec![effect.clone()])
-                            })
-                            .clone(),
-                    ));
-                }
+        let ally_release = chakram.map(|tail| {
+            let mut out = Vec::with_capacity(if stop.is_some() { 5 } else { 4 });
+            if let Some(stop) = stop {
+                out.push(stop);
             }
-        }
+            out.push(message.clone());
+            out.extend(tail);
+            (team, super::transport::TeamBatch::new(out))
+        });
+        witness(room, source, target_id, &message, ally_release);
     }
 }
 
@@ -610,32 +596,43 @@ mod tests {
             room.tick();
         }
         let issuer = drain(&mut recipients[0]);
-        assert_eq!(issuer.len(), 2);
+        assert_eq!(issuer.len(), 4);
         assert_eq!(
             issuer[0],
             Message::ability_point_used(1500, [12., -0.0, 0.], 3)
         );
-        let Ok(halcyon_protocol::Fields::BuffApplication(buff)) = issuer[1].fields() else {
-            panic!("missing released Chakram application")
-        };
-        assert_eq!(
-            (
-                buff.prefix.source,
-                buff.prefix.target,
-                buff.prefix.duration_bits,
-                buff.prefix.definition
-            ),
-            (1500, 1500, 0x4066, 820)
-        );
-        assert!(buff.prefix.instance > 1505);
-        assert_eq!(buff.suffix, [0; 6]);
+        assert_eq!(issuer[1], Message::position(1500, stopped.x, stopped.y));
+        let buffs = [&issuer[2], &issuer[3]].map(|message| {
+            let Ok(halcyon_protocol::Fields::BuffApplication(buff)) = message.fields() else {
+                panic!("missing released Chakram application")
+            };
+            assert_eq!(
+                (
+                    buff.prefix.source,
+                    buff.prefix.target,
+                    buff.prefix.duration_bits
+                ),
+                (1500, 1500, 0x4066)
+            );
+            assert!(buff.prefix.instance > 1505);
+            assert_eq!(buff.suffix, [0; 6]);
+            buff.prefix
+        });
+        assert_eq!(buffs.map(|b| b.definition), [61, 820]);
+        assert_eq!(buffs[0].instance + 1, buffs[1].instance);
         assert_eq!(drain(&mut recipients[1]), issuer[..1]);
         let teammate = drain(&mut recipients[2]);
-        let [stop, correction] = chakram_motion::stop(1500, stopped).unwrap();
+        let stop = chakram_motion::stop(1500, stopped).unwrap();
         assert!(recordable_stop(&stop));
         assert_eq!(
             teammate,
-            [stop, issuer[0].clone(), correction, issuer[1].clone()]
+            [
+                stop,
+                issuer[0].clone(),
+                issuer[1].clone(),
+                issuer[2].clone(),
+                issuer[3].clone()
+            ]
         );
         assert!(room.receive(0, 0, cast).unwrap().is_empty());
         for _ in 0..12 {
@@ -1107,14 +1104,16 @@ mod tests {
         let mut replies = vec![];
         while let Ok(batch) = receiver.try_recv() {
             let records = batch.into_records();
-            let stop_batch = records.iter().any(|m| m.is(crate::Opcode::StopActor));
+            let release_batch = records
+                .iter()
+                .any(|m| m.is(crate::Opcode::PlayPointAbility));
             replies.extend(records.into_iter().filter(|m| {
                 matches!(
                     m.opcode,
                     crate::wire_opcode::StopActor
                         | crate::wire_opcode::PlayPointAbility
                         | crate::wire_opcode::EntityProp
-                ) || (stop_batch && m.is(crate::Opcode::Position))
+                ) || (release_batch && m.is(crate::Opcode::Position))
             }));
         }
         replies

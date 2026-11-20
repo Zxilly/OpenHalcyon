@@ -884,7 +884,8 @@ impl Room<'_> {
                 ));
                 if matches!(self.layout, Layout::Aral { .. }) {
                     let id = self.next_id;
-                    self.next_id += 1;
+                    // The two self-applied cast effects reserve consecutive world instances.
+                    self.next_id += 2;
                     events.push(Event::ChakramApplied { source: src, id });
                 }
             }

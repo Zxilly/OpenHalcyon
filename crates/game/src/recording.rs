@@ -171,7 +171,7 @@ fn sanitize(m: &mut Message) -> bool {
                     && effect.prefix.instance > 1505
                     && matches!((effect.prefix.definition, effect.prefix.duration_bits,
                                  effect.prefix.source == effect.prefix.target),
-                                 (954, 0x4400, false) | (820, 0x4066, true))
+                                 (954, 0x4400, false) | (61 | 820, 0x4066, true))
                     && effect.suffix == [0; 6]) => {}
         Some(
             crate::Opcode::EntityProp

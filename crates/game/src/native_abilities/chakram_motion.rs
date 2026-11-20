@@ -9,7 +9,7 @@ fn observed_extent(position: Position) -> bool {
     (-58.21..=23.38).contains(&position.x) && (-1.83..=9.47).contains(&position.y)
 }
 
-pub(super) fn stop(actor: u32, position: Position) -> Option<[Message; 2]> {
+pub(super) fn stop(actor: u32, position: Position) -> Option<Message> {
     if !observed_extent(position) {
         return None;
     }
@@ -21,10 +21,7 @@ pub(super) fn stop(actor: u32, position: Position) -> Option<[Message; 2]> {
     }
     .movement_message()
     .expect("fixed ARAL stop format");
-    Some([
-        stop,
-        Message::position(u16::try_from(actor).ok()?, position.x, position.y),
-    ])
+    Some(stop)
 }
 
 pub(crate) fn recordable_stop(message: &Message) -> bool {
@@ -46,7 +43,7 @@ mod tests {
 
     #[test]
     fn archives_only_the_verified_finite_ground_profile() {
-        let [mut frame, _] = stop(1500, Position { x: -8., y: 5. }).unwrap();
+        let mut frame = stop(1500, Position { x: -8., y: 5. }).unwrap();
         assert!(recordable_stop(&frame));
         frame.body[16] = 1;
         assert!(!recordable_stop(&frame));

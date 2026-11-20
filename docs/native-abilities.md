@@ -156,8 +156,10 @@ applications carried duration bits `0x4066` (2.19921875 seconds) and six
 zero padding bytes. No paired duration update, cancellation or timeout for
 these instances was observed.
 
-In ARAL the host attaches 820 to a successfully released Chakram using a
-fresh world instance ID. It follows the release on the issuing generation's
+In all 38 pairs, definition 61 has the same source, target and duration as
+820, and its instance ID is exactly one lower. In ARAL the host reserves two
+consecutive world IDs when Chakram releases. The X/Z correction and the two
+applications follow the release on the issuing generation's
 connection and on the world streams of teammates who have the actor in view
 and registered. The host records the self-application from those streams.
 Opposing seats, observers and Solo lack an original recipient sample for
