@@ -1,4 +1,5 @@
 use crate::{LobbyPhase, LobbyState, PlayerProfile, expiry_in};
+use axum::http::uri::Authority;
 use serde::Serialize;
 use uuid::Uuid;
 
@@ -95,9 +96,7 @@ impl StateSnapshot {
             _ => expiry_in(ttl),
         };
         let game = lobby.filter(|_| matches!(state, LobbyState::Playing | LobbyState::Spectating));
-        let endpoint = game
-            .and_then(|l| l.address.as_deref())
-            .and_then(|a| a.rsplit_once(':'));
+        let endpoint = game.and_then(|l| l.address.as_deref()).and_then(endpoint);
         Self {
             state,
             ttl: Seconds::Whole(ttl as i64),
@@ -108,8 +107,8 @@ impl StateSnapshot {
             notify: matches!(state, LobbyState::PendingAuto | LobbyState::MatchPending),
             match_id: game.map(|l| l.match_id),
             spectator_id: game.and_then(|l| l.spectator_id),
-            host: endpoint.map(|(host, _)| host.to_owned()),
-            port: endpoint.map(|(_, port)| port.parse().ok()),
+            host: endpoint.as_ref().map(|address| address.host().to_owned()),
+            port: endpoint.as_ref().map(Authority::port_u16),
             site: game.map(|_| ""),
             timestamp: game.map(|_| timestamp()),
             num_queued_entries: None,
@@ -118,6 +117,80 @@ impl StateSnapshot {
     }
 }
 
+fn endpoint(value: &str) -> Option<Authority> {
+    let address: Authority = value.parse().ok()?;
+    let host = address.host();
+    // A missing explicit port omits both fields. An explicit malformed
+    // port on a valid host preserves the historical null port field.
+    (!host.is_empty()
+        && address
+            .as_str()
+            .strip_prefix(host)
+            .is_some_and(|rest| rest.starts_with(':'))
+        && !address.as_str().contains('@'))
+    .then_some(address)
+}
+
 pub(crate) fn timestamp() -> String {
     chrono::Utc::now().format("%m/%d/%y %H:%M:%S").to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use halcyon_platform::Lobby;
+    use serde_json::Value;
+
+    #[test]
+    fn connection_fields_preserve_brackets_and_distinguish_null_from_omission() {
+        let id = Uuid::new_v4();
+        for (address, expected) in [
+            (Some("127.0.0.1:65535"), Some(("127.0.0.1", Some(65535)))),
+            (
+                Some("[2001:db8::1]:443"),
+                Some(("[2001:db8::1]", Some(443))),
+            ),
+            (Some("room.example:65536"), Some(("room.example", None))),
+            (Some("room.example:bad"), Some(("room.example", None))),
+            (Some("room.example:"), Some(("room.example", None))),
+            (None, None),
+            (Some("room.example"), None),
+            (Some("[2001:db8::1]"), None),
+            (Some("2001:db8::1:443"), None),
+            (Some("user@room.example:443"), None),
+            (Some("room.example:443/path"), None),
+            (Some(":443"), None),
+        ] {
+            let profile = PlayerProfile {
+                player_id: Uuid::new_v4(),
+                name: "Guest".into(),
+                lobby: Some(Lobby {
+                    mode: halcyon_protocol::ce::KnownQueue::CasualAral.as_str().into(),
+                    match_id: Some(id),
+                    phase: LobbyPhase::Playing.as_str().into(),
+                    address: address.map(str::to_owned),
+                    result: None,
+                    spectator_id: None,
+                    settled_at_ms: None,
+                    queued_at_ms: None,
+                }),
+            };
+            let snapshot = serde_json::to_value(StateSnapshot::from_profile(&profile)).unwrap();
+            assert_eq!(snapshot["matchId"], id.to_string(), "{address:?}");
+            match expected {
+                Some((host, port)) => {
+                    assert_eq!(snapshot["host"], host, "{address:?}");
+                    assert_eq!(
+                        snapshot.get("port"),
+                        Some(&port.map_or(Value::Null, Value::from)),
+                        "{address:?}"
+                    );
+                }
+                None => {
+                    assert!(snapshot.get("host").is_none(), "{address:?}");
+                    assert!(snapshot.get("port").is_none(), "{address:?}");
+                }
+            }
+        }
+    }
 }
