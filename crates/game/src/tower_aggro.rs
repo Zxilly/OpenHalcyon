@@ -10,6 +10,7 @@ use super::Batch;
 #[derive(Default)]
 pub(super) struct View {
     pub(super) guard_links: super::aral_guard::State,
+    pub(super) chakrams: [Option<u32>; 6],
     pub(super) ringo_effects: [Option<u32>; 6],
     actors: HashMap<u32, u8>,
     slots: HashMap<u8, u32>,

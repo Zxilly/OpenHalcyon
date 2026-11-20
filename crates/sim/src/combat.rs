@@ -888,15 +888,15 @@ impl Room<'_> {
                 } else {
                     (weapon * self.abilities.chakram_weapon_ratio, None)
                 };
-                self.entities.spawn_spell(chakram::Chakram::new(
-                    src, team, origin, point, damage, refund,
-                ));
+                let mut shot = chakram::Chakram::new(src, team, origin, point, damage, refund);
                 if matches!(self.layout, Layout::Aral { .. }) {
                     let id = self.next_id;
                     // The two self-applied cast effects reserve consecutive world instances.
-                    self.next_id += 2;
+                    self.next_id += 3;
                     events.push(Event::ChakramApplied { source: src, id });
+                    shot.arm_native(id + 2, self.tick + 6);
                 }
+                self.entities.spawn_spell(shot);
             }
             Skill::Achilles => {
                 let j = aimed.unwrap();

@@ -70,3 +70,28 @@ The supplemental protocol spec §3.2 describes rendering the spire through a
 child entity. That description does not account for these 38 transmitted
 040E records. The captures establish the ally-facing packet independently of
 whether a particular client requires it to render the spire.
+
+### ARAL Idris Chakram
+
+Of 38 witnessed selector-3 point releases, 37 have a 040F for definition
+125 (33 ally views and four owner views). Each of the 37 distinct instance
+IDs has exactly one 0410 with flag zero. Release to launch took 0.176–0.421
+seconds (median 0.297). The host arms the shot for six 20 Hz ticks, then
+starts the existing simulation flight if its owner is alive. The launch
+uses the aim from the accepted cast and the instance stays with the same
+Bevy spell across both legs. The first direction pair incorporates launch
+height and the second is the horizontal unit vector. The host projects its
+own two-dimensional cast point onto its zero-height plane.
+
+Launch to terminal took 1.292–4.387 seconds (median 1.689). In 28 cases a
+caster position update was available within 200 ms of termination. Its
+distance to the terminal point had median zero and maximum 0.958 world
+units. There was no second Idris directed launch within 200 ms of any
+terminal. Seven tracked projectiles in those windows had definition 122.
+The recordings do not establish a second launch as part of the ordinary
+return. Although the supplemental spec §3.2 proposes turning at the first
+0410, the host emits one flag-zero terminal when its returning shot
+actually reaches the caster. Flight time follows the hosted movement
+model; its speed is not a fitted native value. Cancellation on owner death
+or terrain has no evidenced terminal form. Only peers that received this
+instance's launch in their own registered scene receive its catch.

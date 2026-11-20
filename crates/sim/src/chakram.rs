@@ -13,6 +13,8 @@ pub(super) struct Chakram {
     team: u8,
     position: Position,
     aim: Position,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    native: Option<(u32, u64)>,
     returning: bool,
     hit: Vec<u32>,
     damage: f32,
@@ -20,6 +22,9 @@ pub(super) struct Chakram {
 }
 
 impl Chakram {
+    pub(super) fn arm_native(&mut self, id: u32, due: u64) {
+        self.native = Some((id, due));
+    }
     pub fn new(
         source: u32,
         team: u8,
@@ -33,6 +38,7 @@ impl Chakram {
             team,
             position,
             aim,
+            native: None,
             returning: false,
             hit: Vec::new(),
             damage,
@@ -60,6 +66,19 @@ impl crate::persistent_spells::TimedSpell for Chakram {
         };
         if world.winner.is_some() || world.entities[owner].hp <= 0. {
             return false;
+        }
+        if let Some((id, due)) = self.native {
+            if world.tick < due {
+                return true;
+            }
+            if world.tick == due {
+                events.push(Event::ChakramLaunch {
+                    source: self.source,
+                    id,
+                    origin: self.position,
+                    aim: self.aim,
+                });
+            }
         }
         let goal = if self.returning {
             world.entities[owner].position
@@ -109,6 +128,13 @@ impl crate::persistent_spells::TimedSpell for Chakram {
         self.position = next;
         if next == goal {
             if self.returning {
+                if let Some((id, _)) = self.native {
+                    events.push(Event::ChakramCatch {
+                        source: self.source,
+                        id,
+                        position: goal,
+                    });
+                }
                 return false;
             }
             self.returning = true;
@@ -180,6 +206,59 @@ mod tests {
         let expected = w.entities[0].weapon_power() * 0.8 * 100. / (100. + w.entities[1].armor());
         assert_eq!(hits, [expected, expected]);
         assert!(w.entities.spells::<Chakram>().next().is_none() && w.command(1, ability).is_err());
+    }
+
+    #[test]
+    fn aral_chakram_launch_and_catch_follow_one_authoritative_flight() {
+        let mut w = World::new(8, 6);
+        w.use_six_human_roster().unwrap();
+        w.use_aral_lane().unwrap();
+        w.entities[0].type_id = 273;
+        let origin = Position {
+            x: -38.417,
+            y: 0.785,
+        };
+        let aim = Position {
+            x: -40.8939,
+            y: 1.4944,
+        };
+        w.entities[0].position = origin;
+        w.command(1, Command::Learn(AbilitySlot::B)).unwrap();
+        w.command(1, cast(aim)).unwrap();
+        let mut release = None;
+        let mut launch = None;
+        let mut catches = 0;
+        for _ in 0..40 {
+            for event in w.step() {
+                match event {
+                    Event::ChakramApplied { source: 1, id } => {
+                        assert!(release.replace((w.tick, id)).is_none());
+                    }
+                    Event::ChakramLaunch {
+                        source: 1,
+                        id,
+                        origin: p,
+                        aim: q,
+                    } => {
+                        assert_eq!((p, q), (origin, aim));
+                        let (at, buff) = release.unwrap();
+                        assert_eq!((w.tick, id), (at + 6, buff + 2));
+                        assert!(launch.replace(id).is_none());
+                    }
+                    Event::ChakramCatch {
+                        source: 1,
+                        id,
+                        position,
+                    } => {
+                        assert_eq!(Some(id), launch);
+                        assert_eq!(position, origin);
+                        catches += 1;
+                    }
+                    _ => {}
+                }
+            }
+        }
+        assert_eq!(catches, 1);
     }
 
     #[test]

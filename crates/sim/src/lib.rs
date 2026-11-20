@@ -167,6 +167,17 @@ pub enum Event {
         id: u32,
         point: Position,
     },
+    ChakramLaunch {
+        source: u32,
+        id: u32,
+        origin: Position,
+        aim: Position,
+    },
+    ChakramCatch {
+        source: u32,
+        id: u32,
+        position: Position,
+    },
     ChakramApplied {
         source: u32,
         id: u32,

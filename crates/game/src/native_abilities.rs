@@ -259,6 +259,19 @@ pub(super) fn publish_before_impacts(room: &mut Room, events: &[Event]) {
         return;
     }
     for event in events {
+        if let Event::ChakramLaunch {
+            source,
+            id,
+            origin,
+            aim,
+        } = *event
+        {
+            projectile::chakram(
+                room,
+                source,
+                projectile::Chakram::Launch { id, origin, aim },
+            );
+        }
         if let Event::Cast {
             source,
             slot: AbilitySlot::B,
@@ -295,6 +308,16 @@ pub(super) fn publish(room: &mut Room, events: &[Event]) {
     }
     let aral = room.legacy_aral();
     for (event_index, event) in events.iter().enumerate() {
+        if aral
+            && let Event::ChakramCatch {
+                source,
+                id,
+                position,
+            } = *event
+        {
+            projectile::chakram(room, source, projectile::Chakram::Catch { id, position });
+            continue;
+        }
         if aral && let Event::WinterSpireProjectile { source, id, point } = *event {
             projectile::spire(room, source, id, point);
             continue;

@@ -443,12 +443,12 @@ impl Room {
     }
     pub(super) fn publish_observer_spell_projectile(
         &mut self,
-        message: impl Fn(&crate::tower_aggro::View) -> Option<Message>,
+        message: impl Fn(&mut crate::tower_aggro::View) -> Option<Message>,
     ) {
         self.observers.retain(|_, o| {
             if let Some(tx) = &o.live
                 && o.scene.is_some()
-                && let Some(m) = message(&o.view)
+                && let Some(m) = message(&mut o.view)
                 && tx.try_send(vec![m]).is_err()
             {
                 o.stop.send_replace(true);
