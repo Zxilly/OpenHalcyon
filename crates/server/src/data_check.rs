@@ -34,7 +34,23 @@ struct Supplement<'a> {
 }
 
 pub(super) fn inspect(data: &GameData) -> Result<Report<'_>> {
-    halcyon_sim::WorldRules::load(data).map_err(anyhow::Error::msg)?;
+    let rules = halcyon_sim::WorldRules::load(data).map_err(anyhow::Error::msg)?;
+    let mut solo = rules.world(0, 1);
+    for hero in &data.hero_names {
+        solo.select_hero(0, hero, data)
+            .map_err(anyhow::Error::msg)
+            .with_context(|| format!("selecting advertised hero {hero}"))?;
+    }
+    solo.use_solo_mid_lane()
+        .and_then(|()| solo.install_map_data(data))
+        .map_err(anyhow::Error::msg)
+        .context("preparing native Solo scene")?;
+    let mut aral = rules.world(0, 6);
+    aral.use_six_human_roster()
+        .and_then(|()| aral.use_aral_lane())
+        .and_then(|()| aral.install_map_data(data))
+        .map_err(anyhow::Error::msg)
+        .context("preparing native ARAL scene")?;
     let supplemental = if let Some(reference) = data.references() {
         let combat = data.extra.combat_content();
         let items = data

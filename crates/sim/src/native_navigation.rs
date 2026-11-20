@@ -207,6 +207,16 @@ impl NativeNavigation {
 }
 
 impl World {
+    /// Install the configured geometry and placements for the selected native layout.
+    pub fn install_map_data(&mut self, data: &GameData) -> Result<(), String> {
+        if let Some(maps) = data.native_maps() {
+            self.install_native_navigation(maps)?;
+        }
+        if matches!(self.layout, Layout::SoloMid { .. }) {
+            self.install_native_camps(data)?;
+        }
+        Ok(())
+    }
     /// Install the operator-supplied map on a newly constructed native room.
     pub fn install_native_navigation(&mut self, maps: &NativeMaps) -> Result<(), String> {
         if self.tick != 0 {

@@ -612,8 +612,8 @@ impl Rooms {
             world
                 .use_aral_lane()
                 .map_err(|_| PlatformError::Invalid("invalid ARAL layout"))?;
-            if let Some(maps) = self.0.data.as_ref().and_then(|data| data.native_maps()) {
-                world.install_native_navigation(maps).map_err(|error| {
+            if let Some(data) = &self.0.data {
+                world.install_map_data(data).map_err(|error| {
                     tracing::warn!(%error, "invalid ARAL map assets");
                     PlatformError::HostUnavailable
                 })?;
