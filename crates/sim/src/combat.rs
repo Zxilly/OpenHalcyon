@@ -45,6 +45,7 @@ enum Skill {
     Waterwall,
     Verse,
     Skedaddle,
+    SuperKick,
 }
 fn skill(hero: u16, slot: AbilitySlot) -> Option<Skill> {
     use AbilitySlot::*;
@@ -52,6 +53,7 @@ fn skill(hero: u16, slot: AbilitySlot) -> Option<Skill> {
     Some(match (EntityTemplate::from_raw(hero)?, slot) {
         (EntityTemplate::Idris, B) => Chakram,
         (EntityTemplate::Gwen, B) => Skedaddle,
+        (EntityTemplate::Amael, C) => SuperKick,
         (EntityTemplate::Catherine, B) => Stormguard,
         (EntityTemplate::Catherine, C) => BlastTremor,
         (EntityTemplate::Catherine, A) => Pursuit,
@@ -258,6 +260,8 @@ pub(super) struct AbilityBook {
     pub(super) leap: Option<super::yates::Leap>,
     pub(super) pursuit: Option<super::pursuit::Pursuit>,
     pub(super) overwhelm: Option<super::overwhelm::Overwhelm>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) super_kick: Option<super::amael::Rules>,
     chill_winds: Option<super::native_combat::ChillWinds>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) skedaddle: Option<super::skedaddle::Rules>,
@@ -300,6 +304,7 @@ impl Default for AbilityBook {
             leap: None,
             pursuit: None,
             overwhelm: None,
+            super_kick: None,
             chill_winds: None,
             skedaddle: None,
             winter_spire: None,
@@ -414,6 +419,7 @@ impl AbilityBook {
             leap: super::yates::Leap::load(data)?,
             pursuit: super::pursuit::Pursuit::load(data)?,
             overwhelm: super::overwhelm::Overwhelm::load(data)?,
+            super_kick: super::amael::Rules::load(data)?,
             chill_winds: super::native_combat::ChillWinds::load(data)?,
             skedaddle: super::skedaddle::Rules::load(data)?,
             winter_spire: super::native_combat::WinterSpire::load(data)?,
@@ -461,6 +467,7 @@ impl Room<'_> {
     }
     fn rules(&self, s: Skill, rank: usize) -> Rules {
         let (range, cost, windup, seconds) = match s {
+            Skill::SuperKick => self.abilities.super_kick.as_ref().unwrap().cast(rank),
             Skill::WinterSpire => (0., 0., 2, 0.),
             Skill::Bulwark => (
                 0.,
@@ -532,6 +539,9 @@ impl Room<'_> {
     }
     fn modeled_skill(&self, hero: u16, slot: AbilitySlot) -> Option<Skill> {
         skill(hero, slot).filter(|s| match s {
+            Skill::SuperKick => {
+                matches!(self.layout, Layout::Aral { .. }) && self.abilities.super_kick.is_some()
+            }
             Skill::Verse => self.abilities.verse.is_some(),
             Skill::Skedaddle => self.abilities.skedaddle.is_some(),
             Skill::WinterSpire => self.abilities.winter_spire.is_some(),
@@ -647,10 +657,25 @@ impl Room<'_> {
                 CastTarget::SelfCast,
             ) => e.position,
             (
-                Skill::Achilles | Skill::Hellfire | Skill::Gift | Skill::Agent | Skill::Waterwall,
+                Skill::Achilles
+                | Skill::Hellfire
+                | Skill::Gift
+                | Skill::Agent
+                | Skill::Waterwall
+                | Skill::SuperKick,
                 CastTarget::Entity(id),
             ) => {
                 let t = &self.entities[self.index(id).ok_or("unknown target")?];
+                if s == Skill::SuperKick
+                    && (t.kind != Kind::Hero
+                        || t.status.stun_until > self.tick
+                        || t.status.root_until > self.tick
+                        || t.status.blocks_movement_impairment(self.tick)
+                        || self.bulwark_blocks_leap(i, t.position)
+                        || !self.spell_motion_clear(e.position, t.position))
+                {
+                    return Err("unsupported kick target");
+                }
                 let ally = matches!(s, Skill::Gift | Skill::Agent | Skill::Waterwall);
                 if t.hp <= 0.
                     || (matches!(s, Skill::Waterwall | Skill::Agent) && t.kind != Kind::Hero)
@@ -795,6 +820,36 @@ impl Room<'_> {
             _ => origin,
         };
         match s {
+            Skill::SuperKick => {
+                let victim = self.entities[aimed.unwrap()].position;
+                let distance = origin.dist(victim);
+                let goal = origin.advance(victim, (distance - 1.8).max(0.));
+                let raw = self
+                    .abilities
+                    .super_kick
+                    .as_ref()
+                    .unwrap()
+                    .damage
+                    .at(r, cp, weapon);
+                let channel = self.tick.max(1);
+                self.entities[i].status.channel = channel;
+                self.entities[i].status.channel_until = self.tick + 6;
+                self.entities.spawn_spell(SpellEffect {
+                    due: self.tick + 1,
+                    src,
+                    team,
+                    area: Area::Kick(super::amael::Flight {
+                        target: id,
+                        range: rule.range,
+                        goal,
+                        step: origin.dist(goal) / 6.,
+                        elapsed: 0,
+                    }),
+                    damage: raw,
+                    heal: 0.,
+                    channel,
+                });
+            }
             Skill::Verse => unreachable!("Verse releases its paid channel separately"),
             Skill::Skedaddle => self.release_skedaddle(i, r, events),
             Skill::Bulwark => self.create_bulwark(i, r, events),
@@ -1149,6 +1204,7 @@ impl Room<'_> {
 }
 #[derive(Clone, Copy, Debug, Serialize)]
 enum Area {
+    Kick(super::amael::Flight),
     BasicTarget(u32, DamageSchool),
     Target(u32, DamageSchool),
     NpcWindup(u32),
@@ -1314,6 +1370,9 @@ impl crate::persistent_spells::TimedSpell for SpellEffect {
         {
             return false;
         }
+        if let Area::Kick(flight) = &mut self.area {
+            return flight.advance(world, self.src, self.team, self.damage, events);
+        }
         if let Area::NpcWindup(target) = self.area {
             let (Some(a), Some(b)) = (world.index(self.src), world.index(target)) else {
                 return false;
@@ -1371,7 +1430,8 @@ impl crate::persistent_spells::TimedSpell for SpellEffect {
                 Area::Circle(p, r) | Area::WinterSpire(p, r) => p.dist(e.position) <= r,
                 Area::Suppression { from, to, .. } => line_distance(e.position, from, to) <= 1.4,
                 Area::Line(a, b, r) => line_distance(e.position, a, b) <= r,
-                Area::BasicTarget(..)
+                Area::Kick(_)
+                | Area::BasicTarget(..)
                 | Area::Target(..)
                 | Area::NpcWindup(_)
                 | Area::Hellfire(..) => unreachable!(),

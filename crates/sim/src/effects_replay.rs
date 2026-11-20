@@ -3,11 +3,12 @@ use sha2::{Digest, Sha256};
 
 pub(super) fn field_replay_world(data: &GameData) -> World {
     let mut world = World::from_data(23, 6, data).unwrap();
-    // These rules were added after the recorded checkpoint. Both heroes' later
+    // These rules were added after the recorded checkpoint. Later
     // skills are outside this fixture, but the digest includes the whole book.
     let book = std::sync::Arc::make_mut(&mut world.abilities);
     book.verse = None;
     book.skedaddle = None;
+    book.super_kick = None;
     world.use_six_human_roster().unwrap();
     for (seat, name) in [(0, "Lyra"), (1, "Adagio"), (2, "Lyra"), (3, "Adagio")] {
         world.select_hero(seat, name, data).unwrap();

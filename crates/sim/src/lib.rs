@@ -3,6 +3,7 @@
 use halcyon_data::EntityTemplate;
 mod actors;
 mod ai;
+mod amael;
 mod aral;
 mod arcane_fire;
 mod fixed_tick;
@@ -145,6 +146,7 @@ pub enum ImpactEffect {
     #[default]
     Standard,
     ChillWinds,
+    AmaelKick,
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Event {
@@ -175,6 +177,11 @@ pub enum Event {
         immunity_seconds: f32,
         speed_seconds: f32,
         talent_reset: bool,
+    },
+    AmaelKick {
+        source: u32,
+        target: u32,
+        instance: u32,
     },
     ChillWindsRoot {
         source: u32,

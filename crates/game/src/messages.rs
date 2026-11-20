@@ -400,7 +400,8 @@ fn combat_event(event: &halcyon_sim::Event, visible: impl Fn(u32) -> bool) -> Op
             if matches!(
                 event,
                 Event::Damage {
-                    effect: halcyon_sim::ImpactEffect::ChillWinds,
+                    effect: halcyon_sim::ImpactEffect::ChillWinds
+                        | halcyon_sim::ImpactEffect::AmaelKick,
                     ..
                 }
             ) =>

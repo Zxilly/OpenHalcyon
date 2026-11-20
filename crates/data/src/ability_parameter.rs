@@ -50,6 +50,7 @@ native_labels! {
         EmpoweredDuration => "E_DURATION",
         EmpoweredShotSpeed => "SHOT_SPEED_EMPOWERED",
         EmpoweredStunMultiplier => "EMP_STUN_MULTIPLIER",
+        UppercaseEnergyCost => "ENERGY COST",
         EnergyCost => "Energy Cost",
         FirstHitDelay => "First Hit Delay",
         ImpactSplashRadius => "ImpactSplashRadius",

@@ -49,3 +49,32 @@ opening gets no terminal reference. A witness that loses sight receives
 zone and actor cleanup without an endpoint revealing Lyra's position.
 Normal expiration follows the caster's current authoritative position.
 Early cleanup on caster death follows the hosted field lifetime.
+
+## Amael's ordinary Super Kick
+
+Two ARAL records distinguish the ordinary targeted kick against Reim and
+Ylva. In both, an opponent saw Amael's 0415 with selector 2, then the victim's
+0402 with values 6, 5 and enabled 1 after 0.10–0.11 seconds. Definition 62
+revealed the victim for 1.5 seconds and the following damage used family
+74, fields 1/0. The preceding caster 0403 destinations were each 1.8 units
+short of the selected hero. Distance from Amael's correction to that
+destination divided by the transmitted speed gives 0.30 seconds in both.
+One victim also had a separate short horizontal displacement.
+
+The hosted ordinary branch requires a living, visible enemy hero within
+seven units and a clear route. The Bevy effect advances the caster for six
+ticks and impacts once on tick two, interrupts the victim's pending action,
+and reveals them for 30 ticks. Physical damage uses the named DAMAGE block
+(300/400/500, 1.8 CP and 1.5 WP), the victim's armor and the caster's armor
+pierce. The ranked cost is 80/95/110 and the base cooldown 80/65/50
+seconds. The bounce operands supply the native presentation. They provide
+no measured duration for a five-second status lock. An already rooted,
+stunned or movement-immune victim is outside this branch. The elbow drop
+and its area damage require a separate trigger.
+
+The hosted controller uses the build's targeted cast request with selector
+2 and ultimate learn index 2. Two remote perspectives include Amael's
+043A operand 2 and the targeted release; neither perspective controlled
+Amael. Tests cover the originating hosted request, registered target and
+release confirmation. Captured owner-side request or reply timing remains
+unverified.

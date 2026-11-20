@@ -21,6 +21,7 @@ pub(super) fn recordable_chill_winds(m: &Message) -> bool {
 }
 pub(super) use chakram_motion::recordable_stop;
 
+const AMAEL: u16 = EntityTemplate::Amael.as_raw();
 const IDRIS: u16 = EntityTemplate::Idris.as_raw();
 const LORELAI: u16 = EntityTemplate::Lorelai.as_raw();
 
@@ -82,6 +83,9 @@ pub(super) fn receive(room: &mut Room, seat: usize, channel: usize, m: Message) 
         Some(crate::Opcode::RequestUpgradeAbility)
             if m.body.len() == 6 && m.body[1..] == [0; 5] =>
         {
+            if hero == AMAEL && (!aral || !room.scene_views[seat].knows(id)) {
+                return Vec::new();
+            }
             let Some((slot, operand)) = native_learn_request(hero, m.body[0]) else {
                 return Vec::new();
             };
@@ -133,7 +137,7 @@ pub(super) fn receive(room: &mut Room, seat: usize, channel: usize, m: Message) 
             Vec::new()
         }
         Some(crate::Opcode::RequestTargetAbility)
-            if hero == LORELAI
+            if (hero == LORELAI || (aral && hero == AMAEL))
                 && m.body.len() == 6
                 && m.body[4..] == [NativeCast::LorelaiC.selector(), 0] =>
         {
@@ -141,10 +145,17 @@ pub(super) fn receive(room: &mut Room, seat: usize, channel: usize, m: Message) 
             let Some(target_id) = wire_target.checked_sub(1499) else {
                 return Vec::new();
             };
+            if hero == AMAEL
+                && !(room.scene_views[seat].knows(id)
+                    && room.scene_views[seat].knows(target_id)
+                    && room.visible[actor.team as usize].contains(&target_id))
+            {
+                return Vec::new();
+            }
             if !room.world.entities.iter().any(|e| {
                 e.id == target_id
                     && e.id != id
-                    && e.team == actor.team
+                    && (e.team == actor.team) == (hero == LORELAI)
                     && e.kind == Kind::Hero
                     && e.hp > 0.0
             }) {
@@ -178,26 +189,32 @@ pub(super) fn receive(room: &mut Room, seat: usize, channel: usize, m: Message) 
 /// Selectors are local to an actor template. The action shape distinguishes
 /// a ground point from an allied-actor target.
 #[derive(Clone, Copy, PartialEq, Eq)]
-#[repr(u8)]
 enum NativeCast {
-    LorelaiA = 0,
-    LorelaiB = 1,
-    LorelaiC = 2,
-    IdrisB = 3,
+    LorelaiA,
+    LorelaiB,
+    LorelaiC,
+    IdrisB,
+    AmaelC,
 }
 impl NativeCast {
     const fn selector(self) -> u8 {
-        self as u8
+        match self {
+            Self::LorelaiA => 0,
+            Self::LorelaiB => 1,
+            Self::LorelaiC | Self::AmaelC => 2,
+            Self::IdrisB => 3,
+        }
     }
     const fn slot(self) -> AbilitySlot {
         match self {
             Self::LorelaiA => AbilitySlot::A,
             Self::LorelaiB | Self::IdrisB => AbilitySlot::B,
-            Self::LorelaiC => AbilitySlot::C,
+            Self::LorelaiC | Self::AmaelC => AbilitySlot::C,
         }
     }
     fn for_slot(hero: u16, slot: AbilitySlot) -> Option<Self> {
         match (hero, slot) {
+            (AMAEL, AbilitySlot::C) => Some(Self::AmaelC),
             (IDRIS, AbilitySlot::B) => Some(Self::IdrisB),
             (LORELAI, AbilitySlot::A) => Some(Self::LorelaiA),
             (LORELAI, AbilitySlot::B) => Some(Self::LorelaiB),
@@ -532,7 +549,7 @@ pub(super) fn publish(room: &mut Room, events: &[Event]) {
                 Message::ability_point_used(actor_wire, [p.x, 0., p.y], cast.selector()),
                 None,
             ),
-            (NativeCast::LorelaiC, CastTarget::Entity(id)) => (
+            (NativeCast::LorelaiC | NativeCast::AmaelC, CastTarget::Entity(id)) => (
                 Message::ability_target_used(actor_wire, u32::from(wire_id(id)), cast.selector()),
                 Some(id),
             ),
@@ -624,7 +641,20 @@ pub(super) fn publish(room: &mut Room, events: &[Event]) {
             out.extend(tail);
             (team, super::transport::TeamBatch::new(out))
         });
-        witness(room, source, target_id, &message, ally_release);
+        if cast == NativeCast::AmaelC
+            && let Some(victim) = target_id
+        {
+            deliver_registered(
+                room,
+                source,
+                1 - team,
+                Some(victim),
+                std::slice::from_ref(&message),
+            );
+            room.publish_observer_actors(&[source, victim], std::slice::from_ref(&message));
+        } else {
+            witness(room, source, target_id, &message, ally_release);
+        }
     }
 }
 
@@ -881,6 +911,93 @@ mod tests {
         );
         assert!(drain(&mut recipients[1]).is_empty());
         assert!(drain(&mut recipients[2]).is_empty());
+    }
+
+    #[tokio::test]
+    #[ignore = "requires original delivery and supplemental combat data"]
+    async fn authenticated_amael_learns_and_confirms_the_registered_enemy_kick() {
+        let data = halcyon_data::GameData::load_with_extra(
+            std::env::var_os("HALCYON_DELIVERY").unwrap(),
+            Some(std::path::Path::new(
+                &std::env::var_os("HALCYON_DATA_EXTRA").unwrap(),
+            )),
+        )
+        .unwrap();
+        let rooms = Rooms::new(
+            "127.0.0.1".parse().unwrap(),
+            "127.0.0.1".into(),
+            1,
+            Some(std::sync::Arc::new(data)),
+        );
+        let id = Uuid::new_v4();
+        rooms
+            .reserve(Reservation {
+                match_id: id,
+                players: (0..6).map(|_| Uuid::new_v4()).collect(),
+                teams: vec![],
+                mode: "casual_aral".into(),
+                difficulty: None,
+                talent_levels: vec![],
+            })
+            .unwrap();
+        let shared = rooms.room(id).unwrap();
+        let mut room = shared.lock().unwrap();
+        room.world.use_aral_lane().unwrap();
+        room.world.entities[0].type_id = AMAEL;
+        room.world.entities[0].level = 6;
+        room.world.entities[0].skill_points = 1;
+        room.world.entities[0].energy = 400.;
+        room.world.entities[0].max_energy = 400.;
+        room.world.entities[0].position = Position { x: 20., y: 1. };
+        room.world.entities[1].position = Position { x: 23., y: 5. };
+        let (tx, mut rx) = mpsc::channel(32);
+        room.seats[0].peers[0] = Some(Peer {
+            generation: 42,
+            tx,
+            stalled: watch::channel(false).0,
+        });
+        let learn = Message::known(crate::Opcode::RequestUpgradeAbility, [2, 0, 0, 0, 0, 0]);
+        assert!(receive(&mut room, 0, 0, learn.clone()).is_empty());
+        room.seats[0].world_actor_written = true;
+        let mut hero = crate::messages::spawn(&room.world.entities[0], &room.picks, None);
+        hero.body[745] = 16;
+        let mut target = crate::messages::spawn(&room.world.entities[1], &room.picks, None);
+        target.body[745] = 17;
+        room.scene_views[0].declarations(&[hero]);
+        assert_eq!(
+            receive(&mut room, 0, 0, learn.clone()),
+            [learn, Message::ability_learned(1500, 2)]
+        );
+        let request = Message::known(crate::Opcode::RequestTargetAbility, [0, 0, 5, 221, 2, 0]);
+        assert!(receive(&mut room, 0, 0, request.clone()).is_empty());
+        assert!(room.seats[0].native_abilities.cast.is_none());
+        room.scene_views[0].declarations(&[target]);
+        room.visible[0].insert(2);
+        receive(&mut room, 0, 0, request);
+        assert!(room.seats[0].native_abilities.cast.is_some());
+        let mut hits = 0;
+        for _ in 0..8 {
+            let ev = room.world.step();
+            hits += ev
+                .iter()
+                .filter(|e| {
+                    matches!(
+                        e,
+                        Event::AmaelKick {
+                            source: 1,
+                            target: 2,
+                            ..
+                        }
+                    )
+                })
+                .count();
+            publish(&mut room, &ev);
+        }
+        assert_eq!(hits, 1);
+        assert_eq!(
+            rx.try_recv().unwrap().into_records(),
+            [Message::ability_target_used(1500, 1501, 2)]
+        );
     }
 
     #[tokio::test]

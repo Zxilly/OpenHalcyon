@@ -20,6 +20,7 @@ impl Room<'_> {
             Some(EntityTemplate::Lyra) => self
                 .sigil_order(caster, enemy)
                 .or_else(|| cast(self.bulwark_reaches(caster, enemy.position), B, SelfCast)),
+            Some(EntityTemplate::Amael) => cast(true, C, target),
             Some(EntityTemplate::Karas) => cast(self.abilities.twister.is_some(), B, point),
             Some(EntityTemplate::Catherine) => {
                 cast(self.pursuit_reaches(caster, enemy.position), A, SelfCast)
