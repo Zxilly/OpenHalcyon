@@ -1376,10 +1376,11 @@ impl Room<'_> {
             }
             let hero = &self.entities[i];
             if hero.status.stun_until > self.tick
-                || self
-                    .entities
-                    .spells::<twister::Dash>()
-                    .any(|d| d.source == hero.id)
+                || (hero.type_id == EntityTemplate::Karas.as_raw()
+                    && self
+                        .entities
+                        .spells::<twister::Dash>()
+                        .any(|d| d.source == hero.id))
             {
                 continue;
             }
