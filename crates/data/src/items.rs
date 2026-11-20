@@ -90,6 +90,19 @@ impl StoreSettings {
 
 #[derive(Clone, Copy)]
 pub enum ItemTuning {
+    WeaponMin,
+    WeaponMax,
+    AttackSpeedMin,
+    AttackSpeedMax,
+    CrystalMin,
+    CrystalMax,
+    CooldownMin,
+    CooldownMax,
+    ArmorMin,
+    ArmorMax,
+    ShieldMin,
+    ShieldMax,
+
     ArmorPen,
     ShieldPierce,
     BonusBaseMoveSpeed,
@@ -104,6 +117,18 @@ pub enum ItemTuning {
 impl ItemTuning {
     pub const fn key(self) -> &'static str {
         match self {
+            Self::WeaponMin => "WEAPON_MIN",
+            Self::WeaponMax => "WEAPON_MAX",
+            Self::AttackSpeedMin => "ATTACKSPEED_MIN",
+            Self::AttackSpeedMax => "ATTACKSPEED_MAX",
+            Self::CrystalMin => "CRYSTAL_MIN",
+            Self::CrystalMax => "CRYSTAL_MAX",
+            Self::CooldownMin => "CDA_MIN",
+            Self::CooldownMax => "CDA_MAX",
+            Self::ArmorMin => "ARMOR_MIN",
+            Self::ArmorMax => "ARMOR_MAX",
+            Self::ShieldMin => "SHIELD_MIN",
+            Self::ShieldMax => "SHIELD_MAX",
             Self::ArmorPen => "ARMOR_PEN",
             Self::ShieldPierce => "SHIELD_PIERCE",
             Self::BonusBaseMoveSpeed => "BONUS_BASE_MSPD",

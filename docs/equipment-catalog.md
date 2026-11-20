@@ -27,7 +27,96 @@ The project simulation can sell an owned, equipped instance at base while the he
 
 The additional 17 ordinary templates comprise Aegis, Capacitor Plate, Dragonblood Contract, Protector Contract, Rook’s Decree, Shiversteel, Tension Bow and Tornado Trigger in both standard stores and Blitz Revamp. Both infusions appear in the two standard stores. Flare and Scout Trap appear only in Standard 3v3. Flare Loader, Scout Pak, Scout Tuff, SuperScout 2000 and Teleport Boots appear only in Standard 5v5. Shiversteel also appears in Tutorial 2. The original ARAL transactions independently establish Capacitor Plate, both infusions, Flare and Scout Trap.
 
-Purchase and resale cover the economy of consumables. Their deployment, infusion consumption and temporary scaling, Tension Bow's conditional proc, and equipment-specific activated abilities need separate simulation and native input evidence. The full catalog exposes the original tuning for these effects. The four captured ARAL sale broadcasts include Scout Trap's modifier-free removal and 25-gold refund.
+Purchase and resale cover the economy of consumables. Vision deployment, Tension Bow's conditional proc and most equipment-specific activated abilities remain catalog-only. The full catalog exposes the original tuning for these effects. The four captured ARAL sale broadcasts include Scout Trap's modifier-free removal and 25-gold refund.
+
+## Infusions
+
+The standard 5v5 catalog contains two infusions. Both cost 500 gold. Buying one adds a held instance. The simulation command `ConsumeInfusion` consumes that instance once and starts a 150-second effect. A new infusion replaces the previous effect, including a fresh duration for the same type. Armor and shield each range from 10 to 20. Weapon Infusion adds 20–40 weapon power and 15–35% attack speed. Crystal Infusion adds 30–60 crystal power and 7.5–15% cooldown speed. The host uses the current level on a linear level 1–12 scale and removes only the active infusion's contribution at expiry.
+
+The two languages both describe consumption and a single active infusion. Of 24 archived grants, nine had immediate mode-0 activation, six had delayed mode-2 activation, and nine had no observed activation. A precise automatic consumption rule and a client-originated activation opcode remain unverified. The host exposes deliberate consumption through the simulation command. Attack-speed endpoints follow the 4.13 catalog; the historical weapon receipts also show a 20% base on some activations.
+
+## Per-item effect coverage
+
+The middle column lists the static catalog attributes. The right column describes additional implemented behavior. “Catalog only” retains the named tuning and description for lookup. Boot movement and named passives use the supplemental catalog where configured.
+
+| Item | Catalog attributes | Separate active or passive behavior |
+| --- | --- | --- |
+| Aegis | HEALTH, ARMOR, SHIELD | No separate handler |
+| Aftershock | CRYSTAL_POWER, ENERGY_REGEN, COOLDOWN_SPEED | Catalog only |
+| Alternating Current | CRYSTAL_POWER, ATTACK_SPEED_DISPLAY | Catalog only |
+| Atlas Pauldron | ARMOR | Catalog only |
+| Barbed Needle | WEAPON_POWER | Catalog only |
+| Blazing Salvo | ATTACK_SPEED_DISPLAY | No separate handler |
+| Bonesaw | WEAPON_POWER, ATTACK_SPEED_DISPLAY | Armor pierce; stacking attack passive is catalog-only |
+| Book of Eulogies | WEAPON_POWER | Catalog only |
+| Breaking Point | WEAPON_POWER, ATTACK_SPEED_DISPLAY | Catalog only |
+| Broken Myth | CRYSTAL_POWER | Shield pierce |
+| Capacitor Plate | HEALTH, ARMOR, SHIELD, COOLDOWN_SPEED | Catalog only |
+| Celestial Shroud | SHIELD, HEALTH | Catalog only |
+| Chronograph | COOLDOWN_SPEED, ENERGY_REGEN | No separate handler |
+| Clockwork | CRYSTAL_POWER, ENERGY, ENERGY_REGEN, COOLDOWN_SPEED | Catalog only |
+| Coat of Plates | ARMOR | No separate handler |
+| Contraption | HEALTH, ENERGY_REGEN, COOLDOWN_SPEED | Catalog only |
+| Crucible | HEALTH | Catalog only |
+| Crystal Bit | CRYSTAL_POWER | No separate handler |
+| Crystal Infusion | — | Owned-instance consumption; timed crystal power, cooldown, armor and shield |
+| Dragon's Eye | CRYSTAL_POWER | Catalog only |
+| Dragonblood Contract | HEALTH | Catalog only |
+| Dragonheart | HEALTH | No separate handler |
+| Eclipse Prism | CRYSTAL_POWER | No separate handler |
+| Energy Battery | ENERGY, ENERGY_REGEN | No separate handler |
+| Eve of Harvest | CRYSTAL_POWER, ENERGY, ENERGY_REGEN | Catalog only |
+| Flare | — | Catalog only |
+| Flare Gun | HEALTH | Catalog only |
+| Flare Loader | HEALTH | Catalog only |
+| Fountain of Renewal | HEALTH, ARMOR, SHIELD | Catalog only |
+| Frostburn | CRYSTAL_POWER | Catalog only |
+| Halcyon Chargers | HEALTH, COOLDOWN_SPEED, ENERGY, ENERGY_REGEN | Nonstacking boot speed; boot-specific active is catalog-only |
+| Heavy Prism | CRYSTAL_POWER | No separate handler |
+| Heavy Steel | WEAPON_POWER | No separate handler |
+| Hourglass | COOLDOWN_SPEED, ENERGY_REGEN | No separate handler |
+| Journey Boots | HEALTH | Nonstacking boot speed; boot-specific active is catalog-only |
+| Kinetic Shield | SHIELD | No separate handler |
+| Lifespring | HEALTH | Catalog only |
+| Light Armor | ARMOR | No separate handler |
+| Light Shield | SHIELD | No separate handler |
+| Lucky Strike | CRIT_CHANCE, CRIT_DAMAGE | Catalog only |
+| Metal Jacket | ARMOR | Catalog only |
+| Minion's Foot | CRIT_CHANCE, CRIT_DAMAGE | No separate handler |
+| Oakheart | HEALTH | No separate handler |
+| Piercing Shard | CRYSTAL_POWER | Shield pierce |
+| Piercing Spear | WEAPON_POWER | Armor pierce |
+| Poisoned Shiv | WEAPON_POWER, ATTACK_SPEED_DISPLAY | Catalog only |
+| Protector Contract | HEALTH | Catalog only |
+| Pulseweave | HEALTH | Base movement amplification; triggered effects are catalog-only |
+| Reflex Block | HEALTH | Catalog only |
+| Rook's Decree | HEALTH, ARMOR, SHIELD, COOLDOWN_SPEED | Catalog only |
+| Scout Trap | — | Catalog only |
+| ScoutPak | COOLDOWN_SPEED, ENERGY_REGEN | Catalog only |
+| ScoutTuff | HEALTH | Catalog only |
+| Serpent Mask | WEAPON_POWER | Catalog only |
+| Shatterglass | CRYSTAL_POWER | No separate handler |
+| Shiversteel | HEALTH, ATTACK_SPEED_DISPLAY | Catalog only |
+| Six Sins | WEAPON_POWER | No separate handler |
+| Slumbering Husk | ARMOR, SHIELD | Catalog only |
+| Sorrowblade | WEAPON_POWER | No separate handler |
+| Spellfire | CRYSTAL_POWER | Catalog only |
+| Spellsword | WEAPON_POWER, COOLDOWN_SPEED, ENERGY_REGEN | Catalog only |
+| Sprint Boots | — | Nonstacking boot speed and Sprint activation |
+| Stormcrown | HEALTH, ENERGY_REGEN, COOLDOWN_SPEED | Catalog only |
+| Stormguard Banner | HEALTH | Catalog only |
+| SuperScout 2000 | HEALTH, ENERGY_REGEN, COOLDOWN_SPEED | Catalog only |
+| Swift Shooter | ATTACK_SPEED_DISPLAY | No separate handler |
+| Teleport Boots  | HEALTH, SHIELD, ARMOR | Nonstacking boot speed; boot-specific active is catalog-only |
+| Tension Bow | WEAPON_POWER | Catalog only |
+| Tornado Trigger | ATTACK_SPEED_DISPLAY, CRIT_CHANCE, CRIT_DAMAGE | Catalog only |
+| Travel Boots | HEALTH | Nonstacking boot speed; boot-specific active is catalog-only |
+| Tyrant's Monocle | WEAPON_POWER, CRIT_CHANCE, CRIT_DAMAGE | No separate handler |
+| Void Battery | ENERGY, ENERGY_REGEN | No separate handler |
+| War Treads | HEALTH | Nonstacking boot speed; boot-specific active is catalog-only |
+| Warmail | ARMOR, SHIELD | Catalog only |
+| Weapon Blade | WEAPON_POWER | No separate handler |
+| Weapon Infusion | — | Owned-instance consumption; timed weapon power, attack speed, armor and shield |
 
 ## Boots
 

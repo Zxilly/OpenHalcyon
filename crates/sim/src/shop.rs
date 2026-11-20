@@ -1,3 +1,5 @@
+#[path = "infusions.rs"]
+pub(super) mod infusions;
 #[path = "item_modifiers.rs"]
 mod item_modifiers;
 use super::*;
@@ -776,6 +778,7 @@ struct Offer {
 }
 #[derive(Serialize)]
 pub(super) struct Shop {
+    infusions: [Option<infusions::Rule>; 2],
     flask: Option<FlaskRule>,
     sprint: Option<SprintRule>,
     offers: Vec<Offer>,
@@ -783,6 +786,7 @@ pub(super) struct Shop {
 impl Default for Shop {
     fn default() -> Self {
         Self {
+            infusions: infusions::Rule::DEFAULTS,
             flask: Some(FlaskRule::ARAL_STARTER),
             sprint: None,
             offers: OFFERS
@@ -905,6 +909,13 @@ impl Shop {
     }
     pub fn load(data: &GameData) -> Result<Self, String> {
         let mut shop = Self {
+            infusions: data
+                .item_catalog()
+                .map_or(infusions::Rule::DEFAULTS, |catalog| {
+                    [WeaponInfusion, CrystalInfusion].map(|kind| {
+                        infusions::Rule::load(catalog.item(kind.definition().name)?, kind)
+                    })
+                }),
             flask: data
                 .item_catalog()
                 .and_then(|c| c.item("Item_HealingFlask"))
@@ -1320,6 +1331,7 @@ impl World {
 }
 #[derive(Clone, Copy, Default, Debug, Serialize)]
 pub struct ItemStats {
+    infusion: Option<infusions::Active>,
     flask_ready: u64,
     pub(super) boot_speed: f32,
     pub(super) sprint_speed: f32,

@@ -93,6 +93,9 @@ pub enum Command {
     Sell {
         instance: u32,
     },
+    ConsumeInfusion {
+        instance: u32,
+    },
     ActivateHealingFlask {
         instance: u32,
     },
@@ -855,6 +858,7 @@ impl World {
             Command::Sell { instance } => {
                 return self.sell_item(self.entities[i].id, instance).map(|_| ());
             }
+            Command::ConsumeInfusion { instance } => return self.consume_infusion(i, instance),
             Command::ActivateHealingFlask { instance } => {
                 return self.activate_healing_flask(self.entities[i].id, instance);
             }
@@ -1093,6 +1097,9 @@ impl World {
         for offset in 0..n {
             let i = (first + offset) % n;
             let e = &mut self.entities[i];
+            if e.kind == Kind::Hero {
+                shop::infusions::update(e, self.tick, &self.shop);
+            }
             e.lane_step = None;
             if e.kind == Kind::Armory {
                 self.advance_armory(i, events);
@@ -1276,6 +1283,7 @@ impl World {
                 Command::Stop
                 | Command::Buy(_)
                 | Command::Sell { .. }
+                | Command::ConsumeInfusion { .. }
                 | Command::ActivateHealingFlask { .. }
                 | Command::ActivateSprintBoots { .. }
                 | Command::Learn(_)
