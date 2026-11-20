@@ -117,21 +117,15 @@ fn sanitize(m: &mut Message) -> bool {
         // Audited outbound gameplay opcodes only. Unknown and control messages stay out.
         0x3f2
             if m.body.len() == 122
-                && (matches!(
-                    (
+                && (super::compact::recordable_mid_structure(&m.body)
+                    || (matches!(
                         u32::from_be_bytes(m.body[..4].try_into().unwrap()),
-                        &m.body[116..122]
-                    ),
-                    (295, [6, 0, 0, 1, 255, 1])
-                        | (296, [7, 0, 0, 1, 255, 2])
-                        | (340, [9, 0, 0, 1, 255, 1] | [12, 0, 0, 1, 255, 2])
-                ) || (matches!(
-                    u32::from_be_bytes(m.body[..4].try_into().unwrap()),
-                    335..=338
-                ) && matches!(
-                    m.body[116..122],
-                    [52..=199, 0, 0, 1, 1, 1] | [52..=199, 0, 0, 1, 4, 2]
-                )) || super::aral_spawn::recordable(&m.body)) => {}
+                        335..=338
+                    ) && matches!(
+                        m.body[116..122],
+                        [52..=199, 0, 0, 1, 1, 1] | [52..=199, 0, 0, 1, 4, 2]
+                    ))
+                    || super::aral_spawn::recordable(&m.body)) => {}
         0x42b
             if matches!(
                 m.body.as_slice(),

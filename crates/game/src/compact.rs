@@ -4,58 +4,71 @@ use halcyon_sim::{Entity, Kind};
 use super::messages::wire_id;
 
 const BODY_LEN: usize = 122;
-const STRUCTURE_SKIN_WORD: u32 = 0xc10b41da;
+/// Native Solo mid-lane slots. Other lanes share the template but have
+/// different registrations and are not part of the authoritative layout.
+pub(super) fn structure_slot(e: &Entity) -> Option<u8> {
+    match (e.kind, e.type_id, e.team) {
+        (Kind::Crystal, 295, 0) => Some(6),
+        (Kind::Crystal, 296, 1) => Some(7),
+        (Kind::Tower, 340, 0) => Some(9),
+        (Kind::Tower, 340, 1) => Some(12),
+        (Kind::Tower, 339, 0) => Some(26),
+        (Kind::Tower, 341, 0) => Some(27),
+        (Kind::Tower, 339, 1) => Some(32),
+        (Kind::Tower, 341, 1) => Some(33),
+        _ => None,
+    }
+}
 
-/// An opening outer mid-lane tower or a living home crystal in the Android 5v5 Solo
-/// opening. The caller selects that opening; other map families use different
-/// placement indices. Only one instance of each of these four slots is valid.
-pub(super) fn structure(tick: u64, entity: &Entity) -> Option<Message> {
-    let placement = match (entity.kind, entity.type_id, entity.team) {
-        (Kind::Crystal, 295, 0) => 6,
-        (Kind::Crystal, 296, 1) => 7,
-        (Kind::Tower, 340, 0) if tick == 0 => 9,
-        (Kind::Tower, 340, 1) if tick == 0 => 12,
-        _ => return None,
-    };
-    if !(1..=u32::from(u16::MAX) - 1500).contains(&entity.id)
-        || !entity.position.x.is_finite()
-        || !entity.position.y.is_finite()
-        || !entity.hp.is_finite()
-        || entity.hp <= 0.0
-        || !entity.max_hp.is_finite()
-        || entity.hp > entity.max_hp
-        || (tick == 0 && entity.hp != entity.max_hp)
+/// Towers acquire dynamic pose and timer fields after the first tick.
+/// All fourteen crystal snapshots retain the compact profile.
+pub(super) fn structure(tick: u64, e: &Entity) -> Option<Message> {
+    if (e.kind == Kind::Tower && tick != 0)
+        || !(1..=u32::from(u16::MAX) - 1500).contains(&e.id)
+        || !e.hp.is_finite()
+        || !e.max_hp.is_finite()
+        || e.hp <= 0.
+        || e.hp > e.max_hp
+        || tick == 0 && e.hp != e.max_hp
     {
         return None;
     }
+    let profile = halcyon_protocol::SoloStructure::at_slot(structure_slot(e)?)?;
+    let mut msg = profile.message(u32::from(wire_id(e.id)));
+    if msg.body[12..16] != e.position.x.to_be_bytes()
+        || msg.body[20..24] != e.position.y.to_be_bytes()
+    {
+        return None;
+    }
+    msg.body[36..40].copy_from_slice(&e.hp.to_be_bytes());
+    msg.body[40..44].copy_from_slice(&e.max_hp.to_be_bytes());
+    Some(msg)
+}
 
-    let mut body = [0; BODY_LEN];
-    put_word(&mut body, 0, u32::from(entity.type_id));
-    put_word(&mut body, 4, STRUCTURE_SKIN_WORD);
-    put_word(&mut body, 8, u32::from(wire_id(entity.id)));
-    let forward = if entity.team == 0 { 1.0_f32 } else { -1.0 };
-    for (offset, value) in [
-        (12, entity.position.x),
-        (16, 0.06),
-        (20, entity.position.y),
-        (24, forward),
-        (36, entity.hp),
-        (40, entity.max_hp),
-        (84, 1.0),
-    ] {
-        put_word(&mut body, offset, value.to_bits());
+pub(super) fn recordable_mid_structure(body: &[u8]) -> bool {
+    if body.len() != BODY_LEN {
+        return false;
     }
-    if entity.kind == Kind::Tower {
-        put_word(&mut body, 64, 1.0_f32.to_bits());
+    let wire = match body[116] {
+        6 => 2006,
+        7 => 2007,
+        9 => 2009,
+        12 => 2012,
+        26 => 2060,
+        27 => 2065,
+        32 => 2102,
+        33 => 2107,
+        _ => return false,
+    };
+    let hp = f32::from_be_bytes(body[36..40].try_into().unwrap());
+    let max = f32::from_be_bytes(body[40..44].try_into().unwrap());
+    if !hp.is_finite() || !max.is_finite() || hp <= 0. || hp > max || body[116] >= 8 && hp != max {
+        return false;
     }
-    body[88..104].fill(1);
-    body[97 + usize::from(entity.team)] = 15;
-    put_word(&mut body, 112, u32::MAX);
-    body[116] = placement;
-    body[119] = 1;
-    body[120] = u8::MAX;
-    body[121] = entity.team + 1;
-    Some(Message::new(0x03f2, body))
+    let expected = halcyon_protocol::SoloStructure::at_slot(body[116])
+        .unwrap()
+        .message(wire);
+    body[..36] == expected.body[..36] && body[44..] == expected.body[44..]
 }
 
 /// Center-lane snapshot with numeric fields, even at first visibility. Mask 1
@@ -119,7 +132,8 @@ mod tests {
 
     #[test]
     fn initial_slots_encode_only_simulated_structures() {
-        let world = World::new(0, 1);
+        let mut world = World::new(0, 1);
+        world.use_solo_mid_lane().unwrap();
         let mut slots = Vec::new();
         for entity in &world.entities {
             let Some(message) = structure(world.tick, entity) else {
@@ -129,7 +143,7 @@ mod tests {
             let b = &message.body;
             assert_eq!((message.opcode, b.len()), (0x03f2, 122));
             assert_eq!(word(b, 0), u32::from(entity.type_id));
-            assert_eq!(word(b, 4), STRUCTURE_SKIN_WORD);
+            assert_eq!(word(b, 4), 0xc10b41da);
             assert_eq!(word(b, 8), u32::from(wire_id(entity.id)));
             assert_eq!(word(b, 12), entity.position.x.to_bits());
             assert_eq!(word(b, 20), entity.position.y.to_bits());
@@ -140,15 +154,30 @@ mod tests {
             assert_eq!(word(b, 36), entity.hp.to_bits());
             assert_eq!(word(b, 40), entity.max_hp.to_bits());
             assert_eq!(b[117..122], [0, 0, 1, 255, entity.team + 1]);
+            assert!(recordable_mid_structure(b));
             slots.push(b[116]);
         }
         slots.sort_unstable();
-        assert_eq!(slots, [6, 7, 9, 12]);
+        assert_eq!(slots, [6, 7, 9, 12, 26, 27, 32, 33]);
+    }
+
+    #[test]
+    fn recording_accepts_only_the_registered_mid_lane_opening_profile() {
+        let encoded = halcyon_protocol::SoloStructure::at_slot(27).unwrap().message(2065);
+        assert!(recordable_mid_structure(&encoded.body));
+        for offset in [0, 4, 8, 16, 24, 28, 64, 97, 116, 121] {
+            let mut other = encoded.body.clone();
+            other[offset] ^= 1;
+            assert!(!recordable_mid_structure(&other), "changed byte {offset}");
+        }
+        let side_lane = halcyon_protocol::SoloStructure::at_slot(25).unwrap().message(2051);
+        assert!(!recordable_mid_structure(&side_lane.body));
     }
 
     #[test]
     fn later_crystal_uses_current_health_but_tower_requires_opening_state() {
-        let world = World::new(0, 1);
+        let mut world = World::new(0, 1);
+        world.use_solo_mid_lane().unwrap();
         let mut crystal = world
             .entities
             .iter()

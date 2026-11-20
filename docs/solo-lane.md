@@ -7,10 +7,28 @@ The Android CE 147219 Solo recording provides positions in native X/Z world unit
 | Heroes, in order within their team | (−90, 0), (−94, −6), (−101, −3), (−101, 3), (−94, 6) | (90, 0), (94, −6), (101, −3), (101, 3), (94, 6) |
 | Home crystal | (−75, 0) | (75, 0) |
 | Outer mid tower | (−17.5, 0) | (17.5, 0) |
+| Middle mid tower | (−34.5, 0) | (34.5, 0) |
+| Armory mid tower | (−53.04, 0) | (53.04, 0) |
 | Mid-lane minion creation | (−70, 0) | (70, 0) |
 
 The opening hero placements correspond to slots 14–18 and 19–23. Ownership and actor IDs remain those of the matchmaking roster, including when seats from the two teams alternate. In all 14 local replay chunks combined, compact minion declarations with mask 1 at body offset 117 and routes 1 or 4 at offset 120 contained 25 creation records per side. Their Z was always zero and the recorded vertical height was approximately 0.06. Mask-0 hydration records carry a moving actor's current position and are excluded from the spawn measurement.
 
-Navigation uses a straight, unobstructed mid-lane corridor bounded by X ±101 and Z ±6. These bounds are a project approximation based on the measured opening extrema. The simulator implements the one outer mid tower and crystal on each side. Vision, movement checks, bot rallying and retreat, ability range checks and attacks use these same world positions. Each hero respawns at its assigned opening slot. Base regeneration and the shop use the existing three-unit radius around each friendly opening pad. Combat timings and wave composition continue to follow the simulation rules. Side lanes, jungle geometry and original terrain collision are outside this layout.
+Navigation uses a straight, unobstructed mid-lane corridor bounded by X ±101 and Z ±6. These bounds are a project approximation based on the measured opening extrema. The simulator implements all three mid towers and the crystal on each side. Vision, movement checks, bot rallying and retreat, ability range checks and attacks use these same world positions. Each hero respawns at its assigned opening slot. Base regeneration and the shop use the existing three-unit radius around each friendly opening pad. Combat timings and wave composition continue to follow the simulation rules. Side lanes, jungle geometry and original terrain collision are outside this layout.
 
 Run `cargo test --locked -p halcyon-sim --lib layout::tests` to check the team slots, shop range, movement, vision, cast cooldown and respawn. The bot test follows the first wave and advances both teams until one actually destroys the opposing crystal.
+
+The fourteen Solo replay chunks register `OuterTurret5v5` (340, 3000 HP,
+190 weapon), `Turret5v5` (339, 4000 HP, 250 weapon) and `ArmoryTurret5v5`
+(341, 5000 HP, 280 weapon). All three have 100 armor, 100 shield and range 9
+in the delivered unit definitions. The middle and armory towers use slots
+26/27 at home and 32/33 away. The host reserves the original static actor
+IDs, gives each tower its own attacks and health, and counts each destruction.
+Only an enemy outer-tower kill starts the first-outer-tower milestone. The
+existing 300-gold local turret bounty applies across tiers.
+
+A native player receives only friendly or visible structures. Opening packets
+use the measured terrain height and signed heading components. A late player
+gets a full declaration for each visible living tower with current health,
+native slot and actor ID. The fallback uses a team-facing heading. The
+original rotating aim and timer fields for arbitrary runtime states remain
+unverified. Crystals retain their compact geometry across all fourteen chunks.

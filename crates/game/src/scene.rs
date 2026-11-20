@@ -412,8 +412,19 @@ mod tests {
                 }
                 if m.opcode == 0x3f3 {
                     let template = u16::from_be_bytes(m.body[2..4].try_into().unwrap());
-                    if matches!(template, 295 | 296 | 340) {
+                    if matches!(template, 295 | 296 | 339..=341) {
                         full_structures.push(template);
+                        if reconnect {
+                            let expected = match template {
+                                339 => (2060u32, 26, 3800f32),
+                                340 => (2009, 9, 3000.),
+                                341 => (2065, 27, 5000.),
+                                _ => unreachable!(),
+                            };
+                            assert_eq!(m.body[8..12], expected.0.to_be_bytes());
+                            assert_eq!(m.body[745], expected.1);
+                            assert_eq!(m.body[42..46], expected.2.to_be_bytes());
+                        }
                     }
                     let id = u16::from_be_bytes(m.body[10..12].try_into().unwrap());
                     if (1500..1510).contains(&id) {
@@ -430,7 +441,7 @@ mod tests {
             if reconnect {
                 assert!(hero_ids.len() < 10 && hero_ids.contains(&1500));
                 full_structures.sort_unstable();
-                assert_eq!(full_structures, [340]);
+                assert_eq!(full_structures, [339, 340, 341]);
                 assert_eq!(compact_structures, [295]);
             } else {
                 assert_eq!(hero_ids.len(), 10);
@@ -484,13 +495,22 @@ mod tests {
                         })
                         .collect()
                 };
-                assert_eq!(expected.len(), 2);
+                assert_eq!(expected.len(), 4);
                 for (template, actor, hp, max_hp) in expected {
                     let m = next(&mut socket, &cipher).await;
                     assert_eq!(m.opcode, 0x3f2);
                     assert_eq!(m.body.len(), 126);
                     assert_eq!(m.body[121], 1);
-                    assert_eq!(m.body[116], if template == 295 { 6 } else { 9 });
+                    assert_eq!(
+                        m.body[116],
+                        match template {
+                            295 => 6,
+                            340 => 9,
+                            339 => 26,
+                            341 => 27,
+                            _ => unreachable!(),
+                        }
+                    );
                     assert_eq!(
                         u32::from_be_bytes(m.body[0..4].try_into().unwrap()),
                         template
@@ -517,7 +537,7 @@ mod tests {
                     assert_ne!(m.opcode, 0x3f2);
                     if m.opcode == 0x3f3 {
                         let template = u16::from_be_bytes(m.body[2..4].try_into().unwrap());
-                        assert!(!matches!(template, 295 | 296 | 340));
+                        assert!(!matches!(template, 295 | 296 | 339..=341));
                     }
                     if m.opcode == 0 {
                         break;
@@ -534,6 +554,15 @@ mod tests {
                 })
                 .await
                 .unwrap();
+                {
+                    let mut room = shared.lock().unwrap();
+                    room.world
+                        .entities
+                        .iter_mut()
+                        .find(|e| e.type_id == 339 && e.team == 0)
+                        .unwrap()
+                        .hp = 3800.;
+                }
                 socket = login(&hosted.address, player, &cipher).await;
                 for _ in 0..10 {
                     assert_eq!(next(&mut socket, &cipher).await.opcode, 0x3ee);

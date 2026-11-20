@@ -99,7 +99,26 @@ impl Layout {
     }
 }
 
+pub(super) fn solo_inner_towers() -> [Stats; 2] {
+    [
+        Stats::new(339, 4000., 250., 100., 9., 0.),
+        Stats::new(341, 5000., 280., 100., 9., 0.),
+    ]
+}
+
 impl World {
+    pub(super) fn load_solo_towers(&mut self, data: &GameData) {
+        for (stats, name) in self
+            .solo_inner_towers
+            .iter_mut()
+            .zip(["Turret5v5", "ArmoryTurret5v5"])
+        {
+            if let Some(unit) = data.unit(name) {
+                *stats = Stats::load(stats.id, unit);
+            }
+        }
+    }
+
     /// Install the measured Solo mid-lane coordinates after team assignment and before the opening tick.
     pub fn use_solo_mid_lane(&mut self) -> Result<(), String> {
         if self.tick != 0 {
@@ -124,20 +143,29 @@ impl World {
         self.layout = Layout::SoloMid {
             hero_starts: starts,
         };
+        self.entities.retain(|e| e.kind == Kind::Hero);
         for e in &mut self.entities {
-            e.position = match e.kind {
-                Kind::Hero => {
-                    e.gold = 600;
-                    self.scores[(e.id - 1) as usize]
-                        .gold_income
-                        .starting_balance = e.gold;
-                    self.layout.home(e)
-                }
-                Kind::Tower => point(e.team, 17.5, 0.),
-                Kind::Crystal => self.layout.objective(e.team),
-                Kind::Minion => self.layout.wave(e.team, 0),
-            };
+            e.gold = 600;
+            self.scores[(e.id - 1) as usize]
+                .gold_income
+                .starting_balance = e.gold;
+            e.position = self.layout.home(e);
         }
+        // Preserve the original actor namespace, including gaps for other lanes.
+        for (wire, team, kind, stats, x) in [
+            (2006, 0, Kind::Crystal, self.stats[2], 75.),
+            (2007, 1, Kind::Crystal, self.stats[3], 75.),
+            (2009, 0, Kind::Tower, self.stats[1], 17.5),
+            (2012, 1, Kind::Tower, self.stats[1], 17.5),
+            (2060, 0, Kind::Tower, self.solo_inner_towers[0], 34.5),
+            (2065, 0, Kind::Tower, self.solo_inner_towers[1], 53.04),
+            (2102, 1, Kind::Tower, self.solo_inner_towers[0], 34.5),
+            (2107, 1, Kind::Tower, self.solo_inner_towers[1], 53.04),
+        ] {
+            self.next_id = wire - 1499;
+            self.spawn_with_stats(team, kind, stats, point(team, x, 0.), false);
+        }
+        self.next_id = 2122 - 1499;
         Ok(())
     }
 }
@@ -210,12 +238,60 @@ mod tests {
     }
 
     #[test]
+    fn three_tower_tiers_award_local_bounties_but_only_outer_records_the_milestone() {
+        let mut world = World::new(1, 10);
+        world.use_solo_mid_lane().unwrap();
+        let mut events = Vec::new();
+        for (tick, wire, ty, hp, weapon) in [
+            (20, 2107, 341, 5000., 280.),
+            (40, 2102, 339, 4000., 250.),
+            (60, 2012, 340, 3000., 190.),
+        ] {
+            let id = wire - 1499;
+            let i = world.index(id).unwrap();
+            let tower = &world.entities[i];
+            assert_eq!(
+                (
+                    tower.type_id,
+                    tower.max_hp,
+                    tower.weapon_power(),
+                    tower.armor(),
+                    tower.shield()
+                ),
+                (ty, hp, weapon, 100., 100.)
+            );
+            assert!(!world.visible(0, tower));
+            world.tick = tick;
+            world.hurt(1, 0, i, hp, score::DamageSchool::True, &mut events);
+            assert!(events.contains(&Event::Death { id, killer: 1 }));
+            assert!(events.contains(&Event::GoldAward { id: 1, amount: 300 }));
+            assert_eq!(
+                world.team_scores()[0].first_enemy_outer_tower_kill_seconds,
+                (ty == 340).then_some(3.)
+            );
+            events.clear();
+        }
+        assert_eq!(world.entities[0].gold, 1500);
+        assert_eq!(world.team_scores()[0].structure_kills.towers, 3);
+        assert_eq!(world.next_id, 2122 - 1499);
+    }
+
+    #[test]
     fn solo_mid_waves_and_bots_reach_an_authoritative_crystal_victory() {
         let mut w = World::new(17, 0);
         w.use_solo_mid_lane().unwrap();
         let mut wave_seen = false;
+        let mut tiers_fired = std::collections::BTreeSet::new();
         while w.winner.is_none() && w.tick < 200_000 {
             let events = w.step();
+            for event in &events {
+                if let Event::Attack { source, .. } = event
+                    && let Some(i) = w.index(*source)
+                    && w.entities[i].kind == Kind::Tower
+                {
+                    tiers_fired.insert(w.entities[i].type_id);
+                }
+            }
             if !wave_seen {
                 let born: Vec<_> = events
                     .iter()
@@ -240,6 +316,7 @@ mod tests {
             }
         }
         assert!(wave_seen);
+        assert_eq!(tiers_fired, [339, 340, 341].into_iter().collect());
         let winner = w.winner.expect("bot teams must reach a crystal victory");
         assert_eq!(w.team_scores()[winner as usize].structure_kills.crystals, 1);
         assert!(

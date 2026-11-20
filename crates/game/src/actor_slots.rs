@@ -41,11 +41,7 @@ impl ActorSlots {
             (Kind::Hero, _, _) if (1..=10).contains(&entity.id) => {
                 self.heroes[(entity.id - 1) as usize]
             }
-            (Kind::Crystal, 295, 0) => Some(6),
-            (Kind::Crystal, 296, 1) => Some(7),
-            (Kind::Tower, 340, 0) => Some(9),
-            (Kind::Tower, 340, 1) => Some(12),
-            _ => None,
+            _ => compact::structure_slot(entity),
         }
     }
 
@@ -75,6 +71,14 @@ impl ActorSlots {
         let slot = self.fixed(entity)?;
         Some(compact::structure(world.tick, entity).unwrap_or_else(|| {
             let mut message = messages::spawn(entity, picks, data);
+            if entity.kind == Kind::Tower {
+                // Use the stationary tower skin and terrain height. Dynamic aim
+                // and timer words from replay snapshots are not authoritative here.
+                message.body[4..8].copy_from_slice(&0xc10b_41dau32.to_be_bytes());
+                message.body[22..26].copy_from_slice(&0x3d75_be29u32.to_be_bytes());
+                let facing: f32 = if entity.team == 0 { 1. } else { -1. };
+                message.body[30..34].copy_from_slice(&facing.to_be_bytes());
+            }
             if entity.kind == Kind::Hero {
                 messages::solo_hero_profile(&mut message, entity, world.tick);
                 super::hero_progress::set_spawn(world, &mut message, entity);

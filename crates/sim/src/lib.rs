@@ -299,6 +299,7 @@ pub struct World {
     stats: [Stats; 8],
     layout: Layout,
     aral_units: aral::Units,
+    solo_inner_towers: [Stats; 2],
     next_id: u32,
     next_item: u32,
     seed: u64,
@@ -448,6 +449,7 @@ impl World {
             timing("interval_s")?,
         );
         world.aral_units.load(data);
+        world.load_solo_towers(data);
         world.abilities = AbilityBook::from_data(data)?;
         world.shop = shop::Shop::load(data)?;
         Ok(world)
@@ -553,6 +555,7 @@ impl World {
             next_id: 1,
             layout: Layout::default(),
             aral_units: aral::Units::default(),
+            solo_inner_towers: layout::solo_inner_towers(),
             next_item: 40000,
             stats,
             seed,

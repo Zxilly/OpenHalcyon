@@ -126,8 +126,11 @@ impl World {
 
     pub(super) fn is_outer_tower(&self, actor: &Entity) -> bool {
         actor.kind == Kind::Tower
-            && (!matches!(self.layout, Layout::Aral { .. })
-                || actor.position == point(actor.team, 17.06, 1.93))
+            && match self.layout {
+                Layout::SoloMid { .. } => actor.type_id == 340,
+                Layout::Aral { .. } => actor.position == point(actor.team, 17.06, 1.93),
+                Layout::Validation => true,
+            }
     }
 
     pub(super) fn spawn_aral_wave(&mut self, events: &mut Vec<Event>) {
