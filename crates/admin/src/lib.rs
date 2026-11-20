@@ -10,7 +10,7 @@ use axum::{
         Path, Query, Request, State,
         rejection::{JsonRejection, PathRejection, QueryRejection},
     },
-    http::{HeaderValue, StatusCode, header},
+    http::{HeaderValue, Method, StatusCode, header},
     middleware::{self, Next},
     response::{Html, IntoResponse, Response},
     routing::{get, put},
@@ -134,10 +134,10 @@ fn validate_origin(origin: &str) -> std::result::Result<(), AdminConfigError> {
 async fn guard(State(state): State<Admin>, mut req: Request, next: Next) -> Response {
     let is_api = req.uri().path().starts_with(PREFIX);
     let method = req.method();
-    let writes = !matches!(method.as_str(), "GET" | "HEAD" | "OPTIONS");
+    let writes = !matches!(*method, Method::GET | Method::HEAD | Method::OPTIONS);
     let unprotected = (req.uri().path() == "/api/admin/v1/session"
         || req.uri().path() == "/api/admin/v1/session/")
-        && matches!(method.as_str(), "POST" | "DELETE");
+        && matches!(*method, Method::POST | Method::DELETE);
     let mut response = if is_api && writes && !matching_origin(&req, &state.config.origin) {
         Problem::new(
             StatusCode::FORBIDDEN,

@@ -116,6 +116,80 @@ fn cookie(headers: &HeaderMap) -> &str {
 }
 
 #[tokio::test]
+async fn duplicate_admin_cookies_are_rejected_across_all_header_lines() {
+    let (app, _) = service();
+    let credentials = serde_json::to_value(Credentials {
+        username: "owner",
+        password: PASSWORD,
+    })
+    .unwrap();
+    let (status, headers, _) =
+        request(&app, "POST", "/session", Some(ORIGIN), None, credentials).await;
+    assert_eq!(status, StatusCode::OK);
+    let issued = ::cookie::Cookie::parse(headers[header::SET_COOKIE].to_str().unwrap()).unwrap();
+    assert_eq!(issued.name(), "__Host-oh_admin");
+    assert_eq!(issued.value().len(), 64);
+    assert_eq!(issued.path(), Some("/"));
+    assert_eq!(issued.domain(), None);
+    assert_eq!(issued.secure(), Some(true));
+    assert_eq!(issued.http_only(), Some(true));
+    assert_eq!(issued.same_site(), Some(::cookie::SameSite::Strict));
+    assert_eq!(issued.max_age(), Some(::cookie::time::Duration::hours(8)));
+    let valid = cookie(&headers);
+    for (fields, expected) in [
+        (vec!["unrelated=x", valid], StatusCode::OK),
+        (vec![valid, valid], StatusCode::UNAUTHORIZED),
+        (vec![valid, "__Host-oh_admin=bad"], StatusCode::UNAUTHORIZED),
+        (vec!["__Host-oh_admin=bad", valid], StatusCode::UNAUTHORIZED),
+        (vec![valid, "__Host-oh_admin"], StatusCode::UNAUTHORIZED),
+        (
+            vec![valid, "__Host-oh_admin = invalid"],
+            StatusCode::UNAUTHORIZED,
+        ),
+        (vec![valid, "__Host-oh_admin="], StatusCode::UNAUTHORIZED),
+        (vec![valid, "broken-unrelated"], StatusCode::OK),
+    ] {
+        let mut request = Request::get("/api/admin/v1/session");
+        for field in &fields {
+            request = request.header(header::COOKIE, *field);
+        }
+        let response = app
+            .clone()
+            .oneshot(request.body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), expected);
+    }
+    for (line, status) in [
+        (&b"__Host-oh_admin=\xff"[..], StatusCode::UNAUTHORIZED),
+        (&b"unrelated=\xff"[..], StatusCode::OK),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::get("/api/admin/v1/session")
+                    .header(header::COOKIE, valid)
+                    .header(
+                        header::COOKIE,
+                        axum::http::HeaderValue::from_bytes(line).unwrap(),
+                    )
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), status);
+    }
+    let duplicate = format!("{valid}; __Host-oh_admin=bad");
+    assert_eq!(
+        request(&app, "GET", "/session", None, Some(&duplicate), Value::Null)
+            .await
+            .0,
+        StatusCode::UNAUTHORIZED
+    );
+}
+
+#[tokio::test]
 async fn admin_auth_origin_rotation_players_and_termination() {
     let (app, platform) = service();
     let credentials = serde_json::to_value(Credentials {

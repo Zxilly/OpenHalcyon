@@ -6,6 +6,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+cookie = "0.18"
 argon2 = "0.5"
 axum.workspace = true
 base64 = "0.22"

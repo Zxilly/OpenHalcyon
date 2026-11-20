@@ -12,6 +12,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use chrono::{DateTime, Utc};
+use cookie::{Cookie, SameSite, time::Duration as CookieDuration};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
@@ -127,27 +128,46 @@ fn digest(token: &str) -> [u8; 32] {
 }
 
 fn cookie_key(headers: &HeaderMap) -> Option<[u8; 32]> {
-    let mut values = headers
-        .get_all(header::COOKIE)
-        .iter()
-        .filter_map(|value| value.to_str().ok())
-        .flat_map(|cookies| cookies.split(';'))
-        .filter_map(|cookie| {
-            let (name, value) = cookie.trim().split_once('=')?;
-            (name == COOKIE).then_some(value)
-        });
-    let value = values.next()?;
-    if values.next().is_some() || value.len() != 64 {
-        return None;
+    let mut session = None;
+    for header in headers.get_all(header::COOKIE) {
+        for field in header.as_bytes().split(|&b| b == b';') {
+            let field = field.trim_ascii();
+            let mut pair = field.splitn(2, |&b| b == b'=');
+            let name = pair.next().unwrap_or_default();
+            if name.trim_ascii() != COOKIE.as_bytes() {
+                continue;
+            }
+            // Count the name before parsing. Even a header rejected by the
+            // text parser may contain a duplicate with an invalid value.
+            if session.is_some() || header.to_str().is_err() {
+                return None;
+            }
+            let raw_value = pair.next()?;
+            let parsed = Cookie::parse(std::str::from_utf8(field).ok()?).ok()?;
+            let value = parsed.value();
+            if name != COOKIE.as_bytes()
+                || raw_value != value.as_bytes()
+                || value.len() != 64
+                || !value.bytes().all(|b| b.is_ascii_hexdigit())
+            {
+                return None;
+            }
+            session = Some(digest(value));
+        }
     }
-    Some(digest(value))
+    session
 }
 
 fn cookie(token: &str, age: u64) -> Result<HeaderValue> {
-    HeaderValue::from_str(&format!(
-        "{COOKIE}={token}; Path=/; Max-Age={age}; Secure; HttpOnly; SameSite=Strict"
-    ))
-    .map_err(|_| Problem::internal())
+    let age = i64::try_from(age).map_err(|_| Problem::internal())?;
+    let cookie = Cookie::build((COOKIE, token))
+        .path("/")
+        .max_age(CookieDuration::seconds(age))
+        .secure(true)
+        .http_only(true)
+        .same_site(SameSite::Strict)
+        .build();
+    HeaderValue::from_str(&cookie.to_string()).map_err(|_| Problem::internal())
 }
 
 #[derive(Deserialize)]
