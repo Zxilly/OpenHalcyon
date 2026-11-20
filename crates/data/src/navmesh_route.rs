@@ -172,6 +172,68 @@ fn closest(tile: &Tile, poly: &Polygon, p: [f32; 2]) -> [f32; 2] {
 }
 
 impl NavMesh {
+    /// Checks that ground polygons cover the complete short segment.
+    /// This answers ground continuity and does not model projectile occlusion.
+    pub fn ground_segment(&self, a: [f32; 2], b: [f32; 2]) -> bool {
+        if distance(a, b) > 24. || ![a, b].into_iter().flatten().all(f32::is_finite) {
+            return false;
+        }
+        let cell = |p: [f32; 2]| {
+            (
+                ((p[0] - self.origin[0]) / self.tile_width).floor() as i32,
+                ((p[1] - self.origin[2]) / self.tile_depth).floor() as i32,
+            )
+        };
+        let (x, z) = cell(a);
+        let (u, v) = cell(b);
+        let mut covered = Vec::new();
+        for (&(col, row), tile) in self
+            .tiles
+            .range((x.min(u).saturating_sub(1), i32::MIN)..=(x.max(u).saturating_add(1), i32::MAX))
+        {
+            if row < z.min(v).saturating_sub(1) || row > z.max(v).saturating_add(1) {
+                continue;
+            }
+            for (index, poly) in tile.polygons.iter().enumerate() {
+                let key = (col, row);
+                let node = self.graph.cells[&key][index];
+                let c = self.graph.nodes[node].center;
+                let mut interval = (0f64, 1f64);
+                for edge in 0..poly.count {
+                    let (v, w) = endpoints(tile, poly, edge);
+                    let cross = |p: [f32; 2]| super::cross_xz(v, w, p[0].into(), p[1].into());
+                    let sign = cross(c).signum();
+                    let lo = sign * cross(a) + super::EDGE_TOLERANCE;
+                    let hi = sign * cross(b) + super::EDGE_TOLERANCE;
+                    if lo < 0. && hi < 0. {
+                        interval.0 = 2.;
+                        break;
+                    }
+                    if lo < 0. {
+                        interval.0 = interval.0.max(lo / (lo - hi));
+                    }
+                    if hi < 0. {
+                        interval.1 = interval.1.min(lo / (lo - hi));
+                    }
+                }
+                if interval.0 <= interval.1 {
+                    covered.push(interval);
+                }
+            }
+        }
+        covered.sort_unstable_by(|a, b| a.0.total_cmp(&b.0));
+        let mut end = 0f64;
+        for (start, finish) in covered {
+            if start > end + super::EDGE_TOLERANCE {
+                return false;
+            }
+            end = end.max(finish);
+            if end >= 1. {
+                return true;
+            }
+        }
+        false
+    }
     fn closest_node(
         &self,
         p: [f32; 2],

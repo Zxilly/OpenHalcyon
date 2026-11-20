@@ -139,6 +139,11 @@ pub(super) fn solo_opening(room: &mut Room, seat: usize) -> std::io::Result<Batc
                 .install_native_navigation(maps)
                 .map_err(std::io::Error::other)?;
         }
+        if let Some(data) = &room.data {
+            room.world
+                .install_native_camps(data)
+                .map_err(std::io::Error::other)?;
+        }
     }
     let mut out = vec![
         messages::scene_mode(&room.queue, 1),

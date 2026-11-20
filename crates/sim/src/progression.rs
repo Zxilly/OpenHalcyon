@@ -115,7 +115,7 @@ impl World {
             return;
         }
         let t = &self.entities[i];
-        if team != t.team && matches!(t.kind, Kind::Tower | Kind::Crystal) {
+        if team < 2 && team != t.team && matches!(t.kind, Kind::Tower | Kind::Crystal) {
             // Only hero basic attacks and spells can outlive their origin actor's turn.
             // Hero and structure entities persist through death; minions attack immediately.
             let minion = self
@@ -158,12 +158,15 @@ impl World {
             hp: t.hp,
         });
         if t.hp > 0. {
+            if t.kind == Kind::Neutral && team < 2 && t.order == Command::Stop {
+                t.order = Command::Attack(src);
+            }
             return;
         }
         let pos = t.position;
         let kind = t.kind;
         let enemy = t.team != team;
-        if enemy {
+        if enemy && team < 2 {
             let scoring = &mut self.team_scores[usize::from(team)];
             match kind {
                 Kind::Tower => {
@@ -185,6 +188,10 @@ impl World {
             }
         }
         let (bounty, xp) = match kind {
+            Kind::Neutral => t
+                .stats
+                .physiology
+                .map_or((0, 0.), |p| (p.gold_bounty as u32, p.xp_bounty)),
             Kind::Hero => (250 + if self.first_blood { 0 } else { 125 }, 90.),
             Kind::Tower => (300, 60.),
             Kind::Crystal | Kind::Armory => (0, 0.),
@@ -247,14 +254,14 @@ impl World {
             events.push(Event::End { winner: team });
             return;
         }
-        if kind == Kind::Hero {
+        if kind == Kind::Hero && team < 2 {
             self.first_blood = true;
         }
         // Ten stable hero seats. A death awards its killer even if the projectile
         // travelled beyond the project assist radius after release.
         let killer_kind = self.index(src).map(|j| self.entities[j].kind);
         let hero_kill = killer_kind == Some(Kind::Hero);
-        if kind == Kind::Hero && self.entities[i].team != team {
+        if kind == Kind::Hero && team < 2 && self.entities[i].team != team {
             let scoring_team = &mut self.team_scores[usize::from(team)];
             match killer_kind {
                 Some(Kind::Hero) => scoring_team.hero_kills += 1,
@@ -271,7 +278,8 @@ impl World {
             if a.team != team || a.kind != Kind::Hero {
                 continue;
             }
-            let nearby = a.hp > 0. && (a.position.dist(pos) <= 10. || a.id == src);
+            let nearby =
+                a.hp > 0. && (a.id == src || kind != Kind::Neutral && a.position.dist(pos) <= 10.);
             let amount = if a.id == src {
                 bounty
             } else if nearby && kind == Kind::Minion {

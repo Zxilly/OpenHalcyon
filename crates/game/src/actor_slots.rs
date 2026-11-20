@@ -66,8 +66,11 @@ impl ActorSlots {
         if !(1..=u32::from(u16::MAX) - 1500).contains(&entity.id) {
             return None;
         }
-        if entity.kind == Kind::Minion {
+        if matches!(entity.kind, Kind::Minion | Kind::Neutral) {
             if let Some(slot) = self.minion(entity.id) {
+                if entity.kind == Kind::Neutral {
+                    return compact::camp_unit(entity, slot);
+                }
                 return Some(compact::minion(entity, slot, fresh).unwrap_or_else(|| {
                     let mut message = messages::spawn(entity, picks, data);
                     set_full(&mut message, slot);

@@ -96,7 +96,7 @@ impl PlayerScore {
             }
             Kind::Armory | Kind::Tower | Kind::Crystal => self.damage_to_structures += hp,
             Kind::Minion if lethal => self.lane_last_hits += 1,
-            Kind::Minion => {}
+            Kind::Minion | Kind::Neutral => {}
         }
     }
 }

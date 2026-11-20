@@ -78,6 +78,7 @@ fn diagnose(data: &GameData, use_mesh: bool) -> Result<(), Box<dyn std::error::E
         world.use_solo_mid_lane()?;
         if use_mesh {
             world.install_native_navigation(data.native_maps().ok_or("map supplement missing")?)?;
+            world.install_native_camps(data)?;
         }
         world.set_bot_difficulty(Some(BotDifficulty::Medium));
         Ok(world)

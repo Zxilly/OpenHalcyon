@@ -137,6 +137,10 @@ impl NativeNavigation {
             .is_some()
     }
 
+    pub(super) fn ground_segment(&self, start: Position, end: Position) -> bool {
+        self.walk.ground_segment(horizontal(start), horizontal(end))
+    }
+
     pub(super) fn forget_route(&mut self, actor: u32) {
         if let Some(route) = self.routes.get_mut(actor.saturating_sub(1) as usize) {
             route.goal = None;

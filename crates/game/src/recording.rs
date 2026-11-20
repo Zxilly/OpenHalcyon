@@ -120,6 +120,7 @@ fn sanitize(m: &mut Message) -> bool {
             if m.body.len() == 122
                 && (super::compact::recordable_mid_structure(&m.body)
                     || super::compact::recordable_minion_birth(&m.body)
+                    || super::compact::recordable_camp_unit(&m.body)
                     || (u16::try_from(u32::from_be_bytes(m.body[..4].try_into().unwrap()))
                         .ok()
                         .and_then(EntityTemplate::from_raw)

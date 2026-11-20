@@ -12,6 +12,7 @@ mod chakram;
 mod combat;
 mod layout;
 mod lorelai;
+mod native_camps;
 mod native_combat;
 mod native_learn;
 mod native_navigation;
@@ -75,6 +76,7 @@ pub enum Kind {
     Tower,
     Crystal,
     Armory,
+    Neutral,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum Command {
@@ -398,6 +400,7 @@ pub struct World {
     water: Vec<lorelai::Water>,
     nav_budget: u8,
     native_navigation: Option<Box<native_navigation::NativeNavigation>>,
+    native_camps: Option<Vec<native_camps::NativeCampUnit>>,
     first_blood: bool,
     scores: [PlayerScore; 10],
     team_scores: [TeamScore; 2],
@@ -462,6 +465,9 @@ impl World {
         }
         if let Some(map) = &self.native_navigation {
             map.digest(&mut hash);
+        }
+        if let Some(camps) = &self.native_camps {
+            serde_json::to_writer(&mut hash, camps).expect("finite camp placements");
         }
         if let Some(difficulty) = self.bot_difficulty {
             hash.update(difficulty.as_str().as_bytes());
@@ -671,6 +677,7 @@ impl World {
             water: Vec::new(),
             nav_budget: 0,
             native_navigation: None,
+            native_camps: None,
             first_blood: false,
             scores: Default::default(),
             team_scores: Default::default(),
@@ -777,7 +784,7 @@ impl World {
                         && a.hp > 0.
                         && (a.position.x - e.position.x).abs() <= a.stats.sight()
                         && a.position.dist(e.position) <= a.stats.sight()
-                        && self.layout.clear(a.position, e.position)
+                        && self.combat_clear(a, e)
                         && self
                             .native_navigation
                             .as_ref()
@@ -1022,6 +1029,7 @@ impl World {
         if matches!(self.layout, Layout::Aral { .. }) {
             self.spawn_aral_wave(events);
         } else if matches!(self.layout, Layout::SoloMid { .. }) {
+            self.spawn_native_camps(events);
             self.spawn_solo_mid_wave(events);
         } else if self.tick >= self.first_wave
             && (self.tick - self.first_wave).is_multiple_of(self.wave_interval)
@@ -1147,7 +1155,8 @@ impl World {
                 continue;
             }
             let e = &self.entities[i];
-            let automated = e.winding.is_none() && (e.bot || e.kind != Kind::Hero);
+            let automated =
+                e.kind != Kind::Neutral && e.winding.is_none() && (e.bot || e.kind != Kind::Hero);
             let offset = self.tick + u64::from(e.id);
             let decide = automated && offset.is_multiple_of(self.decision_interval(e));
             if automated && e.bot && offset.is_multiple_of(5) {
@@ -1231,16 +1240,18 @@ impl World {
                     };
                     let e = &self.entities[i];
                     let t = &self.entities[j];
-                    if !self.visible(e.team, t) || t.hp <= 0. {
+                    if (e.kind != Kind::Neutral && !self.visible(e.team, t)) || t.hp <= 0. {
                         self.entities[i].order = Command::Stop;
                         self.entities[i].winding = None;
                         continue;
                     }
-                    if e.position.dist(t.position) > e.stats.range
-                        || !self.layout.clear(e.position, t.position)
-                    {
+                    if e.position.dist(t.position) > e.stats.range || !self.combat_clear(e, t) {
                         let p = t.position;
                         self.entities[i].winding = None;
+                        if self.entities[i].kind == Kind::Neutral {
+                            self.entities[i].order = Command::Stop;
+                            continue;
+                        }
                         self.walk_diagnosed::<DIAG>(i, p, events, diagnostics.as_deref_mut());
                         continue;
                     }
@@ -1421,7 +1432,7 @@ impl World {
             }
         }
         self.entities
-            .retain(|e| e.kind != Kind::Minion || e.hp > 0.);
+            .retain(|e| !matches!(e.kind, Kind::Minion | Kind::Neutral) || e.hp > 0.);
     }
 }
 

@@ -66,6 +66,7 @@ impl World {
                 Kind::Minion => 2,
                 Kind::Tower | Kind::Armory => 3,
                 Kind::Crystal => 4,
+                Kind::Neutral => continue,
             };
             let stick = if e.order == Command::Attack(t.id) {
                 0.6

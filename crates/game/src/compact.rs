@@ -126,6 +126,67 @@ fn pristine_minion(template: u32, actor: u32, slot: u8, team: u8, side: i8) -> M
     Message::known(crate::Opcode::Snapshot, b)
 }
 
+pub(super) fn camp_unit(entity: &Entity, slot: u8) -> Option<Message> {
+    let template = EntityTemplate::from_raw(entity.type_id)?;
+    if entity.kind != Kind::Neutral || !template.is_solo_camp_unit() {
+        return None;
+    }
+    let mut body = [0; BODY_LEN];
+    put_word(&mut body, 0, u32::from(template.as_raw()));
+    put_word(&mut body, 4, 0x4dd5b7d0);
+    put_word(&mut body, 8, u32::from(wire_id(entity.id)));
+    for (offset, value) in [
+        (12, entity.position.x),
+        (16, f32::from_bits(0x3d75_be29)),
+        (20, entity.position.y),
+        (32, 1.),
+        (36, entity.hp),
+        (40, entity.max_hp),
+        (52, 3.6),
+        (64, 1.),
+        (84, 1.),
+    ] {
+        put_word(&mut body, offset, value.to_bits());
+    }
+    body[88..96].fill(1);
+    body[96] = 15;
+    put_word(&mut body, 112, u32::MAX);
+    body[116..122].copy_from_slice(&[slot, 0, 0, 1, 255, 0]);
+    recordable_camp_unit(&body).then(|| Message::known(crate::Opcode::Snapshot, body))
+}
+
+pub(super) fn recordable_camp_unit(body: &[u8]) -> bool {
+    if body.len() != BODY_LEN || !matches!(body[116..], [52..=199, 0, 0, 1, 255, 0]) {
+        return false;
+    }
+    let word = |i| u32::from_be_bytes(body[i..i + 4].try_into().unwrap());
+    let f = |i| f32::from_bits(word(i));
+    u16::try_from(word(0))
+        .ok()
+        .and_then(EntityTemplate::from_raw)
+        .is_some_and(EntityTemplate::is_solo_camp_unit)
+        && word(4) == 0x4dd5b7d0
+        && (2122..65535).contains(&word(8))
+        && [12, 20, 36, 40].into_iter().all(|i| f(i).is_finite())
+        && f(36) > 0.
+        && f(36) <= f(40)
+        && body[88..97] == [1, 1, 1, 1, 1, 1, 1, 1, 15]
+        && body[97..112] == [0; 15]
+        && word(112) == u32::MAX
+        && [
+            (16, 0x3d75_be29),
+            (32, 1_f32.to_bits()),
+            (52, 3.6_f32.to_bits()),
+            (64, 1_f32.to_bits()),
+            (84, 1_f32.to_bits()),
+        ]
+        .into_iter()
+        .all(|(i, value)| word(i) == value)
+        && [24, 28, 44, 48, 56, 60, 68, 72, 76, 80]
+            .into_iter()
+            .all(|i| word(i) == 0)
+}
+
 pub(super) fn recordable_minion_birth(b: &[u8]) -> bool {
     if b.len() != BODY_LEN || !(52..200).contains(&b[116]) || !(1..=2).contains(&b[121]) {
         return false;
@@ -213,6 +274,42 @@ mod tests {
 
     fn word(body: &[u8], offset: usize) -> u32 {
         u32::from_be_bytes(body[offset..offset + 4].try_into().unwrap())
+    }
+
+    #[test]
+    #[ignore = "requires the local base delivery and supplemental map assets"]
+    fn solo_camp_snapshot_uses_current_health_neutral_slot_and_recorder_shape() {
+        let base = std::env::var_os("HALCYON_DELIVERY").unwrap();
+        let extra = std::path::PathBuf::from(std::env::var_os("HALCYON_DATA_EXTRA").unwrap());
+        let data = halcyon_data::GameData::load_with_extra(base, Some(&extra)).unwrap();
+        let mut world = World::from_data(0, 10, &data).unwrap();
+        world.use_solo_mid_lane().unwrap();
+        world
+            .install_native_navigation(data.native_maps().unwrap())
+            .unwrap();
+        world.install_native_camps(&data).unwrap();
+        for _ in 0..786 {
+            world.step();
+        }
+        let i = world
+            .entities
+            .iter()
+            .position(|e| e.kind == Kind::Neutral)
+            .unwrap();
+        world.entities[i].hp -= 20.;
+        let e = &world.entities[i];
+        let mut slots = crate::actor_slots::ActorSlots::from_roster(&world.entities);
+        let frame = slots.declaration(&world, e, &[], Some(&data)).unwrap();
+        let body = &frame.body;
+        assert!(recordable_camp_unit(body));
+        assert_eq!(word(body, 8), u32::from(wire_id(e.id)));
+        assert_eq!(word(body, 36), e.hp.to_bits());
+        assert_eq!(word(body, 40), e.max_hp.to_bits());
+        assert_eq!(&body[117..], &[0, 0, 1, 255, 0]);
+        assert_eq!(
+            slots.declaration(&world, e, &[], Some(&data)).unwrap().body,
+            *body
+        );
     }
 
     #[test]

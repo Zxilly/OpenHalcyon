@@ -28,6 +28,7 @@ entity_templates! {
     Adagio = 244,
     Saw = 250,
     Hero009 = 254,
+    Reim = 266,
     Lyra = 269,
     Idris = 273,
     RangedMinion = 287,
@@ -42,6 +43,12 @@ entity_templates! {
     Turret = 300,
     VainTurret = 301,
     NeutralJungleMinionStore = 314,
+    HealingTreant = 323,
+    GoldTreant = 324,
+    WeaponTreant = 325,
+    CrystalTreant = 326,
+    BigBear = 327,
+    SmallBear = 328,
     MinionRange5v5 = 335,
     MinionMelee5v5 = 336,
     MinionSiege5v5 = 337,
@@ -56,6 +63,17 @@ entity_templates! {
 }
 
 impl EntityTemplate {
+    pub const fn is_solo_camp_unit(self) -> bool {
+        matches!(
+            self,
+            Self::HealingTreant
+                | Self::GoldTreant
+                | Self::WeaponTreant
+                | Self::CrystalTreant
+                | Self::BigBear
+                | Self::SmallBear
+        )
+    }
     pub const fn is_aral_lane_minion(self) -> bool {
         matches!(
             self,
