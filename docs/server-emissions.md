@@ -9,7 +9,7 @@ The host paths are in [room dispatch](../crates/game/src/lib.rs), [transport](..
 | Opcode | Frames | Path | Action and emitted scope |
 |---|---:|:---:|---|
 | `0000` | 1,175 | E | Session clock |
-| `03E8` | 16 | U | Another declared roster member’s UUID in all 16 samples. The triggering event is unresolved |
+| `03E8` | 16 | H | First authenticated peer attachment during ARAL draft. Fourteen early notifications carry another roster member’s UUID. The two later triggers remain unresolved. [Draft membership](aral.md) |
 | `03E9` | 9 | H | Actor and mode settings |
 | `03EA` | 10 | U | Word |
 | `03EC` | 6 | U | Word |

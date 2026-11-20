@@ -52,7 +52,7 @@ records known payload layouts and ignored tags. The game service interprets
 evidenced commands and emits snapshots, visibility-filtered updates and purchase
 acknowledgements. Uninterpreted payloads remain available to the offline reader.
 The reference checks decoded 43,160 records across 14 VGR chunks and checked
-encrypted messages from three independent sessions.
+all 1,824 client frames and 398,293 server frames from nine complete TCP sessions.
 
 The [game opcode inventory](ce-game.tsv) contains every entry in the Android
 table and both field-decoding counts for the local replay corpus. The table
@@ -63,6 +63,11 @@ A typed count requires at least one decoded variant, including variants that
 only establish a prefix. Zero means that these chunks contain no example of
 that class. Every record with a fixed-size prefix passed its size check.
 Callers retain every byte after the prefix, including bytes of unknown meaning.
+The [fixed action inventory](static-actions.md) covers 38 fixed entries absent
+from both archives. The [outbound packer inventory](outbound-actions.md) audits
+all 48 ignored receiver cases, including 43 verified Android writer widths.
+The [server emission matrix](server-emissions.md) records the implemented scope
+for each of the 103 observed server classes.
 
 To reproduce the inventory for another recording, run
 `cargo run --locked -p halcyon-protocol --example replay_inventory -- <chunk-directory>`.

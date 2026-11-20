@@ -7,7 +7,9 @@ live audit reproduced the encrypted length prefix and ciphertext for all 1,824
 client frames and 398,293 server frames in the nine recorded sessions. The VGR
 audit reproduced the timestamp, length, opcode and body of all 43,160 records in
 14 chunks. Unknown operands and padding pass through intact. Gameplay support
-for individual actions is listed below.
+for individual actions is listed in the [server emission matrix](server-emissions.md).
+The static inventories cover [38 unsampled fixed actions](static-actions.md)
+and [all 48 tags ignored by the Android receiver](outbound-actions.md).
 
 | Opcodes | Message | Implemented behavior and evidence |
 | --- | --- | --- |
