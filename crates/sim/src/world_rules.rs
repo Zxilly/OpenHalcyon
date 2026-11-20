@@ -10,6 +10,7 @@ pub struct WorldRules {
     pub(super) first_wave: u64,
     pub(super) wave_interval: u64,
     pub(super) abilities: Arc<AbilityBook>,
+    pub(super) ability_intents: Arc<ai::utility::HeroIntentCatalog>,
     pub(super) shop: shop::Shop,
 }
 pub(super) static BUILTIN: LazyLock<WorldRules> = LazyLock::new(|| {
@@ -33,6 +34,7 @@ pub(super) static BUILTIN: LazyLock<WorldRules> = LazyLock::new(|| {
         first_wave: 900,
         wave_interval: 600,
         abilities: Default::default(),
+        ability_intents: Default::default(),
         shop: Default::default(),
     }
 });
@@ -75,6 +77,7 @@ impl WorldRules {
             solo_inner_towers,
             solo_lane_rewards: data.solo_lane_rewards(),
             abilities: Arc::new(AbilityBook::from_data(data)?),
+            ability_intents: Arc::new(ai::utility::HeroIntentCatalog::from_data(data)),
             shop: shop::Shop::load(data)?,
         })
     }

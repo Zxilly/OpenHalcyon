@@ -65,6 +65,14 @@ impl Rules {
     }
 }
 impl Field {
+    pub(super) fn hazard_circle(&self, w: &Room<'_>) -> (u8, Position, f32) {
+        let center = self
+            .anchor
+            .and_then(|a| w.index(a.id))
+            .map_or(self.origin, |idx| w.entities[idx].position);
+        (self.team, center, self.radius)
+    }
+
     fn sample(&mut self, w: &mut Room<'_>, center: Position, events: &mut Vec<Event>) {
         for j in 0..w.entities.len() {
             let t = &w.entities[j];

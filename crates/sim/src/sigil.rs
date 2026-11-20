@@ -62,6 +62,10 @@ pub(super) struct Field {
     next: u64,
 }
 impl Field {
+    pub(super) fn hazard_circle(&self) -> (u8, Position, f32) {
+        (self.team, self.center, self.radius)
+    }
+
     fn contains(&self, w: &Room<'_>, p: Position) -> bool {
         p.dist(self.center) <= self.radius && w.layout.clear(self.center, p)
     }

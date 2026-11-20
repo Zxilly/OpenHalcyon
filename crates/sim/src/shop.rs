@@ -782,8 +782,8 @@ pub(super) struct Shop {
     pub(super) vision: vision_devices::Rules,
     attacks: attack_items::Rules,
     infusions: [Option<infusions::Rule>; 2],
-    flask: Option<FlaskRule>,
-    sprint: Option<SprintRule>,
+    pub(super) flask: Option<FlaskRule>,
+    pub(super) sprint: Option<SprintRule>,
     #[serde(skip_serializing_if = "reflex::Rule::is_native")]
     pub(super) reflex: Option<reflex::Rule>,
     #[serde(skip)]
@@ -842,7 +842,7 @@ impl Default for Shop {
     }
 }
 #[derive(Clone, Copy, Serialize)]
-struct FlaskRule {
+pub(super) struct FlaskRule {
     duration: u64,
     cooldown: u64,
     barrier: f32,
@@ -875,10 +875,10 @@ fn seconds_to_ticks(seconds: f32) -> Option<u64> {
     (seconds > 0. && seconds <= 86400.).then(|| (seconds * TICK_HZ as f32).ceil() as u64)
 }
 #[derive(Serialize, Clone, Copy)]
-struct SprintRule {
-    speed: f32,
-    duration: u64,
-    cooldown: u64,
+pub(super) struct SprintRule {
+    pub(super) speed: f32,
+    pub(super) duration: u64,
+    pub(super) cooldown: u64,
 }
 impl SprintRule {
     fn load(item: &halcyon_data::items::FullItem) -> Option<Self> {
