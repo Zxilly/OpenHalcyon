@@ -1,12 +1,23 @@
-//! Bevy owns persistent spell components. An ordinal orders impacts and checkpoints
-//! independently of archetype moves and handle reuse. One room-local scratch list
-//! is reused by both systems and contains only the current phase's scheduled work.
+//! Each spell family keeps its live entity handles in cast order. Deferred
+//! impacts recheck the handle generation after running combat callbacks.
 use super::{Event, World, arcane_fire::Pulse, bulwark::Field};
 use bevy_ecs::component::Mutable;
-use bevy_ecs::prelude::{Commands, Component, Entity, In, InMut, Query};
+use bevy_ecs::prelude::{Commands, Component, Entity, In, InMut, Query, Res, Resource};
+use std::marker::PhantomData;
 
-#[derive(Component)]
-struct CastOrder(u64);
+#[derive(Resource)]
+struct CastOrder<T: TimedSpell> {
+    handles: Vec<Entity>,
+    spell: PhantomData<T>,
+}
+impl<T: TimedSpell> Default for CastOrder<T> {
+    fn default() -> Self {
+        Self {
+            handles: Vec::new(),
+            spell: PhantomData,
+        }
+    }
+}
 
 pub(super) trait TimedSpell: Component<Mutability = Mutable> {
     fn expired_before_step(&self, tick: u64) -> bool;
@@ -14,44 +25,40 @@ pub(super) trait TimedSpell: Component<Mutability = Mutable> {
     fn advance(&mut self, world: &mut World, events: &mut Vec<Event>) -> bool;
 }
 
-type Agenda = Vec<(u64, Entity)>;
+type Agenda = Vec<Entity>;
 #[derive(Default)]
 pub(super) struct Spells {
-    order: u64,
     scratch: Agenda,
-    // Keep insertion order across actor archetype changes and handle reuse.
-    handles: Vec<Entity>,
 }
 impl super::Actors<'_> {
     pub(super) fn spells<T: TimedSpell>(&self) -> impl Iterator<Item = &T> {
-        self.meta
-            .spells
-            .handles
-            .iter()
+        self.ecs
+            .get_resource::<CastOrder<T>>()
+            .into_iter()
+            .flat_map(|order| order.handles.iter())
             .filter_map(|id| self.ecs.get::<T>(*id))
     }
     pub(super) fn spell_snapshot<T: TimedSpell>(&self) -> Vec<&T> {
         self.spells::<T>().collect()
     }
     pub(super) fn spawn_spell<T: TimedSpell>(&mut self, spell: T) {
-        let id = self
-            .ecs
-            .spawn((CastOrder(self.meta.spells.order), spell))
-            .id();
-        self.meta.spells.handles.push(id);
-        self.meta.spells.order += 1;
+        let handle = self.ecs.spawn(spell).id();
+        self.ecs
+            .get_resource_or_insert_with(CastOrder::<T>::default)
+            .handles
+            .push(handle);
     }
     pub(super) fn remove_spell<T: TimedSpell>(
         &mut self,
         mut predicate: impl FnMut(&T) -> bool,
     ) -> Option<T> {
         let i = self
-            .meta
-            .spells
+            .ecs
+            .get_resource::<CastOrder<T>>()?
             .handles
             .iter()
             .position(|id| self.ecs.get::<T>(*id).is_some_and(&mut predicate))?;
-        let id = self.meta.spells.handles.remove(i);
+        let id = self.ecs.resource_mut::<CastOrder<T>>().handles.remove(i);
         let spell = self.ecs.entity_mut(id).take::<T>()?;
         self.ecs.despawn(id);
         Some(spell)
@@ -63,31 +70,29 @@ impl super::Actors<'_> {
 }
 fn schedule<T: TimedSpell>(
     (In(tick), InMut(jobs)): (In<u64>, InMut<Agenda>),
-    spells: Query<(Entity, &CastOrder, &T)>,
+    order: Res<CastOrder<T>>,
+    spells: Query<&T>,
     mut commands: Commands,
 ) {
     jobs.clear();
-    for (id, order, spell) in &spells {
+    for &id in &order.handles {
+        let Ok(spell) = spells.get(id) else {
+            continue;
+        };
         if spell.expired_before_step(tick) {
             commands.entity(id).despawn();
         } else {
-            jobs.push((order.0, id));
+            jobs.push(id);
         }
     }
-    jobs.sort_unstable_by_key(|(order, _)| *order);
 }
 impl World {
-    fn resolve_spells<T: TimedSpell>(
-        &mut self,
-        jobs: &mut Agenda,
-        events: &mut Vec<Event>,
-    ) -> bool {
+    fn resolve_spells<T: TimedSpell>(&mut self, jobs: &mut Agenda, events: &mut Vec<Event>) {
         self.entities
             .ecs
             .run_system_cached_with(schedule::<T>, (self.tick, &mut *jobs))
             .expect("registered spell scheduling system");
-        let mut active = false;
-        for &(_, id) in jobs.iter() {
+        for &id in jobs.iter() {
             let Some(mut spell) = self
                 .entities
                 .ecs
@@ -103,26 +108,30 @@ impl World {
             if keep {
                 if let Some(mut original) = ecs.get_mut::<T>(id) {
                     *original = spell;
-                    active = true;
                 }
             } else {
                 // A replacement may already have removed this generation.
                 let _ = ecs.try_despawn(id);
             }
         }
-        active
     }
     pub(super) fn advance_spell_family<T: TimedSpell>(&mut self, events: &mut Vec<Event>) {
-        if self.entities.spells::<T>().next().is_none() {
+        if self
+            .entities
+            .ecs
+            .get_resource::<CastOrder<T>>()
+            .is_none_or(|order| order.handles.is_empty())
+        {
             return;
         }
         let mut jobs = std::mem::take(&mut self.entities.meta.spells.scratch);
         self.resolve_spells::<T>(&mut jobs, events);
-        let arena = &mut self.entities.meta.spells;
-        arena
-            .handles
-            .retain(|id| self.entities.ecs.get::<CastOrder>(*id).is_some());
-        arena.scratch = jobs;
+        self.entities
+            .ecs
+            .resource_scope(|ecs, mut order: bevy_ecs::prelude::Mut<CastOrder<T>>| {
+                order.handles.retain(|id| ecs.get::<T>(*id).is_some());
+            });
+        self.entities.meta.spells.scratch = jobs;
     }
     pub(super) fn advance_persistent_spells(&mut self, events: &mut Vec<Event>) {
         self.advance_spell_family::<Field>(events);
