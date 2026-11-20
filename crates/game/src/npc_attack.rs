@@ -60,6 +60,7 @@ pub(super) fn deliver(
     world: &World,
     views: &mut [View],
     team: usize,
+    facing_targets: &[Option<u32>; super::aral::SEATS],
 ) {
     if out.iter().any(|m| {
         matches!(
@@ -78,11 +79,13 @@ pub(super) fn deliver(
             };
             let ready =
                 seat.world_actor_written && seat.preamble.confirmed() && seat.peers[1].is_none();
-            let batch: Batch = out
-                .iter()
-                .filter(|m| can_receive(m, ready, view, actor.id) && super::ringo::track(view, m))
-                .cloned()
-                .collect();
+            let mut batch = Vec::with_capacity(out.len());
+            for m in &out {
+                if can_receive(m, ready, view, actor.id) && super::ringo::track(view, m) {
+                    super::ringo::face_attack_target(&mut batch, m, world, facing_targets, view);
+                    batch.push(m.clone());
+                }
+            }
             if !batch.is_empty() {
                 peer.send(transport::Delivery::Private(batch));
             }

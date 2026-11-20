@@ -203,6 +203,7 @@ fn sanitize(m: &mut Message) -> bool {
                     .iter()
                     .all(|v| f32::from_be_bytes(*v).is_finite())
                 && f32::from_be_bytes(m.body[8..12].try_into().unwrap()) == 0.0 => {}
+        Some(crate::Opcode::MoveAndFace) if super::ringo::recordable_face(m) => {}
         Some(crate::Opcode::AggroState)
             if halcyon_protocol::TowerAggro::decode(m).is_some_and(|state| {
                 matches!(state.tower_slot, 3..=7 | 9 | 11..=15)

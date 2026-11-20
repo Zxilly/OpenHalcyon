@@ -140,6 +140,7 @@ struct FederationOrigin {
 struct Room {
     federation: Option<FederationOrigin>,
     scene_views: Vec<tower_aggro::View>,
+    ringo_attacks: ringo::AttackHistory,
     solo_slots: actor_slots::ActorSlots,
     aral_slots: aral_spawn::WaveSlots,
     dead_actors: Vec<aral_death::Pending>,
@@ -664,6 +665,7 @@ impl Rooms {
         let t = Utc::now();
         let mut room = Room {
             federation,
+            ringo_attacks: Default::default(),
             scene_views: (0..req.players.len()).map(|_| Default::default()).collect(),
             solo_slots: actor_slots::ActorSlots::from_roster(&world.entities),
             aral_slots: Default::default(),
@@ -1631,6 +1633,11 @@ impl Room {
         let native_solo = self.solo_scene() && self.seats[0].control_world;
         let postgame = result_frames::aral_lost_crystal(self.legacy_aral(), &self.world);
         let legacy_aral = self.legacy_aral();
+        let facing_targets = if legacy_aral {
+            self.ringo_attacks.observe(events, &self.world)
+        } else {
+            [None; aral::SEATS]
+        };
         let control_stream = legacy_aral || native_solo;
         let born: HashSet<u32> = if control_stream {
             events
@@ -1802,7 +1809,14 @@ impl Room {
                 continue;
             }
             if has_attack_release {
-                npc_attack::deliver(out, &self.seats, &self.world, &mut self.scene_views, team);
+                npc_attack::deliver(
+                    out,
+                    &self.seats,
+                    &self.world,
+                    &mut self.scene_views,
+                    team,
+                    &facing_targets,
+                );
             } else if peers.peek().is_none() {
                 first.send(transport::Delivery::Private(out));
             } else {

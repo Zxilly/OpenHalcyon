@@ -2,6 +2,92 @@
 use super::{Batch, Message, messages::wire_id};
 use halcyon_sim::Event;
 
+/// Last released attack per ARAL seat. Interrupted windups emit no attack event.
+#[derive(Default)]
+pub(super) struct AttackHistory([Option<(u32, halcyon_sim::Position)>; super::aral::SEATS]);
+
+impl AttackHistory {
+    pub(super) fn observe(
+        &mut self,
+        events: &[Event],
+        world: &halcyon_sim::World,
+    ) -> [Option<u32>; super::aral::SEATS] {
+        let mut changed = [None; super::aral::SEATS];
+        for event in events {
+            let (source, target) = match *event {
+                Event::Attack { source, target } => (source, Some(target)),
+                Event::Cast { source, .. } | Event::Death { id: source, .. } => (source, None),
+                _ => continue,
+            };
+            let Some(seat) = source.checked_sub(1).map(|v| v as usize) else {
+                continue;
+            };
+            if let Some(previous) = self.0.get_mut(seat) {
+                if world.entities[seat].type_id != halcyon_data::EntityTemplate::Ringo.as_raw() {
+                    continue;
+                }
+                let attack = target.map(|id| (id, world.entities[seat].position));
+                if previous.is_some() && *previous != attack {
+                    changed[seat] = target;
+                }
+                *previous = attack;
+            }
+        }
+        changed
+    }
+}
+
+const LANE_HEIGHT: f32 = f32::from_bits(0x3d19_2e1f);
+
+fn observed_ground(x: f32, z: f32) -> bool {
+    (-69.44..=52.15).contains(&x) && (-2.13..=14.30).contains(&z)
+}
+
+/// Called on the already filtered stream immediately before an empowered release.
+pub(super) fn face_attack_target(
+    batch: &mut Batch,
+    release: &Message,
+    world: &halcyon_sim::World,
+    changed: &[Option<u32>; super::aral::SEATS],
+    view: &super::tower_aggro::View,
+) {
+    if !release.is(crate::Opcode::PlayAbility) {
+        return;
+    }
+    let Some((source, Some(target))) = references(release) else {
+        return;
+    };
+    let seat = (source - 1) as usize;
+    let actor = &world.entities[seat];
+    if changed[seat] != Some(target)
+        || view.ringo_effects[seat].is_none()
+        || actor.type_id != halcyon_data::EntityTemplate::Ringo.as_raw()
+        || !observed_ground(actor.position.x, actor.position.y)
+    {
+        return;
+    }
+    let caster = wire_id(source);
+    let position = actor.position;
+    batch.push(
+        halcyon_protocol::Fields::MoveAndFace {
+            actor: u32::from(caster),
+            reference: u32::from(wire_id(target)),
+            values: [position.x, LANE_HEIGHT, position.y],
+            remaining: &[],
+        }
+        .movement_message()
+        .expect("fixed move-and-face shape"),
+    );
+    batch.push(Message::position(caster, position.x, position.y));
+}
+
+pub(super) fn recordable_face(m: &Message) -> bool {
+    matches!(m.fields(), Ok(halcyon_protocol::Fields::MoveAndFace {
+        actor: actor @ 1500..=1505, reference: target @ 1500..=65534,
+        values: [x, height, z], remaining: [],
+    }) if actor != target && height.to_bits() == LANE_HEIGHT.to_bits() && observed_ground(x,z))
+}
+
 pub(super) fn append(out: &mut Batch, event: &Event, visible: impl Fn(u32) -> bool) -> bool {
     let Event::DoubleDown {
         source,
@@ -139,6 +225,104 @@ pub(super) fn track(view: &mut super::tower_aggro::View, message: &Message) -> b
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn same_target_requires_displacement_and_history_does_not_survive_death() {
+        let mut history = AttackHistory::default();
+        let mut world = halcyon_sim::World::new(7, 6);
+        world.entities[0].type_id = halcyon_data::EntityTemplate::Ringo.as_raw();
+        let shot = [Event::Attack {
+            source: 1,
+            target: 2,
+        }];
+        assert_eq!(history.observe(&shot, &world)[0], None);
+        assert_eq!(history.observe(&shot, &world)[0], None);
+        world.entities[0].position.x += 1.;
+        assert_eq!(history.observe(&shot, &world)[0], Some(2));
+        history.observe(&[Event::Death { id: 1, killer: 3 }], &world);
+        assert_eq!(history.observe(&shot, &world)[0], None);
+    }
+
+    #[tokio::test]
+    async fn empowered_attack_turns_toward_a_new_opponent_on_the_registered_stream() {
+        use crate::{Peer, Rooms, transport::Delivery};
+        use halcyon_platform::{MatchHost, Reservation};
+        use halcyon_sim::{Command, Position};
+        use tokio::sync::{mpsc, watch};
+        use uuid::Uuid;
+
+        let rooms = Rooms::new("127.0.0.1".parse().unwrap(), "localhost".into(), 1, None);
+        let id = Uuid::new_v4();
+        rooms
+            .reserve(Reservation {
+                match_id: id,
+                players: (0..6).map(|_| Uuid::new_v4()).collect(),
+                teams: vec![0, 1, 0, 1, 0, 1],
+                talent_levels: vec![],
+                difficulty: None,
+                mode: halcyon_protocol::ce::KnownQueue::CasualAral.as_str().into(),
+            })
+            .unwrap();
+        let shared = rooms.room(id).unwrap();
+        let mut room = shared.lock().unwrap();
+        let (tx, mut rx) = mpsc::channel(256);
+        let seat = &mut room.seats[2];
+        seat.peers[0] = Some(Peer {
+            generation: 1,
+            tx,
+            stalled: watch::channel(false).0,
+        });
+        seat.world_actor_written = true;
+        seat.preamble
+            .observe(&Message::known(crate::Opcode::RequestScene, [0; 6]), 1502);
+        seat.preamble.observe(
+            &Message::known(crate::Opcode::SceneOwner, [0, 0, 5, 222, 1, 0]),
+            1502,
+        );
+        seat.preamble.confirm_world_input();
+        for (seat, x) in [0., 1., -1., 2.].into_iter().enumerate() {
+            room.world.entities[seat].position = Position { x, y: 2. };
+        }
+        room.world.entities[0].type_id = halcyon_data::EntityTemplate::Ringo.as_raw();
+        room.world.entities[1].hp = 0.1;
+        for target in [2, 4] {
+            room.world.command(1, Command::Attack(target)).unwrap();
+            let mut released = false;
+            for _ in 0..160 {
+                let events = room.world.step();
+                room.replicate(&events);
+                if events.iter().any(|ev| matches!(ev,Event::DoubleDown{source:1,attack_target,..} if (target==2 && attack_target.is_none()) || *attack_target==Some(target))) {
+                    released = true; break;
+                }
+            }
+            assert!(released, "missing perk transition against {target}");
+        }
+        let mut seen = Vec::new();
+        while let Ok(batch) = rx.try_recv() {
+            match batch {
+                Delivery::Private(batch) => seen.extend(batch),
+                Delivery::Team(batch) => seen.extend_from_slice(batch.messages()),
+            }
+        }
+        let facing = seen
+            .iter()
+            .position(|m| m.is(crate::Opcode::MoveAndFace))
+            .unwrap();
+        assert_eq!(
+            seen.iter()
+                .filter(|m| m.is(crate::Opcode::MoveAndFace))
+                .count(),
+            1
+        );
+        assert!(recordable_face(&seen[facing]));
+        assert_eq!(seen[facing].body[..8], [0, 0, 5, 220, 0, 0, 5, 223]);
+        assert_eq!(seen[facing + 1], Message::position(1500, 0., 2.));
+        assert_eq!(
+            seen[facing + 2],
+            Message::ability_target_used(1500, 1503, 3)
+        );
+        assert!(seen[facing + 3].is(crate::Opcode::CancelBuff));
+    }
+
     #[test]
     fn only_registered_visibles_are_referenced_in_release_order() {
         let mut out = Batch::new();

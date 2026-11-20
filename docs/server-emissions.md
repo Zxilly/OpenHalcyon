@@ -2,9 +2,9 @@
 
 Nine complete TCP streams contain 398,293 encrypted server frames in 103 opcode classes. The plaintext handshake acknowledgment is outside these counts. Each count includes every captured form of the opcode. The scope column describes the subset the host currently emits.
 
-Of the 103 classes, 73 have a documented host path for at least one scenario:
-40 room outputs, 19 setup or draft outputs, and 14 conditional responses.
-24 further classes have an identified reader-side action. Six have an
+Of the 103 classes, 75 have a documented host path in at least one scenario. These include
+42 room outputs, 19 setup or draft outputs, and 14 conditional responses.
+22 further classes have an identified reader-side action. Six have an
 unresolved server trigger and receiver-side field evidence only.
 
 **A** is authoritative room output. **H** is setup, draft or scene output. **E** is a conditional response to the originating request. **R** is a read-only class with a documented action role. **U** has readable fields and an unresolved server role. Action names come from the independently labeled Windows action table. Counts come from the full captured streams. [Capture method](live-captures.md) · [Independent action labels](https://github.com/TurnaboutHero/vainglory-replay-decoder/blob/f4743be743564e3aadef1566499fe25d9d0f9ffc/vg/docs/vg-binary-event-candidates-2026-09-09-details.md)
@@ -26,7 +26,7 @@ The host paths are in [room dispatch](../crates/game/src/lib.rs), [transport](..
 | `03F3` | 42 | A | ActionHeroSpawn · Full actor declaration for simulated heroes and fallback profiles |
 | `03F8` | 37,568 | A | ActionMoveTo · Accepted Solo 03F5 destination, visible registered ARAL hero route from 03F4/03F5, and [visible native lane-minion waypoints](native-motion.md#lane-minion-destinations) |
 | `03F9` | 2,548 | R | [ActionMoveToServerAuthoritative](native-motion.md) |
-| `03FA` | 1,978 | R | [ActionMoveToAndFace](native-motion.md) |
+| `03FA` | 1,978 | A | [Ringo facing the target of a released Double Down attack](native-motion.md#ringo-empowered-attacks) |
 | `03FB` | 1,829 | A | [ActionStopActor](native-motion.md#aral-chakram-movement-interruption) for the registered teammate view of an ARAL Idris B release that interrupted walking |
 | `0402` | 25 | R | [ActionAutoActorBounce](aral-orbit.md) |
 | `0403` | 525 | R | ActionAutoMoveTo |
@@ -74,7 +74,7 @@ The host paths are in [room dispatch](../crates/game/src/lib.rs), [transport](..
 | `0440` | 60 | R | ActionShowFlyoutText |
 | `0441` | 385 | R | ActionModifyBuffDuration |
 | `0443` | 1,831 | R | [ActionModifyBuffStack and observed instance counts](aral-item-activation.md#extended-applications-at-match-opening-and-on-purchase) |
-| `0445` | 1,398 | R | ActionCancelBuff |
+| `0445` | 1,398 | A | [Cancellation of Ringo’s previously delivered Double Down instance](aral-ability-overrides.md#definition-379) |
 | `0446` | 18 | R | ActionTimeoutBuff |
 | `0447` | 41 | R | ActionDecrementBuffStack |
 | `0448` | 150 | A | ARAL Healing Flask and Scout Trap instance prefixes for eligible witnesses.  [ActionRequestActivateItem](aral-item-activation.md) |

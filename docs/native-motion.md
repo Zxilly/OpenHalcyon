@@ -56,8 +56,26 @@ views or abilities do not produce the new stop.
 In all 1,978 live `03FA` actions the next same-actor correction had the
 same X/Z at the same capture timestamp. A matching entity-targeted release
 followed within 0.5 seconds in 1,832 cases. This establishes the
-move-and-face position and reference without identifying which hosted
-attack transitions should emit it. None of the 525 `0403` actions matched
+move-and-face position and reference. The Ringo comparison below identifies
+one hosted release transition. None of the 525 `0403` actions matched
 the next correction's X/Z when treated as the `03FB` position layout.
 The independent reader converts five words and a byte. The host retains
 this action as read-only pending operand and displacement semantics.
+
+## Ringo empowered attacks
+
+Two ARAL streams contain 63 target releases from Ringo with selector 3.
+Compare the target and the last reported X/Z with Ringo's preceding targeted
+release. All 50 target changes and all 10 same-target releases from a changed
+position had a preceding `03FA` for that victim at the release timestamp.
+The next same-actor `042E` repeated its X/Z. Of the three remaining releases
+from an unchanged position against the same target, only one had a face action.
+
+The host emits `03FA`, an X/Z correction and the empowered release to
+scene-ready recipients that saw the perk and have both actors registered.
+It compares consecutive basic releases and drops the comparison on a cast or
+death. Fifty-nine of the 60 matching faces use height bits `3d192e1f` in
+the lane region X −69.44 to 52.15 and Z −2.13 to 14.30. The remaining one,
+near (−73.25, 21.23), has a different elevation. The host projects the flat
+profile inside the measured region. It omits the elevated and ambiguous
+stationary cases.
