@@ -1,5 +1,6 @@
 //! A small authored ability set. Official 4.13 deltas supply the named rank
-//! tables; windups, radii, energy and complete effects are validation rules.
+//! tables. Optional client tables supply Ringo cast costs, cooldowns and target ranges.
+//! Windups and skill effects remain independently modeled.
 use super::*;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AbilitySlot {
@@ -80,7 +81,51 @@ pub(super) struct Status {
     pub(super) channel_until: u64,
 }
 #[derive(Clone, Debug, Serialize)]
+#[serde(bound(serialize = "[f32; N]: Serialize"))]
+struct CastRanks<const N: usize> {
+    range: [f32; N],
+    energy: [f32; N],
+    seconds: [f32; N],
+}
+
+impl<const N: usize> CastRanks<N> {
+    fn at(&self, rank: usize, windup: u64) -> (f32, f32, u64, f32) {
+        (
+            self.range[rank],
+            self.energy[rank],
+            windup,
+            self.seconds[rank],
+        )
+    }
+
+    fn load(&mut self, data: &GameData, ability: &str, targeted: bool) -> Result<(), String> {
+        let read = |parameter: halcyon_data::AbilityParameter, defaults: [f32; N]| {
+            let name = parameter.as_str();
+            let Some(values) = data.ability_ranks("Ringo", ability, name) else {
+                return Ok(defaults);
+            };
+            if values.len() != N || values.iter().any(|v| !v.is_finite() || *v < 0.) {
+                return Err(format!("invalid {ability} {name} rank table"));
+            }
+            let mut ranks = defaults;
+            ranks.copy_from_slice(values);
+            Ok(ranks)
+        };
+        use halcyon_data::AbilityParameter;
+        self.energy = read(AbilityParameter::EnergyCost, self.energy)?;
+        self.seconds = read(AbilityParameter::Cooldown, self.seconds)?;
+        if targeted {
+            self.range = read(AbilityParameter::Range, self.range)?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Serialize)]
 pub(super) struct AbilityBook {
+    achilles: CastRanks<5>,
+    twirl: CastRanks<5>,
+    hellfire: CastRanks<3>,
     gift_cd: [f32; 5],
     gift_hp: f32,
     empower: [f32; 5],
@@ -98,6 +143,21 @@ pub(super) struct AbilityBook {
 impl Default for AbilityBook {
     fn default() -> Self {
         Self {
+            achilles: CastRanks {
+                range: [7.; 5],
+                energy: [20.; 5],
+                seconds: [6.; 5],
+            },
+            twirl: CastRanks {
+                range: [0.; 5],
+                energy: [18.; 5],
+                seconds: [9.; 5],
+            },
+            hellfire: CastRanks {
+                range: [12.; 3],
+                energy: [45.; 3],
+                seconds: [28.; 3],
+            },
             gift_cd: [12., 11., 10., 9., 8.],
             gift_hp: 0.09,
             empower: [5., 5., 5., 5., 7.],
@@ -136,7 +196,19 @@ impl AbilityBook {
                 .map(|v| v as f32)
                 .ok_or_else(|| format!("invalid {hero}.{key}"))
         };
+        let Self {
+            mut achilles,
+            mut twirl,
+            mut hellfire,
+            ..
+        } = Self::default();
+        achilles.load(data, "Ability__Ringo__A", true)?;
+        twirl.load(data, "Ability__Ringo__B", false)?;
+        hellfire.load(data, "Ability__Ringo__C", true)?;
         Ok(Self {
+            achilles,
+            twirl,
+            hellfire,
             chakram_weapon_ratio: num("Idris", "B_weapon_ratio")?,
             karas_basic_crystal_ratio: num("Karas", "basic_crystal_ratio").unwrap_or(0.6),
             gift_cd: five("Adagio", "cooldown_s")?,
@@ -180,9 +252,9 @@ impl World {
                 8. - 0.5 * rank as f32,
             ),
             Skill::Waterwall => (10., 100. + 25. * rank as f32, 1, 90. - 15. * rank as f32),
-            Skill::Achilles => (7., 20., 4, 6.),
-            Skill::Twirl => (0., 18., 1, 9.),
-            Skill::Hellfire => (12., 45., 22, 28.),
+            Skill::Achilles => self.abilities.achilles.at(rank, 4),
+            Skill::Twirl => self.abilities.twirl.at(rank, 1),
+            Skill::Hellfire => self.abilities.hellfire.at(rank, 22),
             Skill::Gift => (7., 26., 4, self.abilities.gift_cd[rank]),
             Skill::Agent => (7., 24., 3, 10.),
             Skill::Sigil => (8., 30., 5, self.abilities.sigil_cd[rank]),
@@ -665,6 +737,80 @@ mod tests {
         w.entities[1].position = Position { x: 29., y: 0. };
         w
     }
+    #[test]
+    fn ringo_rank_controls_release_debit_range_and_ready_tick() {
+        let mut w = duel();
+        w.abilities.achilles = CastRanks {
+            range: [8.; 5],
+            energy: [40., 45., 50., 55., 60.],
+            seconds: [9., 8.5, 8., 7.5, 7.],
+        };
+        let actor = w.entities[0].id;
+        let target = w.entities[1].id;
+        w.entities[0].level = 3;
+        w.entities[0].skill_points = 2;
+        w.command(actor, Command::Learn(AbilitySlot::A)).unwrap();
+        w.command(actor, Command::Learn(AbilitySlot::A)).unwrap();
+        let cast = Command::Cast {
+            slot: AbilitySlot::A,
+            target: CastTarget::Entity(target),
+        };
+        w.entities[0].energy = 44.;
+        assert_eq!(w.command(actor, cast), Err("ability not ready"));
+        w.entities[0].energy = 90.;
+        w.entities[1].position.x = 34.01;
+        assert_eq!(w.command(actor, cast), Err("cast out of range"));
+        w.entities[1].position.x = 34.;
+        w.command(actor, cast).unwrap();
+        w.tick = 4;
+        w.advance_cast(0, &mut Vec::new());
+        assert_eq!(w.entities[0].energy, 45.);
+        let deadline = 4 + 170;
+        assert_eq!(w.entities[0].cooldown[0], deadline);
+        w.tick = deadline - 1;
+        assert_eq!(w.command(actor, cast), Err("ability not ready"));
+        w.tick = deadline;
+        w.command(actor, cast).unwrap();
+    }
+
+    #[test]
+    #[ignore = "requires the original delivery and optional 4.13.4 server data"]
+    fn delivered_ringo_tables_reach_every_learnable_rank() {
+        use std::{env, path::PathBuf};
+        let base = PathBuf::from(env::var_os("HALCYON_DELIVERY").expect("HALCYON_DELIVERY"));
+        let extra = PathBuf::from(env::var_os("HALCYON_DATA_EXTRA").expect("HALCYON_DATA_EXTRA"));
+        let data = GameData::load_with_extra(base, Some(&extra)).unwrap();
+        let w = World::from_data(1, 10, &data).unwrap();
+        for (skill, costs, seconds, range) in [
+            (
+                Skill::Achilles,
+                &[40., 45., 50., 55., 60.][..],
+                &[9., 8.5, 8., 7.5, 7.][..],
+                8.,
+            ),
+            (
+                Skill::Twirl,
+                &[40., 45., 50., 55., 60.][..],
+                &[8.; 5][..],
+                0.,
+            ),
+            (
+                Skill::Hellfire,
+                &[100., 115., 130.][..],
+                &[90., 80., 70.][..],
+                13.,
+            ),
+        ] {
+            for (rank, (&cost, &seconds)) in costs.iter().zip(seconds).enumerate() {
+                let rule = w.rules(skill, rank);
+                assert_eq!(
+                    (rule.range, rule.cost, rule.cooldown),
+                    (range, cost, (seconds * TICK_HZ as f32) as u64)
+                );
+            }
+        }
+    }
+
     #[test]
     fn tracked_npc_shot_keeps_its_due_time_and_never_reuses_an_actor_id() {
         let mut w = World::new(7, 6);
