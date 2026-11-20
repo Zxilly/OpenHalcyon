@@ -91,6 +91,18 @@ mod tests {
         let mut world = World::new(12, 6);
         world.use_six_human_roster().unwrap();
         world.use_aral_lane().unwrap();
+        let allocation = std::ptr::from_ref(world.entities[0].aral_inventory.as_deref().unwrap());
+        world.use_aral_lane().unwrap();
+        assert!(std::ptr::eq(
+            allocation,
+            world.entities[0].aral_inventory.as_deref().unwrap()
+        ));
+        assert!(
+            world
+                .entities
+                .iter()
+                .all(|e| e.aral_inventory.is_some() == (e.kind == crate::Kind::Hero))
+        );
         let starter = world.entities[0].aral_inventory.as_ref().unwrap().slots()[..2].to_vec();
         assert_eq!(
             starter
@@ -144,5 +156,9 @@ mod tests {
         let cap_state = world.state_digest();
         assert_eq!(world.try_purchase(1, Oakheart).unwrap(), None);
         assert_eq!(world.state_digest(), cap_state);
+        assert!(std::ptr::eq(
+            allocation,
+            world.entities[0].aral_inventory.as_deref().unwrap()
+        ));
     }
 }

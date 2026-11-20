@@ -1215,7 +1215,7 @@ impl Room {
                         scene::announce_aral_entry(self, i, &m);
                         self.seats[i].aral_reorder_view = self.world.entities[i]
                             .aral_inventory
-                            .as_ref()
+                            .as_deref()
                             .is_some_and(halcyon_sim::AralInventory::is_dense);
                         aral::opening(self, team)
                     };

@@ -674,7 +674,11 @@ impl World {
         self.next_item = self.next_item.checked_add(1).ok_or("item instance limit")?;
         let h = &mut self.entities[i];
         h.inventory.retain(|owned| !consumed.contains(owned));
-        h.aral_inventory = aral_inventory;
+        if let Some(prepared) = aral_inventory {
+            *h.aral_inventory
+                .as_deref_mut()
+                .expect("prepared ARAL inventory") = prepared;
+        }
         // Apply the net modifier once. Upgrading an HP component must preserve
         // missing health when the completed item grants the same HP.
         let mut delta = [0.; 26];

@@ -266,7 +266,7 @@ pub struct Entity {
     pub skill_points: u8,
     pub inventory: Vec<HeldItem>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub aral_inventory: Option<AralInventory>,
+    pub aral_inventory: Option<Box<AralInventory>>,
     pub item_stats: ItemStats,
     #[serde(skip)]
     bonus_hp: f32,
