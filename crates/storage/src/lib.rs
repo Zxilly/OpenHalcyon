@@ -22,6 +22,8 @@ pub enum Error {
     Migration(Box<dyn std::error::Error + Send + Sync>),
     #[error("account or session not found")]
     Unauthorized,
+    #[error("invalid persisted player identifier")]
+    InvalidPlayerId,
     #[error("account already linked")]
     AlreadyLinked,
 }

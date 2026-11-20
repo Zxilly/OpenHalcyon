@@ -85,13 +85,19 @@ async fn accounts_adopt_existing_rows_rotate_credentials_and_share_uniqueness() 
         Err(PlatformError::Unauthorized)
     ));
     assert_eq!(second.profile(session).await.unwrap().player_id, id);
+    let restored = second.resume_guest(recovery.into()).await.unwrap();
+    assert_eq!(restored.player_id, id);
+    assert!(matches!(
+        first.profile(session).await,
+        Err(PlatformError::Unauthorized)
+    ));
     let newer = first
         .login_account(" LEGACY ", PASSWORD.into())
         .await
         .unwrap();
     assert_eq!(newer.player_id, id);
     assert!(matches!(
-        second.profile(session).await,
+        second.profile(&restored.session_token).await,
         Err(PlatformError::Unauthorized)
     ));
     assert!(matches!(
@@ -216,5 +222,117 @@ async fn credential_rotation_rolls_back_recovery_on_session_collision() {
             .unwrap()
             .player_id,
         a.player_id
+    );
+}
+
+#[tokio::test]
+async fn guest_recovery_retries_keep_one_identity_and_only_the_latest_session() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("guest.sqlite");
+    let created = app(&path).create_guest("Fresh".into()).await.unwrap();
+    let recovery = created.recovery_token.unwrap();
+    let first = app(&path);
+    let second = app(&path);
+    let (a, b) = tokio::join!(
+        first.resume_guest(recovery.clone()),
+        second.resume_guest(recovery.clone()),
+    );
+    let (a, b) = (a.unwrap(), b.unwrap());
+    assert_eq!(
+        (a.player_id, b.player_id),
+        (created.player_id, created.player_id)
+    );
+    assert!(a.recovery_token.is_none() && b.recovery_token.is_none());
+    let current_a = first.profile(&a.session_token).await.is_ok();
+    let current_b = second.profile(&b.session_token).await.is_ok();
+    assert_ne!(current_a, current_b);
+    assert!(matches!(
+        first.profile(&created.session_token).await,
+        Err(PlatformError::Unauthorized)
+    ));
+
+    let active = if current_a {
+        a.session_token
+    } else {
+        b.session_token
+    };
+    let db = Connection::open(&path).unwrap();
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM players", [], |row| row
+            .get::<_, u32>(0))
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM sessions", [], |row| row
+            .get::<_, u32>(0))
+            .unwrap(),
+        1
+    );
+    db.execute("UPDATE players SET last_seen=1", []).unwrap();
+    assert!(
+        !first
+            .player_activity(created.player_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .online
+    );
+    first.rename(&active, "Renamed".into()).await.unwrap();
+    let active_view = second
+        .player_activity(created.player_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(active_view.profile.name, "Renamed");
+    assert!(active_view.online && active_view.last_seen > 1);
+    first.end_session(&active).await.unwrap();
+    first.end_session(&active).await.unwrap();
+    assert!(
+        !second
+            .player_activity(created.player_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .online
+    );
+    let retry = second.resume_guest(recovery).await.unwrap();
+    assert_eq!(retry.player_id, created.player_id);
+    assert_eq!(
+        first.profile(&retry.session_token).await.unwrap().name,
+        "Renamed"
+    );
+}
+
+#[tokio::test]
+async fn guest_creation_rolls_back_identity_if_session_key_is_taken() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("guest-collision.sqlite");
+    let state = app(&path);
+    let existing = state.create_guest("Existing".into()).await.unwrap();
+    let mut storage =
+        halcyon_storage::AccountStore::open(&halcyon_storage::DatabaseAddress::new(&path)).unwrap();
+    let id = Uuid::new_v4();
+    assert!(matches!(
+        storage.create_guest(
+            id,
+            "Second",
+            &digest("uncommitted"),
+            &digest(&existing.session_token)
+        ),
+        Err(halcyon_storage::Error::Query(_))
+    ));
+    assert!(state.player_activity(id).await.unwrap().is_none());
+    assert!(matches!(
+        state.resume_guest("uncommitted".into()).await,
+        Err(PlatformError::Unauthorized)
+    ));
+    assert_eq!(
+        state
+            .profile(&existing.session_token)
+            .await
+            .unwrap()
+            .player_id,
+        existing.player_id
     );
 }

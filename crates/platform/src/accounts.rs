@@ -108,3 +108,51 @@ impl AppState {
         .await
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{HostedMatch, MatchHost, PlatformConfig, Reservation};
+    use std::sync::Arc;
+
+    struct NoHost;
+    impl MatchHost for NoHost {
+        fn reserve(&self, _: Reservation) -> Result<HostedMatch> {
+            panic!("identity operations do not allocate a match")
+        }
+    }
+
+    #[tokio::test]
+    async fn identity_changes_signal_after_writes_and_ignore_repeated_logout() {
+        let state = AppState::open(
+            PlatformConfig {
+                database_path: ":memory:".into(),
+                public_address: "localhost".into(),
+                seats_per_match: 1,
+            },
+            Arc::new(NoHost),
+        )
+        .unwrap();
+        let mut changes = state.changes.subscribe();
+        let guest = state.create_guest("Watcher".into()).await.unwrap();
+        assert!(changes.has_changed().unwrap());
+        changes.borrow_and_update();
+        let resumed = state
+            .resume_guest(guest.recovery_token.unwrap())
+            .await
+            .unwrap();
+        assert!(changes.has_changed().unwrap());
+        changes.borrow_and_update();
+        state
+            .rename(&resumed.session_token, "Updated".into())
+            .await
+            .unwrap();
+        assert!(changes.has_changed().unwrap());
+        changes.borrow_and_update();
+        state.end_session(&resumed.session_token).await.unwrap();
+        assert!(changes.has_changed().unwrap());
+        changes.borrow_and_update();
+        state.end_session(&resumed.session_token).await.unwrap();
+        assert!(!changes.has_changed().unwrap());
+    }
+}

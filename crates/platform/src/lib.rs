@@ -606,16 +606,6 @@ fn player(db: &Connection, key: &[u8]) -> Result<String> {
     Ok(id)
 }
 
-fn issue_session(tx: &Transaction<'_>, id: &str) -> Result<String> {
-    let token = credential();
-    tx.execute(
-        "INSERT INTO sessions(key, player) VALUES(?, ?) ON CONFLICT(player) DO UPDATE SET key=excluded.key",
-        params![digest(&token), id],
-    )?;
-    tx.execute("UPDATE players SET last_seen=unixepoch() WHERE id=?", [id])?;
-    Ok(token)
-}
-
 #[derive(Deserialize, Serialize)]
 pub struct CreateGuest {
     pub name: String,
@@ -631,19 +621,20 @@ impl AppState {
     pub async fn create_guest(&self, name: String) -> Result<Guest> {
         let name = display_name(name)?;
         self.run(move |state| {
-            state.transaction(|tx| {
-                let id = Uuid::new_v4().to_string();
-                let recovery = credential();
-                tx.execute(
-                    "INSERT INTO players(id, name, recovery) VALUES(?, ?, ?)",
-                    params![id, name, digest(&recovery)],
-                )?;
-                let token = issue_session(tx, &id)?;
-                Ok(Guest {
-                    player_id: parse_id(&id)?,
-                    recovery_token: Some(recovery),
-                    session_token: token,
-                })
+            let player_id = Uuid::new_v4();
+            let recovery = credential();
+            let session = credential();
+            state
+                .accounts
+                .lock()
+                .map_err(|_| PlatformError::WorkerUnavailable)?
+                .create_guest(player_id, &name, &digest(&recovery), &digest(&session))
+                .map_err(accounts::storage_error)?;
+            state.changes.send_replace(());
+            Ok(Guest {
+                player_id,
+                recovery_token: Some(recovery),
+                session_token: session,
             })
         })
         .await
@@ -665,21 +656,18 @@ async fn resume_guest(
 impl AppState {
     pub async fn resume_guest(&self, recovery_token: String) -> Result<Guest> {
         self.run(move |state| {
-            state.transaction(|tx| {
-                let id: String = tx
-                    .query_row(
-                        "SELECT id FROM players WHERE recovery=?",
-                        [digest(&recovery_token)],
-                        |row| row.get(0),
-                    )
-                    .optional()?
-                    .ok_or(PlatformError::Unauthorized)?;
-                let token = issue_session(tx, &id)?;
-                Ok(Guest {
-                    player_id: parse_id(&id)?,
-                    recovery_token: None,
-                    session_token: token,
-                })
+            let session = credential();
+            let player_id = state
+                .accounts
+                .lock()
+                .map_err(|_| PlatformError::WorkerUnavailable)?
+                .resume_guest(&digest(&recovery_token), &digest(&session))
+                .map_err(accounts::storage_error)?;
+            state.changes.send_replace(());
+            Ok(Guest {
+                player_id,
+                recovery_token: None,
+                session_token: session,
             })
         })
         .await
@@ -782,11 +770,14 @@ impl AppState {
         let key = digest(session_token);
         let name = display_name(name)?;
         self.run(move |state| {
-            state.transaction(|tx| {
-                let id = player(tx, &key)?;
-                tx.execute("UPDATE players SET name=? WHERE id=?", params![name, id])?;
-                Ok(())
-            })
+            state
+                .accounts
+                .lock()
+                .map_err(|_| PlatformError::WorkerUnavailable)?
+                .rename(&key, &name)
+                .map_err(accounts::storage_error)?;
+            state.changes.send_replace(());
+            Ok(())
         })
         .await
     }
@@ -794,10 +785,16 @@ impl AppState {
     pub async fn end_session(&self, session_token: &str) -> Result<()> {
         let key = digest(session_token);
         self.run(move |state| {
-            state.transaction(|tx| {
-                tx.execute("DELETE FROM sessions WHERE key=?", [&key])?;
-                Ok(())
-            })
+            let removed = state
+                .accounts
+                .lock()
+                .map_err(|_| PlatformError::WorkerUnavailable)?
+                .end_session(&key)
+                .map_err(accounts::storage_error)?;
+            if removed {
+                state.changes.send_replace(());
+            }
+            Ok(())
         })
         .await
     }

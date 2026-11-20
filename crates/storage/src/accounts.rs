@@ -5,6 +5,7 @@ use crate::{
 use diesel::sql_types::Text;
 use diesel::{dsl::exists, prelude::*, sqlite::SqliteConnection, upsert::excluded};
 use diesel_migrations::{EmbeddedMigrations, MigrationHarness, embed_migrations};
+use uuid::Uuid;
 
 const MIGRATIONS: EmbeddedMigrations = embed_migrations!();
 
@@ -35,19 +36,8 @@ impl AccountStore {
 
     pub fn link(&mut self, session_key: &[u8], login: &str, hash: &str) -> Result<()> {
         self.0.immediate_transaction(|db| {
-            let player = sessions::table
-                .find(session_key)
-                .select(sessions::player)
-                .first::<String>(db)
-                .optional()?
-                .ok_or(Error::Unauthorized)?;
-            diesel::update(
-                players::table
-                    .find(&player)
-                    .filter(players::last_seen.lt(unixepoch_modified("now", "-15 seconds"))),
-            )
-            .set(players::last_seen.eq(unixepoch()))
-            .execute(db)?;
+            let player = session_owner(db, session_key)?;
+            touch_presence(db, &player)?;
             let count = diesel::insert_into(local_accounts::table)
                 .values((
                     local_accounts::login.eq(login),
@@ -93,24 +83,96 @@ impl AccountStore {
                 return Err(Error::Unauthorized);
             }
             let count = diesel::update(players::table.find(&account.player))
-                .set((
-                    players::recovery.eq(recovery_key),
-                    players::last_seen.eq(unixepoch()),
-                ))
+                .set(players::recovery.eq(recovery_key))
                 .execute(db)?;
             if count != 1 {
                 return Err(Error::Unauthorized);
             }
-            diesel::insert_into(sessions::table)
+            issue_session(db, &account.player, session_key)
+        })
+    }
+
+    pub fn create_guest(
+        &mut self,
+        player: Uuid,
+        name: &str,
+        recovery_key: &[u8],
+        session_key: &[u8],
+    ) -> Result<()> {
+        let player = player.to_string();
+        self.0.immediate_transaction(|db| {
+            diesel::insert_into(players::table)
                 .values((
-                    sessions::key.eq(session_key),
-                    sessions::player.eq(&account.player),
+                    players::id.eq(&player),
+                    players::name.eq(name),
+                    players::recovery.eq(recovery_key),
                 ))
-                .on_conflict(sessions::player)
-                .do_update()
-                .set(sessions::key.eq(excluded(sessions::key)))
+                .execute(db)?;
+            issue_session(db, &player, session_key)
+        })
+    }
+
+    pub fn resume_guest(&mut self, recovery_key: &[u8], session_key: &[u8]) -> Result<Uuid> {
+        self.0.immediate_transaction(|db| {
+            let player = players::table
+                .filter(players::recovery.eq(recovery_key))
+                .select(players::id)
+                .first::<String>(db)
+                .optional()?
+                .ok_or(Error::Unauthorized)?;
+            let id = Uuid::parse_str(&player).map_err(|_| Error::InvalidPlayerId)?;
+            issue_session(db, &player, session_key)?;
+            Ok(id)
+        })
+    }
+
+    pub fn rename(&mut self, session_key: &[u8], name: &str) -> Result<()> {
+        self.0.immediate_transaction(|db| {
+            let player = session_owner(db, session_key)?;
+            touch_presence(db, &player)?;
+            diesel::update(players::table.find(&player))
+                .set(players::name.eq(name))
                 .execute(db)?;
             Ok(())
         })
     }
+
+    /// Returns whether a live session was actually removed.
+    pub fn end_session(&mut self, session_key: &[u8]) -> Result<bool> {
+        let count = diesel::delete(sessions::table.find(session_key)).execute(&mut self.0)?;
+        Ok(count != 0)
+    }
+}
+
+fn session_owner(db: &mut SqliteConnection, key: &[u8]) -> Result<String> {
+    sessions::table
+        .find(key)
+        .select(sessions::player)
+        .first::<String>(db)
+        .optional()?
+        .ok_or(Error::Unauthorized)
+}
+
+fn touch_presence(db: &mut SqliteConnection, player: &str) -> Result<()> {
+    diesel::update(
+        players::table
+            .find(player)
+            .filter(players::last_seen.lt(unixepoch_modified("now", "-15 seconds"))),
+    )
+    .set(players::last_seen.eq(unixepoch()))
+    .execute(db)?;
+    Ok(())
+}
+
+fn issue_session(db: &mut SqliteConnection, player: &str, key: &[u8]) -> Result<()> {
+    diesel::insert_into(sessions::table)
+        .values((sessions::key.eq(key), sessions::player.eq(player)))
+        .on_conflict(sessions::player)
+        .do_update()
+        .set(sessions::key.eq(excluded(sessions::key)))
+        .execute(db)?;
+    diesel::update(players::table.find(player))
+        .set(players::last_seen.eq(unixepoch()))
+        .execute(db)?;
+    Ok(())
 }
