@@ -211,6 +211,16 @@ fn sanitize(m: &mut Message) -> bool {
         0x452 | 0x48f if m.body.is_empty() => {}
         0x48d if m.body.len() == 1612 => {}
         0x3f1 if matches!(m.body.as_slice(), [0, 0, 0, 1 | 2, 0 | 2, 0]) => {}
+        0x438
+            if m.body.len() == 6
+                && matches!(
+                    u32::from_be_bytes(m.body[..4].try_into().unwrap()),
+                    1500..=1505
+                )
+                && m.body[4] != m.body[5]
+                && m.body[4..]
+                    .iter()
+                    .all(|slot| usize::from(*slot) < halcyon_sim::ARAL_ITEM_CAPACITY) => {}
         0x3e9 | 0x3f3 | 0x41c | 0x41d | 0x42e | 0x439 | 0x43d | 0x44b | 0x451 | 0x46c | 0x46f
         | 0x470 => {}
         _ => return false,

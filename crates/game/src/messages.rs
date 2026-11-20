@@ -275,8 +275,15 @@ pub(super) fn item_grant(actor: u32, item: u32, instance: u32) -> Message {
 }
 pub(super) fn append_inventory(out: &mut Vec<Message>, world: &World, entity: &Entity) {
     let actor = u32::from(wire_id(entity.id));
+    if let Some(slots) = &entity.aral_inventory {
+        for held in slots.slots().iter().flatten() {
+            out.push(item_grant(actor, held.template, held.instance));
+        }
+    }
     for held in &entity.inventory {
-        out.push(item_grant(actor, held.kind.template(), held.instance));
+        if entity.aral_inventory.is_none() {
+            out.push(item_grant(actor, held.kind.template(), held.instance));
+        }
         // HP, max energy, armor, shield and weapon power already include
         // equipment in the full declaration. Restore the remaining modifiers.
         for (stat, bonus) in world.item_bonuses(held.kind) {

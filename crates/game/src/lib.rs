@@ -5,6 +5,7 @@ mod tower_aggro;
 pub use admission::{AdmissionPolicy, PortRange, ResourceMetrics};
 mod aral;
 mod aral_death;
+mod aral_inventory;
 mod aral_spawn;
 mod commands;
 mod compact;
@@ -83,6 +84,7 @@ struct Seat {
     draft_sync_sent: bool,
     recommended_path: Option<u8>,
     equipped_talent: Option<halcyon_protocol::EquippedTalent>,
+    aral_reorder_view: bool,
     preamble: scene::Preamble,
     loading_roster_sent: bool,
     control_world: bool,
@@ -768,6 +770,7 @@ impl Room {
             self.seats[idx].loading_roster_sent = false;
             self.seats[idx].scene_written = false;
             self.seats[idx].world_actor_written = false;
+            self.seats[idx].aral_reorder_view = false;
             self.scene_views[idx] = Default::default();
             self.seats[idx].draft_sync_sent = false;
             self.seats[idx].preamble = Default::default();
@@ -1057,6 +1060,9 @@ impl Room {
                     .world
                     .command(i as u32 + 1, Command::MoveTo(Position { x, y }));
             }
+            Fields::Live(halcyon_protocol::LiveFields::Item(
+                halcyon_protocol::ItemAction::Reorder { actor, slots },
+            )) => aral_inventory::reorder(self, i, ch, actor, slots),
             Fields::Live(halcyon_protocol::LiveFields::TalentSelection(selection)) => {
                 out = aral::talent_response(self, i, ch, selection);
             }
@@ -1207,6 +1213,10 @@ impl Room {
                         scene::solo_opening(self, i)?
                     } else {
                         scene::announce_aral_entry(self, i, &m);
+                        self.seats[i].aral_reorder_view = self.world.entities[i]
+                            .aral_inventory
+                            .as_ref()
+                            .is_some_and(halcyon_sim::AralInventory::is_dense);
                         aral::opening(self, team)
                     };
                     out.push(Message::new(0x046e, [0; 6]));

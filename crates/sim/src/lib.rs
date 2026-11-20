@@ -2,6 +2,8 @@
 //! Vision, spawn offsets, windup, attack cadence, retreat and respawn are project rules.
 mod ai;
 mod aral;
+mod aral_inventory;
+pub use aral_inventory::{ARAL_ITEM_CAPACITY, AralInventory, AralItem};
 mod chakram;
 mod combat;
 mod layout;
@@ -263,6 +265,8 @@ pub struct Entity {
     pub xp: f32,
     pub skill_points: u8,
     pub inventory: Vec<HeldItem>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub aral_inventory: Option<AralInventory>,
     pub item_stats: ItemStats,
     #[serde(skip)]
     bonus_hp: f32,
@@ -625,6 +629,7 @@ impl World {
             gold: starting_gold,
             bot,
             inventory: Vec::new(),
+            aral_inventory: None,
             item_stats: ItemStats::default(),
             bonus_hp: 0.,
             level: 1,

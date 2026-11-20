@@ -92,6 +92,7 @@ impl World {
             hero.skill_points = 4;
             hero.apply_growth(3);
             hero.gold = 2000;
+            hero.aral_inventory = Some(super::AralInventory::starting());
             self.scores[(hero.id - 1) as usize]
                 .gold_income
                 .starting_balance = hero.gold;

@@ -35,6 +35,19 @@ pub enum ItemAction<'a> {
 }
 
 impl<'a> ItemAction<'a> {
+    /// Rebuild a reorder record in its original six-byte body layout.
+    /// Both bytes are native zero-based slot indices for a symmetric swap.
+    /// Mode-specific capacity and occupied slots are outside this codec.
+    pub fn reorder_message(&self) -> Option<crate::Message> {
+        let Self::Reorder { actor, slots } = self else {
+            return None;
+        };
+        let mut body = [0; 6];
+        body[..4].copy_from_slice(&actor.to_be_bytes());
+        body[4..].copy_from_slice(slots);
+        Some(crate::Message::new(0x0438, body))
+    }
+
     pub(super) fn decode(op: u16, body: &'a [u8]) -> Option<Self> {
         let prefix: usize = match op {
             0x438 => 6,
@@ -114,6 +127,25 @@ impl<'a> ItemAction<'a> {
 mod tests {
     use super::*;
     use crate::{Fields, LiveFields, Message};
+
+    #[test]
+    fn reorder_preserves_actor_and_both_zero_based_slot_bytes() {
+        let cipher = crate::MatchCipher::new("reorder fixtures");
+        for slots in [[4, 3], [3, 2], [6, 5], [5, 6], [0, 255]] {
+            let input = ItemAction::Reorder { actor: 1500, slots };
+            let message = input.reorder_message().unwrap();
+            let frame = cipher.encode(&message).unwrap();
+            let decoded = cipher.decode(&frame[2..]).unwrap();
+            assert_eq!(decoded.body.len(), 6);
+            let Fields::Live(LiveFields::Item(parsed)) = decoded.fields().unwrap() else {
+                panic!("missing reorder view");
+            };
+            assert_eq!(parsed, input);
+            assert_eq!(parsed.reorder_message(), Some(message));
+        }
+        assert!(ItemAction::decode(0x0438, &[0; 5]).is_none());
+        assert!(ItemAction::decode(0x0438, &[0; 7]).is_none());
+    }
 
     #[test]
     fn compact_operands_and_opaque_suffixes_survive_dispatch() {

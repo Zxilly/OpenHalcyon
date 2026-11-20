@@ -230,7 +230,10 @@ pub(super) async fn shop_sequence(
             _ => {}
         }
     }
-    assert_eq!(restored, [(509, current), (478, boots)]);
+    assert_eq!(
+        restored,
+        [(457, 2000), (526, 2001), (509, current), (478, boots)]
+    );
     assert_eq!(restored_modifiers, [(5, 45.), (15, 0.4)]);
     let (gold, worth) = balance.unwrap();
     assert_eq!(worth - gold, 3450.);
