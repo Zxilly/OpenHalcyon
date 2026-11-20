@@ -85,12 +85,12 @@ Run `cargo run --locked --release -p halcyon-sim --example solo_sides -- ../vg/_
 
 | Roster at west / east | West wins | East wins | Ending tick, min / median / max |
 | --- | ---: | ---: | --- |
-| Built-in Ringo / Ringo | 16 | 16 | 20,500 / 25,863.5 / 35,211 |
-| Delivery west five / same five | 21 | 11 | 18,717 / 23,696 / 30,941 |
-| Recorded west five / recorded east five | 17 | 15 | 17,589 / 27,312.5 / 32,969 |
-| Recorded east five / recorded west five | 16 | 16 | 17,741 / 25,845.5 / 33,626 |
+| Built-in Ringo / Ringo | 14 | 18 | 24,406 / 33,101 / 38,275 |
+| Delivery west five / same five | 20 | 12 | 23,361 / 26,850.5 / 31,995 |
+| Recorded west five / recorded east five | 19 | 13 | 21,985 / 29,381 / 34,877 |
+| Recorded east five / recorded west five | 19 | 13 | 20,090 / 27,977 / 33,637 |
 
-Native team slots 14–18 contained Amael, Inara, Ardan, Tony and Varya. Slots 19–23 contained Skye, Alpha, Tony, Idris and Baron. Recorded picks here use local bot logic and the host's implemented skills. In fallback seed 0, at 30 s both teams' leading side heroes reached absolute X/Z near (56, 31), then around (20, 61) at 45 s. Mid heroes had already engaged around X ±3 at 45 s. All 128 games ended by crystal destruction. In the recorded-roster run, the first tower fell on the negative-Z road 17 times, mid 7 and positive-Z 8. Swapping those rosters yielded 25, 3 and 4 first tower losses respectively.
+Native team slots 14–18 contained Amael, Inara, Ardan, Tony and Varya. Slots 19–23 contained Skye, Alpha, Tony, Idris and Baron. Recorded picks here use local bot logic and the host's implemented skills. All 128 games ended by crystal destruction. In the recorded-roster run, the first tower fell on the negative-Z road 14 times, mid 9 and positive-Z 9. Swapping those rosters yielded 1, 3 and 28 first tower losses respectively.
 
 Team-local seats determine the host's lane assignments (mid, negative Z, positive Z, mid, negative Z). The former global actor-ID formula could pair different heroes with the same lane or concentrate a side's heroes there after party-based team assignment. The alternating-seat controls already had equivalent assignments. The native mid-lane routes differ near center, actor IDs stagger decisions, and simultaneous actions use deterministic scheduling. Exact left/right trajectories need not coincide. These four samples characterize the measured rosters and seeds and establish no general win-rate target.
 
@@ -108,3 +108,12 @@ both total stalled ticks per walking attempt and the longest run. Combat,
 arrival and ticks without a walking attempt do not count toward a stall.
 Nanoseconds vary by machine. The 20 Hz tick statistics and state digest
 describe the simulation, independently of wall-clock decision timings.
+
+The route solver checks movement segments against convex pieces of the
+project's corridors around the recorded centerlines. It splits at corridor joins and follows a reachable
+centerline waypoint when a direct segment cannot be verified. Bot retreat
+steps follow the same routes. In the recorded lineup at seed 0, the route
+fix reduced rejected tactical orders from 2,401 of 58,376 decisions to
+0 of 52,044. Stalled walking fell from 41,743 of 273,621 attempts to
+0 of 229,251. The east team destroyed the west crystal at tick 29,901
+before the fix and tick 29,177 after it.

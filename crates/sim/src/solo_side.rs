@@ -75,15 +75,17 @@ pub(super) fn walkable(p: Position) -> bool {
     if x > 81. || z > 66. {
         return false;
     }
-    HALF.windows(2).any(|pair| {
-        let [(a, b), (c, d)] = [pair[0], pair[1]];
-        if x < a.min(c) - 5. || x > a.max(c) + 5. || z < b.min(d) - 5. || z > b.max(d) + 5. {
-            return false;
-        }
-        let (dx, dz) = (c - a, d - b);
-        let t = (((x - a) * dx + (z - b) * dz) / (dx * dx + dz * dz)).clamp(0., 1.);
-        (x - a - t * dx).powi(2) + (z - b - t * dz).powi(2) <= 25.
-    })
+    HALF.windows(2).any(|pair| inside_section(x, z, pair))
+}
+
+fn inside_section(x: f32, z: f32, pair: &[(f32, f32)]) -> bool {
+    let [(a, b), (c, d)] = [pair[0], pair[1]];
+    if x < a.min(c) - 5. || x > a.max(c) + 5. || z < b.min(d) - 5. || z > b.max(d) + 5. {
+        return false;
+    }
+    let (dx, dz) = (c - a, d - b);
+    let t = (((x - a) * dx + (z - b) * dz) / (dx * dx + dz * dz)).clamp(0., 1.);
+    (x - a - t * dx).powi(2) + (z - b - t * dz).powi(2) <= 25.
 }
 
 pub(super) fn clear(a: Position, b: Position) -> bool {
@@ -103,47 +105,103 @@ pub(super) fn clear(a: Position, b: Position) -> bool {
     })
 }
 
-// Players may click ahead along a road. Choose a connected waypoint on
-// the same road; crossing between roads requires returning through a base.
-pub(super) fn steer(from: Position, to: Position) -> Option<Position> {
-    if clear(from, to) {
-        return Some(to);
-    }
-    let side = if from.y.abs() > 6. {
-        from.y.signum()
-    } else {
-        to.y.signum()
-    } as i8;
-    if side == 0 {
-        return None;
-    }
-    let nearest = |p: Position| {
-        (0..=LAST)
-            .min_by(|&a, &b| {
-                point(a, 0, side)
-                    .dist(p)
-                    .total_cmp(&point(b, 0, side).dist(p))
-            })
-            .unwrap()
-    };
-    let start = nearest(from);
-    let end = if from.y.abs() > 6. && (to.y.abs() <= 6. || from.y * to.y < 0.) {
-        if to.x < 0. { 0 } else { LAST }
-    } else {
-        nearest(to)
-    };
-    if mid(from) && !mid(to) {
-        let entrance = point(if from.x < 0. { 0 } else { LAST }, 0, side);
-        if (from.x - entrance.x).abs() > 6. {
-            return Some(entrance);
+// Within one quadrant each corridor section is convex: its endpoints
+// certify the entire segment. Subdivide at overlaps, and reject if coverage
+// cannot be established within the depth bound.
+fn sections(p: Position) -> u32 {
+    let mut mask = u32::from(mid(p));
+    let (x, z) = (p.x.abs(), p.y.abs());
+    if x <= 81. && z <= 66. {
+        for (i, pair) in HALF.windows(2).enumerate() {
+            if inside_section(x, z, pair) {
+                mask |= 1 << (i + 1);
+            }
         }
     }
+    mask
+}
+
+fn covered(a: Position, b: Position, a_sections: u32, b_sections: u32, depth: u8) -> bool {
+    if a_sections & b_sections != 0 {
+        return true;
+    }
+    if a_sections == 0 || b_sections == 0 || depth == 0 {
+        return false;
+    }
+    let middle = Position {
+        x: (a.x + b.x) * 0.5,
+        y: (a.y + b.y) * 0.5,
+    };
+    let mask = sections(middle);
+    covered(a, middle, a_sections, mask, depth - 1)
+        && covered(middle, b, mask, b_sections, depth - 1)
+}
+
+fn movement_clear(a: Position, b: Position) -> bool {
+    if mid(a) && mid(b) {
+        return true;
+    }
+    // Fit each piece to a single reflected quadrant before comparing masks.
+    if (a.x < 0. && b.x > 0.) || (a.x > 0. && b.x < 0.) {
+        let axis = Position {
+            x: 0.,
+            y: a.y + (b.y - a.y) * (a.x / (a.x - b.x)),
+        };
+        return movement_clear(a, axis) && movement_clear(axis, b);
+    }
+    if (a.y < 0. && b.y > 0.) || (a.y > 0. && b.y < 0.) {
+        let axis = Position {
+            x: a.x + (b.x - a.x) * (a.y / (a.y - b.y)),
+            y: 0.,
+        };
+        return movement_clear(a, axis) && movement_clear(axis, b);
+    }
+    covered(a, b, sections(a), sections(b), 8)
+}
+
+fn nearest_reachable(p: Position, side: i8) -> Option<usize> {
+    let mut best = None;
+    let mut distance = f32::INFINITY;
+    for i in 0..=LAST {
+        let waypoint = point(i, 0, side);
+        let d = p.dist(waypoint);
+        if d < distance && movement_clear(p, waypoint) {
+            best = Some(i);
+            distance = d;
+        }
+    }
+    best
+}
+
+// Players may click ahead along a road. Crossing between roads goes via the
+// junctions at the bases, and every chosen segment stays inside the corridor.
+pub(super) fn steer(from: Position, to: Position) -> Option<Position> {
+    if movement_clear(from, to) {
+        return Some(to);
+    }
+    if !walkable(from) || !walkable(to) {
+        return None;
+    }
+    let from_side = if mid(from) { 0 } else { from.y.signum() as i8 };
+    let to_side = if mid(to) { 0 } else { to.y.signum() as i8 };
+    let side = if from_side == 0 { to_side } else { from_side };
+    let start = nearest_reachable(from, side)?;
+    let end = if from_side != 0 && from_side != to_side {
+        if start < HALF.len() { 0 } else { LAST }
+    } else {
+        nearest_reachable(to, side)?
+    };
+    let current = point(start, 0, side);
     if start == end {
-        return clear(from, point(end, 0, side)).then(|| point(end, 0, side));
+        return Some(current);
     }
     let next = if start < end { start + 1 } else { start - 1 };
-    let p = point(next, 0, side);
-    clear(from, p).then_some(p)
+    let waypoint = point(next, 0, side);
+    if movement_clear(from, waypoint) {
+        Some(waypoint)
+    } else {
+        Some(current)
+    }
 }
 #[cfg(test)]
 mod tests {
@@ -201,6 +259,51 @@ mod tests {
         }
         assert_eq!(count, [[20; 2]; 2]);
         assert!(tracks.values().all(|points| points.len() == 8));
+    }
+
+    #[test]
+    fn bot_kites_toward_a_reachable_retreat_point() {
+        let mut world = World::new(0, 0);
+        world.use_solo_mid_lane().unwrap();
+        let i = 4;
+        let before = Position {
+            x: -1.5873325,
+            y: 52.13896,
+        };
+        world.entities[i].position = before;
+        world.entities[i].next_attack = 10;
+        world.entities[1].position = Position { x: 0., y: 53. };
+        let home = world.layout.home(&world.entities[i]);
+        assert!(!walkable(before.advance(home, 1.)));
+        let order = world.decide(i);
+        let Command::MoveTo(goal) = order else {
+            panic!("expected a retreat order, received {order:?}");
+        };
+        assert!(movement_clear(before, goal));
+        assert_ne!(before, goal);
+        assert_eq!(world.order(i, order), Ok(()));
+    }
+
+    #[test]
+    fn hero_enters_a_flank_without_crossing_the_gap_near_the_base() {
+        let from = Position { x: 80.125, y: 5.98 };
+        let to = Position { x: 73.44, y: 11.31 };
+        let mut world = World::new(8, 10);
+        world.use_solo_mid_lane().unwrap();
+        world.entities[0].position = from;
+        world.command(1, Command::MoveTo(to)).unwrap();
+        for _ in 0..200 {
+            world.walk(0, to, &mut Vec::new());
+            assert!(
+                walkable(world.entities[0].position),
+                "{:?}",
+                world.entities[0].position
+            );
+            if world.entities[0].position == to {
+                return;
+            }
+        }
+        panic!("did not reach the flank");
     }
 
     #[test]

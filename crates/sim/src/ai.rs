@@ -14,6 +14,15 @@ impl World {
             }
         }
     }
+    fn retreat_step(&self, e: &Entity, home: Position) -> Position {
+        let waypoint = if matches!(self.layout, Layout::SoloMid { .. }) {
+            solo_side::steer(e.position, home).unwrap_or(e.position)
+        } else {
+            home
+        };
+        e.position.advance(waypoint, 1.)
+    }
+
     pub(super) fn decide(&self, i: usize) -> Command {
         let e = &self.entities[i];
         let home = self.layout.home(e);
@@ -81,6 +90,9 @@ impl World {
             {
                 let mut p = t.position;
                 p.x += (if e.team == 0 { -1. } else { 1. }) * (t.stats.range + 1.);
+                if matches!(self.layout, Layout::SoloMid { .. }) && !self.layout.walkable(p) {
+                    p = self.retreat_step(e, home);
+                }
                 return Command::MoveTo(p);
             }
             if e.kind == Kind::Hero && t.kind == Kind::Hero {
@@ -126,7 +138,7 @@ impl World {
                 && e.next_attack > self.tick + 4
                 && e.position.dist(t.position) < 4.
             {
-                return Command::MoveTo(e.position.advance(home, 1.));
+                return Command::MoveTo(self.retreat_step(e, home));
             }
             return Command::Attack(t.id);
         }
