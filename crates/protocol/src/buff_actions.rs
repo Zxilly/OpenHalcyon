@@ -37,8 +37,8 @@ pub struct BuffApplication<'a> {
 impl<'a> BuffApplication<'a> {
     pub(super) fn decode(opcode: u16, body: &'a [u8]) -> Option<Self> {
         let size = match (opcode, body.len()) {
-            (0x43e, 16 | 22) => 16,
-            (0x43f, 34 | 38) => 34,
+            (crate::wire_opcode::EntityProp, 16 | 22) => 16,
+            (crate::wire_opcode::EntityData, 34 | 38) => 34,
             _ => return None,
         };
         let word = |i: usize| u32::from_be_bytes(body[i..i + 4].try_into().unwrap());
@@ -61,9 +61,9 @@ impl<'a> BuffApplication<'a> {
 
     pub fn to_message(self) -> io::Result<Message> {
         let (op, size, extended) = if self.extras.is_some() {
-            (0x43f, 34, 4)
+            (crate::wire_opcode::EntityData, 34, 4)
         } else {
-            (0x43e, 16, 6)
+            (crate::wire_opcode::EntityProp, 16, 6)
         };
         if !self.suffix.is_empty() && self.suffix.len() != extended {
             return Err(invalid("unsupported buff application suffix length"));
@@ -121,14 +121,14 @@ impl BuffStack<'_> {
         body.extend(self.instance.to_be_bytes());
         body.extend(self.count.to_be_bytes());
         body.extend(self.suffix);
-        Ok(Message::new(0x443, body))
+        Ok(Message::known(crate::Opcode::ModifyBuffStack, body))
     }
 }
 
 impl Message {
     /// Reads the Android native prefix and the observed extended capture form.
     pub fn buff_stack(&self) -> Option<BuffStack<'_>> {
-        if self.opcode != 0x443 || !matches!(self.body.len(), 12 | 14) {
+        if !self.is(crate::Opcode::ModifyBuffStack) || !matches!(self.body.len(), 12 | 14) {
             return None;
         }
         let word = |i| u32::from_be_bytes(self.body[i..i + 4].try_into().unwrap());
@@ -149,16 +149,18 @@ impl Message {
 impl<'a> BuffMutation<'a> {
     fn decode(op: u16, body: &'a [u8]) -> Option<Self> {
         let size = match op {
-            0x441 => 12,
-            0x445 | 0x446 => 8,
+            crate::wire_opcode::ModifyBuffDuration => 12,
+            crate::wire_opcode::CancelBuff | crate::wire_opcode::TimeoutBuff => 8,
             _ => return None,
         };
         if body.len() != size && body.len() != 14 {
             return None;
         }
         let change = match op {
-            0x441 => BuffChange::Duration(f32::from_be_bytes(body[8..12].try_into().unwrap())),
-            0x445 => BuffChange::Cancel,
+            crate::wire_opcode::ModifyBuffDuration => {
+                BuffChange::Duration(f32::from_be_bytes(body[8..12].try_into().unwrap()))
+            }
+            crate::wire_opcode::CancelBuff => BuffChange::Cancel,
             _ => BuffChange::Timeout,
         };
         Some(Self {
@@ -171,9 +173,9 @@ impl<'a> BuffMutation<'a> {
 
     pub fn to_message(self) -> io::Result<Message> {
         let (op, size) = match self.change {
-            BuffChange::Duration(_) => (0x441, 12),
-            BuffChange::Cancel => (0x445, 8),
-            BuffChange::Timeout => (0x446, 8),
+            BuffChange::Duration(_) => (crate::wire_opcode::ModifyBuffDuration, 12),
+            BuffChange::Cancel => (crate::wire_opcode::CancelBuff, 8),
+            BuffChange::Timeout => (crate::wire_opcode::TimeoutBuff, 8),
         };
         if !self.padding.is_empty() && self.padding.len() != 14 - size {
             return Err(invalid("unsupported buff mutation padding length"));
@@ -200,7 +202,7 @@ mod tests {
             0, 0, 5, 220, 0x12, 0x34, 0x56, 0x78, 0, 0, 3, 32, 0xAB, 0xCD,
         ];
         for len in [12, 14] {
-            let msg = Message::new(0x443, &bytes[..len]);
+            let msg = Message::known(crate::Opcode::ModifyBuffStack, &bytes[..len]);
             let change = msg.buff_stack().unwrap();
             assert_eq!(
                 change,
@@ -225,9 +227,17 @@ mod tests {
             );
         }
         for n in [11, 13, 15] {
-            assert!(Message::new(0x443, vec![0; n]).buff_stack().is_none());
+            assert!(
+                Message::known(crate::Opcode::ModifyBuffStack, vec![0; n])
+                    .buff_stack()
+                    .is_none()
+            );
         }
-        assert!(Message::new(0x444, bytes).buff_stack().is_none());
+        assert!(
+            Message::known(crate::Opcode::ModifyItemStack, bytes)
+                .buff_stack()
+                .is_none()
+        );
     }
 
     #[test]
@@ -297,7 +307,11 @@ mod tests {
 
     #[test]
     fn duration_cancel_and_timeout_keep_the_actor_instance_key() {
-        for (opcode, prefix) in [(0x441, 12), (0x445, 8), (0x446, 8)] {
+        for (opcode, prefix) in [
+            (crate::wire_opcode::ModifyBuffDuration, 12),
+            (crate::wire_opcode::CancelBuff, 8),
+            (crate::wire_opcode::TimeoutBuff, 8),
+        ] {
             let mut body = Vec::from(1500u32.to_be_bytes());
             body.extend(0x12345678u32.to_be_bytes());
             if prefix == 12 {
@@ -309,8 +323,8 @@ mod tests {
                 let action = message.buff_mutation().unwrap();
                 assert_eq!((action.target, action.instance), (1500, 0x12345678));
                 let expected = match opcode {
-                    0x441 => BuffChange::Duration(8.),
-                    0x445 => BuffChange::Cancel,
+                    crate::wire_opcode::ModifyBuffDuration => BuffChange::Duration(8.),
+                    crate::wire_opcode::CancelBuff => BuffChange::Cancel,
                     _ => BuffChange::Timeout,
                 };
                 assert_eq!(action.change, expected);

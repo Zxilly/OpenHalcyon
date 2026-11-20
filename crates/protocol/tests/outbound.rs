@@ -50,7 +50,10 @@ fn writer_evidence_covers_receiver_ignore_list_and_keeps_every_byte() {
 #[test]
 fn alternate_move_and_ability_words_preserve_variant_and_bits() {
     let bits = [0x8000_0000u32, 0x7fc0_0123];
-    let motion = Message::new(0x03f6, bits.map(u32::to_be_bytes).concat());
+    let motion = Message::known(
+        halcyon_protocol::Opcode::StateUpdB,
+        bits.map(u32::to_be_bytes).concat(),
+    );
     let Fields::Outbound(view) = motion.fields().unwrap() else {
         panic!("missing specialized outbound movement view");
     };
@@ -66,7 +69,7 @@ fn alternate_move_and_ability_words_preserve_variant_and_bits() {
     let ability_words = [1500u32, 0x3f80_0000, 0, 0xbf80_0000];
     let mut body = ability_words.map(u32::to_be_bytes).concat();
     body.push(3);
-    let ability = Message::new(0x0413, body);
+    let ability = Message::known(halcyon_protocol::Opcode::RequestAbilityVariant, body);
     let Fields::Outbound(view) = ability.fields().unwrap() else {
         panic!("missing specialized outbound ability view");
     };
@@ -79,12 +82,13 @@ fn alternate_move_and_ability_words_preserve_variant_and_bits() {
     );
     assert_eq!(view.to_message(), ability);
 
-    let pair = OutboundLayout::for_opcode(0x0467).unwrap();
+    let pair = OutboundLayout::for_opcode(halcyon_protocol::wire_opcode::Unresolved0467).unwrap();
     assert_eq!(
         pair.read(&[0x80, 3]).unwrap().operands,
         OutboundOperands::Bytes([0x80, 3])
     );
-    let unknown = OutboundLayout::for_opcode(0x0466).unwrap();
+    let unknown =
+        OutboundLayout::for_opcode(halcyon_protocol::wire_opcode::Unresolved0466).unwrap();
     assert_eq!(
         unknown.read(&[1, 2, 3, 4]).unwrap().operands,
         OutboundOperands::Opaque

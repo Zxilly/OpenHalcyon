@@ -55,7 +55,7 @@ impl MapPing {
         }
         body[20] = self.selector;
         body[21] = self.qualifier;
-        Message::new(0x044e, body)
+        Message::known(crate::Opcode::Ping, body)
     }
 }
 
@@ -93,7 +93,7 @@ impl HudQuickMessage {
         if let Some(pad) = self.padding {
             body.extend(pad);
         }
-        Message::new(0x044f, body)
+        Message::known(crate::Opcode::HUDQuickMessage, body)
     }
 }
 
@@ -122,8 +122,8 @@ mod tests {
     }
     #[test]
     fn ping_coordinates_and_unaligned_hud_operands_roundtrip() {
-        let ping = Message::new(
-            0x044e,
+        let ping = Message::known(
+            crate::Opcode::Ping,
             [
                 0, 0, 5, 220, 255, 255, 255, 255, 0xc0, 0, 0, 0, 0x80, 0, 0, 0, 0x3f, 0x80, 0, 0,
                 5, 1,
@@ -146,7 +146,7 @@ mod tests {
             if padded {
                 raw.extend([1, 3, 5, 7, 9]);
             }
-            let m = Message::new(0x044f, raw.clone());
+            let m = Message::known(crate::Opcode::HUDQuickMessage, raw.clone());
             let Fields::Live(LiveFields::HudQuickMessage(q)) = m.fields().unwrap() else {
                 panic!()
             };

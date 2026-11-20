@@ -14,7 +14,12 @@ impl Fields<'_> {
                 remaining,
             } if remaining.is_empty() => {
                 body.push(*selector);
-                (0x03f9, values, Some(flag), remaining)
+                (
+                    crate::wire_opcode::EntityAct2,
+                    values,
+                    Some(flag),
+                    remaining,
+                )
             }
             Self::MoveAndFace {
                 actor,
@@ -24,7 +29,7 @@ impl Fields<'_> {
             } if matches!(remaining.len(), 0 | 2) => {
                 body.extend(actor.to_be_bytes());
                 body.extend(reference.to_be_bytes());
-                (0x03fa, values, None, remaining)
+                (crate::wire_opcode::MoveAndFace, values, None, remaining)
             }
             Self::StopActor {
                 actor,
@@ -33,7 +38,7 @@ impl Fields<'_> {
                 remaining,
             } if matches!(remaining.len(), 0 | 5) => {
                 body.extend(actor.to_be_bytes());
-                (0x03fb, values, Some(flag), remaining)
+                (crate::wire_opcode::StopActor, values, Some(flag), remaining)
             }
             _ => return None,
         };
@@ -56,14 +61,19 @@ mod tests {
         let bits = [0xbf800000_u32, 0x80000000, 0x7fc00109];
         let xyz = bits.map(u32::to_be_bytes).concat();
         for (op, prefix, flag, padding) in [
-            (0x3f9, vec![19], Some(0x7c), vec![]),
+            (crate::wire_opcode::EntityAct2, vec![19], Some(0x7c), vec![]),
             (
-                0x3fa,
+                crate::wire_opcode::MoveAndFace,
                 vec![0, 0, 5, 220, 0, 0, 5, 221],
                 None,
                 vec![0xaa, 0xbb],
             ),
-            (0x3fb, vec![0, 0, 5, 220], Some(0x38), vec![1, 2, 3, 4, 5]),
+            (
+                crate::wire_opcode::StopActor,
+                vec![0, 0, 5, 220],
+                Some(0x38),
+                vec![1, 2, 3, 4, 5],
+            ),
         ] {
             let mut raw = prefix;
             raw.extend(&xyz);

@@ -96,7 +96,9 @@ impl Stream {
                         }
                         e.typed += 1;
                     }
-                    Ok(Fields::ActionWords(_)) if m.opcode == 0x0419 => {
+                    Ok(Fields::ActionWords(_))
+                        if m.is(halcyon_protocol::Opcode::PlayPfxAtLocation) =>
+                    {
                         let effect = m
                             .play_pfx_at_location()
                             .ok_or_else(|| invalid("invalid location effect"))?;
@@ -123,7 +125,13 @@ impl Stream {
                         }
                         e.typed += 1;
                     }
-                    Ok(_) if matches!(m.opcode, 0x03ea..=0x03ec) => {
+                    Ok(_)
+                        if matches!(
+                            m.opcode,
+                            halcyon_protocol::wire_opcode::EntityActA
+                                ..=halcyon_protocol::wire_opcode::PosUpdate
+                        ) =>
+                    {
                         let flags = m
                             .actor_flags()
                             .ok_or_else(|| invalid("invalid actor flags"))?;
@@ -132,7 +140,9 @@ impl Stream {
                         }
                         e.typed += 1;
                     }
-                    Ok(Fields::ActionWords(_)) if m.opcode == 0x443 => {
+                    Ok(Fields::ActionWords(_))
+                        if m.is(halcyon_protocol::Opcode::ModifyBuffStack) =>
+                    {
                         let stack = m
                             .buff_stack()
                             .ok_or_else(|| invalid("unsupported buff stack body"))?;
@@ -141,7 +151,13 @@ impl Stream {
                         }
                         e.typed += 1;
                     }
-                    Ok(Fields::ActionWords(_)) if matches!(m.opcode, 0x421 | 0x423) => {
+                    Ok(Fields::ActionWords(_))
+                        if matches!(
+                            m.opcode,
+                            halcyon_protocol::wire_opcode::CreateZoneOfControlVariantB
+                                | halcyon_protocol::wire_opcode::DestroyZoneOfControl
+                        ) =>
+                    {
                         let zone = m
                             .zone_action()
                             .ok_or_else(|| invalid("unsupported zone action body"))?;
@@ -330,12 +346,20 @@ mod tests {
         let mut counts: [BTreeMap<u16, Counts>; 2] = Default::default();
         let c_wire = [
             hello("127.0.0.1").unwrap(),
-            cipher.encode(&Message::new(0x436, [1])).unwrap(),
+            cipher
+                .encode(&Message::known(
+                    halcyon_protocol::Opcode::RequestUpgradeAbility,
+                    [1],
+                ))
+                .unwrap(),
         ]
         .concat();
         let mut s_wire = ACK_FRAME.to_vec();
         let frame = cipher
-            .encode(&Message::new(0x423, 1u32.to_be_bytes()))
+            .encode(&Message::known(
+                halcyon_protocol::Opcode::DestroyZoneOfControl,
+                1u32.to_be_bytes(),
+            ))
             .unwrap();
         s_wire.extend_from_slice(&frame);
         s_wire.extend_from_slice(&frame);
@@ -347,8 +371,14 @@ mod tests {
                     .unwrap();
             }
         }
-        assert_eq!(counts[0][&0x436].frames, 1);
-        assert_eq!(counts[1][&0x423].frames, 2);
+        assert_eq!(
+            counts[0][&halcyon_protocol::wire_opcode::RequestUpgradeAbility].frames,
+            1
+        );
+        assert_eq!(
+            counts[1][&halcyon_protocol::wire_opcode::DestroyZoneOfControl].frames,
+            2
+        );
         assert_eq!(streams[1].pending.len(), 3);
         assert!(streams[0].pending.is_empty());
         assert!(

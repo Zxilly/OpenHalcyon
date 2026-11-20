@@ -69,23 +69,27 @@ impl<'a, const N: usize, const S: usize> ProjectileFire<'a, N, S> {
 impl<'a> ProjectileAction<'a> {
     pub(super) fn decode(op: u16, b: &'a [u8]) -> Option<Self> {
         match op {
-            0x040d => ProjectileFire::read(b).map(Self::FireTracked),
-            0x040e => ProjectileFire::read(b).map(Self::FirePoint),
-            0x040f => ProjectileFire::read(b).map(Self::FireDirected),
-            0x0410 if valid_len(b.len(), 17) => Some(Self::Detonate {
-                projectile: word(b, 0),
-                position: std::array::from_fn(|i| f32::from_bits(word(b, 4 + 4 * i))),
-                flag: b[16],
-                padding: &b[17..],
-            }),
+            crate::wire_opcode::FireProjectile => ProjectileFire::read(b).map(Self::FireTracked),
+            crate::wire_opcode::FirePointProjectile => ProjectileFire::read(b).map(Self::FirePoint),
+            crate::wire_opcode::FireDirectedProjectile => {
+                ProjectileFire::read(b).map(Self::FireDirected)
+            }
+            crate::wire_opcode::DetonateProjectile if valid_len(b.len(), 17) => {
+                Some(Self::Detonate {
+                    projectile: word(b, 0),
+                    position: std::array::from_fn(|i| f32::from_bits(word(b, 4 + 4 * i))),
+                    flag: b[16],
+                    padding: &b[17..],
+                })
+            }
             _ => None,
         }
     }
     pub fn message(&self) -> Option<Message> {
         match self {
-            Self::FireTracked(f) => f.message(0x040d),
-            Self::FirePoint(f) => f.message(0x040e),
-            Self::FireDirected(f) => f.message(0x040f),
+            Self::FireTracked(f) => f.message(crate::wire_opcode::FireProjectile),
+            Self::FirePoint(f) => f.message(crate::wire_opcode::FirePointProjectile),
+            Self::FireDirected(f) => f.message(crate::wire_opcode::FireDirectedProjectile),
             Self::Detonate {
                 projectile,
                 position,
@@ -99,7 +103,7 @@ impl<'a> ProjectileAction<'a> {
                 }
                 b.push(*flag);
                 b.extend(*padding);
-                Some(Message::new(0x0410, b))
+                Some(Message::known(crate::Opcode::DetonateProjectile, b))
             }
             _ => None,
         }
@@ -112,7 +116,12 @@ mod tests {
     use crate::Fields;
     #[test]
     fn native_and_padded_forms_preserve_all_operands() {
-        for (op, size) in [(0x40d, 17usize), (0x40e, 28), (0x40f, 44), (0x410, 17)] {
+        for (op, size) in [
+            (crate::wire_opcode::FireProjectile, 17usize),
+            (crate::wire_opcode::FirePointProjectile, 28),
+            (crate::wire_opcode::FireDirectedProjectile, 44),
+            (crate::wire_opcode::DetonateProjectile, 17),
+        ] {
             let padded = (size + 2).next_multiple_of(8) - 2;
             for len in [size, padded] {
                 let mut b: Vec<u8> = (0..len as u8).collect();

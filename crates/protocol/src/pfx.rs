@@ -12,7 +12,7 @@ pub struct PlayPfxAtLocation {
 
 impl Message {
     pub fn play_pfx_at_location(&self) -> Option<PlayPfxAtLocation> {
-        if self.opcode != 0x0419 {
+        if !self.is(crate::Opcode::PlayPfxAtLocation) {
             return None;
         }
         let (fields, tail) = self.body.split_at_checked(24)?;
@@ -43,7 +43,7 @@ impl PlayPfxAtLocation {
         if let Some(padding) = self.padding {
             body.extend(padding);
         }
-        Message::new(0x0419, body)
+        Message::known(crate::Opcode::PlayPfxAtLocation, body)
     }
 }
 
@@ -64,7 +64,10 @@ mod tests {
         ];
         let body: Vec<_> = words.into_iter().flat_map(u32::to_be_bytes).collect();
         for tail in [&[][..], &[6, 5, 4, 3, 2, 1]] {
-            let message = Message::new(0x0419, [body.as_slice(), tail].concat());
+            let message = Message::known(
+                crate::Opcode::PlayPfxAtLocation,
+                [body.as_slice(), tail].concat(),
+            );
             let effect = message.play_pfx_at_location().unwrap();
             assert_eq!(effect.position.map(f32::to_bits), words[2..5]);
             assert_eq!(effect.unknown_word, words[5]);
@@ -73,11 +76,15 @@ mod tests {
         }
         for size in [0, 23, 25, 29, 31] {
             assert!(
-                Message::new(0x0419, vec![0; size])
+                Message::known(crate::Opcode::PlayPfxAtLocation, vec![0; size])
                     .play_pfx_at_location()
                     .is_none()
             );
         }
-        assert!(Message::new(0x041a, body).play_pfx_at_location().is_none());
+        assert!(
+            Message::known(crate::Opcode::OverrideAbility, body)
+                .play_pfx_at_location()
+                .is_none()
+        );
     }
 }

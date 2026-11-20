@@ -17,10 +17,10 @@ pub struct ActorFlags<'a> {
 
 impl Message {
     pub fn actor_flags(&self) -> Option<ActorFlags<'_>> {
-        let change = match self.opcode {
-            0x03ea => ActorFlagChange::SetFirst,
-            0x03eb => ActorFlagChange::SetSecond,
-            0x03ec => ActorFlagChange::ClearBoth,
+        let change = match self.known_opcode() {
+            Some(crate::Opcode::EntityActA) => ActorFlagChange::SetFirst,
+            Some(crate::Opcode::EntityActB) => ActorFlagChange::SetSecond,
+            Some(crate::Opcode::PosUpdate) => ActorFlagChange::ClearBoth,
             _ => return None,
         };
         let (actor, padding) = self.body.split_first_chunk::<4>()?;
@@ -35,9 +35,9 @@ impl Message {
 impl ActorFlags<'_> {
     pub fn to_message(self) -> Message {
         let opcode = match self.change {
-            ActorFlagChange::SetFirst => 0x03ea,
-            ActorFlagChange::SetSecond => 0x03eb,
-            ActorFlagChange::ClearBoth => 0x03ec,
+            ActorFlagChange::SetFirst => crate::wire_opcode::EntityActA,
+            ActorFlagChange::SetSecond => crate::wire_opcode::EntityActB,
+            ActorFlagChange::ClearBoth => crate::wire_opcode::PosUpdate,
         };
         let mut body = Vec::with_capacity(4 + self.padding.len());
         body.extend_from_slice(&self.actor.to_be_bytes());
@@ -53,9 +53,9 @@ mod tests {
     #[test]
     fn decodes_both_setters_and_the_shared_clear() {
         for (opcode, change) in [
-            (0x03ea, ActorFlagChange::SetFirst),
-            (0x03eb, ActorFlagChange::SetSecond),
-            (0x03ec, ActorFlagChange::ClearBoth),
+            (crate::wire_opcode::EntityActA, ActorFlagChange::SetFirst),
+            (crate::wire_opcode::EntityActB, ActorFlagChange::SetSecond),
+            (crate::wire_opcode::PosUpdate, ActorFlagChange::ClearBoth),
         ] {
             for padding in [&[][..], &[0x35, 0x78]] {
                 let message = Message::new(opcode, [&1502u32.to_be_bytes()[..], padding].concat());
@@ -64,7 +64,15 @@ mod tests {
                 assert_eq!(flags.to_message(), message);
             }
         }
-        assert!(Message::new(0x03ec, [0; 5]).actor_flags().is_none());
-        assert!(Message::new(0x03ed, [0; 6]).actor_flags().is_none());
+        assert!(
+            Message::known(crate::Opcode::PosUpdate, [0; 5])
+                .actor_flags()
+                .is_none()
+        );
+        assert!(
+            Message::known(crate::Opcode::PlayerHandle, [0; 6])
+                .actor_flags()
+                .is_none()
+        );
     }
 }

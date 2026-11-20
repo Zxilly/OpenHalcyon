@@ -3,7 +3,7 @@ use std::io;
 
 impl Message {
     fn has_spawn_resources(&self) -> bool {
-        self.opcode == 0x03f3
+        self.is(crate::Opcode::EntitySpawn)
             && matches!(self.body.len(), 746 | 750)
             && self.body[326..330] == [0; 4]
     }
@@ -38,7 +38,7 @@ mod tests {
     #[test]
     fn resource_mask_and_bounds_preserve_the_other_fields() {
         for length in [746, 750] {
-            let mut m = Message::new(0x03f3, vec![0x31; length]);
+            let mut m = Message::known(crate::Opcode::EntitySpawn, vec![0x31; length]);
             assert!(m.spawn_gold().is_none());
             assert!(m.set_spawn_gold(250., 2000.).is_err());
             m.body[326] = 0;

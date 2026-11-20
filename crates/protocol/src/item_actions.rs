@@ -45,16 +45,16 @@ impl<'a> ItemAction<'a> {
         let mut body = [0; 6];
         body[..4].copy_from_slice(&actor.to_be_bytes());
         body[4..].copy_from_slice(slots);
-        Some(crate::Message::new(0x0438, body))
+        Some(crate::Message::known(crate::Opcode::ReorderItem, body))
     }
 
     pub(super) fn decode(op: u16, body: &'a [u8]) -> Option<Self> {
         let prefix: usize = match op {
-            0x438 => 6,
-            0x448 => 4,
-            0x449 | 0x44d => 8,
-            0x44a => 16,
-            0x44c => 21,
+            crate::wire_opcode::ReorderItem => 6,
+            crate::wire_opcode::RequestActivateItem => 4,
+            crate::wire_opcode::RequestActivateItemVariantB | crate::wire_opcode::SellItem => 8,
+            crate::wire_opcode::RequestActivateItemVariantC => 16,
+            crate::wire_opcode::ItemActivated => 21,
             _ => return None,
         };
         let padded = (prefix + 2).next_multiple_of(8) - 2;
@@ -64,29 +64,29 @@ impl<'a> ItemAction<'a> {
         let word = |offset: usize| u32::from_be_bytes(body[offset..offset + 4].try_into().unwrap());
         let suffix = &body[prefix..];
         Some(match op {
-            0x44d => Self::Sell {
+            crate::wire_opcode::SellItem => Self::Sell {
                 actor: word(0),
                 instance: word(4),
                 suffix,
             },
-            0x438 => Self::Reorder {
+            crate::wire_opcode::ReorderItem => Self::Reorder {
                 actor: word(0),
                 slots: [body[4], body[5]],
             },
-            0x448 => Self::Activate {
+            crate::wire_opcode::RequestActivateItem => Self::Activate {
                 instance: word(0),
                 suffix,
             },
-            0x449 => Self::TargetRequest {
+            crate::wire_opcode::RequestActivateItemVariantB => Self::TargetRequest {
                 arguments: [word(0), word(4)],
                 suffix,
             },
-            0x44a => Self::VectorRequest {
+            crate::wire_opcode::RequestActivateItemVariantC => Self::VectorRequest {
                 vector_bits: [word(0), word(4), word(8)],
                 argument: word(12),
                 suffix,
             },
-            0x44c => Self::Activation {
+            crate::wire_opcode::ItemActivated => Self::Activation {
                 actor: word(0),
                 instance: word(4),
                 target_word: word(8),
@@ -143,20 +143,20 @@ mod tests {
             assert_eq!(parsed, input);
             assert_eq!(parsed.reorder_message(), Some(message));
         }
-        assert!(ItemAction::decode(0x0438, &[0; 5]).is_none());
-        assert!(ItemAction::decode(0x0438, &[0; 7]).is_none());
+        assert!(ItemAction::decode(crate::wire_opcode::ReorderItem, &[0; 5]).is_none());
+        assert!(ItemAction::decode(crate::wire_opcode::ReorderItem, &[0; 7]).is_none());
     }
 
     #[test]
     fn compact_operands_and_opaque_suffixes_survive_dispatch() {
         let bytes: Vec<u8> = (0x80..=0xa0).collect();
         for (op, prefix, padded) in [
-            (0x438, 6, 6),
-            (0x448, 4, 6),
-            (0x449, 8, 14),
-            (0x44a, 16, 22),
-            (0x44c, 21, 22),
-            (0x44d, 8, 14),
+            (crate::wire_opcode::ReorderItem, 6, 6),
+            (crate::wire_opcode::RequestActivateItem, 4, 6),
+            (crate::wire_opcode::RequestActivateItemVariantB, 8, 14),
+            (crate::wire_opcode::RequestActivateItemVariantC, 16, 22),
+            (crate::wire_opcode::ItemActivated, 21, 22),
+            (crate::wire_opcode::SellItem, 8, 14),
         ] {
             for size in [prefix, padded] {
                 let m = Message::new(op, &bytes[..size]);
@@ -165,24 +165,24 @@ mod tests {
                 };
                 let suffix = &bytes[prefix..size];
                 let expected = match op {
-                    0x438 => ItemAction::Reorder {
+                    crate::wire_opcode::ReorderItem => ItemAction::Reorder {
                         actor: 0x80818283,
                         slots: [0x84, 0x85],
                     },
-                    0x448 => ItemAction::Activate {
+                    crate::wire_opcode::RequestActivateItem => ItemAction::Activate {
                         instance: 0x80818283,
                         suffix,
                     },
-                    0x449 => ItemAction::TargetRequest {
+                    crate::wire_opcode::RequestActivateItemVariantB => ItemAction::TargetRequest {
                         arguments: [0x80818283, 0x84858687],
                         suffix,
                     },
-                    0x44a => ItemAction::VectorRequest {
+                    crate::wire_opcode::RequestActivateItemVariantC => ItemAction::VectorRequest {
                         vector_bits: [0x80818283, 0x84858687, 0x88898a8b],
                         argument: 0x8c8d8e8f,
                         suffix,
                     },
-                    0x44d => ItemAction::Sell {
+                    crate::wire_opcode::SellItem => ItemAction::Sell {
                         actor: 0x80818283,
                         instance: 0x84858687,
                         suffix,
@@ -211,7 +211,7 @@ mod tests {
         body[12..16].copy_from_slice(&0x7fc0_4321u32.to_be_bytes());
         for mode in [0, 1, 2, 255] {
             body[20] = mode;
-            let action = ItemAction::decode(0x44c, &body).unwrap();
+            let action = ItemAction::decode(crate::wire_opcode::ItemActivated, &body).unwrap();
             assert_eq!(action.active_target(), (mode == 0).then_some(1510));
             assert_eq!(
                 action.active_position_bits(),

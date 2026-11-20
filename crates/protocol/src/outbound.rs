@@ -37,18 +37,31 @@ impl OutboundLayout {
             let bytes = &payload[offset..offset + 4];
             u32::from_be_bytes(bytes.try_into().unwrap())
         };
-        let operands = match self.opcode {
-            0x03f6 => OutboundOperands::MoveAlternate {
+        let operands = match crate::Opcode::try_from(self.opcode).ok() {
+            Some(crate::Opcode::StateUpdB) => OutboundOperands::MoveAlternate {
                 coordinate_bits: [word(0), word(4)],
             },
-            0x0413 => OutboundOperands::AbilityAlternate {
+            Some(crate::Opcode::RequestAbilityVariant) => OutboundOperands::AbilityAlternate {
                 words: [word(0), word(4), word(8), word(12)],
                 byte: payload[16],
             },
-            0x0449 => OutboundOperands::Words([word(0), word(4)]),
-            0x045d | 0x0464 | 0x0486 => OutboundOperands::Word(word(0)),
-            0x0455 | 0x0465 | 0x0474 | 0x047b => OutboundOperands::Byte(payload[0]),
-            0x0467 | 0x0468 => OutboundOperands::Bytes([payload[0], payload[1]]),
+            Some(crate::Opcode::RequestActivateItemVariantB) => {
+                OutboundOperands::Words([word(0), word(4)])
+            }
+            Some(
+                crate::Opcode::Unresolved045D
+                | crate::Opcode::Unresolved0464
+                | crate::Opcode::RequestLevelLogicEvent,
+            ) => OutboundOperands::Word(word(0)),
+            Some(
+                crate::Opcode::HeroLock
+                | crate::Opcode::Unresolved0465
+                | crate::Opcode::SpectatorExitMatchRequest
+                | crate::Opcode::Unresolved047B,
+            ) => OutboundOperands::Byte(payload[0]),
+            Some(crate::Opcode::Unresolved0467 | crate::Opcode::Unresolved0468) => {
+                OutboundOperands::Bytes([payload[0], payload[1]])
+            }
             _ => OutboundOperands::Opaque,
         };
         Some(OutboundAction {
@@ -119,87 +132,142 @@ const fn entry(
 
 /// Receiver-ignore entries and independently checked writer metadata.
 pub const OUTBOUND_LAYOUTS: &[OutboundLayout] = &[
-    entry(0x03f4, Some(8), true, Some("ActionRequestMoveTo_Client")),
-    entry(0x03f5, Some(8), true, Some("ActionRequestMoveTo_Client")),
-    entry(0x03f6, Some(8), true, Some("ActionRequestMoveTo_Client")),
-    entry(0x03f7, Some(1), false, None),
-    entry(0x040c, None, false, None),
-    entry(0x0411, Some(5), true, Some("ActionRequestActivateAbility")),
-    entry(0x0412, Some(13), true, Some("ActionRequestActivateAbility")),
-    entry(0x0413, Some(17), true, Some("ActionRequestActivateAbility")),
     entry(
-        0x0414,
+        crate::wire_opcode::MoveCmd,
+        Some(8),
+        true,
+        Some("ActionRequestMoveTo_Client"),
+    ),
+    entry(
+        crate::wire_opcode::StateUpdA,
+        Some(8),
+        true,
+        Some("ActionRequestMoveTo_Client"),
+    ),
+    entry(
+        crate::wire_opcode::StateUpdB,
+        Some(8),
+        true,
+        Some("ActionRequestMoveTo_Client"),
+    ),
+    entry(crate::wire_opcode::StateUpdC, Some(1), false, None),
+    entry(crate::wire_opcode::Unresolved040C, None, false, None),
+    entry(
+        crate::wire_opcode::RequestTargetAbility,
+        Some(5),
+        true,
+        Some("ActionRequestActivateAbility"),
+    ),
+    entry(
+        crate::wire_opcode::RequestPointAbility,
+        Some(13),
+        true,
+        Some("ActionRequestActivateAbility"),
+    ),
+    entry(
+        crate::wire_opcode::RequestAbilityVariant,
+        Some(17),
+        true,
+        Some("ActionRequestActivateAbility"),
+    ),
+    entry(
+        crate::wire_opcode::RequestCancelAbility,
         Some(2),
         true,
         Some("ActionRequestCancelAbility_Client"),
     ),
     entry(
-        0x0424,
+        crate::wire_opcode::RequestModifyBasicAttackTarget,
         Some(5),
         true,
         Some("ActionRequestModifyBasicAttackTarget"),
     ),
-    entry(0x0426, None, false, None),
-    entry(0x042a, None, false, None),
-    entry(0x042d, None, false, None),
+    entry(crate::wire_opcode::Unresolved0426, None, false, None),
+    entry(crate::wire_opcode::Unresolved042A, None, false, None),
+    entry(crate::wire_opcode::Unresolved042D, None, false, None),
     entry(
-        0x0436,
+        crate::wire_opcode::RequestUpgradeAbility,
         Some(1),
         true,
         Some("ActionRequestUpgradeAbility_Client"),
     ),
-    entry(0x0438, Some(6), true, Some("ActionReorderItem")),
-    entry(0x0448, Some(4), true, Some("ActionRequestActivateItem")),
-    entry(0x0449, Some(8), true, Some("ActionRequestActivateItem")),
-    entry(0x044a, Some(16), true, Some("ActionRequestActivateItem")),
-    entry(0x0450, Some(1), false, None),
-    entry(0x0455, Some(1), true, None),
-    entry(0x0456, Some(1), true, None),
-    entry(0x0457, Some(1), false, None),
-    entry(0x0458, Some(1), true, None),
-    entry(0x045d, Some(4), true, None),
-    entry(0x045e, Some(8), true, None),
-    entry(0x045f, Some(4), true, None),
-    entry(0x0460, Some(1), false, None),
-    entry(0x0461, Some(1), true, None),
-    entry(0x0462, Some(1), true, None),
-    entry(0x0463, Some(1), true, None),
-    entry(0x0464, Some(4), true, None),
-    entry(0x0465, Some(1), true, None),
-    entry(0x0466, Some(4), true, None),
-    entry(0x0467, Some(2), true, None),
-    entry(0x0468, Some(2), true, None),
-    entry(0x0469, Some(2), false, None),
-    entry(0x046a, Some(2), false, None),
-    entry(0x046b, Some(1), true, None),
-    entry(0x046d, Some(1), true, None),
-    entry(0x046e, Some(1), true, None),
     entry(
-        0x0472,
+        crate::wire_opcode::ReorderItem,
+        Some(6),
+        true,
+        Some("ActionReorderItem"),
+    ),
+    entry(
+        crate::wire_opcode::RequestActivateItem,
+        Some(4),
+        true,
+        Some("ActionRequestActivateItem"),
+    ),
+    entry(
+        crate::wire_opcode::RequestActivateItemVariantB,
+        Some(8),
+        true,
+        Some("ActionRequestActivateItem"),
+    ),
+    entry(
+        crate::wire_opcode::RequestActivateItemVariantC,
+        Some(16),
+        true,
+        Some("ActionRequestActivateItem"),
+    ),
+    entry(crate::wire_opcode::Unresolved0450, Some(1), false, None),
+    entry(crate::wire_opcode::HeroLock, Some(1), true, None),
+    entry(crate::wire_opcode::Unresolved0456, Some(1), true, None),
+    entry(crate::wire_opcode::Unresolved0457, Some(1), false, None),
+    entry(crate::wire_opcode::SetupA, Some(1), true, None),
+    entry(crate::wire_opcode::Unresolved045D, Some(4), true, None),
+    entry(crate::wire_opcode::HeroSelection, Some(8), true, None),
+    entry(crate::wire_opcode::SkinSelection, Some(4), true, None),
+    entry(crate::wire_opcode::Unresolved0460, Some(1), false, None),
+    entry(crate::wire_opcode::Unresolved0461, Some(1), true, None),
+    entry(crate::wire_opcode::Unresolved0462, Some(1), true, None),
+    entry(crate::wire_opcode::LockSelection, Some(1), true, None),
+    entry(crate::wire_opcode::Unresolved0464, Some(4), true, None),
+    entry(crate::wire_opcode::Unresolved0465, Some(1), true, None),
+    entry(crate::wire_opcode::Unresolved0466, Some(4), true, None),
+    entry(crate::wire_opcode::Unresolved0467, Some(2), true, None),
+    entry(crate::wire_opcode::Unresolved0468, Some(2), true, None),
+    entry(crate::wire_opcode::Unresolved0469, Some(2), false, None),
+    entry(crate::wire_opcode::Unresolved046A, Some(2), false, None),
+    entry(crate::wire_opcode::SetupC, Some(1), true, None),
+    entry(crate::wire_opcode::SceneConfirmed, Some(1), true, None),
+    entry(crate::wire_opcode::RequestScene, Some(1), true, None),
+    entry(
+        crate::wire_opcode::SetSurrenderStateRequest,
         Some(1),
         true,
         Some("ActionSetSurrenderStateRequest"),
     ),
     entry(
-        0x0474,
+        crate::wire_opcode::SpectatorExitMatchRequest,
         Some(1),
         true,
         Some("ActionSpectatorExitMatchRequest"),
     ),
-    entry(0x047a, None, false, None),
-    entry(0x047b, Some(1), true, None),
-    entry(0x0484, Some(4), true, Some("ActionRequestEquipTalent")),
+    entry(crate::wire_opcode::Unresolved047A, None, false, None),
+    entry(crate::wire_opcode::Unresolved047B, Some(1), true, None),
     entry(
-        0x0485,
+        crate::wire_opcode::RequestEquipTalent,
+        Some(4),
+        true,
+        Some("ActionRequestEquipTalent"),
+    ),
+    entry(
+        crate::wire_opcode::RequestRecommendedBuildPath,
         Some(1),
         true,
         Some("ActionRequestRecommendedBuildPath"),
     ),
     entry(
-        0x0486,
+        crate::wire_opcode::RequestLevelLogicEvent,
         Some(4),
         true,
         Some("ActionRequestLevelLogicEvent_Client"),
     ),
-    entry(0x048e, Some(8), false, None),
+    entry(crate::wire_opcode::Unresolved048E, Some(8), false, None),
 ];

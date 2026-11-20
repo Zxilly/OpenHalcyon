@@ -23,7 +23,7 @@ impl TalentSelection {
 
     /// The request carries no actor identifier or level.
     pub fn request(self) -> Message {
-        Message::new(0x0484, [self as u8, 0, 0, 0])
+        Message::known(crate::Opcode::RequestEquipTalent, [self as u8, 0, 0, 0])
     }
 }
 
@@ -45,7 +45,7 @@ impl EquippedTalent {
         body[..4].copy_from_slice(&self.actor.to_be_bytes());
         body[4] = self.selection as u8;
         body[5] = self.level;
-        Ok(Message::new(0x0481, body))
+        Ok(Message::known(crate::Opcode::EquipTalent, body))
     }
 }
 

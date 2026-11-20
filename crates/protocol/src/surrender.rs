@@ -50,7 +50,7 @@ impl AralSurrenderBoard {
 impl Message {
     /// The stock ARAL client emitted state 1. Other state bytes are preserved by the reader.
     pub fn aral_surrender_request() -> Self {
-        Self::new(0x0472, [1])
+        Self::known(crate::Opcode::SetSurrenderStateRequest, [1])
     }
 
     pub fn aral_surrender_board(
@@ -80,14 +80,17 @@ impl Message {
             body[84 + 4 * i..88 + 4 * i].copy_from_slice(&cooldowns[i].to_be_bytes());
         }
         body[148..151].copy_from_slice(&[wire_team, phase, 3]);
-        Ok(Self::new(0x0473, body))
+        Ok(Self::known(crate::Opcode::TeamSurrenderStateChanged, body))
     }
 
     pub fn aral_surrender_result(winning_wire_team: u8) -> io::Result<Self> {
         if !(1..=2).contains(&winning_wire_team) {
             return Err(invalid("invalid ARAL winning team"));
         }
-        Ok(Self::new(0x03f1, [0, 0, 0, winning_wire_team, 2, 0]))
+        Ok(Self::known(
+            crate::Opcode::TickSyncC,
+            [0, 0, 0, winning_wire_team, 2, 0],
+        ))
     }
 }
 

@@ -95,7 +95,7 @@ mod tests {
         body[160] = 8;
         body[2583] = 5;
         body[2589] = 7;
-        let message = Message::new(0x45a, body.clone());
+        let message = Message::known(crate::Opcode::SnapshotAral, body.clone());
         let Fields::AralRoster(view) = message.fields().unwrap() else {
             panic!("full ARAL view")
         };

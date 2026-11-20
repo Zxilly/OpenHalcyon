@@ -41,9 +41,16 @@ fn every_static_entry_keeps_payload_and_padding_losslessly() {
                     assert_eq!(actual, view);
                     added += usize::from(sample == 0);
                 }
-                Fields::Heartbeat => assert_eq!(layout.opcode, 0x0006),
-                Fields::AbilityCharges { .. } => assert_eq!(layout.opcode, 0x0429),
-                Fields::ControlByte { .. } => assert_eq!(layout.opcode, 0x047c),
+                Fields::Heartbeat => {
+                    assert_eq!(layout.opcode, halcyon_protocol::wire_opcode::Heartbeat)
+                }
+                Fields::AbilityCharges { .. } => assert_eq!(
+                    layout.opcode,
+                    halcyon_protocol::wire_opcode::ModifyAbilityCharges
+                ),
+                Fields::ControlByte { .. } => {
+                    assert_eq!(layout.opcode, halcyon_protocol::wire_opcode::Unresolved047C)
+                }
                 Fields::Opaque(raw) => {
                     assert!(
                         !layout.has_fields(),
@@ -71,7 +78,7 @@ fn packed_words_keep_their_types_and_bit_patterns() {
     face[4..8].copy_from_slice(&0x7fc0_0123u32.to_be_bytes());
     face[8..12].copy_from_slice(&(-0.0f32).to_be_bytes());
     face[12..16].copy_from_slice(&(1.25f32).to_be_bytes());
-    let face = StaticActionLayout::for_opcode(0x0401)
+    let face = StaticActionLayout::for_opcode(halcyon_protocol::wire_opcode::FaceDir)
         .unwrap()
         .read(&face)
         .unwrap();
@@ -89,7 +96,7 @@ fn packed_words_keep_their_types_and_bit_patterns() {
     let mut roster = [0u8; 2134];
     roster[273..275].copy_from_slice(&0x0515u16.to_be_bytes());
     roster[1769..1771].copy_from_slice(&0x1234u16.to_be_bytes());
-    let roster = StaticActionLayout::for_opcode(0x045b)
+    let roster = StaticActionLayout::for_opcode(halcyon_protocol::wire_opcode::Unresolved045B)
         .unwrap()
         .read(&roster)
         .unwrap();
@@ -98,7 +105,7 @@ fn packed_words_keep_their_types_and_bit_patterns() {
     assert_eq!(values[&273], Be16(0x0515));
     assert_eq!(values[&1769], Be16(0x1234));
 
-    let path = StaticActionLayout::for_opcode(0x0487).unwrap();
+    let path = StaticActionLayout::for_opcode(halcyon_protocol::wire_opcode::SetBuildPath).unwrap();
     let mut body = [0u8; 99];
     body[96] = 2;
     body[4..8].copy_from_slice(&0x1234_5678u32.to_be_bytes());

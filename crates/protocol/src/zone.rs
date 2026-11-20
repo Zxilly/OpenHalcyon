@@ -25,15 +25,17 @@ impl Message {
         let body = &self.body;
         let word = |i: usize| u32::from_be_bytes(body[i..i + 4].try_into().unwrap());
         match (self.opcode, body.len()) {
-            (0x421, 25 | 30) => Some(ZoneAction::Create {
-                id: word(0),
-                source: word(4),
-                anchor: word(8),
-                parameters: [word(12), word(16), word(20)],
-                flag: body[24],
-                suffix: &body[25..],
-            }),
-            (0x423, 4 | 6) => Some(ZoneAction::Destroy {
+            (crate::wire_opcode::CreateZoneOfControlVariantB, 25 | 30) => {
+                Some(ZoneAction::Create {
+                    id: word(0),
+                    source: word(4),
+                    anchor: word(8),
+                    parameters: [word(12), word(16), word(20)],
+                    flag: body[24],
+                    suffix: &body[25..],
+                })
+            }
+            (crate::wire_opcode::DestroyZoneOfControl, 4 | 6) => Some(ZoneAction::Destroy {
                 id: word(0),
                 suffix: &body[4..],
             }),
@@ -59,13 +61,16 @@ impl ZoneAction<'_> {
                 }
                 body.push(*flag);
                 body.extend_from_slice(suffix);
-                Ok(Message::new(0x421, body))
+                Ok(Message::known(
+                    crate::Opcode::CreateZoneOfControlVariantB,
+                    body,
+                ))
             }
             Self::Destroy { id, suffix } if matches!(suffix.len(), 0 | 2) => {
                 let mut body = Vec::with_capacity(4 + suffix.len());
                 body.extend(id.to_be_bytes());
                 body.extend_from_slice(suffix);
-                Ok(Message::new(0x423, body))
+                Ok(Message::known(crate::Opcode::DestroyZoneOfControl, body))
             }
             _ => Err(invalid("unsupported zone action suffix length")),
         }
@@ -78,7 +83,10 @@ mod tests {
 
     #[test]
     fn native_and_aligned_zone_actions_retain_all_bits() {
-        for (opcode, lengths) in [(0x421, [25, 30]), (0x423, [4, 6])] {
+        for (opcode, lengths) in [
+            (crate::wire_opcode::CreateZoneOfControlVariantB, [25, 30]),
+            (crate::wire_opcode::DestroyZoneOfControl, [4, 6]),
+        ] {
             for len in lengths {
                 let body: Vec<_> = (0..len).map(|n| 0xff - n as u8).collect();
                 let message = Message::new(opcode, body);

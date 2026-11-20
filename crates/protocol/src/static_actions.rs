@@ -114,7 +114,7 @@ impl<'a> StaticAction<'a> {
 
     pub fn primitives(self) -> impl Iterator<Item = (usize, StaticValue)> + 'a {
         let body = self.payload();
-        let words = if self.layout.opcode == 0x0487 {
+        let words = if self.layout.opcode == crate::Opcode::SetBuildPath.raw() {
             // The reader uses byte 96 as the number of words starting at byte 4.
             // Out-of-range counts leave the entire operand region opaque.
             let count = usize::from(body[96]);
@@ -163,80 +163,116 @@ use Primitive::{Be16 as H, Be32 as W, Byte as B, Float as F};
 /// The intersection of fixed Android layouts and opcodes absent in both local corpora.
 /// Empty primitive lists retain length and any evidenced static action name.
 pub const STATIC_ACTIONS: &[StaticActionLayout] = &[
-    entry(0x0005, None, &[]),
-    entry(0x0006, None, &[]),
-    entry(0x03eb, None, &[at(W, 0)]),
-    entry(0x03f0, Some("ActionShowMatchPrepSequence"), &[]),
+    entry(crate::wire_opcode::Hello, None, &[]),
+    entry(crate::wire_opcode::Heartbeat, None, &[]),
+    entry(crate::wire_opcode::EntityActB, None, &[at(W, 0)]),
     entry(
-        0x03fc,
+        crate::wire_opcode::TickSyncB,
+        Some("ActionShowMatchPrepSequence"),
+        &[],
+    ),
+    entry(
+        crate::wire_opcode::ResetMovement,
         Some("ActionResetMovement_Client"),
         &[span(F, 1, 4, 4)],
     ),
     entry(
-        0x03fd,
+        crate::wire_opcode::MoveToPredictive,
         Some("ActionMoveToPredictive_Client"),
         &[span(F, 1, 2, 4)],
     ),
     entry(
-        0x03fe,
+        crate::wire_opcode::MoveToAuthoritative,
         Some("ActionMoveToAuthoritative_Client"),
         &[span(F, 1, 4, 4)],
     ),
     entry(
-        0x03ff,
+        crate::wire_opcode::StopAuthoritative,
         Some("ActionStopAuthoritative_Client"),
         &[span(F, 1, 2, 4)],
     ),
     entry(
-        0x0400,
+        crate::wire_opcode::StopNavigating,
         Some("ActionStopNavigating_Client"),
         &[span(F, 1, 2, 4)],
     ),
-    entry(0x0401, Some("ActionFaceDir"), &[at(W, 0), span(F, 4, 3, 4)]),
     entry(
-        0x0404,
+        crate::wire_opcode::FaceDir,
+        Some("ActionFaceDir"),
+        &[at(W, 0), span(F, 4, 3, 4)],
+    ),
+    entry(
+        crate::wire_opcode::AutoMoveToActorResponse,
         Some("ActionAutoMoveToActorResponse"),
         &[span(F, 1, 3, 4), span(B, 13, 2, 1)],
     ),
     entry(
-        0x0405,
+        crate::wire_opcode::AutoMoveToLocation,
         Some("ActionAutoMoveToLocation_Client"),
         &[span(F, 1, 5, 4)],
     ),
-    entry(0x0408, Some("ActionAttachToActor_Client"), &[at(W, 0)]),
-    entry(0x040a, Some("ActionTeleport_Client"), &[span(F, 1, 4, 4)]),
     entry(
-        0x0417,
+        crate::wire_opcode::AttachToActor,
+        Some("ActionAttachToActor_Client"),
+        &[at(W, 0)],
+    ),
+    entry(
+        crate::wire_opcode::Teleport,
+        Some("ActionTeleport_Client"),
+        &[span(F, 1, 4, 4)],
+    ),
+    entry(
+        crate::wire_opcode::PlayAbilityVariant,
         Some("ActionPlayAbility"),
         &[span(W, 0, 2, 4), span(F, 8, 3, 4)],
     ),
-    entry(0x0418, Some("ActionPlayVoiceOver"), &[span(W, 0, 2, 4)]),
     entry(
-        0x0420,
+        crate::wire_opcode::PlayVoiceOver,
+        Some("ActionPlayVoiceOver"),
+        &[span(W, 0, 2, 4)],
+    ),
+    entry(
+        crate::wire_opcode::CreateZoneOfControl,
         Some("ActionCreateZoneOfControl"),
         &[span(W, 0, 2, 4), span(F, 8, 5, 4), at(B, 28)],
     ),
     entry(
-        0x0422,
+        crate::wire_opcode::CreateZoneOfControlVariantC,
         Some("ActionCreateZoneOfControl"),
         &[span(W, 0, 2, 4), span(F, 8, 4, 4)],
     ),
-    entry(0x0427, Some("ActionPauseCooldown"), &[span(W, 0, 2, 4)]),
     entry(
-        0x0429,
+        crate::wire_opcode::PauseCooldown,
+        Some("ActionPauseCooldown"),
+        &[span(W, 0, 2, 4)],
+    ),
+    entry(
+        crate::wire_opcode::ModifyAbilityCharges,
         Some("ActionModifyAbilityCharges"),
         &[span(W, 0, 2, 4)],
     ),
-    entry(0x0437, Some("ActionQuickBuyItem"), &[at(W, 0)]),
-    entry(0x043b, Some("ActionDowngradeAbility"), &[span(W, 0, 2, 4)]),
     entry(
-        0x0442,
+        crate::wire_opcode::QuickBuyItem,
+        Some("ActionQuickBuyItem"),
+        &[at(W, 0)],
+    ),
+    entry(
+        crate::wire_opcode::DowngradeAbility,
+        Some("ActionDowngradeAbility"),
+        &[span(W, 0, 2, 4)],
+    ),
+    entry(
+        crate::wire_opcode::ModifyBuffMaxStacks,
         Some("ActionModifyBuffMaxStacks"),
         &[span(W, 0, 2, 4)],
     ),
-    entry(0x0444, Some("ActionModifyItemStack"), &[span(W, 0, 2, 4)]),
     entry(
-        0x045b,
+        crate::wire_opcode::ModifyItemStack,
+        Some("ActionModifyItemStack"),
+        &[span(W, 0, 2, 4)],
+    ),
+    entry(
+        crate::wire_opcode::Unresolved045B,
         None,
         &[
             span(W, 4, 4, 4),
@@ -246,32 +282,60 @@ pub const STATIC_ACTIONS: &[StaticActionLayout] = &[
             span(F, 2124, 2, 4),
         ],
     ),
-    entry(0x0475, Some("ActionPauseTutorial"), &[at(W, 0)]),
-    entry(0x0476, Some("ActionSetSimulationSpeed"), &[at(F, 0)]),
     entry(
-        0x0477,
+        crate::wire_opcode::PauseTutorial,
+        Some("ActionPauseTutorial"),
+        &[at(W, 0)],
+    ),
+    entry(
+        crate::wire_opcode::SetSimulationSpeed,
+        Some("ActionSetSimulationSpeed"),
+        &[at(F, 0)],
+    ),
+    entry(
+        crate::wire_opcode::SetPlayerAsSpectator,
         Some("ActionSetPlayerAsSpectator"),
         &[at(W, 0), at(B, 4)],
     ),
-    entry(0x047c, None, &[at(B, 0)]),
-    entry(0x047d, Some("ActionTutorialStateChangedResponse"), &[]),
-    entry(0x047e, Some("ActionStateChange_Client"), &[at(W, 0)]),
-    entry(0x047f, None, &[at(W, 0)]),
-    entry(0x0482, Some("ActionUnequipTalent"), &[at(W, 0)]),
-    entry(0x0483, Some("ActionInvalidateTalent"), &[at(W, 0)]),
-    entry(0x0487, Some("ActionSetBuildPath"), &[at(W, 0), at(B, 96)]),
+    entry(crate::wire_opcode::Unresolved047C, None, &[at(B, 0)]),
     entry(
-        0x0489,
+        crate::wire_opcode::TutorialStateChangedResponse,
+        Some("ActionTutorialStateChangedResponse"),
+        &[],
+    ),
+    entry(
+        crate::wire_opcode::StateChange,
+        Some("ActionStateChange_Client"),
+        &[at(W, 0)],
+    ),
+    entry(crate::wire_opcode::Unresolved047F, None, &[at(W, 0)]),
+    entry(
+        crate::wire_opcode::UnequipTalent,
+        Some("ActionUnequipTalent"),
+        &[at(W, 0)],
+    ),
+    entry(
+        crate::wire_opcode::InvalidateTalent,
+        Some("ActionInvalidateTalent"),
+        &[at(W, 0)],
+    ),
+    entry(
+        crate::wire_opcode::SetBuildPath,
+        Some("ActionSetBuildPath"),
+        &[at(W, 0), at(B, 96)],
+    ),
+    entry(
+        crate::wire_opcode::SyncAbilityBehavior,
         Some("ActionSyncAbilityBehavior"),
         &[span(W, 0, 2, 4), span(B, 8, 2, 1)],
     ),
     entry(
-        0x048b,
+        crate::wire_opcode::ModifyBuffVar,
         Some("ActionModifyBuffVar"),
         &[at(W, 0), at(W, 4), at(W, 12), at(B, 16)],
     ),
     entry(
-        0x0490,
+        crate::wire_opcode::BroadcastSwapTarget,
         Some("ActionBroadcastSwapTarget"),
         &[span(W, 0, 2, 4)],
     ),

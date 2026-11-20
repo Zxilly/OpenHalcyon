@@ -13,7 +13,10 @@ fn appending_frames_preserves_prefix_padding_and_caller_storage() {
     let before_error = buffer.clone();
     assert!(
         cipher
-            .encode_into(&Message::new(0, vec![0; MAX_PAYLOAD]), &mut buffer)
+            .encode_into(
+                &Message::known(halcyon_protocol::Opcode::ClockSync, vec![0; MAX_PAYLOAD]),
+                &mut buffer
+            )
             .is_err()
     );
     assert_eq!(buffer, before_error);

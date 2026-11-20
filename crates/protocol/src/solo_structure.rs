@@ -99,7 +99,7 @@ impl SoloStructure {
         body[96 + usize::from(self.team)] = 15;
         body[116] = self.slot;
         body[119..122].copy_from_slice(&[1, 255, self.team]);
-        Message::new(0x03f2, body)
+        Message::known(crate::Opcode::Snapshot, body)
     }
 
     // Native headings retain signed zero and slightly asymmetric rotation rounding.
@@ -134,7 +134,7 @@ mod tests {
         for slot in 0..=u8::MAX {
             if let Some(profile) = SoloStructure::at_slot(slot) {
                 let frame = profile.message(0);
-                assert_eq!(frame.opcode, 0x03f2);
+                assert_eq!(frame.opcode, crate::wire_opcode::Snapshot);
                 digest.update(&frame.body);
                 count += 1;
             }

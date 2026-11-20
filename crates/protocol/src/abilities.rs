@@ -3,8 +3,8 @@ use crate::Message;
 impl Message {
     /// Observed 0x043A actor and learned ability operand.
     pub fn ability_learned(actor: u32, operand: u32) -> Self {
-        Self::new(
-            0x043a,
+        Self::known(
+            crate::Opcode::GrantAbility,
             [actor.to_be_bytes(), operand.to_be_bytes()].concat(),
         )
     }
@@ -15,7 +15,7 @@ impl Message {
         body[..4].copy_from_slice(&actor.to_be_bytes());
         body[4..8].copy_from_slice(&target.to_be_bytes());
         body[8] = selector;
-        Self::new(0x0415, body)
+        Self::known(crate::Opcode::PlayAbility, body)
     }
 
     /// Observed 0x0416 actor, three world coordinates and ability selector.
@@ -31,7 +31,7 @@ impl Message {
             word.copy_from_slice(&coordinate.to_be_bytes());
         }
         body[16] = selector;
-        Self::new(0x0416, body)
+        Self::known(crate::Opcode::PlayPointAbility, body)
     }
 }
 
@@ -53,7 +53,7 @@ mod tests {
                 .flat_map(f32::to_be_bytes)
                 .collect::<Vec<_>>();
             body.push(3);
-            let request = Message::new(0x0412, &body[..]);
+            let request = Message::known(crate::Opcode::RequestPointAbility, &body[..]);
             let wire = cipher.encode(&request).unwrap();
             let decoded = cipher.decode(&wire[2..]).unwrap();
             assert_eq!(decoded.body[13..], [0]);
@@ -67,7 +67,7 @@ mod tests {
             let response = Message::ability_point_used(1505, coordinates, 3);
             let wire = cipher.encode(&response).unwrap();
             let decoded = cipher.decode(&wire[2..]).unwrap();
-            assert_eq!(decoded.opcode, 0x0416);
+            assert_eq!(decoded.opcode, crate::wire_opcode::PlayPointAbility);
             assert_eq!(&decoded.body[..4], &1505u32.to_be_bytes());
             assert_eq!(&decoded.body[4..17], &body);
             assert_eq!(decoded.body[17..], [0; 5]);

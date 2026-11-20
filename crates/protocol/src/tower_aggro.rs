@@ -10,7 +10,7 @@ pub struct TowerAggro {
 impl TowerAggro {
     pub fn decode(message: &Message) -> Option<Self> {
         let b = &message.body;
-        if message.opcode != 0x048c
+        if !message.is(crate::Opcode::AggroState)
             || !matches!(b.len(), 8 | 14)
             || b[2..6] != 9_f32.to_be_bytes()
             || b[7..].iter().any(|&byte| byte != 0)
@@ -38,7 +38,7 @@ impl TowerAggro {
         body[1] = self.target_slot.unwrap_or(255);
         body[2..6].copy_from_slice(&9_f32.to_be_bytes());
         body[6] = u8::from(self.target_slot.is_some());
-        Some(Message::new(0x048c, body))
+        Some(Message::known(crate::Opcode::AggroState, body))
     }
 }
 
