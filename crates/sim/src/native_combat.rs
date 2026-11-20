@@ -292,6 +292,29 @@ impl OtherSpells {
         }))
     }
 }
+#[derive(Clone, Debug, Serialize)]
+pub(super) struct WinterSpire {
+    pub first: Damage<5>,
+    pub shatter: Damage<5>,
+    pub radius: [f32; 5],
+    pub first_delay: [f32; 5],
+    pub shatter_delay: [f32; 5],
+}
+impl WinterSpire {
+    pub fn load(data: &GameData) -> Result<Option<Self>, String> {
+        let Some(a) = data.ability("Reim", "Ability__Reim__A") else {
+            return Ok(None);
+        };
+        Ok(Some(Self {
+            first: Damage::named(a, "Damage First Hit")?,
+            shatter: Damage::named(a, "Damage Second Hit")?,
+            radius: ranks(a, "Radius")?,
+            first_delay: ranks(a, "First Hit Delay")?,
+            shatter_delay: ranks(a, "Second Hit Delay")?,
+        }))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -310,6 +333,60 @@ mod tests {
         w.entities[0].position = Position { x: 0., y: 0. };
         w.entities[1].position = Position { x: 10., y: 0. };
         w
+    }
+    #[test]
+    #[ignore = "requires the original delivery and supplemental combat data"]
+    fn winter_spire_bot_and_player_use_the_same_two_ranked_area_hits() {
+        let data = original();
+        let mut w = room(&data, "Reim");
+        w.command(1, Command::Learn(AbilitySlot::A)).unwrap();
+        let p = Position { x: 4., y: 0. };
+        w.entities[1].position = p;
+        w.entities[1].stats.shield = 0.;
+        let minion = w.spawn(1, crate::Kind::Minion, 4, p, false);
+        let mi = w.index(minion).unwrap();
+        w.entities[mi].stats.shield = 0.;
+        w.entities[0].item_stats.crystal = 25.;
+        let bot_order = w.decide(0);
+        assert_eq!(
+            bot_order,
+            Command::Cast {
+                slot: AbilitySlot::A,
+                target: CastTarget::Point(p)
+            }
+        );
+        w.command(1, bot_order).unwrap();
+        w.tick = 2;
+        let mut events = Vec::new();
+        w.advance_cast(0, &mut events);
+        assert!(events.contains(&Event::Cast {
+            source: 1,
+            slot: AbilitySlot::A,
+            target: CastTarget::Point(p)
+        }));
+        for (tick, hero_dmg, minion_dmg) in
+            [(9, 0., 0.), (10, 80., 40.), (29, 0., 0.), (30, 120., 60.)]
+        {
+            w.tick = tick;
+            events.clear();
+            w.advance_effects(&mut events);
+            let hits = |id| {
+                events
+                    .iter()
+                    .filter_map(|e| {
+                        if let Event::Damage { target, amount, .. } = e
+                            && *target == id
+                        {
+                            Some(*amount)
+                        } else {
+                            None
+                        }
+                    })
+                    .sum::<f32>()
+            };
+            assert_eq!((hits(2), hits(minion)), (hero_dmg, minion_dmg));
+        }
+        assert_eq!(w.entities[0].cooldown[0], 82);
     }
     #[test]
     #[ignore = "requires original delivery and supplemental combat data"]

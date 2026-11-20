@@ -191,6 +191,10 @@ fn witness(
     message: &Message,
     chakram_stop: Option<(u8, [Message; 2])>,
 ) {
+    let needs_spire_registration = source
+        .checked_sub(1)
+        .and_then(|seat| room.world.entities.get(seat as usize))
+        .is_some_and(|e| e.id == source && e.type_id == EntityTemplate::Reim.as_raw());
     let mut shared = None;
     let mut walking = None;
     for (index, (seat, actor)) in room.seats.iter().zip(&room.world.entities).enumerate() {
@@ -198,6 +202,7 @@ fn witness(
         if actor.id != source
             && (seat.world_actor_written || seat.peers[1].is_some())
             && visible.contains(&source)
+            && (!needs_spire_registration || room.scene_views[index].knows(source))
             && target.is_none_or(|id| visible.contains(&id))
             && let Some(peer) = seat.gameplay_peer()
         {
@@ -253,6 +258,19 @@ pub(super) fn publish(room: &mut Room, events: &[Event]) {
         };
         let hero = actor.type_id;
         let actor_wire = u32::from(wire_id(source));
+        // Reim is evidenced only on another ARAL seat. There is no verified originating input.
+        if aral && hero == EntityTemplate::Reim.as_raw() && slot == AbilitySlot::A {
+            let msg = match *event {
+                Event::Learned { .. } => Message::ability_learned(actor_wire, 0),
+                Event::Cast {
+                    target: CastTarget::Point(p),
+                    ..
+                } => Message::ability_point_used(actor_wire, [p.x, 0., p.y], 0),
+                _ => continue,
+            };
+            witness(room, source, None, &msg, None);
+            continue;
+        }
         let Event::Cast { target, .. } = *event else {
             if let Some(operand) = native_learn_operand(hero, slot) {
                 witness(
@@ -730,6 +748,56 @@ mod tests {
             streams[2].try_recv().unwrap().into_records(),
             [Message::ability_target_used(1500, 1501, 2)]
         );
+    }
+
+    #[tokio::test]
+    async fn winter_spire_publishes_only_the_registered_visible_witness_form() {
+        let rooms = Rooms::new("127.0.0.1".parse().unwrap(), "127.0.0.1".into(), 1, None);
+        let id = Uuid::new_v4();
+        rooms
+            .reserve(Reservation {
+                talent_levels: Vec::new(),
+                match_id: id,
+                players: (0..6).map(|_| Uuid::new_v4()).collect(),
+                mode: "casual_aral".into(),
+                teams: vec![0, 0, 1, 0, 1, 1],
+                difficulty: None,
+            })
+            .unwrap();
+        let shared = rooms.room(id).unwrap();
+        let mut room = shared.lock().unwrap();
+        room.world.entities[0].type_id = EntityTemplate::Reim.as_raw();
+        let (tx, mut rx) = mpsc::channel(8);
+        room.seats[1].peers[1] = Some(Peer {
+            generation: 1,
+            tx,
+            stalled: watch::channel(false).0,
+        });
+        room.visible[0].insert(1);
+        let p = Position {
+            x: -3.9156992,
+            y: 7.9015503,
+        };
+        let event = Event::Cast {
+            source: 1,
+            slot: AbilitySlot::A,
+            target: CastTarget::Point(p),
+        };
+        publish(&mut room, std::slice::from_ref(&event));
+        assert!(rx.try_recv().is_err());
+        let mut hero = crate::messages::spawn(&room.world.entities[0], &room.picks, None);
+        hero.body[745] = 16;
+        room.scene_views[1].declarations(&[hero]);
+        publish(&mut room, std::slice::from_ref(&event));
+        assert_eq!(
+            rx.try_recv().unwrap().into_records(),
+            [Message::ability_point_used(1500, [p.x, 0., p.y], 0)]
+        );
+        room.visible[0].clear();
+        publish(&mut room, &[event]);
+        assert!(rx.try_recv().is_err());
+        assert!(NativeCast::point_input(EntityTemplate::Reim.as_raw(), 0).is_none());
+        assert!(native_learn_request(EntityTemplate::Reim.as_raw(), 0).is_none());
     }
 
     #[tokio::test]

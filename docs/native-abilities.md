@@ -190,3 +190,50 @@ The Android ability text identifies an area burst centered on Reim, with damage 
 All twelve `0419` records in the seven ARAL streams came from a single Kinetic perspective watching Reim (template 266). Each effect referenced Reim and carried the FNV-1a key of `Effect_Reim_B_AOE_Range`. Every effect paired, in order, with a distinct preceding Reim `0415` using target `ffffffff` and selector 1. These were all twelve such releases in that stream. Nine pairs shared a receive timestamp and the remaining three were 93–101 ms apart. The nearest Reim position update lay within 1.12 world units of each effect center. Eight effect timestamps also had one or more damage records credited to Reim with impact code 74. Four had none, so a successful hit cannot be required to display the range effect.
 
 The capture contains no first-person Reim cast, and one remote viewpoint cannot determine recipient eligibility. The delivered 4.13 balance deltas contain no Reim entry. The extracted B labels do not resolve signed rank tables for cooldown, energy, damage, radius, minion reduction or immobilization duration. This leaves the client request, numeric combat rules and visibility boundary open. The host has no Reim B release or effect emitter.
+
+## Reim Winter Spire and current playable scope
+
+In one of the seven ARAL archives the recording seat witnessed 38 point releases
+from Reim (template 266) with selector 0. Of those, 24 had a preceding server
+0x0412 within 0.5 seconds containing the identical 13 coordinate/selector bytes.
+The seat received five 0x043A grants for this actor with operand 0. The native
+position vectors are world points, with planar lengths from 2.62 to 69.74.
+Their vertical component includes zero and small terrain heights. The local
+simulation uses the observed zero-height form.
+
+Winter Spire is the first ability entry in the Reim asset. Its tooltip names
+two damage blocks, whose 32-bit FNV-1a headers match `Damage First Hit` and
+`Damage Second Hit`. The first hit deals 60/100/140/180/220 plus 80% crystal
+power. The shatter deals 80/140/200/260/320 plus 160%. Both test the current
+occupants of a two-unit circle. The asset gives 0.5 seconds to the first hit
+and another 1.0 second to shatter. Reim-attributed 0x041E damage in the
+recording peaks around 0.4 and 1.4 seconds after the 0x0416 release. The host
+uses a two-tick windup, then eight ticks to impact and twenty more to shatter.
+
+For a lane minion with zero shield, subtracting twice the first hit from
+the second cancels the crystal power term. Fifteen paired same-minion samples
+at ranks 3–5 give a damage multiplier of 0.5; one yields 0.213. These pairs
+require a single same-source impact on that minion in each of the 0.30–0.57
+and 1.25–1.58 second windows after a release. This supports the ordinary
+half-damage rule. The outlier's individual cause is unknown.
+
+With the supplement installed, an authoritative Reim actor can learn and cast
+A. Bots use the same range, resource, cooldown and target checks. The host
+sends the witnessed 0x0416 and 0x043A forms to registered, visible ARAL peers.
+The historical recording contains no originating Reim 0x0412 or 0x0436.
+A complete native Reim client interaction still needs that evidence.
+
+| Templates | Authoritative hosted skills | Native observations |
+| --- | --- | --- |
+| Idris, Lorelai | Idris B; Lorelai A, B, C | All 16 originating casts in the nine TCP archives belong to these four skills. |
+| Reim | A with the supplement | ARAL witness releases and grants. |
+| Ringo, Adagio, Lyra, SAW, Karas, Shin | Ringo A/B/C; Adagio A/B; Lyra A; SAW B; Karas B; Shin C | Modeled subsets of their asset effects. Numeric weapon and gear effects also apply to basic attacks. |
+| Other advertised heroes | Shared movement, basic attacks, items and progression | Hero009 and Yates have confirmed native learn grants. A rank grant alone supplies no cast mechanism. |
+
+The 57-hero advertisement and the static definitions for 61 hero entries are
+catalog counts. The separate platform inventory has 155 RPC names and the
+Android reader table has 171 entries. Each describes its own interface.
+Numeric native talent admission records a template and a shared authorized
+level. It cannot distinguish a named talent in a triplet. The authoritative
+named LongShot path needs an independently authenticated talent ID and level;
+the current native room does not infer it from selector or rarity.

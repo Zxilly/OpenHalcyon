@@ -102,6 +102,14 @@ impl World {
                 {
                     return cmd;
                 }
+                if e.type_id == EntityTemplate::Reim.as_raw()
+                    && self.can_cast(i, AbilitySlot::A, CastTarget::Point(t.position))
+                {
+                    return Command::Cast {
+                        slot: AbilitySlot::A,
+                        target: CastTarget::Point(t.position),
+                    };
+                }
                 if e.type_id == EntityTemplate::Idris.as_raw()
                     && self.can_cast(i, AbilitySlot::B, CastTarget::Point(t.position))
                 {

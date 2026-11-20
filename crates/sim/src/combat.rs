@@ -31,6 +31,7 @@ enum Skill {
     Wind,
     Strike,
     Chakram,
+    WinterSpire,
     FishFood,
     Splashdown,
     Waterwall,
@@ -40,6 +41,7 @@ fn skill(hero: u16, slot: AbilitySlot) -> Option<Skill> {
     use Skill::*;
     Some(match (EntityTemplate::from_raw(hero)?, slot) {
         (EntityTemplate::Idris, B) => Chakram,
+        (EntityTemplate::Reim, A) => WinterSpire,
         (EntityTemplate::Lorelai, A) => FishFood,
         (EntityTemplate::Lorelai, B) => Splashdown,
         (EntityTemplate::Lorelai, C) => Waterwall,
@@ -165,6 +167,7 @@ impl ExtraCast {
 #[derive(Clone, Debug, Serialize)]
 pub(super) struct AbilityBook {
     extra_casts: [ExtraCast; Skill::Waterwall as usize + 1],
+    winter_spire: Option<super::native_combat::WinterSpire>,
     other: Option<super::native_combat::OtherSpells>,
     pub(super) lorelai: Option<super::native_combat::LorelaiRanks>,
     pub(super) ringo_b: Option<super::native_combat::TwirlingSilver>,
@@ -192,6 +195,7 @@ impl Default for AbilityBook {
     fn default() -> Self {
         Self {
             extra_casts: Default::default(),
+            winter_spire: None,
             other: None,
             lorelai: None,
             ringo_b: None,
@@ -263,6 +267,7 @@ impl AbilityBook {
         let mut extra_casts: [ExtraCast; Skill::Waterwall as usize + 1] = Default::default();
         for (skill, hero, slot, ranks) in [
             (Skill::Chakram, "Idris", "B", 5),
+            (Skill::WinterSpire, "Reim", "A", 5),
             (Skill::FishFood, "Lorelai", "A", 5),
             (Skill::Splashdown, "Lorelai", "B", 5),
             (Skill::Waterwall, "Lorelai", "C", 3),
@@ -283,6 +288,7 @@ impl AbilityBook {
         }
         Ok(Self {
             extra_casts,
+            winter_spire: super::native_combat::WinterSpire::load(data)?,
             other: super::native_combat::OtherSpells::load(data)?,
             lorelai: super::native_combat::LorelaiRanks::load(data)?,
             ringo_b: super::native_combat::TwirlingSilver::load(data)?,
@@ -321,6 +327,7 @@ struct Rules {
 impl World {
     fn rules(&self, s: Skill, rank: usize) -> Rules {
         let (range, cost, windup, seconds) = match s {
+            Skill::WinterSpire => (0., 0., 2, 0.),
             Skill::Chakram => (8.5, 10., 4, 8.),
             Skill::FishFood => (
                 if rank == 4 { 9.5 } else { 8. },
@@ -354,6 +361,10 @@ impl World {
             cooldown: (seconds * TICK_HZ as f32).ceil() as u64,
         }
     }
+    fn modeled_skill(&self, hero: u16, slot: AbilitySlot) -> Option<Skill> {
+        skill(hero, slot)
+            .filter(|s| *s != Skill::WinterSpire || self.abilities.winter_spire.is_some())
+    }
     pub(super) fn can_learn(&self, i: usize, slot: AbilitySlot) -> bool {
         let e = &self.entities[i];
         let rank = e.ability_ranks[slot.idx()];
@@ -363,7 +374,7 @@ impl World {
             1 + 2 * rank
         };
         e.skill_points > 0
-            && (skill(e.type_id, slot).is_some()
+            && (self.modeled_skill(e.type_id, slot).is_some()
                 || (!e.bot && native_learn_operand(e.type_id, slot).is_some()))
             && rank < if slot == AbilitySlot::C { 3 } else { 5 }
             && e.level >= needed
@@ -386,7 +397,9 @@ impl World {
         target: CastTarget,
     ) -> Result<(Skill, usize, Rules), &'static str> {
         let e = &self.entities[i];
-        let s = skill(e.type_id, slot).ok_or("ability unavailable")?;
+        let s = self
+            .modeled_skill(e.type_id, slot)
+            .ok_or("ability unavailable")?;
         let rank = e.ability_ranks[slot.idx()]
             .checked_sub(1)
             .ok_or("ability not learned")? as usize;
@@ -429,6 +442,7 @@ impl World {
                 | Skill::Wind
                 | Skill::Strike
                 | Skill::Chakram
+                | Skill::WinterSpire
                 | Skill::FishFood
                 | Skill::Splashdown,
                 CastTarget::Point(p),
@@ -506,6 +520,31 @@ impl World {
             _ => origin,
         };
         match s {
+            Skill::WinterSpire => {
+                let a = self
+                    .abilities
+                    .winter_spire
+                    .as_ref()
+                    .expect("validated learned Winter Spire");
+                let first = self.tick
+                    + ((a.first_delay[r] * TICK_HZ as f32).round() as u64)
+                        .saturating_sub(rule.windup);
+                let second = first + (a.shatter_delay[r] * TICK_HZ as f32).round() as u64;
+                for (due, damage) in [
+                    (first, a.first.at(r, cp, 0.)),
+                    (second, a.shatter.at(r, cp, 0.)),
+                ] {
+                    self.effects.push(SpellEffect {
+                        due,
+                        src,
+                        team,
+                        area: Area::WinterSpire(point, a.radius[r]),
+                        damage,
+                        heal: 0.,
+                        channel: 0,
+                    });
+                }
+            }
             Skill::FishFood | Skill::Splashdown | Skill::Waterwall => {
                 self.cast_water(i, c.slot, c.target, r, events);
             }
@@ -736,6 +775,7 @@ enum Area {
     Target(u32, DamageSchool),
     NpcWindup(u32),
     Hellfire(u32, f32, bool),
+    WinterSpire(Position, f32),
     Circle(Position, f32),
     Line(Position, Position, f32),
     Suppression {
@@ -922,7 +962,7 @@ impl World {
                     continue;
                 }
                 let hit = match v.area {
-                    Area::Circle(p, r) => p.dist(e.position) <= r,
+                    Area::Circle(p, r) | Area::WinterSpire(p, r) => p.dist(e.position) <= r,
                     Area::Suppression { from, to, .. } => {
                         line_distance(e.position, from, to) <= 1.4
                     }
@@ -938,6 +978,9 @@ impl World {
                     }
                 } else {
                     let mut raw = v.damage;
+                    if matches!(v.area, Area::WinterSpire(..)) && e.kind == Kind::Minion {
+                        raw *= 0.5;
+                    }
                     if let Area::Suppression {
                         minion_multiplier, ..
                     } = v.area
