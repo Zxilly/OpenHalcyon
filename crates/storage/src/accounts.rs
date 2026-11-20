@@ -1,6 +1,6 @@
 use crate::{
     DatabaseAddress, Error, Result,
-    schema::{local_accounts, players, sessions},
+    schema::{events, local_accounts, notification_events, players, sessions},
 };
 use diesel::sql_types::Text;
 use diesel::{dsl::exists, prelude::*, sqlite::SqliteConnection, upsert::excluded};
@@ -32,6 +32,39 @@ impl AccountStore {
             Ok::<(), Error>(())
         })?;
         Ok(Self(db))
+    }
+
+    /// Read the next notification in the authenticated player's cursor space.
+    /// The session and both cursor reads share one SQLite read snapshot.
+    pub fn next_notification(
+        &mut self,
+        session_key: &[u8],
+        after: i64,
+        initial: bool,
+    ) -> Result<Option<(i64, String)>> {
+        self.0.transaction(|db| {
+            let player = session_owner(db, session_key)?;
+            let latest = notification_events::table
+                .filter(notification_events::player.eq(&player))
+                .select(diesel::dsl::max(notification_events::ordinal))
+                .get_result::<Option<i64>>(db)?
+                .unwrap_or(0);
+            // Initial loads and cursors from an older deployment read its newest notification.
+            let after = if initial || after > latest {
+                latest.saturating_sub(1)
+            } else {
+                after
+            };
+            notification_events::table
+                .inner_join(events::table)
+                .filter(notification_events::player.eq(&player))
+                .filter(notification_events::ordinal.gt(after))
+                .order(notification_events::ordinal)
+                .select((notification_events::ordinal, events::body))
+                .first(db)
+                .optional()
+                .map_err(Into::into)
+        })
     }
 
     pub fn link(&mut self, session_key: &[u8], login: &str, hash: &str) -> Result<()> {

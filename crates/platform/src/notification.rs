@@ -1,11 +1,11 @@
 use crate::EventBody;
 use std::time::Duration;
 
-use rusqlite::{OptionalExtension, Transaction, params};
+use rusqlite::Transaction;
 use serde_json::Value;
 use uuid::Uuid;
 
-use super::{AppState, Event, PlatformError, Result, digest, event, player};
+use super::{AppState, Event, PlatformError, Result, accounts, digest, event};
 
 pub(super) fn initialize(tx: &Transaction<'_>) -> Result<()> {
     let existed: bool = tx.query_row(
@@ -80,32 +80,12 @@ impl AppState {
             let read_key = key.clone();
             let result = self
                 .run(move |state| {
-                    let db = state
-                        .db
+                    let row = state
+                        .accounts
                         .lock()
-                        .map_err(|_| PlatformError::WorkerUnavailable)?;
-                    let id = player(&db, &read_key)?;
-                    let latest: i64 = db.query_row(
-                        "SELECT coalesce(max(ordinal), 0) FROM notification_events WHERE player=?",
-                        [&id],
-                        |row| row.get(0),
-                    )?;
-                    // A client may retain an old deployment's cursor across reconnect.
-                    // Restart this stream from the most recent snapshot in that case.
-                    let ordered_after = if initial || after > latest {
-                        latest.saturating_sub(1)
-                    } else {
-                        after
-                    };
-                    let row = db
-                        .query_row(
-                            "SELECT n.ordinal, e.body FROM notification_events n
-                     JOIN events e ON e.cursor=n.event_cursor
-                     WHERE n.player=? AND n.ordinal>? ORDER BY n.ordinal LIMIT 1",
-                            params![id, ordered_after],
-                            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
-                        )
-                        .optional()?;
+                        .map_err(|_| PlatformError::WorkerUnavailable)?
+                        .next_notification(&read_key, after, initial)
+                        .map_err(accounts::storage_error)?;
                     row.map(|(cursor, body)| {
                         let body: Value = serde_json::from_str(&body)
                             .map_err(|_| PlatformError::WorkerUnavailable)?;

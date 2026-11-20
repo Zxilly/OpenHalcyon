@@ -1124,3 +1124,71 @@ async fn unrecognized_federated_phase_roundtrips_without_authorizing_seat_change
     assert!(!after.cancel);
     assert!(after.accepted_match.is_none());
 }
+
+#[tokio::test]
+async fn notification_reader_reopens_legacy_events_and_authenticates_in_memory() {
+    let directory = tempfile::tempdir().unwrap();
+    for path in [":memory:".into(), directory.path().join("old.sqlite")] {
+        let config = PlatformConfig {
+            database_path: path.clone(),
+            public_address: "localhost:8000".into(),
+            seats_per_match: 2,
+        };
+        let mut state = AppState::open(config.clone(), Arc::new(Host::default())).unwrap();
+        let one = state.create_guest("One".into()).await.unwrap();
+        let other = state.create_guest("Other".into()).await.unwrap();
+        state
+            .refresh_friends(vec![one.player_id, other.player_id])
+            .await
+            .unwrap();
+        state.refresh_friends(vec![one.player_id]).await.unwrap();
+
+        if path != std::path::Path::new(":memory:") {
+            // Older DBs had only the common events table. Opening again backfills
+            // recipient-local ordinals without rewriting their event bodies.
+            drop(state);
+            let db = rusqlite::Connection::open(&path).unwrap();
+            db.execute_batch("DROP TRIGGER event_notifications; DROP TABLE notification_events;")
+                .unwrap();
+            drop(db);
+            state = AppState::open(config, Arc::new(Host::default())).unwrap();
+        }
+
+        for (after, initial, expected) in [(0, false, 1), (0, true, 2), (500, false, 2)] {
+            let item = state
+                .next_notification(&one.session_token, after, initial)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(item.cursor, expected);
+            assert_eq!(
+                item.kind(),
+                Some(halcyon_platform::EventKind::FriendsChanged)
+            );
+        }
+        let item = state
+            .next_notification(&other.session_token, 0, true)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(item.cursor, 1);
+
+        let restored = state
+            .resume_guest(one.recovery_token.unwrap())
+            .await
+            .unwrap();
+        assert!(matches!(
+            state.next_notification(&one.session_token, 0, true).await,
+            Err(PlatformError::Unauthorized)
+        ));
+        assert_eq!(
+            state
+                .next_notification(&restored.session_token, 0, true)
+                .await
+                .unwrap()
+                .unwrap()
+                .cursor,
+            2
+        );
+    }
+}

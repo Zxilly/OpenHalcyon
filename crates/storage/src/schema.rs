@@ -21,3 +21,21 @@ diesel::table! {
         hash -> Text,
     }
 }
+
+diesel::table! {
+    notification_events (player, ordinal) {
+        player -> Text,
+        ordinal -> BigInt,
+        event_cursor -> BigInt,
+    }
+}
+
+diesel::table! {
+    events (cursor) {
+        cursor -> BigInt,
+        body -> Text,
+    }
+}
+
+diesel::joinable!(notification_events -> events (event_cursor));
+diesel::allow_tables_to_appear_in_same_query!(notification_events, events);
