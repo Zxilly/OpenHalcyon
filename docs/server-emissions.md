@@ -29,7 +29,7 @@ The host paths are in [room dispatch](../crates/game/src/lib.rs), [transport](..
 | `0407` | 25 | R | ActionCancelAutoOrbit |
 | `0409` | 67 | R | ActionTeleportTo |
 | `040B` | 1,111 | A | ActionEntityDestroy · Delayed removal of eligible ARAL lane minions |
-| `040D` | 4,751 | R | [ActionFireProjectile](native-projectiles.md) |
+| `040D` | 4,751 | A | [ActionFireProjectile](native-projectiles.md#authored-aral-tracked-fire) · ARAL tower and level-2 ranged lane-minion tracked fire |
 | `040E` | 383 | R | [ActionFireProjectile](native-projectiles.md) |
 | `040F` | 585 | R | [ActionFireProjectile](native-projectiles.md) |
 | `0410` | 376 | R | [ActionDetonateProjectile](native-projectiles.md) |

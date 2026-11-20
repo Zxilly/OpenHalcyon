@@ -23,6 +23,9 @@ struct LanePath {
 }
 
 impl View {
+    pub fn slot(&self, id: u32) -> Option<u8> {
+        self.actors.get(&id).copied()
+    }
     pub fn knows(&self, actor: u32) -> bool {
         self.actors.contains_key(&actor)
     }

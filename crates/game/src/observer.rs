@@ -345,6 +345,22 @@ impl Room {
             true
         });
     }
+    pub(super) fn publish_observer_projectiles(&mut self, shots: &[super::npc_projectile::Shot]) {
+        self.observers.retain(|_, observer| {
+            let Some(tx) = &observer.live else {
+                return true;
+            };
+            if observer.scene.is_none() {
+                return true;
+            }
+            let out = super::npc_projectile::batch(shots, &observer.view, |_| true);
+            if !out.is_empty() && tx.try_send(out).is_err() {
+                observer.stop.send_replace(true);
+                return false;
+            }
+            true
+        });
+    }
     pub(super) fn publish_observers(&mut self, out: &[Message]) {
         self.observers.retain(|_, o| {
             if o.live

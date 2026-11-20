@@ -12,6 +12,7 @@ mod hero_progress;
 mod messages;
 mod native_abilities;
 mod npc_attack;
+mod npc_projectile;
 mod observer;
 mod point_move;
 mod recording;
@@ -1322,6 +1323,7 @@ impl Room {
         }
         self.replicate(&events);
         if legacy {
+            npc_projectile::publish(self, &events);
             aral::announcements::publish(self, &events);
         }
         if legacy || self.solo_scene() {

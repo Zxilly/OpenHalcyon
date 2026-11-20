@@ -150,6 +150,7 @@ fn sanitize(m: &mut Message) -> bool {
         0x43a
             if matches!(m.body.as_slice(), [0, 0, 5, 220..=229, 0, 0, 0, operand]
             if halcyon_sim::known_native_learn_operand(*operand)) => {}
+        0x40d if super::npc_projectile::recordable(m) => {}
         0x415 if super::npc_attack::actors(m).is_some() => {}
         0x415
             if matches!(

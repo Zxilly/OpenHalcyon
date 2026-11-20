@@ -17,4 +17,16 @@ For ARAL `040D`, the first and final slots resolve to opposing teams in 4,677 re
 
 For 1,317 ARAL fires from template 287 and 1,094 from template 288, the profile word was 6148364 and the halfword 79. Every one carried a nonzero float whose meaning is unresolved. The single receiving perspective does not establish what another player could see. A missing `0410` does not identify a miss or a hit.
 
-The simulator applies tower and lane-minion damage on attack release. Its delayed basic-attack impacts are restricted to ranged heroes. The archives establish the tower fire body but do not define a travel-time or collision rule for implementing this lifecycle. The four actions remain available for offline decoding and serialization. [Simulation attack resolution](../crates/sim/src/lib.rs)
+## Authored ARAL tracked fire
+
+In the seven played ARAL matches, no fire ID collided with any declared actor. The project allocates a fresh ID from the simulation's actor allocator when the deferred projectile actually launches. All receivers use that same projectile ID. The three scene indices are resolved separately on each receiver. For all 2,779 fires from templates 287, 288, 300 and 301, the first two slots were equal and the third identified a declared opponent. Each released ARAL tower fire had a preceding same-source, same-target selector-zero ability play within 1.5 seconds.
+
+| Source | Target | Captured fires | Profile word / halfword | Float at +8 |
+|---|---|---:|---|---:|
+| ARAL tower 300 or 301 | Hero or lane minion | 368 | 403962522 / 112 | 0 |
+| Level-2 minion 287 | Hero / lane minion / structure | 383 / 591 / 125 | 6148364 / 79 | 14 / 46.5 / 100 |
+| Level-2 minion 288 | Hero / lane minion / structure | 303 / 534 / 86 | 6148364 / 79 | 47 / 62 / 100 |
+
+The level here is the source's compact spawn level. All 2,022 level-2 minion records match these six combinations. The codec keeps the float as an operand. For example, only 31 of 1,005 template-287 fires followed within one second by a same-pair impact had any such impact equal to that operand in magnitude. Higher-level minion records showed multiple operands for the same source template and target kind.
+
+For the supported profiles, the host sends `040D` at authoritative launch to active ARAL scenes where both participants are visible and registered. The read-only observer uses its own registered slots. A reconnect receives subsequent launches. The VGR writer retains the supported profiles within the player's delivered stream. Damage remains a separate simulation event. None of the captured tower or lane-minion fires matched a detonation, so the host emits no `0410` for these attacks. The Solo template-340 timing and the point and directed fire variants remain outside this production path. [Network projection](../crates/game/src/npc_projectile.rs) · [Simulation attack resolution](../crates/sim/src/lib.rs)

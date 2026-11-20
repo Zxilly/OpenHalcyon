@@ -784,11 +784,9 @@ mod tests {
                     x: pos.x + 1.,
                     y: pos.y,
                 };
-                for _ in 0..14 {
-                    state.tick();
-                }
                 u32::from(crate::messages::wire_id(tower_id))
             };
+            let mut shared_id = None;
             for socket in clients
                 .iter_mut()
                 .take(2)
@@ -796,6 +794,7 @@ mod tests {
             {
                 tokio::time::timeout(Duration::from_secs(2), async {
                     let mut releases = 0;
+                    let mut fires = 0;
                     loop {
                         let msg = next(socket, &cipher).await;
                         if msg.opcode == 0x415
@@ -805,11 +804,24 @@ mod tests {
                             assert_eq!(msg.body[8], 0);
                             releases += 1;
                         }
+                        if let Fields::Projectile(halcyon_protocol::ProjectileAction::FireTracked(
+                            f,
+                        )) = msg.fields().unwrap()
+                            && f.slots == [7, 7, 17]
+                        {
+                            assert_eq!(releases, 1);
+                            assert_eq!(
+                                (f.profile_word, f.values, f.operand),
+                                (403962522, [0.], 112)
+                            );
+                            assert_eq!(*shared_id.get_or_insert(f.projectile), f.projectile);
+                            fires += 1;
+                        }
                         if msg.opcode == 0x41e
                             && msg.body[..4] == 1501u32.to_be_bytes()
                             && msg.body[4..8] == wire_tower.to_be_bytes()
                         {
-                            assert_eq!(releases, 1);
+                            assert_eq!((releases, fires), (1, 1));
                             break;
                         }
                     }
