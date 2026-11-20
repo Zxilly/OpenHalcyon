@@ -1019,6 +1019,9 @@ impl Room {
             .is_some_and(|p| p.generation == generation)
         {
             self.seats[i].peers[ch] = None;
+            // The empty-room grace starts when the last current connection leaves.
+            // A connected player may have received updates without sending input.
+            self.last_active = Instant::now();
             if ch == 0 {
                 self.seats[i].aral_reorder_view = None;
             }

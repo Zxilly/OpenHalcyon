@@ -214,45 +214,118 @@ mod tests {
     use tokio::sync::{mpsc, watch};
     use uuid::Uuid;
 
-    #[tokio::test]
-    async fn aral_draft_registers_new_seats_once_to_connected_players() {
-        use halcyon_protocol::{ACK_FRAME, Fields, MatchCipher, hello};
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
-        use tokio::net::TcpStream;
-        use tokio::time::timeout;
+    use halcyon_protocol::{ACK_FRAME, Fields, MatchCipher, hello};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpStream;
+    use tokio::time::timeout;
 
-        async fn login(address: &str, player: Uuid, cipher: &MatchCipher) -> TcpStream {
-            let mut socket = TcpStream::connect(address).await.unwrap();
-            socket
-                .write_all(&hello("127.0.0.1").unwrap())
+    async fn login(address: &str, player: Uuid, cipher: &MatchCipher) -> TcpStream {
+        let mut socket = TcpStream::connect(address).await.unwrap();
+        socket
+            .write_all(&hello("127.0.0.1").unwrap())
+            .await
+            .unwrap();
+        let mut ack = [0; 5];
+        socket.read_exact(&mut ack).await.unwrap();
+        assert_eq!(ack, ACK_FRAME);
+        let identity = Message::known(crate::Opcode::PlayerUuid, player.to_string().as_bytes());
+        socket
+            .write_all(&cipher.encode(&identity).unwrap())
+            .await
+            .unwrap();
+        socket
+    }
+    async fn read_until(socket: &mut TcpStream, cipher: &MatchCipher, end: u16) -> Batch {
+        timeout(Duration::from_secs(3), async {
+            let mut messages = Vec::new();
+            loop {
+                let body = crate::transport::frame(socket).await.unwrap();
+                let message = cipher.decode_owned(body).unwrap();
+                let done = message.opcode == end;
+                messages.push(message);
+                if done {
+                    return messages;
+                }
+            }
+        })
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn quiet_control_disconnect_gets_the_whole_room_rejoin_window() {
+        let rooms = Rooms::new("127.0.0.1".parse().unwrap(), "127.0.0.1".into(), 1, None);
+        let room_id = Uuid::new_v4();
+        let players: Vec<_> = (0..6).map(|_| Uuid::new_v4()).collect();
+        let seat = 2;
+        let address = rooms
+            .reserve(Reservation {
+                talent_levels: Vec::new(),
+                match_id: room_id,
+                players: players.clone(),
+                teams: Vec::new(),
+                mode: "casual_aral".into(),
+                difficulty: None,
+            })
+            .unwrap()
+            .address;
+        let cipher = MatchCipher::new(&room_id.to_string());
+        let mut socket = login(&address, players[seat], &cipher).await;
+        read_until(&mut socket, &cipher, crate::wire_opcode::SnapshotAral).await;
+        let shared = rooms.room(room_id).unwrap();
+        let previous = {
+            let mut room = shared.lock().unwrap();
+            // An authenticated, receive-only control connection may be quiet for
+            // up to 600 seconds. Advance its last input without a wall-clock sleep.
+            room.last_active = Instant::now() - Duration::from_secs(301);
+            room.tick();
+            assert!(!*room.stop.borrow());
+            room.seats[seat].peers[0].as_ref().unwrap().generation
+        };
+        async fn disconnect(mut socket: TcpStream, shared: &crate::Shared, seat: usize) {
+            socket.shutdown().await.unwrap();
+            timeout(Duration::from_secs(2), socket.read_to_end(&mut Vec::new()))
                 .await
+                .unwrap()
                 .unwrap();
-            let mut ack = [0; 5];
-            socket.read_exact(&mut ack).await.unwrap();
-            assert_eq!(ack, ACK_FRAME);
-            let identity = Message::known(crate::Opcode::PlayerUuid, player.to_string().as_bytes());
-            socket
-                .write_all(&cipher.encode(&identity).unwrap())
-                .await
-                .unwrap();
-            socket
-        }
-        async fn read_until(socket: &mut TcpStream, cipher: &MatchCipher, end: u16) -> Batch {
-            timeout(Duration::from_secs(3), async {
-                let mut messages = Vec::new();
-                loop {
-                    let body = crate::transport::frame(socket).await.unwrap();
-                    let message = cipher.decode_owned(body).unwrap();
-                    let done = message.opcode == end;
-                    messages.push(message);
-                    if done {
-                        return messages;
-                    }
+            timeout(Duration::from_secs(2), async {
+                while shared.lock().unwrap().seats[seat].peers[0].is_some() {
+                    tokio::task::yield_now().await;
                 }
             })
             .await
-            .unwrap()
+            .unwrap();
         }
+        disconnect(socket, &shared, seat).await;
+        {
+            let mut room = shared.lock().unwrap();
+            room.tick();
+            assert!(
+                !*room.stop.borrow(),
+                "room expired immediately after a quiet player disconnected"
+            );
+        }
+        let mut fresh = login(&address, players[seat], &cipher).await;
+        read_until(&mut fresh, &cipher, crate::wire_opcode::SnapshotAral).await;
+        {
+            let mut room = shared.lock().unwrap();
+            let generation = room.seats[seat].peers[0].as_ref().unwrap().generation;
+            assert!(generation > previous);
+            room.detach(seat, 0, previous);
+            assert_eq!(
+                room.seats[seat].peers[0].as_ref().unwrap().generation,
+                generation
+            );
+        }
+        disconnect(fresh, &shared, seat).await;
+        let mut room = shared.lock().unwrap();
+        room.last_active = Instant::now() - Duration::from_secs(301);
+        room.detach(seat, 0, previous);
+        room.tick();
+        assert!(*room.stop.borrow(), "an empty room still expires");
+    }
+    #[tokio::test]
+    async fn aral_draft_registers_new_seats_once_to_connected_players() {
         async fn registrations(socket: &mut TcpStream, cipher: &MatchCipher) -> Batch {
             let barrier = Message::known(crate::Opcode::ClockSync, [0; 6]);
             socket
