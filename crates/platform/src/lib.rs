@@ -550,13 +550,16 @@ fn bearer(headers: &HeaderMap) -> Result<&str> {
         .ok_or(PlatformError::Unauthorized)
 }
 
+fn session_owner(db: &Connection, key: &[u8]) -> Result<String> {
+    db.query_row("SELECT player FROM sessions WHERE key=?", [key], |row| {
+        row.get(0)
+    })
+    .optional()?
+    .ok_or(PlatformError::Unauthorized)
+}
+
 fn player(db: &Connection, key: &[u8]) -> Result<String> {
-    let id: String = db
-        .query_row("SELECT player FROM sessions WHERE key=?", [key], |row| {
-            row.get(0)
-        })
-        .optional()?
-        .ok_or(PlatformError::Unauthorized)?;
+    let id = session_owner(db, key)?;
     db.execute(
         "UPDATE players SET last_seen=unixepoch() WHERE id=? AND last_seen < unixepoch() - 15",
         [&id],

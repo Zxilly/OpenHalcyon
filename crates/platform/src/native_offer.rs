@@ -173,7 +173,9 @@ impl AppState {
         self.run(move |state| {
             let mut db = state.db.lock().map_err(|_| PlatformError::WorkerUnavailable)?;
             let tx = db.transaction()?;
-            let owner = player(&tx, &key)?;
+            // A deferred read snapshot cannot upgrade safely during another writer.
+            // The CE request already renews presence when loading the user's profile.
+            let owner = session_owner(&tx, &key)?;
             let binding: Option<(String, i64)> = tx.query_row(
                 "SELECT m.id, m.offered_at + 30 FROM tickets t JOIN matches m ON m.id=t.match_id WHERE t.player=?",
                 [owner], |row| Ok((row.get(0)?, row.get(1)?)),
@@ -198,5 +200,64 @@ impl AppState {
                 expires: Some(expires),
             }))
         }).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct NoHost;
+    impl MatchHost for NoHost {
+        fn reserve(&self, _: Reservation) -> Result<HostedMatch> {
+            panic!("reading an offer never reserves a game host")
+        }
+    }
+
+    #[tokio::test]
+    async fn offer_snapshot_does_not_upgrade_to_a_write_under_contention() {
+        let dir = tempfile::tempdir().unwrap();
+        let database = dir.path().join("test.sqlite");
+        let state = AppState::open(
+            PlatformConfig {
+                database_path: database.clone(),
+                public_address: "localhost".into(),
+                seats_per_match: 1,
+            },
+            Arc::new(NoHost),
+        )
+        .unwrap();
+        let guest = state.create_guest("fixture".into()).await.unwrap();
+        state
+            .join(&guest.session_token, "5v5_pvp_casual".into())
+            .await
+            .unwrap();
+
+        let mut external = Connection::open(database).unwrap();
+        let writer = external
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .unwrap();
+        writer
+            .execute(
+                "UPDATE players SET last_seen=1 WHERE id=?",
+                [guest.player_id.to_string()],
+            )
+            .unwrap();
+        let offer = state
+            .native_offer(&guest.session_token)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(offer.seats.len(), 1);
+        assert_eq!(offer.seats[0].player, guest.player_id);
+        writer.commit().unwrap();
+        let last_seen: i64 = external
+            .query_row(
+                "SELECT last_seen FROM players WHERE id=?",
+                [guest.player_id.to_string()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(last_seen, 1);
     }
 }
