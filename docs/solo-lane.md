@@ -93,3 +93,18 @@ Run `cargo run --locked --release -p halcyon-sim --example solo_sides -- ../vg/_
 Native team slots 14–18 contained Amael, Inara, Ardan, Tony and Varya. Slots 19–23 contained Skye, Alpha, Tony, Idris and Baron. Recorded picks here use local bot logic and the host's implemented skills. In fallback seed 0, at 30 s both teams' leading side heroes reached absolute X/Z near (56, 31), then around (20, 61) at 45 s. Mid heroes had already engaged around X ±3 at 45 s. All 128 games ended by crystal destruction. In the recorded-roster run, the first tower fell on the negative-Z road 17 times, mid 7 and positive-Z 8. Swapping those rosters yielded 25, 3 and 4 first tower losses respectively.
 
 Team-local seats determine the host's lane assignments (mid, negative Z, positive Z, mid, negative Z). The former global actor-ID formula could pair different heroes with the same lane or concentrate a side's heroes there after party-based team assignment. The alternating-seat controls already had equivalent assignments. The native mid-lane routes differ near center, actor IDs stagger decisions, and simultaneous actions use deterministic scheduling. Exact left/right trajectories need not coincide. These four samples characterize the measured rosters and seeds and establish no general win-rate target.
+
+Use `--bot-diagnostics` after the delivery path to run the recorded lineup on
+all three lanes at seed 0 and print one row for each of the ten Bot actors.
+The example checks the state digest against an uninstrumented copy every
+1,000 ticks and at match end. Only the decision function is timed. Rejections
+count tactical orders rejected by the shared validator, divided by those
+decision calls. Periodic shop and skill-learning probes are outside both
+counts. A walking attempt is a tick that executes movement or chase for that
+actor. A stall is at least 20 consecutive walking ticks with a goal more than
+0.1 world units away and less than 0.001 world unit of movement per tick.
+Total stalled ticks include the whole qualifying run, and the report gives
+both total stalled ticks per walking attempt and the longest run. Combat,
+arrival and ticks without a walking attempt do not count toward a stall.
+Nanoseconds vary by machine. The 20 Hz tick statistics and state digest
+describe the simulation, independently of wall-clock decision timings.

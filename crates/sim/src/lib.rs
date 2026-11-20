@@ -4,7 +4,9 @@ mod ai;
 mod aral;
 mod aral_inventory;
 mod armory;
+mod bot_diagnostics;
 pub use aral_inventory::{ARAL_ITEM_CAPACITY, AralInventory, AralItem};
+pub use bot_diagnostics::{BotDiagnostics, BotHeroDiagnostics};
 mod chakram;
 mod combat;
 mod layout;
@@ -744,6 +746,25 @@ impl World {
         self.entities[i].order = cmd;
         Ok(())
     }
+    #[inline]
+    fn walk_diagnosed<const DIAG: bool>(
+        &mut self,
+        i: usize,
+        goal: Position,
+        events: &mut Vec<Event>,
+        diagnostics: Option<&mut BotDiagnostics>,
+    ) {
+        if DIAG && self.entities[i].kind == Kind::Hero && self.entities[i].bot {
+            let before = self.entities[i].position;
+            self.walk(i, goal, events);
+            diagnostics
+                .unwrap()
+                .walk(&self.entities[i], self.tick, before, goal);
+        } else {
+            self.walk(i, goal, events);
+        }
+    }
+
     fn walk(&mut self, i: usize, p: Position, events: &mut Vec<Event>) {
         let e = &mut self.entities[i];
         if e.stats.speed <= 0. {
@@ -807,12 +828,24 @@ impl World {
     }
 
     pub fn step(&mut self) -> Vec<Event> {
+        self.step_with::<false>(None)
+    }
+
+    /// Run the same simulation with wall-clock diagnostics for hero bots.
+    pub fn step_diagnosed(&mut self, diagnostics: &mut BotDiagnostics) -> Vec<Event> {
+        self.step_with::<true>(Some(diagnostics))
+    }
+
+    fn step_with<const DIAG: bool>(
+        &mut self,
+        diagnostics: Option<&mut BotDiagnostics>,
+    ) -> Vec<Event> {
         let mut events = Vec::new();
         if self.winner.is_some() {
             return events;
         }
         self.tick += 1;
-        self.step_tick(&mut events);
+        self.step_tick::<DIAG>(&mut events, diagnostics);
         if self.tick == 300 * TICK_HZ {
             self.record_milestone(true);
         } else if self.tick == 600 * TICK_HZ {
@@ -838,7 +871,11 @@ impl World {
         minion.stats.weapon += minion.stats.growth.weapon * extra;
         events.push(Event::Spawn { id });
     }
-    fn step_tick(&mut self, events: &mut Vec<Event>) {
+    fn step_tick<const DIAG: bool>(
+        &mut self,
+        events: &mut Vec<Event>,
+        mut diagnostics: Option<&mut BotDiagnostics>,
+    ) {
         self.nav_budget = 6;
         self.advance_effects(events);
         self.advance_chakrams(events);
@@ -972,7 +1009,14 @@ impl World {
                 }
             }
             if decide {
+                let started = if DIAG && self.entities[i].kind == Kind::Hero && self.entities[i].bot
+                {
+                    Some(std::time::Instant::now())
+                } else {
+                    None
+                };
                 let order = self.decide(i);
+                let elapsed = started.map(|start| start.elapsed());
                 if let Command::Attack(id)
                 | Command::Cast {
                     target: CastTarget::Entity(id),
@@ -983,11 +1027,20 @@ impl World {
                 {
                     self.entities[i].last_seen = Some((id, self.entities[j].position, self.tick));
                 }
-                let _ = self.order(i, order);
+                let result = self.order(i, order);
+                if DIAG && let Some(elapsed) = elapsed {
+                    diagnostics.as_deref_mut().unwrap().decision(
+                        &self.entities[i],
+                        elapsed,
+                        result,
+                    );
+                }
             }
             match self.entities[i].order {
                 Command::Stop | Command::Buy(_) | Command::Learn(_) | Command::Cast { .. } => {}
-                Command::MoveTo(p) => self.walk(i, p, events),
+                Command::MoveTo(p) => {
+                    self.walk_diagnosed::<DIAG>(i, p, events, diagnostics.as_deref_mut());
+                }
                 Command::Attack(id) => {
                     let Some(j) = self.index(id) else {
                         self.entities[i].winding = None;
@@ -1006,7 +1059,7 @@ impl World {
                     {
                         let p = t.position;
                         self.entities[i].winding = None;
-                        self.walk(i, p, events);
+                        self.walk_diagnosed::<DIAG>(i, p, events, diagnostics.as_deref_mut());
                         continue;
                     }
                     if self.tick < e.next_attack {
