@@ -25,8 +25,8 @@ additional padding bytes. All offsets here start after the two-byte opcode.
 | 112 | u32 value 0xffffffff in these forms |
 | 116–121 | Placement byte, numeric-field mask (zero includes stats), observed zero flag, writer's constant 1, observed 255, team |
 
-The encoder covers the simulation's existing two crystals and two outer
-mid-lane towers. With wire teams 1 and 2, the home and away crystal templates
+Four of the opening board's structures sit on the crystal and outer mid-tower
+positions. With wire teams 1 and 2, the home and away crystal templates
 are 295 and 296 and their placement bytes are 6 and 7. Outer towers share
 template 340 and use placement bytes 9 and 12. These four forms share the
 observed skin word 0xc10b41da. The encoder uses authoritative actor IDs, current

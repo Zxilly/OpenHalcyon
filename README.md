@@ -11,7 +11,8 @@ Bots, select a hero and skin, and load the battlefield. On build 147219 an
 isolated client displayed the ten-player loading screen, build selection, the
 battlefield and HUD. Moving the touchscreen joystick sent both movement
 opcodes on the original TCP connection. The native Solo opening uses measured
-hero, crystal, mid-tower and minion positions. A device run verified movement
+hero and structure positions. The host now simulates all three lanes, their
+18 turrets and six armories using recorded slots and minion routes. A device run verified movement
 from its starting pad and later ended in a native crash. Native reentry and
 the victory screen remain open. [CE compatibility](docs/protocol-coverage.md) · [Solo mid lane](docs/solo-lane.md)
 
