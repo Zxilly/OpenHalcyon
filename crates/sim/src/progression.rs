@@ -181,12 +181,21 @@ impl World {
             Kind::Hero => (250 + if self.first_blood { 0 } else { 125 }, 90.),
             Kind::Tower => (300, 60.),
             Kind::Crystal | Kind::Armory => (0, 0.),
-            Kind::Minion => match EntityTemplate::from_raw(t.type_id) {
-                Some(EntityTemplate::MinionRange5v5) => (25, 6.),
-                Some(EntityTemplate::MinionSiege5v5) => (60, 12.),
-                Some(EntityTemplate::MinionCaptain5v5) => (100, 12.),
-                _ => (35, 6.),
-            },
+            Kind::Minion => {
+                let template = EntityTemplate::from_raw(t.type_id);
+                let measured = if matches!(self.layout, Layout::SoloMid { .. }) {
+                    self.solo_lane_rewards
+                        .and_then(|table| table.for_template(template?))
+                } else {
+                    None
+                };
+                measured.unwrap_or(match template {
+                    Some(EntityTemplate::MinionRange5v5) => (25, 6.),
+                    Some(EntityTemplate::MinionSiege5v5) => (60, 12.),
+                    Some(EntityTemplate::MinionCaptain5v5) => (100, 12.),
+                    _ => (35, 6.),
+                })
+            }
         };
         t.order = Command::Stop;
         t.winding = None;
@@ -292,6 +301,69 @@ impl World {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    #[ignore = "requires original delivery and 4.13.4 units_full.json"]
+    fn supplemented_solo_minion_kills_distribute_base_gold_and_xp() {
+        let base = std::env::var_os("HALCYON_DELIVERY").unwrap();
+        let extra = std::env::var_os("HALCYON_DATA_EXTRA").unwrap();
+        let data = GameData::load_with_extra(base, Some(std::path::Path::new(&extra))).unwrap();
+        for solo in [false, true] {
+            let mut w = World::from_data(1, 10, &data).unwrap();
+            if solo {
+                w.use_solo_mid_lane().unwrap();
+            }
+            let pos = Position::default();
+            // Keep exactly one allied recipient within sharing distance.
+            for e in &mut w.entities[..10] {
+                e.position.x = 50.;
+            }
+            w.entities[0].position = pos;
+            let killer = w.entities[0].id;
+            let team = w.entities[0].team;
+            for (t, gold, extracted, legacy) in [
+                (EntityTemplate::MinionRange5v5, 25, 6., 6.),
+                (EntityTemplate::MinionMelee5v5, 35, 8., 6.),
+                (EntityTemplate::MinionSiege5v5, 60, 9., 12.),
+                (EntityTemplate::MinionCaptain5v5, 100, 11., 12.),
+            ] {
+                let id = w.spawn(1 - team, Kind::Minion, 0, pos, false);
+                let idx = w.index(id).unwrap();
+                w.entities[idx].type_id = t.as_raw();
+                let before = w.entities[0].xp;
+                let mut events = Vec::new();
+                w.hurt(killer, team, idx, 10000., DamageSchool::True, &mut events);
+                assert!(events.contains(&Event::GoldAward {
+                    id: killer,
+                    amount: gold
+                }));
+                assert_eq!(
+                    w.entities[0].xp - before,
+                    if solo { extracted } else { legacy }
+                );
+            }
+            if solo {
+                let ally = w.entities[..10]
+                    .iter()
+                    .position(|a| a.team == team && a.id != killer)
+                    .unwrap();
+                w.entities[ally].position = pos;
+                let ally_id = w.entities[ally].id;
+                let id = w.spawn(1 - team, Kind::Minion, 0, pos, false);
+                let index = w.index(id).unwrap();
+                w.entities[index].type_id = EntityTemplate::MinionMelee5v5.as_raw();
+                let mut events = Vec::new();
+                w.hurt(killer, team, index, 10000., DamageSchool::True, &mut events);
+                for id in [killer, ally_id] {
+                    assert!(events.contains(&Event::XpGain { id, amount: 4.8 }));
+                }
+                assert!(events.contains(&Event::GoldAward {
+                    id: ally_id,
+                    amount: 17
+                }));
+            }
+        }
+    }
+
     #[test]
     fn remaining_respawn_time_uses_the_authoritative_tick() {
         let mut world = World::new(7, 2);

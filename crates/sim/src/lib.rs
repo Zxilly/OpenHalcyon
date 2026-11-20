@@ -338,6 +338,7 @@ pub struct World {
     layout: Layout,
     aral_units: aral::Units,
     solo_inner_towers: [Stats; 2],
+    solo_lane_rewards: Option<halcyon_data::SoloLaneRewards>,
     next_id: u32,
     next_item: u32,
     seed: u64,
@@ -410,6 +411,9 @@ impl World {
             ),
         )
         .expect("finite simulation state");
+        if let Some(rewards) = self.solo_lane_rewards {
+            serde_json::to_writer(&mut hash, &rewards).expect("finite unit rewards");
+        }
         if let Some(difficulty) = self.bot_difficulty {
             hash.update(difficulty.as_str().as_bytes());
         }
@@ -495,6 +499,7 @@ impl World {
         );
         world.aral_units.load(data);
         world.load_solo_towers(data);
+        world.solo_lane_rewards = data.solo_lane_rewards();
         world.abilities = AbilityBook::from_data(data)?;
         world.shop = shop::Shop::load(data)?;
         Ok(world)
@@ -600,6 +605,7 @@ impl World {
             next_id: 1,
             layout: Layout::default(),
             aral_units: aral::Units::default(),
+            solo_lane_rewards: None,
             solo_inner_towers: layout::solo_inner_towers(),
             next_item: 40000,
             stats,

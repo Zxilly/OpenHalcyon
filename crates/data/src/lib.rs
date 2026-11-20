@@ -4,10 +4,12 @@ mod entity_template;
 mod extra;
 mod item_bonuses;
 mod skins;
+mod unit_rewards;
 pub use difficulty::BotDifficulty;
 pub use entity_template::EntityTemplate;
 pub use extra::{AbilityParameter, ExtraData};
 pub use halcyon_protocol::ce::{KnownQueue, NativeMode};
+pub use unit_rewards::SoloLaneRewards;
 
 /// Matchmaking ID observed in the iOS-era ARAL requests.
 pub const LEGACY_ARAL_QUEUE: &str = KnownQueue::CasualAral.as_str();

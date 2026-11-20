@@ -45,6 +45,7 @@ struct Hero {
 
 #[derive(Default, Debug)]
 pub struct ExtraData {
+    pub(crate) solo_lane_rewards: Option<crate::SoloLaneRewards>,
     pub(crate) item_bonuses: crate::item_bonuses::ItemBonuses,
     pub(crate) skins: Option<crate::skins::SkinIndex>,
     heroes: BTreeMap<String, BTreeMap<String, Vec<RankedVariable>>>,
@@ -96,6 +97,7 @@ impl ExtraData {
         }
         let stores: Stores = read(dir, "item_stores.json", hash)?;
         Ok(Self {
+            solo_lane_rewards: Some(crate::SoloLaneRewards::load(dir, hash)?),
             item_bonuses: crate::item_bonuses::ItemBonuses::load(dir, hash)?,
             skins: Some(crate::skins::SkinIndex::load(
                 dir, hash, hero_names, skin_names,
@@ -117,5 +119,41 @@ impl ExtraData {
 
     pub(super) fn standard_five(&self) -> Option<&BTreeSet<String>> {
         self.standard_five.as_ref()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ambiguous_labels_do_not_select_an_arbitrary_rank_table() {
+        let variable = |name: &str, first| RankedVariable {
+            name: name.into(),
+            ranks: Box::new([first, first + 1.]),
+        };
+        let data = ExtraData {
+            heroes: BTreeMap::from([(
+                "FixtureHero".into(),
+                BTreeMap::from([(
+                    "AbilityA".into(),
+                    vec![
+                        variable("Range", 12.),
+                        variable("Energy Cost", 30.),
+                        variable("ENERGY COST", 45.),
+                    ],
+                )]),
+            )]),
+            ..Default::default()
+        };
+        assert_eq!(
+            data.ranks("FixtureHero", "AbilityA", "range"),
+            Some([12., 13.].as_slice())
+        );
+        assert!(
+            data.ranks("FixtureHero", "AbilityA", "energy cost")
+                .is_none()
+        );
+        assert!(data.ranks("FixtureHero", "AbilityB", "Range").is_none());
     }
 }
