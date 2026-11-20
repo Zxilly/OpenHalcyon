@@ -5,6 +5,7 @@ mod tower_aggro;
 pub use admission::{AdmissionPolicy, PortRange, ResourceMetrics};
 mod aral;
 mod aral_death;
+mod aral_guard;
 mod aral_inventory;
 mod aral_item_actions;
 mod aral_spawn;
@@ -1460,6 +1461,9 @@ impl Room {
         }
         if ch == 0 && scene_requested {
             self.scene_views[i].declarations(&out);
+            if self.legacy_aral() {
+                self.scene_views[i].accept_guard_links(&out);
+            }
         }
         Ok(out)
     }
@@ -1666,6 +1670,7 @@ impl Room {
                 continue;
             };
             let mut out = vec![];
+            let mut guard_deaths = Vec::new();
             let previous = &mut self.visible[team];
             let current = &mut self.next_visible[team];
             current.clear();
@@ -1782,6 +1787,7 @@ impl Room {
                     if legacy_aral && let Event::Death { id, .. } = ev {
                         let death_sent = out.len() != before;
                         if death_sent {
+                            guard_deaths.extend(self.world.aral_structure_slot(*id));
                             aral_death::witness(
                                 &mut self.dead_actors,
                                 *id,
@@ -1828,6 +1834,32 @@ impl Room {
                 let batch = transport::TeamBatch::new(out);
                 for peer in std::iter::once(first).chain(peers) {
                     peer.send(transport::Delivery::Team(batch.clone()));
+                }
+            }
+            if !guard_deaths.is_empty() {
+                for ((seat, hero), view) in self
+                    .seats
+                    .iter()
+                    .zip(&self.world.entities)
+                    .zip(&mut self.scene_views)
+                {
+                    if usize::from(hero.team) != team
+                        || !seat.world_actor_written
+                        || !seat.preamble.confirmed()
+                        || seat.peers[1].is_some()
+                    {
+                        continue;
+                    }
+                    let Some(peer) = seat.gameplay_peer() else {
+                        continue;
+                    };
+                    let mut updates = Batch::new();
+                    for &slot in &guard_deaths {
+                        view.guard_death(slot, &mut updates);
+                    }
+                    if !updates.is_empty() {
+                        peer.send(transport::Delivery::Private(updates));
+                    }
                 }
             }
         }

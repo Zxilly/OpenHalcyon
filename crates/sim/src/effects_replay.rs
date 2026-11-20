@@ -20,6 +20,8 @@ fn overlapping_bulwark_and_fire_match_baseline() {
         world.select_hero(seat, name, &data).unwrap();
     }
     world.use_aral_lane().unwrap();
+    // This pre-migration fixture predates native tower attachment allocation.
+    world.next_id = 517;
     for seat in 0..world.entities.len().min(6) {
         let actor = &mut world.entities[seat];
         actor.position = Position {

@@ -2,8 +2,9 @@ use super::*;
 use layout::point;
 
 // Slots 0, 2, 8 and 10 are presentation-only shop/beacon declarations.
-// Reserve the entire native static block; dynamic entities start at 517.
+// Native scene IDs use simulation ID + 1499. Opening actors and tower attachments occupy wire IDs through 2083.
 const FIRST_STATIC_ACTOR: u32 = 501;
+const FIRST_DYNAMIC_ACTOR: u32 = FIRST_STATIC_ACTOR + 84;
 
 pub(super) const PADS: [[(f32, f32); 3]; 2] = [
     [(-78.18, 0.88), (-81.81, 1.97), (-77.03, -1.94)],
@@ -118,6 +119,7 @@ impl Room<'_> {
                 self.spawn_with_stats(team, Kind::Tower, stats, point(team, x, z), false);
             }
         }
+        self.next_id = FIRST_DYNAMIC_ACTOR;
         Ok(())
     }
 
@@ -216,7 +218,7 @@ mod tests {
         for slot in [0, 2, 8, 10] {
             assert!(w.index(FIRST_STATIC_ACTOR + slot).is_none());
         }
-        assert_eq!(w.next_id, 517);
+        assert_eq!(w.next_id, FIRST_DYNAMIC_ACTOR);
         for team in [0, 1] {
             let positions: Vec<_> = w
                 .entities

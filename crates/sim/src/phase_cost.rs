@@ -17,6 +17,8 @@ fn effect_phase_cost() {
         w.select_hero(i, name, &data).unwrap();
     }
     w.use_aral_lane().unwrap();
+    // This pre-migration fixture predates native tower attachment allocation.
+    w.next_id = 517;
     for i in 0..w.entities.len().min(6) {
         let a = &mut w.entities[i];
         a.position = Position {

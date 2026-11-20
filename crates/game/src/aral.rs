@@ -196,14 +196,10 @@ pub(super) fn opening(room: &mut Room, team: Option<u8>) -> Batch {
     }
     map_objects.sort_unstable_by_key(|m| std::cmp::Reverse(m.body[116]));
     let initial = room.world.tick == 0 && team.is_none();
-    let slots: u16 = if initial {
-        map_objects
-            .iter()
-            .filter_map(|message| 1_u16.checked_shl(u32::from(message.body[116])))
-            .fold(0, |map, mask| map | mask)
-    } else {
-        0
-    };
+    let slots = map_objects
+        .iter()
+        .filter_map(|message| 1_u16.checked_shl(u32::from(message.body[116])))
+        .fold(0, |map, mask| map | mask);
     batch.extend(map_objects);
     batch.extend(lane_minions);
     if initial {
@@ -211,10 +207,21 @@ pub(super) fn opening(room: &mut Room, team: Option<u8>) -> Batch {
             (0..16)
                 .rev()
                 .filter(|slot| slots & (1 << slot) != 0)
-                .filter_map(crate::structure_effects::Opening::aral)
-                .flat_map(crate::structure_effects::Opening::messages),
+                .flat_map(|slot| {
+                    crate::structure_effects::Opening::aral(slot)
+                        .into_iter()
+                        .flat_map(crate::structure_effects::Opening::messages)
+                        .chain(crate::aral_guard::opening(slot))
+                }),
         );
         batch.extend(super::scene::mode_variables::Opening::Aral.messages());
+    } else {
+        batch.extend(
+            (0..16)
+                .rev()
+                .filter(|slot| slots & (1 << slot) != 0)
+                .filter_map(|slot| crate::aral_guard::restore(&room.world, team, slot)),
+        );
     }
     batch.extend(room.recommended_paths(team));
     batch.extend(talent_snapshot(room));
@@ -335,7 +342,10 @@ mod tests {
                 variables.push(frame.clone());
             }
             if frame.is(crate::Opcode::EntityData) {
-                assert!(crate::structure_effects::recordable(&frame));
+                assert!(
+                    crate::structure_effects::recordable(&frame)
+                        || crate::aral_guard::recordable(&frame)
+                );
                 assert!(variables.is_empty(), "tower effects precede mode variables");
                 let Ok(Fields::BuffApplication(effect)) = frame.fields() else {
                     panic!("missing typed ARAL tower effect");
@@ -393,6 +403,8 @@ mod tests {
             }
         }
         if initial {
+            assert_eq!(tower_effects.iter().filter(|e| e.1 == 205).count(), 10);
+            tower_effects.retain(|e| e.1 != 205);
             assert_eq!(tower_effects.len(), 30);
             assert_eq!(
                 tower_effects
@@ -426,7 +438,11 @@ mod tests {
             assert!(talents.is_empty());
         } else {
             assert!(variables.is_empty());
-            assert!(tower_effects.is_empty());
+            assert!(
+                tower_effects
+                    .iter()
+                    .all(|&(_, definition, _)| definition == 205)
+            );
             assert_eq!(
                 talents,
                 [vec![0, 0, 5, 220, 0, 1], vec![0, 0, 5, 223, 255, 0]]

@@ -2,9 +2,9 @@
 
 Nine complete TCP streams contain 398,293 encrypted server frames in 103 opcode classes. The plaintext handshake acknowledgment is outside these counts. Each count includes every captured form of the opcode. The scope column describes the subset the host currently emits.
 
-Of the 103 classes, 75 have a documented host path in at least one scenario. These include
-42 room outputs, 19 setup or draft outputs, and 14 conditional responses.
-22 further classes have an identified reader-side action. Six have an
+Of the 103 classes, 76 have a documented host path in at least one scenario. These include
+43 room outputs, 19 setup or draft outputs, and 14 conditional responses.
+21 further classes have an identified reader-side action. Six have an
 unresolved server trigger and receiver-side field evidence only.
 
 **A** is authoritative room output. **H** is setup, draft or scene output. **E** is a conditional response to the originating request. **R** is a read-only class with a documented action role. **U** has readable fields and an unresolved server role. Action names come from the independently labeled Windows action table. Counts come from the full captured streams. [Capture method](live-captures.md) · [Independent action labels](https://github.com/TurnaboutHero/vainglory-replay-decoder/blob/f4743be743564e3aadef1566499fe25d9d0f9ffc/vg/docs/vg-binary-event-candidates-2026-09-09-details.md)
@@ -76,7 +76,7 @@ The host paths are in [room dispatch](../crates/game/src/lib.rs), [transport](..
 | `0443` | 1,831 | R | [ActionModifyBuffStack and observed instance counts](aral-item-activation.md#extended-applications-at-match-opening-and-on-purchase) |
 | `0445` | 1,398 | A | [Cancellation of Ringo’s previously delivered Double Down instance](aral-ability-overrides.md#definition-379) |
 | `0446` | 18 | R | ActionTimeoutBuff |
-| `0447` | 41 | R | ActionDecrementBuffStack |
+| `0447` | 41 | A | [ARAL same-side structure stack decrement following a witnessed tower death](aral-tower-opening.md#tower-death-and-structure-stack-decrements) |
 | `0448` | 150 | A | ARAL Healing Flask and Scout Trap instance prefixes for eligible witnesses.  [ActionRequestActivateItem](aral-item-activation.md) |
 | `044A` | 66 | A | ARAL Scout Cam placement for eligible witnesses. [ActionRequestActivateItem](aral-item-activation.md) |
 | `044B` | 150 | A | ActionConsumeItem · Consumed recipe component instance |

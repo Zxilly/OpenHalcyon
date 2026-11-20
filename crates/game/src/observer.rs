@@ -179,7 +179,11 @@ async fn client(
                 false,
             );
         }
-        r.solo_structure_snapshot.append(&mut b);
+        if matches!(scene, Some(tower_aggro::ObserverScene::Aral(_))) {
+            view.observer_guard_links(&r.world, &mut b);
+        } else {
+            r.solo_structure_snapshot.append(&mut b);
+        }
         let o = r.observers.get_mut(&grant).unwrap();
         o.scene = scene;
         o.view = view;
@@ -363,6 +367,15 @@ impl Room {
                 super::npc_attack::actors(m).is_none()
                     || o.scene.is_some() && super::npc_attack::registered(&o.view, m)
             });
+            if matches!(o.scene, Some(tower_aggro::ObserverScene::Aral(_))) {
+                for ev in events {
+                    if let Event::Death { id, .. } = ev
+                        && let Some(slot) = self.world.aral_structure_slot(*id)
+                    {
+                        o.view.guard_death(slot, &mut batch);
+                    }
+                }
+            }
             if !batch.is_empty() && tx.try_send(batch).is_err() {
                 o.stop.send_replace(true);
                 return false;
