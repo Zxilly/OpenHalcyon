@@ -249,7 +249,14 @@ item stats through `041C`. The fourth had no accompanying stat reversal.
 No same-actor reorder occurred within two seconds of any sale. The seven
 client streams contain zero `044D` requests. These results support decoding
 a completed sale by owned instance. The client request path, sale eligibility
-and refund policy for other items remain unverified.
+and refund policy for other items remain unverified. Every seller was a
+different seat from the recorded client: one opponent (473) and three
+teammates (463, 519, 495). The last recorded positions for those four sellers
+were respectively 27.27, 14.99, 33.16 and 194.30 seconds old. They cannot
+establish where the shop permitted the transaction. The recorded client sent
+only clock frames or nothing within 300 ms of the notices. The trap instance
+already had a removal after its historical grant before the later sell notice,
+so a historical grant alone is insufficient to authorize a sale.
 
 [Server emission matrix for all 103 observed opcodes](server-emissions.md)
 
@@ -354,7 +361,6 @@ target consumes the pending impact. No same-projectile `040E`, `0410` or
 `040B` terminal record was established for these tracked shots.
 
 Solo 340 had 71 tracked launches and 67 paired impacts, with only seven
-impacts having recent actor positions within one second. Its median
-release-to-launch delay was 0.092 s. The Solo impact timing and source
-positions do not support reusing the ARAL tower curve. The validation
-map, Solo simulation and ARAL melee 289 retain their existing timing.
+paired impacts having a target position less than one second old. The host
+uses measured target-class medians for the three original minion profiles
+from outer tower slots 9, 11 and 13. [Solo flight times](native-projectiles.md#solo-outer-towers)
