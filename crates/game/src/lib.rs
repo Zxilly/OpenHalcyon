@@ -24,6 +24,7 @@ mod registry;
 mod result_frames;
 mod ringo;
 mod scene;
+mod structure_effects;
 mod surrender;
 mod tick_latency;
 mod transport;

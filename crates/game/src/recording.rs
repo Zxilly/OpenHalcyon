@@ -122,7 +122,7 @@ fn sanitize(m: &mut Message) -> bool {
         // Audited outbound gameplay opcodes only. Unknown and control messages stay out.
         Some(crate::Opcode::Snapshot)
             if m.body.len() == 122
-                && (super::compact::recordable_mid_structure(&m.body)
+                && (super::compact::recordable_structure(&m.body)
                     || super::compact::recordable_minion_birth(&m.body)
                     || super::compact::recordable_camp_unit(&m.body)
                     || (u16::try_from(u32::from_be_bytes(m.body[..4].try_into().unwrap()))
@@ -157,7 +157,7 @@ fn sanitize(m: &mut Message) -> bool {
             if matches!(m.body.as_slice(), [0, 0, 5, 220..=229, 0, 0, 0, operand]
             if halcyon_sim::known_native_learn_operand(*operand)) => {}
         Some(crate::Opcode::FireProjectile) if super::npc_projectile::recordable(m) => {}
-        Some(crate::Opcode::EntityData) if super::aral::tower_opening::recordable(m) => {}
+        Some(crate::Opcode::EntityData) if super::structure_effects::recordable(m) => {}
         Some(crate::Opcode::EntityProp)
             if matches!(m.fields(), Ok(halcyon_protocol::Fields::BuffApplication(effect))
             if effect.prefix.definition==654 && effect.prefix.duration_bits==0x3c00 && (1500..=1505).contains(&effect.prefix.source)

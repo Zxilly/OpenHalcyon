@@ -33,6 +33,15 @@ native slot and actor ID. The fallback uses a team-facing heading. The
 original rotating aim and timer fields for arbitrary runtime states remain
 unverified. Crystals retain their compact geometry across all fourteen chunks.
 
+At the first running tick the server sends the compact declarations, then the
+self-sourced `043F` applications for the structures visible to that player.
+The pristine home side receives 38 applications across 13 structures. Across
+both sides the recording contains 76 applications on 26 structures. Their
+34-byte prefixes match in all 14 chunks. The recorder accepts the matching
+actor, definition, instance, duration, stack and extension fields. Another
+18 opening applications use definition 205 and source `FFFFFFFF`; those
+instances and their lifetimes are still unimplemented.
+
 ### Mid-lane waves
 
 The Solo replay's `03EF` start marker is at replay time 5.116 s. Routes 1

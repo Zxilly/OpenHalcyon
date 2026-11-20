@@ -1,5 +1,4 @@
 pub(super) mod announcements;
-pub(crate) mod tower_opening;
 use super::{Batch, Message, Room, messages};
 
 pub(super) use halcyon_data::LEGACY_ARAL_SEATS as SEATS;
@@ -212,7 +211,8 @@ pub(super) fn opening(room: &mut Room, team: Option<u8>) -> Batch {
             (0..16)
                 .rev()
                 .filter(|slot| slots & (1 << slot) != 0)
-                .flat_map(tower_opening::messages),
+                .filter_map(crate::structure_effects::Opening::aral)
+                .flat_map(crate::structure_effects::Opening::messages),
         );
         batch.extend(super::scene::mode_variables::Opening::Aral.messages());
     }
@@ -342,7 +342,7 @@ mod tests {
                 variables.push(frame.clone());
             }
             if frame.is(crate::Opcode::EntityData) {
-                assert!(tower_opening::recordable(&frame));
+                assert!(crate::structure_effects::recordable(&frame));
                 assert!(variables.is_empty(), "tower effects precede mode variables");
                 let Ok(Fields::BuffApplication(effect)) = frame.fields() else {
                     panic!("missing typed ARAL tower effect");

@@ -194,16 +194,23 @@ pub(super) fn initial_structures(room: &mut Room) {
     let team = room.world.entities[0].team;
     let known = &mut room.visible[usize::from(team)];
     let mut batch = Vec::new();
+    let mut effects = Vec::new();
     for entity in &room.world.entities {
         if !known.contains(&entity.id)
             && room.world.visible(team, entity)
             && let Some(message) = super::compact::structure(room.world.tick, entity)
         {
             known.insert(entity.id);
+            if let Some(opening) = super::structure_effects::Opening::solo(message.body[116])
+                && opening.actor() == u32::from(messages::wire_id(entity.id))
+            {
+                effects.push(opening);
+            }
             batch.push(message);
         }
     }
     if !batch.is_empty() {
+        super::structure_effects::append_solo(&mut batch, &mut effects);
         room.scene_views[0].declarations(&batch);
         peer.send(super::transport::Delivery::Private(batch));
     }
@@ -643,6 +650,8 @@ mod tests {
                         .collect()
                 };
                 assert_eq!(expected.len(), 13);
+                let declared: std::collections::BTreeSet<_> =
+                    expected.iter().map(|e| e.2).collect();
                 for (slot, template, actor, hp, max_hp) in expected {
                     let m = next(&mut socket, &cipher).await;
                     assert_eq!(m.opcode, crate::wire_opcode::Snapshot);
@@ -660,6 +669,27 @@ mod tests {
                         max_hp
                     );
                 }
+                let mut applications = std::collections::BTreeMap::new();
+                for _ in 0..38 {
+                    let m = next(&mut socket, &cipher).await;
+                    assert!(crate::structure_effects::recordable(&m));
+                    let Fields::BuffApplication(effect) = m.fields().unwrap() else {
+                        panic!("expected a native opening effect");
+                    };
+                    let target = effect.prefix.target;
+                    assert!(declared.contains(&target));
+                    assert!(
+                        applications
+                            .insert(effect.prefix.instance, target)
+                            .is_none()
+                    );
+                }
+                assert_eq!(
+                    applications
+                        .into_values()
+                        .collect::<std::collections::BTreeSet<_>>(),
+                    declared
+                );
             }
             send(
                 &mut socket,

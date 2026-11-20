@@ -7,25 +7,8 @@ use super::messages::wire_id;
 const BODY_LEN: usize = 122;
 /// Fixed native Solo structure slots. Towers on different lanes share templates.
 pub(super) fn structure_slot(e: &Entity) -> Option<u8> {
-    match (e.kind, EntityTemplate::from_raw(e.type_id)?, e.team) {
-        (Kind::Tower, EntityTemplate::OuterTurret5v5, 0) if e.id == 2008 - 1499 => Some(8),
-        (Kind::Tower, EntityTemplate::OuterTurret5v5, 0) if e.id == 2010 - 1499 => Some(10),
-        (Kind::Tower, EntityTemplate::OuterTurret5v5, 1) if e.id == 2011 - 1499 => Some(11),
-        (Kind::Tower, EntityTemplate::OuterTurret5v5, 1) if e.id == 2013 - 1499 => Some(13),
-        (Kind::Tower, EntityTemplate::Turret5v5, 0) if e.id == 2046 - 1499 => Some(24),
-        (Kind::Tower, EntityTemplate::ArmoryTurret5v5, 0) if e.id == 2051 - 1499 => Some(25),
-        (Kind::Tower, EntityTemplate::Turret5v5, 0) if e.id == 2074 - 1499 => Some(28),
-        (Kind::Tower, EntityTemplate::ArmoryTurret5v5, 0) if e.id == 2079 - 1499 => Some(29),
-        (Kind::Tower, EntityTemplate::Turret5v5, 1) if e.id == 2088 - 1499 => Some(30),
-        (Kind::Tower, EntityTemplate::ArmoryTurret5v5, 1) if e.id == 2093 - 1499 => Some(31),
-        (Kind::Tower, EntityTemplate::Turret5v5, 1) if e.id == 2116 - 1499 => Some(34),
-        (Kind::Tower, EntityTemplate::ArmoryTurret5v5, 1) if e.id == 2121 - 1499 => Some(35),
-
-        (Kind::Armory, EntityTemplate::VainNode, team)
-            if (501..=506).contains(&e.id) && u32::from(team) == (e.id - 501) / 3 =>
-        {
-            Some((e.id - 501) as u8)
-        }
+    let fallback = match (e.kind, EntityTemplate::from_raw(e.type_id)?, e.team) {
+        (Kind::Armory, EntityTemplate::VainNode, _) => None,
         (Kind::Crystal, EntityTemplate::VainCrystalHome5v5, 0) => Some(6),
         (Kind::Crystal, EntityTemplate::VainCrystalAway5v5, 1) => Some(7),
         (Kind::Tower, EntityTemplate::OuterTurret5v5, 0) => Some(9),
@@ -34,8 +17,13 @@ pub(super) fn structure_slot(e: &Entity) -> Option<u8> {
         (Kind::Tower, EntityTemplate::ArmoryTurret5v5, 0) => Some(27),
         (Kind::Tower, EntityTemplate::Turret5v5, 1) => Some(32),
         (Kind::Tower, EntityTemplate::ArmoryTurret5v5, 1) => Some(33),
-        _ => None,
-    }
+        _ => return None,
+    };
+    e.id.checked_add(1499)
+        .and_then(halcyon_protocol::SoloStructure::at_actor)
+        .filter(|p| p.template() == e.type_id && p.team_index() == e.team)
+        .map(|p| p.slot())
+        .or(fallback)
 }
 
 /// Towers acquire dynamic pose and timer fields after the first tick.
@@ -63,34 +51,12 @@ pub(super) fn structure(tick: u64, e: &Entity) -> Option<Message> {
     Some(msg)
 }
 
-pub(super) fn recordable_mid_structure(body: &[u8]) -> bool {
+pub(super) fn recordable_structure(body: &[u8]) -> bool {
     if body.len() != BODY_LEN {
         return false;
     }
-    let wire = match body[116] {
-        8 => 2008,
-        10 => 2010,
-        11 => 2011,
-        13 => 2013,
-        24 => 2046,
-        25 => 2051,
-        28 => 2074,
-        29 => 2079,
-        30 => 2088,
-        31 => 2093,
-        34 => 2116,
-        35 => 2121,
-
-        slot @ 0..=5 => 2000 + u32::from(slot),
-        6 => 2006,
-        7 => 2007,
-        9 => 2009,
-        12 => 2012,
-        26 => 2060,
-        27 => 2065,
-        32 => 2102,
-        33 => 2107,
-        _ => return false,
+    let Some(profile) = halcyon_protocol::SoloStructure::at_slot(body[116]) else {
+        return false;
     };
     let hp = f32::from_be_bytes(body[36..40].try_into().unwrap());
     let max = f32::from_be_bytes(body[40..44].try_into().unwrap());
@@ -102,9 +68,7 @@ pub(super) fn recordable_mid_structure(body: &[u8]) -> bool {
     {
         return false;
     }
-    let expected = halcyon_protocol::SoloStructure::at_slot(body[116])
-        .unwrap()
-        .message(wire);
+    let expected = profile.message(profile.actor());
     body[..36] == expected.body[..36] && body[44..] == expected.body[44..]
 }
 
@@ -352,7 +316,7 @@ mod tests {
             assert_eq!(word(b, 36), entity.hp.to_bits());
             assert_eq!(word(b, 40), entity.max_hp.to_bits());
             assert_eq!(b[117..122], [0, 0, 1, 255, entity.team + 1]);
-            assert!(recordable_mid_structure(b));
+            assert!(recordable_structure(b));
             slots.push(b[116]);
         }
         slots.sort_unstable();
@@ -365,16 +329,16 @@ mod tests {
         let encoded = halcyon_protocol::SoloStructure::at_slot(27)
             .unwrap()
             .message(2065);
-        assert!(recordable_mid_structure(&encoded.body));
+        assert!(recordable_structure(&encoded.body));
         for offset in [0, 4, 8, 16, 24, 28, 64, 97, 116, 121] {
             let mut other = encoded.body.clone();
             other[offset] ^= 1;
-            assert!(!recordable_mid_structure(&other), "changed byte {offset}");
+            assert!(!recordable_structure(&other), "changed byte {offset}");
         }
         let side_lane = halcyon_protocol::SoloStructure::at_slot(25)
             .unwrap()
             .message(2051);
-        assert!(recordable_mid_structure(&side_lane.body));
+        assert!(recordable_structure(&side_lane.body));
     }
 
     #[test]

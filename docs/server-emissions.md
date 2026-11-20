@@ -70,7 +70,7 @@ The host paths are in [room dispatch](../crates/game/src/lib.rs), [transport](..
 | `043C` | 1,351 | R | ActionCancelAbility |
 | `043D` | 425 | A | ActionGrantItem · Acquired or restored held item instance |
 | `043E` | 44,346 | A | [ARAL Waterwall on an ally (issuer), Chakram self-application (issuer and registered teammates), and the one-second Chill Winds root (registered teammates)](native-abilities.md) |
-| `043F` | 17,018 | H | [Three initial self-sourced applications per declared ARAL tower](aral-tower-opening.md). [ActionApplyBuff opening and equipment instances](aral-item-activation.md#extended-applications-at-match-opening-and-on-purchase) |
+| `043F` | 17,018 | H | [Solo opening applications on visible structures](solo-lane.md). [Three initial self-sourced applications per declared ARAL tower](aral-tower-opening.md). [ActionApplyBuff opening and equipment instances](aral-item-activation.md#extended-applications-at-match-opening-and-on-purchase) |
 | `0440` | 60 | R | ActionShowFlyoutText |
 | `0441` | 385 | R | ActionModifyBuffDuration |
 | `0443` | 1,831 | R | [ActionModifyBuffStack and observed instance counts](aral-item-activation.md#extended-applications-at-match-opening-and-on-purchase) |
