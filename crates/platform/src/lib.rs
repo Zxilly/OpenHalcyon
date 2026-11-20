@@ -207,6 +207,7 @@ fn parse_id(id: &str) -> Result<Uuid> {
 #[derive(Clone)]
 pub struct AppState {
     db: Arc<Mutex<Connection>>,
+    accounts: Arc<Mutex<halcyon_storage::AccountStore>>,
     host: Arc<dyn MatchHost>,
     changes: watch::Sender<()>,
     config: Arc<PlatformConfig>,
@@ -232,7 +233,8 @@ impl AppState {
                 "seats_per_match must be between 1 and 64",
             ));
         }
-        let mut db = Connection::open(&config.database_path)?;
+        let address = halcyon_storage::DatabaseAddress::new(&config.database_path);
+        let mut db = Connection::open(address.path())?;
         db.execute_batch(
             "PRAGMA journal_mode=WAL;
              PRAGMA foreign_keys=ON;
@@ -287,10 +289,12 @@ impl AppState {
             talent_levels::initialize(&tx)?;
             tx.commit()?;
         }
-        accounts::initialize(&db)?;
+        let accounts =
+            halcyon_storage::AccountStore::open(&address).map_err(accounts::storage_error)?;
         let (changes, _) = watch::channel(());
         let state = Self {
             db: Arc::new(Mutex::new(db)),
+            accounts: Arc::new(Mutex::new(accounts)),
             host,
             changes,
             config: Arc::new(config),

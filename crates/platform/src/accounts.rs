@@ -1,9 +1,7 @@
 //! Password accounts belong to one instance. Linking requires a live session.
-use super::{
-    AppState, Guest, PlatformError, Result, credential, digest, issue_session, parse_id, player,
-};
+use super::{AppState, Guest, PlatformError, Result, credential, digest, parse_id};
 use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier, password_hash::SaltString};
-use rusqlite::{OptionalExtension, params};
+use halcyon_storage::Error as StorageError;
 use tokio::sync::Semaphore;
 use uuid::Uuid;
 
@@ -25,10 +23,15 @@ fn credentials(name: &str, password: &str) -> Result<String> {
     Ok(name)
 }
 
-pub(super) fn initialize(db: &rusqlite::Connection) -> Result<()> {
-    db.execute_batch("CREATE TABLE IF NOT EXISTS local_accounts(
-        login TEXT PRIMARY KEY, player TEXT NOT NULL UNIQUE REFERENCES players(id), hash TEXT NOT NULL)")?;
-    Ok(())
+pub(super) fn storage_error(error: StorageError) -> PlatformError {
+    match error {
+        StorageError::Unauthorized => PlatformError::Unauthorized,
+        StorageError::AlreadyLinked => PlatformError::Conflict("account already linked"),
+        independent => {
+            tracing::error!(error = %independent, "account storage failed");
+            PlatformError::WorkerUnavailable
+        }
+    }
 }
 
 impl AppState {
@@ -50,17 +53,13 @@ impl AppState {
         .await
         .map_err(|_| PlatformError::WorkerUnavailable)??;
         self.run(move |s| {
-            s.transaction(|tx| {
-                let id = player(tx, &session)?;
-                let inserted = tx.execute(
-                    "INSERT INTO local_accounts VALUES(?,?,?) ON CONFLICT DO NOTHING",
-                    params![login, id, hash],
-                )?;
-                if inserted == 0 {
-                    return Err(PlatformError::Conflict("account already linked"));
-                }
-                Ok(())
-            })
+            s.accounts
+                .lock()
+                .map_err(|_| PlatformError::WorkerUnavailable)?
+                .link(&session, &login, &hash)
+                .map_err(storage_error)?;
+            s.changes.send_replace(());
+            Ok(())
         })
         .await
     }
@@ -68,21 +67,19 @@ impl AppState {
     /// Issue new session and device recovery credentials after password verification.
     pub async fn login_account(&self, name: &str, password: String) -> Result<Guest> {
         let login = credentials(name, &password)?;
-        let (id, stored): (String, String) = self
+        let account = self
             .run(move |s| {
-                let db = s.db.lock().map_err(|_| PlatformError::WorkerUnavailable)?;
-                db.query_row(
-                    "SELECT player,hash FROM local_accounts WHERE login=?",
-                    [login],
-                    |r| Ok((r.get(0)?, r.get(1)?)),
-                )
-                .optional()?
-                .ok_or(PlatformError::Unauthorized)
+                s.accounts
+                    .lock()
+                    .map_err(|_| PlatformError::WorkerUnavailable)?
+                    .password(&login)
+                    .map_err(storage_error)
             })
             .await?;
         let permit = HASH_SLOTS
             .try_acquire()
             .map_err(|_| PlatformError::WorkerUnavailable)?;
+        let stored = account.hash.clone();
         tokio::task::spawn_blocking(move || {
             let _permit = permit;
             let hash = PasswordHash::new(&stored).map_err(|_| PlatformError::WorkerUnavailable)?;
@@ -93,17 +90,19 @@ impl AppState {
         .await
         .map_err(|_| PlatformError::WorkerUnavailable)??;
         self.run(move |s| {
-            s.transaction(|tx| {
-                let recovery = credential();
-                tx.execute(
-                    "UPDATE players SET recovery=? WHERE id=?",
-                    params![digest(&recovery), id],
-                )?;
-                Ok(Guest {
-                    player_id: parse_id(&id)?,
-                    recovery_token: Some(recovery),
-                    session_token: issue_session(tx, &id)?,
-                })
+            let player_id = parse_id(&account.player)?;
+            let recovery = credential();
+            let session = credential();
+            s.accounts
+                .lock()
+                .map_err(|_| PlatformError::WorkerUnavailable)?
+                .rotate(&account, &digest(&recovery), &digest(&session))
+                .map_err(storage_error)?;
+            s.changes.send_replace(());
+            Ok(Guest {
+                player_id,
+                recovery_token: Some(recovery),
+                session_token: session,
             })
         })
         .await

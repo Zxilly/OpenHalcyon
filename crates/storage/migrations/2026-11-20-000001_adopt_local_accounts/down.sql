@@ -1,0 +1,2 @@
+-- This migration adopts an existing table. Reverting the Diesel history marker
+-- must preserve both the legacy account rows and compatibility with old binaries.
