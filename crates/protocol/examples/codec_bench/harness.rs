@@ -1,9 +1,11 @@
 use std::hint::black_box;
 
-use halcyon_protocol::{Fields, MatchCipher, Message, ProjectileAction, ProjectileFire};
+use halcyon_protocol::{
+    AttributeChange, Fields, MatchCipher, Message, ProjectileAction, ProjectileFire,
+};
 
 const FIXTURES: usize = 64;
-const CASES: [Case; 7] = [
+const CASES: [Case; 9] = [
     Case::Movement,
     Case::Position,
     Case::Impact,
@@ -11,6 +13,8 @@ const CASES: [Case; 7] = [
     Case::Tracked,
     Case::Point,
     Case::Directed,
+    Case::Clock,
+    Case::StatModifier,
 ];
 
 #[derive(Clone, Copy)]
@@ -22,6 +26,8 @@ enum Case {
     Tracked,
     Point,
     Directed,
+    Clock,
+    StatModifier,
 }
 
 impl Case {
@@ -34,6 +40,8 @@ impl Case {
             Self::Tracked => "projectile_tracked",
             Self::Point => "projectile_point",
             Self::Directed => "projectile_directed",
+            Self::Clock => "clock",
+            Self::StatModifier => "stat_modifier",
         }
     }
 
@@ -45,6 +53,16 @@ impl Case {
             Self::Position => Message::position(actor, -x, x + 0.25),
             Self::Impact => Message::health_impact(actor.into(), 1500, -x, 2, 1, 0),
             Self::Death => Message::actor_death(actor.into(), 1500),
+            Self::Clock => Message::clock(x),
+            Self::StatModifier => AttributeChange {
+                actor: actor.into(),
+                source: 1500,
+                value: x,
+                index: 7,
+                layer: 2,
+                set_mode: 1,
+            }
+            .message(),
             _ => self.action(i).expect("projectile case").message().unwrap(),
         }
     }
@@ -72,6 +90,8 @@ impl Case {
                 | (Self::Position, Fields::Position { .. })
                 | (Self::Impact, Fields::HealthImpact { .. })
                 | (Self::Death, Fields::ActorDeath { .. })
+                | (Self::Clock, Fields::Clock(_))
+                | (Self::StatModifier, Fields::StatModifier { .. })
                 | (
                     Self::Tracked,
                     Fields::Projectile(ProjectileAction::FireTracked(_))

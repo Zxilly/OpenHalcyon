@@ -218,7 +218,7 @@ impl Message {
         let float = |i: usize| -> io::Result<f32> {
             Ok(f32::from_be_bytes(
                 b.get(i..i + 4)
-                    .ok_or(invalid("truncated float"))?
+                    .ok_or_else(|| invalid("truncated float"))?
                     .try_into()
                     .unwrap(),
             ))
@@ -226,7 +226,7 @@ impl Message {
         let eid = || -> io::Result<u16> {
             Ok(u16::from_be_bytes(
                 b.get(2..4)
-                    .ok_or(invalid("truncated entity"))?
+                    .ok_or_else(|| invalid("truncated entity"))?
                     .try_into()
                     .unwrap(),
             ))
@@ -234,7 +234,7 @@ impl Message {
         let number = |i: usize| -> io::Result<u32> {
             Ok(u32::from_be_bytes(
                 b.get(i..i + 4)
-                    .ok_or(invalid("missing u32 field"))?
+                    .ok_or_else(|| invalid("missing u32 field"))?
                     .try_into()
                     .unwrap(),
             ))
@@ -242,7 +242,7 @@ impl Message {
         let word = |i: usize| -> io::Result<u16> {
             Ok(u16::from_be_bytes(
                 b.get(i..i + 2)
-                    .ok_or(invalid("missing u16 field"))?
+                    .ok_or_else(|| invalid("missing u16 field"))?
                     .try_into()
                     .unwrap(),
             ))
@@ -431,7 +431,7 @@ impl Message {
                 word96: number(96)?,
                 mode: b
                     .get(32..96)
-                    .ok_or(invalid("truncated game setup"))?
+                    .ok_or_else(|| invalid("truncated game setup"))?
                     .split(|&v| v == 0)
                     .next()
                     .unwrap_or_default(),
@@ -468,7 +468,7 @@ impl Message {
             Some(Opcode::PlayerHandle) => Fields::HandleRecord {
                 text: b
                     .get(..64)
-                    .ok_or(invalid("truncated name field"))?
+                    .ok_or_else(|| invalid("truncated name field"))?
                     .split(|&v| v == 0)
                     .next()
                     .unwrap_or_default(),
@@ -480,14 +480,16 @@ impl Message {
                 kind: Opcode::ModeName,
                 text: b
                     .get(..64)
-                    .ok_or(invalid("truncated name field"))?
+                    .ok_or_else(|| invalid("truncated name field"))?
                     .split(|&v| v == 0)
                     .next()
                     .unwrap_or_default(),
                 remaining: &b[64..],
             },
             Some(Opcode::SceneReadiness) => {
-                let raw = b.get(..96).ok_or(invalid("truncated control entries"))?;
+                let raw = b
+                    .get(..96)
+                    .ok_or_else(|| invalid("truncated control entries"))?;
                 let entries = std::array::from_fn(|i| {
                     let slot = &raw[i * 6..][..6];
                     ControlEntry {
@@ -503,7 +505,7 @@ impl Message {
             }
             Some(Opcode::SceneOwner) => Fields::ReferencedFlag {
                 reference: number(0)?,
-                flag: *b.get(4).ok_or(invalid("truncated control flag"))?,
+                flag: *b.get(4).ok_or_else(|| invalid("truncated control flag"))?,
                 remaining: &b[5..],
             },
             Some(
@@ -513,7 +515,9 @@ impl Message {
                 | Opcode::SceneTransition
                 | Opcode::Unresolved047C,
             ) => {
-                let (flag, remaining) = b.split_first().ok_or(invalid("truncated control byte"))?;
+                let (flag, remaining) = b
+                    .split_first()
+                    .ok_or_else(|| invalid("truncated control byte"))?;
                 Fields::ControlByte {
                     value: *flag,
                     remaining,
@@ -539,8 +543,8 @@ impl Message {
                 actor: number(0)?,
                 source: number(4)?,
                 value: float(8)?,
-                stat: *b.get(12).ok_or(invalid("missing modifier stat"))?,
-                flags: *b.get(13).ok_or(invalid("missing modifier flags"))?,
+                stat: *b.get(12).ok_or_else(|| invalid("missing modifier stat"))?,
+                flags: *b.get(13).ok_or_else(|| invalid("missing modifier flags"))?,
             },
             Some(Opcode::RemoveItem) => Fields::ItemRemoval {
                 actor: number(0)?,
@@ -596,7 +600,7 @@ impl Message {
             Some(Opcode::EntityStat) => Fields::EntityStat {
                 entity: eid()?,
                 value: float(4)?,
-                stat: *b.get(8).ok_or(invalid("missing stat type"))?,
+                stat: *b.get(8).ok_or_else(|| invalid("missing stat type"))?,
             },
             Some(Opcode::PlayerUuid | Opcode::HeroCatalog | Opcode::GameMode) => {
                 let offset = if self.is(crate::Opcode::GameMode) {
@@ -604,7 +608,9 @@ impl Message {
                 } else {
                     0
                 };
-                let raw = b.get(offset..).ok_or(invalid("truncated string header"))?;
+                let raw = b
+                    .get(offset..)
+                    .ok_or_else(|| invalid("truncated string header"))?;
                 let name = std::str::from_utf8(raw.split(|v| *v == 0).next().unwrap())
                     .map_err(|_| invalid("invalid text"))?;
                 match self.known_opcode() {
