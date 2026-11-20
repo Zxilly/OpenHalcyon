@@ -63,8 +63,8 @@ same-template grant before the next purchase yields 341 transactions across
 an intervening Weapon Blade grant. A grant alone does not establish a debit.
 The table uses mode-0 stat-6 debits, identifies each removed `044B` instance
 by its earlier grant, and compares the ordered equipment modifiers with the
-delivered item definitions. The 50 witnessed catalog entries cover 256
-transactions and 91 distinct debit/component profiles. For all 256, the
+delivered item definitions. At the initial audit, 50 witnessed catalog entries covered 256
+transactions and 91 distinct debit/component profiles. For those 256, the
 ordered negative modifiers in the supported stat categories matched the
 bonuses of exactly the removed component instances.
 
@@ -136,7 +136,36 @@ recipe and attributes. Its full value reconciles the final-item debits.
 
 The simulator applies the equipment's supported HP, energy, regeneration,
 weapon power, crystal power, armor, shield, attack speed and cooldown
-modifiers. Items requiring timed infusions, consumable charges, critical
-hits, penetration or additional unmodeled modifier types remain outside
-this table. Passive procs, deployables and on-use effects need independently
+modifiers. Five additional equipment profiles are detailed below. Passive procs, deployables and on-use effects need independently
 established triggers.
+
+### Penetration and movement
+
+| Template | Matched purchases | Full price | Registered modifiers in wire order |
+|---:|---:|---:|---|
+| 506 Piercing Spear | 2 | 900 | weapon 15, armor pierce 0.10 |
+| 510 Piercing Shard | 2 | 900 | crystal 20, shield pierce 0.10 |
+| 482 Bonesaw | 5 | 2900 | weapon 30, attack speed 0.30, armor pierce 0.10 twice |
+| 496 Broken Myth | 2 | 2900 | crystal 50, shield pierce 0.10 then 0.35 |
+| 533 Pulseweave | 2 | 2000 | HP 600, movement speed 0.08 in amplifier layer 2 |
+
+Every split penetration increment above used flat layer 1. The named item
+definition confirms the totals of 20% and 45%. The hosted damage paths use
+the delivered guide formula, `raw × (100 + pierce × defense) / (100 + defense)`.
+The 4.13 delivery attributes this formula to contemporary guides. Weapon
+damage uses the attacker's armor pierce and crystal damage uses shield
+pierce. True damage continues to bypass both defenses. The host caps
+bypassed mitigation at 100%. Pulseweave amplifies movement speed throughout
+movement and its new modifier is restored on first visibility. Bonesaw's
+on-hit shred and Pulseweave's reactive burst need their trigger/stack rules.
+
+Together with the preceding table the host covers 269 of 341 paired receipts
+and 55 of 63 witnessed templates, plus the published Dragonheart component.
+The remaining 72 paired receipts have the following evidence.
+
+| Templates (matched receipts) | Evidence and remaining question |
+|---|---|
+| 517 Minion's Foot (1), 508 Lucky Strike (2), 491 Tyrant's Monocle (2) | Flat stat pairs 30/31 add 0.10/0.05, 0.20/0.05 and 0.35/0.15. These are critical chance and critical damage. The delivered hero definitions omit the base critical multiplier, and the impact records lack a verified critical-basic-hit discriminator. |
+| 493 Weapon Infusion (18), 494 Crystal Infusion (6) | The definitions contain stat ranges and 150 s duration. Same-instance activation appeared within 100 ms of 7 and 2 grants respectively, and later for another 2 and 4. These observations do not establish unconditional consumption on purchase. |
+| 481 Flare (11), 495 Scout Trap (31) | No immediate activation. Later activation and removal of the same instance appeared for 2 flares and 9 traps. One trap was sold. Complete charge/slot rules and an attributable authenticated use request are unresolved. |
+| 534 Capacitor Plate (1) | Two equal 0.15 modifiers have different wire indices and layers (36/2 and 34/0). The definition names heal and barrier amplification. The sample does not distinguish the stat-to-effect mapping or the outgoing/received scope. |

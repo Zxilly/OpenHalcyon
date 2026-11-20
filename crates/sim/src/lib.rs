@@ -730,9 +730,10 @@ impl World {
         } else {
             1.
         };
-        let pos = e
-            .position
-            .advance(waypoint, e.stats.speed * pace / TICK_HZ as f32);
+        let pos = e.position.advance(
+            waypoint,
+            e.stats.speed * (1. + e.item_stats.move_speed_amp) * pace / TICK_HZ as f32,
+        );
         if pos != e.position {
             if e.kind == Kind::Minion {
                 let followed = match e.order {
@@ -964,18 +965,29 @@ impl World {
                         DamageSchool::Weapon
                     };
                     let damage = if e.type_id == lorelai::HERO {
-                        (10. + e.stats.weapon + bonus) * 100. / (100. + t.stats.shield)
+                        shop::mitigated(
+                            10. + e.stats.weapon + bonus,
+                            t.stats.shield,
+                            e.item_stats.shield_pierce,
+                        )
                     } else if e.kind == Kind::Crystal {
                         t.max_hp * 0.04
                     } else {
-                        (e.stats.weapon + bonus) * 100. / (100. + t.stats.armor)
+                        shop::mitigated(
+                            e.stats.weapon + bonus,
+                            t.stats.armor,
+                            e.item_stats.armor_pierce,
+                        )
                     };
                     let haste = e.status.haste_until > self.tick;
                     let crystal = e.kind == Kind::Crystal;
                     // Karas's 4.13 basic-attack coefficient is explicitly named in official_rules.
                     let karas_crystal = if e.type_id == 926 {
-                        e.item_stats.crystal * self.abilities.karas_basic_crystal_ratio * 100.
-                            / (100. + t.stats.shield)
+                        shop::mitigated(
+                            e.item_stats.crystal * self.abilities.karas_basic_crystal_ratio,
+                            t.stats.shield,
+                            e.item_stats.shield_pierce,
+                        )
                     } else {
                         0.
                     };

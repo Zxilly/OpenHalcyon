@@ -53,6 +53,11 @@ pub enum BasicItem {
     Warmail,
     SeraphicShell,
     Dragonheart,
+    PiercingSpear,
+    PiercingShard,
+    Bonesaw,
+    BrokenMyth,
+    Pulseweave,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HeldItem {
@@ -96,7 +101,7 @@ const fn def(
     }
 }
 
-const OFFERS: [Definition; 51] = [
+const OFFERS: [Definition; 56] = [
     def(WeaponBlade, 458, "Item_WeaponBlade", 300, &[], &[(4, 10.)]),
     def(LightArmor, 469, "Item_LightArmor", 300, &[], &[(7, 25.)]),
     def(LightShield, 501, "Item_LightShield", 300, &[], &[(8, 25.)]),
@@ -463,6 +468,46 @@ const OFFERS: [Definition; 51] = [
         &[Oakheart],
         &[(0, 350.0)],
     ),
+    def(
+        PiercingSpear,
+        506,
+        "Item_PiercingSpear",
+        600,
+        &[WeaponBlade],
+        &[(4, 15.), (9, 0.1)],
+    ),
+    def(
+        PiercingShard,
+        510,
+        "Item_PiercingShard",
+        600,
+        &[CrystalBit],
+        &[(5, 20.), (11, 0.1)],
+    ),
+    def(
+        Bonesaw,
+        482,
+        "Item_Bonesaw",
+        1300,
+        &[BlazingSalvo, PiercingSpear],
+        &[(4, 30.), (15, 0.3), (9, 0.1), (9, 0.1)],
+    ),
+    def(
+        BrokenMyth,
+        496,
+        "Item_BrokenMyth",
+        1350,
+        &[PiercingShard, EclipsePrism],
+        &[(5, 50.), (11, 0.1), (11, 0.35)],
+    ),
+    def(
+        Pulseweave,
+        533,
+        "Item_Pulseweave",
+        550,
+        &[Dragonheart, Lifespring],
+        &[(0, 600.), (18, 0.08)],
+    ),
 ];
 
 impl BasicItem {
@@ -629,6 +674,9 @@ impl World {
         h.item_stats.crystal += delta[5];
         h.stats.armor += delta[7];
         h.stats.shield += delta[8];
+        h.item_stats.armor_pierce += delta[9];
+        h.item_stats.shield_pierce += delta[11];
+        h.item_stats.move_speed_amp += delta[18];
         h.item_stats.attack_speed += delta[15];
         h.item_stats.cooldown += delta[25];
         h.gold -= price as u32;
@@ -644,11 +692,20 @@ impl World {
 
 #[derive(Clone, Copy, Default, Debug, Serialize)]
 pub struct ItemStats {
+    pub armor_pierce: f32,
+    pub shield_pierce: f32,
+    pub move_speed_amp: f32,
     pub crystal: f32,
     pub attack_speed: f32,
     pub energy_regen: f32,
     pub cooldown: f32,
 }
+/// The delivered damage rules attribute this formula to contemporary guides.
+/// Penetration bypasses a fraction of mitigation for this attacker's damage.
+pub(super) fn mitigated(raw: f32, defense: f32, pierce: f32) -> f32 {
+    raw * (100. + pierce.clamp(0., 1.) * defense) / (100. + defense)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -753,6 +810,14 @@ mod tests {
             (539, 1150, &[502]),
             (539, 1200, &[485]),
             (539, 1600, &[501]),
+            (506, 900, &[]),
+            (510, 900, &[]),
+            (482, 2900, &[]),
+            (482, 2200, &[463]),
+            (482, 2600, &[460]),
+            (496, 2900, &[]),
+            (496, 1950, &[459, 462]),
+            (533, 2000, &[]),
         ];
         for &(template, debit, parts) in profiles {
             let mut w = World::new(7, 6);
@@ -784,6 +849,49 @@ mod tests {
             assert_eq!(w.entities[0].inventory, [result.granted]);
             assert_eq!(w.entities[0].gold, 0);
         }
+    }
+
+    #[test]
+    fn penetration_bypasses_only_its_damage_school_and_speed_amp_changes_distance() {
+        let mut w = World::new(3, 10);
+        w.entities[0].position = base(0);
+        w.entities[0].gold = 10_000;
+        let shard = w.purchase(1, PiercingShard).unwrap();
+        let myth = w.purchase(1, BrokenMyth).unwrap();
+        assert_eq!(myth.consumed, [shard.granted]);
+        assert!((w.entities[0].item_stats.shield_pierce - 0.45).abs() < 0.00001);
+        assert_eq!(w.entities[0].item_stats.armor_pierce, 0.);
+        let spear = w.purchase(1, PiercingSpear).unwrap();
+        let saw = w.purchase(1, Bonesaw).unwrap();
+        assert_eq!(saw.consumed, [spear.granted]);
+        assert!((w.entities[0].item_stats.armor_pierce - 0.2).abs() < 0.00001);
+        assert_eq!(mitigated(100., 100., 0.2), 60.);
+        assert_eq!(mitigated(100., 100., 0.45), 72.5);
+
+        w.entities[1].position = Position { x: 4., y: 0. };
+        let weapon = w.entities[0].weapon_power();
+        let armor = w.entities[1].armor();
+        let expected = weapon * (100. + armor * 0.2) / (100. + armor);
+        w.command(1, Command::Attack(2)).unwrap();
+        assert!((0..15).flat_map(|_| w.step()).any(|event| matches!(event,
+            Event::Damage { source: 1, target: 2, amount, .. } if (amount-expected).abs()<0.001)));
+
+        let mut slow = World::new(9, 10);
+        let mut fast = World::new(9, 10);
+        fast.entities[0].gold = 2000;
+        fast.purchase(1, Pulseweave).unwrap();
+        let origin = slow.entities[0].position;
+        let dest = Position {
+            x: origin.x + 5.,
+            y: origin.y,
+        };
+        for world in [&mut slow, &mut fast] {
+            world.command(1, Command::MoveTo(dest)).unwrap();
+            world.step();
+        }
+        let ordinary = origin.dist(slow.entities[0].position);
+        assert!(ordinary > 0.);
+        assert!((origin.dist(fast.entities[0].position) - ordinary * 1.08).abs() < 0.00001);
     }
 
     #[test]

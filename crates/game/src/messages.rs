@@ -280,7 +280,7 @@ pub(super) fn append_inventory(out: &mut Vec<Message>, world: &World, entity: &E
         // HP, max energy, armor, shield and weapon power already include
         // equipment in the full declaration. Restore the remaining modifiers.
         for (stat, bonus) in world.item_bonuses(held.kind) {
-            if matches!(stat, 3 | 5 | 15 | 25) {
+            if matches!(stat, 3 | 5 | 9 | 11 | 15 | 18 | 25) {
                 out.push(modifier(actor, stat, bonus));
             }
         }
@@ -323,7 +323,7 @@ pub(super) fn modifier(actor: u32, stat: u8, value: f32) -> Message {
         source: u32::MAX,
         value,
         index: stat,
-        layer: 1,
+        layer: if stat == 18 { 2 } else { 1 },
         set_mode: 0,
     }
     .message()
@@ -426,6 +426,53 @@ mod combat_tests {
     use super::*;
     use halcyon_protocol::Fields;
     use halcyon_sim::Event;
+    #[test]
+    fn reconnect_restores_split_pierce_and_movement_amplifier_in_the_native_layers() {
+        use halcyon_protocol::AttributeChange;
+        use halcyon_sim::BasicItem;
+
+        let mut world = World::new(7, 10);
+        world.entities[0].gold = 10_000;
+        let mut expected = Vec::new();
+        for item in [
+            BasicItem::Bonesaw,
+            BasicItem::BrokenMyth,
+            BasicItem::Pulseweave,
+        ] {
+            let receipt = world.purchase(1, item).unwrap();
+            let mut frames = Vec::new();
+            append_purchase(&mut frames, &world, &receipt, true);
+            expected.extend(
+                frames
+                    .iter()
+                    .filter_map(AttributeChange::read)
+                    .filter(|m| matches!(m.index, 9 | 11 | 18)),
+            );
+        }
+        let mut snapshot = Vec::new();
+        append_inventory(&mut snapshot, &world, &world.entities[0]);
+        let restored: Vec<_> = snapshot
+            .iter()
+            .filter_map(AttributeChange::read)
+            .filter(|m| matches!(m.index, 9 | 11 | 18))
+            .collect();
+        assert_eq!(restored, expected);
+        let layers: Vec<_> = restored
+            .iter()
+            .map(|m| (m.index, m.layer, m.value))
+            .collect();
+        assert_eq!(
+            layers,
+            [
+                (9, 1, 0.1),
+                (9, 1, 0.1),
+                (11, 1, 0.1),
+                (11, 1, 0.35),
+                (18, 2, 0.08)
+            ]
+        );
+    }
+
     #[test]
     fn each_visible_level_gain_uses_the_single_step_wire_operand() {
         let mut records = vec![];

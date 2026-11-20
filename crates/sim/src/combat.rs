@@ -357,7 +357,11 @@ impl World {
                 let j = aimed.unwrap();
                 self.entities[j].status.slow_until = self.tick + 30;
                 self.entities[j].status.slow_factor = 0.7;
-                let dmg = (65. + r as f32 * 30.) * 100. / (100. + self.entities[j].stats.shield);
+                let dmg = shop::mitigated(
+                    65. + r as f32 * 30.,
+                    self.entities[j].stats.shield,
+                    self.entities[i].item_stats.shield_pierce,
+                );
                 self.hurt(src, team, j, dmg, DamageSchool::Crystal, events);
             }
             Skill::Twirl => {
@@ -534,6 +538,9 @@ impl World {
                 }
                 return false;
             }
+            let pierce = self
+                .index(v.src)
+                .map_or(0., |i| self.entities[i].item_stats.shield_pierce);
             for i in 0..self.entities.len() {
                 let e = &self.entities[i];
                 if e.hp <= 0. || !matches!(e.kind, Kind::Hero | Kind::Minion) {
@@ -552,7 +559,7 @@ impl World {
                         self.heal(v.src, i, v.heal, events)
                     }
                 } else {
-                    let dmg = v.damage * 100. / (100. + e.stats.shield);
+                    let dmg = shop::mitigated(v.damage, e.stats.shield, pierce);
                     self.hurt(v.src, v.team, i, dmg, DamageSchool::Crystal, events)
                 }
             }

@@ -153,6 +153,9 @@ impl World {
             if matches!(w.pool, Pool::Fish { .. }) && !elapsed.is_multiple_of(TICK_HZ) {
                 return true;
             }
+            let pierce = self
+                .index(w.owner)
+                .map_or(0., |i| self.entities[i].item_stats.shield_pierce);
             for i in 0..self.entities.len() {
                 let e = &mut self.entities[i];
                 if e.hp <= 0.
@@ -177,7 +180,7 @@ impl World {
                         } else {
                             [55., 95., 135., 175., 255.][rank]
                         };
-                        let damage = raw * 100. / (100. + e.stats.shield);
+                        let damage = shop::mitigated(raw, e.stats.shield, pierce);
                         self.hurt(w.owner, w.team, i, damage, DamageSchool::Crystal, events);
                     }
                     Pool::Splash { .. } if e.team == w.team => {

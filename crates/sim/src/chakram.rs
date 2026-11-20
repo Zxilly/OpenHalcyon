@@ -63,7 +63,11 @@ impl World {
                     continue;
                 }
                 p.hit.push(target.id);
-                let damage = p.damage * 100. / (100. + target.stats.armor);
+                let damage = shop::mitigated(
+                    p.damage,
+                    target.stats.armor,
+                    self.entities[owner].item_stats.armor_pierce,
+                );
                 self.hurt(p.source, p.team, i, damage, DamageSchool::Weapon, events);
             }
             p.position = next;
