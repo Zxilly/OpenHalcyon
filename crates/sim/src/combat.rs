@@ -767,6 +767,42 @@ mod tests {
         assert!(w.command(1, cast).is_err());
     }
     #[test]
+    fn native_lorelai_cooldown_uses_release_tick_and_equipped_reduction() {
+        let mut w = World::new(0, 10);
+        w.entities[0].type_id = 409;
+        w.entities[0].gold = 250;
+        w.purchase(1, BasicItem::Hourglass).unwrap();
+        let slot = AbilitySlot::B;
+        w.command(1, Command::Learn(slot)).unwrap();
+        let cast = Command::Cast {
+            slot,
+            target: CastTarget::Point(w.entities[0].position),
+        };
+        w.command(1, cast).unwrap();
+        w.command(1, Command::Stop).unwrap();
+        w.step();
+        assert_eq!(w.entities[0].cooldown[slot.idx()], 0);
+        w.command(1, cast).unwrap();
+        let mut released = false;
+        for _ in 0..3 {
+            if w.step()
+                .iter()
+                .any(|e| matches!(e, Event::Cast { source: 1, .. }))
+            {
+                released = true;
+                break;
+            }
+        }
+        assert!(released);
+        let deadline = w.entities[0].cooldown[slot.idx()];
+        assert_eq!(deadline, w.tick + 149); // ceil(8 seconds * 20 Hz / 1.075).
+        w.tick = deadline - 1;
+        assert!(w.command(1, cast).is_err());
+        w.tick = deadline;
+        assert!(w.command(1, cast).is_ok());
+    }
+
+    #[test]
     fn targeted_spell_rechecks_visibility_and_range_on_release() {
         let mut w = duel();
         w.command(1, Command::Learn(AbilitySlot::A)).unwrap();

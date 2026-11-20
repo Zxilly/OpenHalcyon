@@ -141,6 +141,7 @@ fn sanitize(m: &mut Message) -> bool {
                     .iter()
                     .all(|b| f32::from_be_bytes(*b).is_finite()) => {}
         // Only the authored hero-slot and target combinations have verified wire meanings.
+        0x48a if super::native_cooldown::recordable(m) => {}
         0x435 if super::aral::announcements::recordable(&m.body) => {}
         0x43a
             if matches!(m.body.as_slice(), [0, 0, 5, 220..=229, 0, 0, 0, operand]
@@ -186,6 +187,10 @@ fn sanitize(m: &mut Message) -> bool {
         0x3ef if m.body.is_empty() || m.body == [0; 6] => {}
         0x41e if m.body.len() == 22 && m.body[16..] == [0; 6] => {}
         0x434 if m.body.len() == 14 && m.body[4..] == [0, 0, 0, 1, 0, 0, 0, 0, 0, 0] => {}
+        0x409 if matches!(m.fields(),Ok(halcyon_protocol::Fields::ActorRelocation{actor:1500..=1505,xyz,flag:1,remaining:[0,0,0,0,0]}) if [
+            [-78.18,1.3,0.88],[-81.81,1.3,1.97],[-77.03,1.3,-1.94],
+            [79.66,1.5,-0.91],[78.60,1.5,-5.06],[83.22,1.5,0.72]
+        ].contains(&xyz)) => {}
         0x432 if m.body.len() == 22 && m.body[16..] == [0; 6] => {}
         0x433
             if matches!(

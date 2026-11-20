@@ -147,3 +147,20 @@ and 18 timeouts. Matching by target and instance also yielded zero mutations
 for definitions 820 and 949 through 953. Across two matches, all 38 witnessed
 Idris B releases coincided with definition 820 on Idris. It also appeared
 25 times outside those releases, leaving its general trigger unresolved.
+
+## Cooldown keys and initial state
+
+The keys in the original ARAL records equal 32-bit FNV-1a over the case-sensitive ASCII definition names in the Android string table. The hosted opening sends the following records immediately after the corresponding hero declaration. Both big-endian floats are positive zero. Lorelai's original C/B/A relative order is retained.
+
+| Definition name | Key in hex | Six configuration bytes in hex |
+|---|---|---|
+| Ability__Lorelai__C | 72761226 | 00 00 01 01 01 00 |
+| Ability__Lorelai__B | 737613b9 | 00 00 01 00 01 00 |
+| Ability__Lorelai__A | 70760f00 | 00 00 01 00 01 00 |
+| Ability__Idris__B | 5cb5e744 | 00 00 01 00 01 00 |
+
+The seven ARAL matches contained 322 syncs. Two Lorelai openings and two Idris openings repeat these profiles. Idris was observed on his own stream and another player's stream. Android Solo independently repeated Idris B's zero-valued profile in all fourteen replay sections without an intervening B release. The host emits these rows only on the original scene opening, with Solo limited to the Idris B profile. No further actor reference is disclosed.
+
+The same seven matches contained 2,000 modify-cooldown records. Across six Lorelai A, five B and one C releases, the caster received no such records for her actor throughout either match. No Idris B key occurred in the 44 changes on his own actor or the 127 on the remote Idris. The only changes coinciding with any of the 38 B releases within 120 ms were two relative zero operands on Idris **A and C**. No same-owner sync occurred within 100 ms of any of the 50 releases. The static receiver selects a relative operation for mode zero and a direct operation for nonzero mode. The charge opcode uses an unsigned slot index and operand. None of these observations supplies a B/ABC start or expiry packet, a late-join nonzero countdown formula, or a teammate cooldown subscription.
+
+The simulation still writes an independent tick deadline on successful release. It charges the effective cooldown after equipped reduction and rejects a new cast until that tick. Interrupted or rejected releases leave the deadline unchanged. [Independent cooldown and charge receiver study](https://github.com/TurnaboutHero/vainglory-replay-decoder/blob/f4743be743564e3aadef1566499fe25d9d0f9ffc/vg/docs/COOLDOWN_EVENT_FIELDS_2026-10-14.md)

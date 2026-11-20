@@ -147,6 +147,9 @@ pub(super) fn solo_opening(room: &mut Room, seat: usize) -> std::io::Result<Batc
                 continue;
             };
             out.push(message);
+            if initial {
+                super::native_cooldown::opening(&mut out, e, false);
+            }
             messages::append_inventory(&mut out, &room.world, e);
             if visible {
                 room.visible[team as usize].insert(e.id);

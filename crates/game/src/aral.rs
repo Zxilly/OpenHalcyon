@@ -169,6 +169,9 @@ pub(super) fn opening(room: &mut Room, team: Option<u8>) -> Batch {
             match actor.kind {
                 halcyon_sim::Kind::Hero => {
                     batch.push(declaration);
+                    if room.world.tick == 0 && team.is_none() {
+                        super::native_cooldown::opening(&mut batch, actor, true);
+                    }
                     messages::append_inventory(&mut batch, &room.world, actor);
                 }
                 halcyon_sim::Kind::Minion => lane_minions.push(declaration),

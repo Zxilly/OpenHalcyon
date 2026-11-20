@@ -12,6 +12,7 @@ mod compact;
 mod hero_progress;
 mod messages;
 mod native_abilities;
+mod native_cooldown;
 mod npc_attack;
 mod npc_projectile;
 mod observer;
@@ -1311,6 +1312,7 @@ impl Room {
         if legacy {
             aral_death::flush(self, self.world.tick);
             aral_death::schedule(self, &events);
+            aral_death::publish_approaches(self,&events);
         }
         self.tick_observers(&events);
         for event in &events {
