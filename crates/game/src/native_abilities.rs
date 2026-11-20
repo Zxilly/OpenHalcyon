@@ -158,7 +158,7 @@ pub(super) fn publish(room: &mut Room, events: &[Event]) {
         return;
     }
     let aral = room.legacy_aral();
-    for event in events {
+    for (event_index, event) in events.iter().enumerate() {
         let (source, slot) = match *event {
             Event::Cast { source, slot, .. } | Event::Learned { source, slot } => (source, slot),
             _ => continue,
@@ -202,6 +202,32 @@ pub(super) fn publish(room: &mut Room, events: &[Event]) {
             ),
             _ => continue,
         };
+        let chakram = if aral
+            && hero == IDRIS
+            && slot == AbilitySlot::B
+            && let Some(Event::ChakramApplied { source: caster, id }) = events.get(event_index + 1)
+            && *caster == source
+            && let Some(instance) = id.checked_add(1499)
+        {
+            Some(
+                halcyon_protocol::BuffApplication {
+                    prefix: halcyon_protocol::BuffPrefix {
+                        target: actor_wire,
+                        source: actor_wire,
+                        duration_bits: 0x4066,
+                        instance,
+                        definition: 820,
+                    },
+                    extras: None,
+                    suffix: &[0; 6],
+                }
+                .to_message()
+                .expect("fixed Chakram application"),
+            )
+        } else {
+            None
+        };
+        let team = actor.team;
         if let Some(seat) = room.seats.get_mut(index)
             && let Some(pending) = seat.native_abilities.cast.take()
             && pending.slot == slot
@@ -239,9 +265,32 @@ pub(super) fn publish(room: &mut Room, events: &[Event]) {
                 };
                 batch.push(apply.to_message().expect("fixed Waterwall format"));
             }
+            batch.extend(chakram.iter().cloned());
             peer.send(Delivery::Private(batch));
         }
         witness(room, source, target_id, &message);
+        if let Some(effect) = chakram {
+            let mut shared = None;
+            for (recipient, seat) in room.seats.iter().enumerate() {
+                if recipient == index
+                    || room.world.entities[recipient].team != team
+                    || !room.visible[usize::from(team)].contains(&source)
+                    || !room.scene_views[recipient].knows(source)
+                    || !(seat.world_actor_written || seat.peers[1].is_some())
+                {
+                    continue;
+                }
+                if let Some(peer) = seat.gameplay_peer() {
+                    peer.send(Delivery::Team(
+                        shared
+                            .get_or_insert_with(|| {
+                                super::transport::TeamBatch::new(vec![effect.clone()])
+                            })
+                            .clone(),
+                    ));
+                }
+            }
+        }
     }
 }
 
@@ -263,7 +312,7 @@ mod tests {
                 talent_levels: Vec::new(),
                 match_id,
                 players: (0..6).map(|_| Uuid::new_v4()).collect(),
-                teams: vec![],
+                teams: vec![0, 1, 0, 1, 0, 1],
                 mode: "casual_aral".into(),
                 difficulty: None,
             })
@@ -271,7 +320,7 @@ mod tests {
         let shared = rooms.room(match_id).unwrap();
         let mut room = shared.lock().unwrap();
         let mut recipients = Vec::new();
-        for (i, seat) in room.seats.iter_mut().enumerate().take(2) {
+        for (i, seat) in room.seats.iter_mut().enumerate().take(3) {
             let (tx, rx) = mpsc::channel(64);
             seat.peers[0] = Some(Peer {
                 generation: 1 + i as u64,
@@ -303,6 +352,12 @@ mod tests {
         assert!(room.receive(0, 0, learn.clone()).unwrap().is_empty());
         room.seats[0].world_actor_written = true;
         room.seats[1].world_actor_written = true;
+        room.seats[2].world_actor_written = true;
+        let mut declared = super::super::messages::spawn(&room.world.entities[0], &[], None);
+        declared.body[745] = 16;
+        for view in &mut room.scene_views[..3] {
+            view.declarations(std::slice::from_ref(&declared));
+        }
         assert!(room.receive(1, 0, learn.clone()).unwrap().is_empty());
         assert!(room.receive(0, 0, cast.clone()).unwrap().is_empty());
         room.tick();
@@ -338,14 +393,28 @@ mod tests {
         for _ in 0..12 {
             room.tick();
         }
+        let issuer = drain(&mut recipients[0]);
+        assert_eq!(issuer.len(), 2);
         assert_eq!(
-            drain(&mut recipients[0]),
-            [Message::ability_point_used(1500, [12., -0.0, 0.], 3)]
+            issuer[0],
+            Message::ability_point_used(1500, [12., -0.0, 0.], 3)
         );
+        let Ok(halcyon_protocol::Fields::BuffApplication(buff)) = issuer[1].fields() else {
+            panic!("missing released Chakram application")
+        };
         assert_eq!(
-            drain(&mut recipients[1]),
-            [Message::ability_point_used(1500, [12., -0.0, 0.], 3)]
+            (
+                buff.prefix.source,
+                buff.prefix.target,
+                buff.prefix.duration_bits,
+                buff.prefix.definition
+            ),
+            (1500, 1500, 0x4066, 820)
         );
+        assert!(buff.prefix.instance > 1505);
+        assert_eq!(buff.suffix, [0; 6]);
+        assert_eq!(drain(&mut recipients[1]), issuer[..1]);
+        assert_eq!(drain(&mut recipients[2]), issuer);
         assert!(room.receive(0, 0, cast).unwrap().is_empty());
         for _ in 0..12 {
             room.tick();
@@ -669,7 +738,7 @@ mod tests {
                 batch
                     .into_records()
                     .into_iter()
-                    .filter(|m| m.opcode == 0x0416),
+                    .filter(|m| matches!(m.opcode, 0x0416 | 0x043e)),
             );
         }
         replies

@@ -148,6 +148,24 @@ for definitions 820 and 949 through 953. Across two matches, all 38 witnessed
 Idris B releases coincided with definition 820 on Idris. It also appeared
 25 times outside those releases, leaving its general trigger unresolved.
 
+All 38 Chakram applications had source equal to target. The four caster-view
+and 34 teammate-view releases shared the same stream timestamp and order:
+`0416`, `042E`, `043E` definition 61, `043E` definition 820. All 63
+instances of 820 had unique IDs within their own match. The 38 matched
+applications carried duration bits `0x4066` (2.19921875 seconds) and six
+zero padding bytes. No paired duration update, cancellation or timeout for
+these instances was observed.
+
+In ARAL the host attaches 820 to a successfully released Chakram using a
+fresh world instance ID. It follows the release on the issuing generation's
+connection and on the world streams of teammates who have the actor in view
+and registered. The host records the self-application from those streams.
+Opposing seats, observers and Solo lack an original recipient sample for
+this action. Early interruption consumes no instance, and late entry does
+not recreate expired applications. The simulation gains no extra combat
+effect from the visual application. Definition 61's gameplay role remains
+unverified.
+
 ## Cooldown keys and initial state
 
 The keys in the original ARAL records equal 32-bit FNV-1a over the case-sensitive ASCII definition names in the Android string table. The hosted opening sends the following records immediately after the corresponding hero declaration. Both big-endian floats are positive zero. Lorelai's original C/B/A relative order is retained.

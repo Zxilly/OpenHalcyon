@@ -151,10 +151,11 @@ fn sanitize(m: &mut Message) -> bool {
             if matches!(m.fields(), Ok(halcyon_protocol::Fields::BuffApplication(effect))
                 if (1500..=1505).contains(&effect.prefix.source)
                     && (1500..=1505).contains(&effect.prefix.target)
-                    && effect.prefix.source != effect.prefix.target
                     && effect.prefix.instance > 1505
-                    && effect.prefix.duration_bits == 0x4400
-                    && effect.prefix.definition == 954 && effect.suffix == [0; 6]) => {}
+                    && matches!((effect.prefix.definition, effect.prefix.duration_bits,
+                                 effect.prefix.source == effect.prefix.target),
+                                 (954, 0x4400, false) | (820, 0x4066, true))
+                    && effect.suffix == [0; 6]) => {}
         0x415 if super::npc_attack::actors(m).is_some() => {}
         0x415
             if matches!(

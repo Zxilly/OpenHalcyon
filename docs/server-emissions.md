@@ -64,7 +64,7 @@ The host paths are in [room dispatch](../crates/game/src/lib.rs), [transport](..
 | `043A` | 317 | A | ActionGrantAbility · Granted rank for mapped native hero ability |
 | `043C` | 1,351 | R | ActionCancelAbility |
 | `043D` | 425 | A | ActionGrantItem · Acquired or restored held item instance |
-| `043E` | 44,346 | A | ActionApplyBuff · [Lorelai’s four-second Waterwall on an ally](native-abilities.md), reported to the caster |
+| `043E` | 44,346 | A | [ARAL Waterwall on an ally (issuer) and Chakram self-application (issuer and registered teammates)](native-abilities.md) |
 | `043F` | 17,018 | R | ActionApplyBuff |
 | `0440` | 60 | R | ActionShowFlyoutText |
 | `0441` | 385 | R | ActionModifyBuffDuration |

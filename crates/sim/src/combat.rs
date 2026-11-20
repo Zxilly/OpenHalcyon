@@ -352,6 +352,11 @@ impl World {
                     point,
                     weapon * self.abilities.chakram_weapon_ratio,
                 ));
+                if matches!(self.layout, Layout::Aral { .. }) {
+                    let id = self.next_id;
+                    self.next_id += 1;
+                    events.push(Event::ChakramApplied { source: src, id });
+                }
             }
             Skill::Achilles => {
                 let j = aimed.unwrap();

@@ -85,6 +85,10 @@ pub enum Command {
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Event {
+    ChakramApplied {
+        source: u32,
+        id: u32,
+    },
     WaterwallApplied {
         source: u32,
         target: u32,
