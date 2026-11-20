@@ -13,7 +13,13 @@ pub enum ZoneAction<'a> {
         flag: u8,
         suffix: &'a [u8],
     },
-    /// Two X/Z points. Original IEEE-754 bits are retained, without assuming corner order.
+    /// Two X/Z endpoints (`p0_xz_bits`, `p1_xz_bits`). In Android 147219,
+    /// `0x82bccc` -> `0xc00e64` -> `0xc7e1e0` stores `p0_xz` (`+0x60`) and `p1_xz`
+    /// (`+0x68`) with `flags |= 4` (`+0x78`), and movement collision (`0xc7dd80`,
+    /// branch `0xc7de74`/`0xc7df48`) invokes 2D line-segment vs. line-segment
+    /// intersection (`0x18bb8ec`, `t, u in [0, 1]`), establishing an oriented 2D
+    /// line-segment barrier `(p0_x, p0_z) -> (p1_x, p1_z)` rather than an AABB.
+    /// Original IEEE-754 bits are retained without assuming endpoint order.
     Rectangle {
         id: u32,
         owner: u32,

@@ -160,3 +160,25 @@ Nodes with rerolls disabled retain the existing rules identity. Queued tickets
 retain their original rules identity. They need a compatible host or a fresh
 queue entry after cancellation. The host sends the updated roster before
 the zero-operand echo and sends the replacement default skin to its owner.
+
+### ARAL reroll state (0x0480)
+
+Android 147219 disassembly (`0x82d890` -> `0x8e0830` -> `g_DraftController`
+`vt[8]` `0x8e1324` -> `0xad5460` -> UI handler `0xad4250`) establishes that
+the 82-byte `0x0480` (`AralDraftMarker`) payload drives the ARAL hero-reroll
+control:
+
+| Body offset | Type | Field | Android UI behavior (`0xad4250`) |
+| --- | --- | --- | --- |
+| `+0` (`0`) | BE `u32` | `cost` | Cost per reroll (`w1` to `0xb32be4`). |
+| `+4` (`4`) | BE `u32` | `limit` | Reroll cap compared against `used`. |
+| `+8` (`8`) | BE `u32` | `used` | Rerolls already used by the player. |
+| `+12..75` | `[u8; 64]` | buffer | 64-byte unconverted payload block. |
+| `+76` (`0x4c`) | `u8` | `allow_override` | Nonzero allows rerolling even when `used >= limit`. |
+| `+77` (`0x4d`) | BE `u32` | `balance` | Available reroll currency/tokens (`balance >= cost` required; displayed via `0xb32c00`). |
+| `+81` (`0x51`) | `u8` | `locked` | Nonzero disables the reroll button (`eor w2, w8, #1`). |
+
+The four constant words sent on the first refresh in all eight recorded ARAL
+captures (`1, 5, 1, 3` with zero elsewhere) correspond directly to
+`cost = 1`, `limit = 5`, `used = 0`, `allow_override = 1`, `balance = 3`, and
+`locked = 0`. [`LiveFields::AralRerollState`](../crates/protocol/src/live.rs)

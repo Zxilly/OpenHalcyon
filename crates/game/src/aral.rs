@@ -210,7 +210,9 @@ pub(super) fn reroll(room: &mut Room, seat: usize) -> Batch {
 pub(super) fn refresh(room: &mut Room, seat: usize) -> Batch {
     let mut batch = draft_catalog(room, room.aral_remaining());
     if !room.seats[seat].draft_sync_sent {
-        // The first refresh of all eight recorded ARAL connections used these four constants.
+        // The first refresh of all eight recorded ARAL connections sent this reroll state
+        // (verified at 0xad4250): cost=1 (+0), limit=5 (+4), used=0 (+8),
+        // allow_override=1 (+76), balance=3 (+77), locked=0 (+81).
         let mut body = [0; 86];
         body[..4].copy_from_slice(&1_u32.to_be_bytes());
         body[4..8].copy_from_slice(&5_u32.to_be_bytes());

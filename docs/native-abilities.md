@@ -179,7 +179,7 @@ On the first scene, the host sends the observed `048A` cooldown definitions imme
 
 Every hero's records immediately followed its declaration at the same recorded timestamp. Repeated templates agreed byte for byte within each mode. Seven templates also appeared in both modes with identical initializations. Subsequent Solo chunks can include items and changed timers. The host sends the template's initialization only during the initial scene, before live grants and item use. The replay writer accepts only the observed combinations of key, initial value, configuration value and flags for a hero actor.
 
-The regression reconstructs the arrays from the production encoder. In ascending order by template, it hashes the two-byte big-endian template ID, one byte of row count, and bytes 4 through 21 from each consecutive same-actor `048A`. The SHA-256 values from the original recordings are `7f7c078337111ee4803bac3b030dcd18884f1443353db2e7db08db48c1a239bd` (ARAL) and `ca7626305d8c7a483cdb0acf6bd448eb5398fa581e300fbbf12ea592953dd05b` (Solo). [Template profiles](../crates/game/src/native_cooldown/profiles.rs) · [Production encoder and regression](../crates/game/src/native_cooldown.rs)
+The regression reconstructs the arrays from the production encoder. In ascending order by template, it hashes the two-byte big-endian template ID, one byte of row count, and bytes 4 through 21 from each consecutive same-actor `048A`. The SHA-256 values from the original recordings are `7f7c078337111ee4803bac3b030dcd18884f1443353db2e7db08db48c1a239bd` (ARAL) and `ca7626305d8c7a483cdb0acf6bd448eb5398fa581e300fbbf12ea592953dd05b` (Solo). Scanning all 930 decrypted OBB CFF0 files resolved ten additional per-hero cooldown keys in `profiles.rs` (`Petal_C_RecastDelay`, `CancelWhirlwind`, `Baron_C_RecastDelay`, `Skye_C_RecastDelay`, `Reboot`, `Blackfeather_C_RecastDelay`, `Lorelai_B_RecastDelay`, `Shin_A`, `Shin_B`, `Shin_C`) as well as both previously unresolved item cooldown hashes (`0x1b184adf` = `Ability__Item__HealingFlask`, `0xdb161949` = `StormguardBanner`); only `0xd60c580b` (present in a static table at `0x1ad11d4` in `libGameKindred.so`) remains unnamed. [Template profiles](../crates/game/src/native_cooldown/profiles.rs) · [Production encoder and regression](../crates/game/src/native_cooldown.rs)
 
 The same seven matches contained 2,000 modify-cooldown records. Across six Lorelai A, five B and one C releases, the caster received no such records for her actor throughout either match. No Idris B key occurred in the 44 changes on his own actor or the 127 on the remote Idris. The only changes coinciding with any of the 38 B releases within 120 ms were two relative zero operands on Idris **A and C**. No same-owner sync occurred within 100 ms of any of the 50 releases. The static receiver selects a relative operation for mode zero and a direct operation for nonzero mode. The charge opcode uses an unsigned slot index and operand. None of these observations supplies a B/ABC start or expiry packet, a late-join nonzero countdown formula, or a teammate cooldown subscription.
 
@@ -276,3 +276,32 @@ Mobile Bulwark moves the combat circle with Lyra and extends it using its named 
 * The host charges 140/190/240 energy and starts the 100/80/60-second cooldown when protection begins. Interrupting or cancelling removes protection immediately and prevents the blast. This payment timing is a host policy. The normal simulator command and Bot decision both use a self-cast. A native client request binding for Verse remains unverified.
 * Karas's Twister travels towards the selected point at the speed implied by seven units in 0.32 seconds. A wall, hostile Bulwark, root or stun can interrupt movement. Each crossed enemy takes the ranked damage at most once. The host tests swept collision circles for Karas and the target because the supplement gives no separate blade width.
 * Lyra's Imperial Sigil tests allied and enemy heroes inside its 3.5-unit circle. The host uses the circle as its sight radius, checks healing and damage once per second, and tracks a twelve-second charge budget. Passive drain is one unit per second. While occupied, four units per second are consumed per affected hero, counting allied heroes only while injured. Those timing and drain-combination choices implement the tooltip and named values. An authoritative self-targeted A reactivates the current sigil without another energy debit or cooldown reset. It converts remaining charge to healing at 30%, grants a decaying movement bonus, and deals the named burst to enemy heroes and half damage to lane minions. Natural depletion ends the field. A standalone additional detonation-heal amount has no independently specified additive relationship with the remaining-charge formula.
+
+## CFF0 AbilitySet slot indices (61 heroes)
+
+Each decrypted v7 hero `ActorDef` CFF0 record contains a contiguous `PTCH` pointer array of `AbilityDef` structs whose 0-based indices match observed `0x043A` grant operands and `0x0412` / `0x0415` / `0x0416` selectors (`Withdraw` / `Emote` entries sit outside this array, and `DefaultAttack` / `AltAttack` / `CritAttack` live in a separate `AttackSet` array). Across all 61 `HeroManifest` entries, 41 heroes use standard `(A=0, B=1, C=2)` indices and 20 heroes have shifted or sub-ability slots:
+
+| Hero | A / B / C indices | Complete CFF0 `AbilitySet` order |
+| --- | --- | --- |
+| `Anka` | `0 / 2 / 3` | `[0] A, [1] A2, [2] B, [3] C` |
+| `Baron` | `1 / 2 / 3` | `[0] QuickAttack, [1] A, [2] B, [3] C` |
+| `Catherine` | `1 / 2 / 3` | `[0] A_DefaultAttack, [1] A, [2] B, [3] C, [4] B_ReflectDamage` |
+| `Glaive` | `0 / 2 / 3` | `[0] A, [1] A_KnockbackDefAttack, [2] B, [3] C, [4] A_Talent_AfterburnAnyDistance` |
+| `Grumpjaw` | `1 / 2 / 3` | `[0] B_FrenzyAttack, [1] A, [2] B, [3] C, [4] Eat, [5] C_SpitOut` |
+| `Gwen` | `1 / 2 / 3` | `[0] PerkAttack, [1] A, [2] B, [3] C` |
+| `Hero057` (`Miho`) | `0 / 1 / 3` | `[0] A, [1] B, [2] B_LeapOff, [3] C` |
+| `Idris` | `0 / 3 / 4` | `[0] A, [1] A_Dash, [2] A_Blink, [3] B, [4] C, [5] C_LeapOff` |
+| `Lyra` | `0 / 2 / 3` | `[0] A, [1] A_Detonate, [2] B, [3] C` |
+| `Malene` | dual-form | `[0] A1, [1] A2, [2] B1, [3] B2, [4] C1, [5] C2` |
+| `Ozo` | `0/1/2 / 3 / 8` | `[0] A1, [1] A2, [2] A3, [3] B, [4] B_QueueBounce, [5] B_Bounce, [6] B_Bounce, [7] B_EndingAttack, [8] C, [9] C_Finisher` |
+| `Samuel` | `1 / 3 / 4` | `[0] EmpoweredAttack, [1] A, [2] A_Empowered, [3] B, [4] C` |
+| `SAW` | `1 / 2 / 3` | `[0] Shank, [1] A, [2] B, [3] C, [4] B_Cancel` |
+| `Silvernail` | `2 / 3 / 4` | `[0] DefaultFastAttack, [1] CritFastAttack, [2] A, [3] B, [4] C` |
+| `Skye` | `0 / 2 / 4` | `[0] A, [1] A_Cancel, [2] B, [3] AlwaysDisabled, [4] C` |
+| `Tony` | `0 / 4 / 5` | `[0] A, [1] A1, [2] A2, [3] A3, [4] B, [5] C` |
+| `Varya` | `0 / 4 / 8` | `[0] A, [1] A_Default, [2] A_Quick, [3] A_Queue, [4] B, [5] B_Move, [6] B_Move_Default, [7] B_Move_Charged, [8] C` |
+| `Viola` | `0 / 1 / 3` | `[0] A, [1] B, [2] C0, [3] C, [4] C2, [5] C3, [6] C4` |
+| `Yates` | `0 / 2 / 3` | `[0] A, [1] A_Recoil, [2] B, [3] C` |
+| `Ylva` | `0 / 2 / 3` | `[0] A, [1] A_Cancel, [2] B, [3] C, [4] Talent_ShatteredFang` |
+
+This layout matches all captured wire grants and casts (`Hero009`, `Lorelai`, `Reim`, `Amael`, `Ringo` `DoubleDown = 3`, `Yates` `0 / 2 / 3`, `Idris` `0 / 3 / 4`) and establishes the shifted selector indices for currently simulated heroes whose slots are not `(0, 1, 2)` (`Catherine` `1 / 2 / 3`, `Gwen` `1 / 2 / 3`, `Lyra` `0 / 2 / 3`, `SAW` `1 / 2 / 3`).

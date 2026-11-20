@@ -4,7 +4,7 @@ use halcyon_data::EntityTemplate;
 const TAUNT: Row = row("Ability__Emote_Taunt", EmoteFive);
 const DANCE: Row = row("Ability__Emote_Dance", EmoteHalf);
 const WITHDRAW: Row = row("Ability__Withdraw", EmoteHalf);
-// This definition key has no independently identified name.
+// Appears in a 3-entry static table at 0x1ad11d4 in libGameKindred.so (0x377db359, 0xd60c580b, 0xd1f4faf2); string name remains unresolved in OBB CFF0.
 const SHARED: u32 = 0xd60c580b;
 const HALF: Row = Row::raw(SHARED, SharedHalf);
 const SIX_TENTHS: Row = Row::raw(SHARED, SharedSixTenths);
@@ -39,7 +39,7 @@ openings! {
         TAUNT,
         DANCE,
         WITHDRAW,
-        Row::raw(0xcb59333b, Internal),
+        row("Petal_C_RecastDelay", Internal),
         row("Ability__Petal__C", Ultimate),
         row("Ability__Petal__B", Ability),
         row("Ability__Petal__A", Ability),
@@ -82,7 +82,7 @@ openings! {
         TAUNT,
         DANCE,
         row("Ability__Rona__Withdraw", EmoteHalf),
-        Row::raw(0x1a1a5c73, Internal),
+        row("CancelWhirlwind", Internal),
         row("Ability__Rona__C", Ultimate),
         row("Ability__Rona__B", Ability),
         row("Ability__Rona__A", Ability),
@@ -92,7 +92,7 @@ openings! {
         TAUNT,
         DANCE,
         row("Ability__Baron__Withdraw", EmoteHalf),
-        Row::raw(0x9fc950db, Internal),
+        row("Baron_C_RecastDelay", Internal),
         row("Ability__Baron__C", Ultimate),
         row("Ability__Baron__B", Ability),
         row("Ability__Baron__A", Ability),
@@ -102,7 +102,7 @@ openings! {
         TAUNT,
         DANCE,
         row("Ability__Skye__Withdraw", EmoteHalf),
-        Row::raw(0x7c0cad61, Internal),
+        row("Skye_C_RecastDelay", Internal),
         row("Ability__Skye__C", Ultimate),
         row("Ability__Skye__B", Ability),
         row("Ability__Skye__A", Ability),
@@ -114,7 +114,7 @@ openings! {
         DANCE,
         row("Ability__Alpha__Withdraw", EmoteHalf),
         row("Ability__Alpha__SelfDestruct", Ultimate),
-        Row::raw(0xcd8619d8, Internal),
+        row("Reboot", Internal),
         row("Ability__Alpha__C", Ultimate),
         row("Ability__Alpha__B", Ability),
         row("Ability__Alpha__A", Ability),
@@ -127,7 +127,7 @@ openings! {
         TAUNT,
         DANCE,
         WITHDRAW,
-        Row::raw(0xf90eec0b, Internal),
+        row("Blackfeather_C_RecastDelay", Internal),
         row("Ability__Blackfeather__C", Ultimate),
         row("Ability__Blackfeather__B", Ability),
         row("Ability__Blackfeather__A", Ability),
@@ -142,7 +142,7 @@ openings! {
         DANCE,
         WITHDRAW,
         row("Ability__Lorelai__C", Ultimate),
-        Row::raw(0xb6c5daa2, AlternateZero),
+        row("Lorelai_B_RecastDelay", AlternateZero),
         row("Ability__Lorelai__B", Ability),
         row("Ability__Lorelai__A", Ability),
         SEVEN_TENTHS,
@@ -200,9 +200,9 @@ openings! {
         DANCE,
         WITHDRAW,
         row("Ability__Shin__C1", Ultimate),
-        Row::raw(0x56ed1b7b, Ultimate),
-        Row::raw(0x55ed19e8, Ability),
-        Row::raw(0x58ed1ea1, Ability),
+        row("Shin_C", Ultimate),
+        row("Shin_B", Ability),
+        row("Shin_A", Ability),
         SEVEN_TENTHS,
     ],
 }

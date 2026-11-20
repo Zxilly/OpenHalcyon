@@ -73,6 +73,9 @@ pub struct VisibilityBody {
 }
 
 /// Observed `0x042C` camp minimap state byte (`(populated << 1) | visible`).
+///
+/// Android 147219 (`0x82aee0`) extracts only the low 2 bits via
+/// `bfxil w3, w21, #0, #2`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CampVisibilityState {
     /// Camp has no living monsters (countdown or cleared) and is hidden from this index (`0`).
@@ -122,6 +125,10 @@ impl From<CampVisibilityState> for u8 {
 }
 
 /// Six-byte body of `0x042C` (`Opcode::CampVisibility`).
+///
+/// Android 147219 (`vt[3]` at `0x8844dc`) filters strictly on
+/// `index == GetLocalTeamId()` (`0xbedf10`, `[local_player + 0xc2] & 0xf`) before
+/// storing `state` into `[minimap_entry + 0x6c]` via `0x820a7c`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, BinRead, BinWrite)]
 #[brw(big)]
 pub struct CampVisibilityBody {

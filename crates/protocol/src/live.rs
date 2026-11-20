@@ -47,9 +47,21 @@ pub enum LiveFields<'a> {
         player_uuid: &'a [u8; 64],
         disconnect_code: u16,
     },
-    UnalignedWord {
-        prefix: [u32; 3],
-        word77: u32,
+    /// `0x0480` (`AralDraftMarker`) ARAL hero-reroll state decoded at `0x82d890`
+    /// and consumed by the ARAL draft UI at `0xad4250`.
+    AralRerollState {
+        /// `+0x00` (BE32): reroll cost (`w1` to `0xb32be4`).
+        cost: u32,
+        /// `+0x04` (BE32): reroll cap compared against `used`.
+        limit: u32,
+        /// `+0x08` (BE32): rerolls already consumed.
+        used: u32,
+        /// `+0x4c` (`76`): nonzero permits rerolling even when `used >= limit`.
+        allow_override: u8,
+        /// `+0x4d` (`77`, unaligned BE32): available reroll currency/token balance (`>= cost` required; displayed via `0xb32c00`).
+        balance: u32,
+        /// `+0x51` (`81`): nonzero locks/disables the reroll button (`eor w2, w8, #1`).
+        locked: u8,
     },
 }
 pub(super) fn fields(op: u16, b: &[u8]) -> Option<Fields<'_>> {
@@ -176,9 +188,13 @@ pub(super) fn fields(op: u16, b: &[u8]) -> Option<Fields<'_>> {
             }));
         }
         crate::wire_opcode::AralDraftMarker if expected(82) => {
-            return Some(Fields::Live(LiveFields::UnalignedWord {
-                prefix: [word(0), word(4), word(8)],
-                word77: word(77),
+            return Some(Fields::Live(LiveFields::AralRerollState {
+                cost: word(0),
+                limit: word(4),
+                used: word(8),
+                allow_override: b[76],
+                balance: word(77),
+                locked: b[81],
             }));
         }
         _ => {}
@@ -290,9 +306,29 @@ mod tests {
         assert_eq!(right[15], [144, 145, 146, 147]);
         assert!(matches!(
             fields(crate::wire_opcode::AralDraftMarker, &b[..86]),
-            Some(Fields::Live(LiveFields::UnalignedWord {
-                word77: 0x4d4e4f50,
-                ..
+            Some(Fields::Live(LiveFields::AralRerollState {
+                cost: 0x0001_0203,
+                limit: 0x0405_0607,
+                used: 0x0809_0a0b,
+                allow_override: 76,
+                balance: 0x4d4e_4f50,
+                locked: 81,
+            }))
+        ));
+        let mut observed = [0u8; 86];
+        observed[..4].copy_from_slice(&1u32.to_be_bytes());
+        observed[4..8].copy_from_slice(&5u32.to_be_bytes());
+        observed[76] = 1;
+        observed[77..81].copy_from_slice(&3u32.to_be_bytes());
+        assert!(matches!(
+            fields(crate::wire_opcode::AralDraftMarker, &observed),
+            Some(Fields::Live(LiveFields::AralRerollState {
+                cost: 1,
+                limit: 5,
+                used: 0,
+                allow_override: 1,
+                balance: 3,
+                locked: 0,
             }))
         ));
         assert!(fields(crate::wire_opcode::TeamSurrenderStateChanged, &b[..150]).is_none());

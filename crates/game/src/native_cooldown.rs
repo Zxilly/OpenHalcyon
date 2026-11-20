@@ -87,8 +87,8 @@ impl Row {
     }
 }
 
-/// FNV-1a over the exact case-sensitive Android definition name.
-const fn row(name: &str, preset: Preset) -> Row {
+/// FNV-1a 32-bit hash over a case-sensitive Android definition name.
+const fn fnv1a_32(name: &str) -> u32 {
     let bytes = name.as_bytes();
     let mut hash = 0x811c9dc5u32;
     let mut i = 0;
@@ -96,7 +96,11 @@ const fn row(name: &str, preset: Preset) -> Row {
         hash = (hash ^ bytes[i] as u32).wrapping_mul(0x01000193);
         i += 1;
     }
-    Row::raw(hash, preset)
+    hash
+}
+
+const fn row(name: &str, preset: Preset) -> Row {
+    Row::raw(fnv1a_32(name), preset)
 }
 
 /// Called immediately after a hero declaration on the initial native scene.
@@ -186,5 +190,11 @@ mod tests {
             assert_eq!(counts, (templates, rows));
             assert_eq!(format!("{:x}", digest.finalize()), expected);
         }
+    }
+
+    #[test]
+    fn resolved_item_cooldown_hashes_match_cff0_names() {
+        assert_eq!(fnv1a_32("Ability__Item__HealingFlask"), 0x1b184adf);
+        assert_eq!(fnv1a_32("StormguardBanner"), 0xdb161949);
     }
 }
