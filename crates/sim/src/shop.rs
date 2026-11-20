@@ -768,9 +768,8 @@ impl BasicItem {
     }
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 struct Offer {
-    permitted: bool,
     boot_move: f32,
     components: Vec<BasicItem>,
     refund: Option<u32>,
@@ -778,13 +777,14 @@ struct Offer {
     combine: u32,
     bonuses: Vec<(NativeItemStat, f32)>,
 }
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 pub(super) struct Shop {
     attacks: attack_items::Rules,
     infusions: [Option<infusions::Rule>; 2],
     flask: Option<FlaskRule>,
     sprint: Option<SprintRule>,
-    offers: Vec<Offer>,
+    offers: std::sync::Arc<[Offer]>,
+    permitted: Vec<bool>,
 }
 impl Default for Shop {
     fn default() -> Self {
@@ -793,10 +793,13 @@ impl Default for Shop {
             infusions: infusions::Rule::DEFAULTS,
             flask: Some(FlaskRule::ARAL_STARTER),
             sprint: None,
+            permitted: OFFERS
+                .iter()
+                .map(|d| d.kind.catalog_store_allows(None).unwrap_or(true))
+                .collect(),
             offers: OFFERS
                 .iter()
                 .map(|d| Offer {
-                    permitted: d.kind.catalog_store_allows(None).unwrap_or(true),
                     boot_move: 0.,
                     components: d.components.to_vec(),
                     refund: match d.kind {
@@ -883,6 +886,11 @@ impl SprintRule {
     }
 }
 impl Shop {
+    #[cfg(test)]
+    pub(super) fn shares_offers_with(&self, other: &Self) -> bool {
+        std::sync::Arc::ptr_eq(&self.offers, &other.offers)
+    }
+
     pub(super) fn bot_item(
         &self,
         inventory_size: usize,
@@ -898,7 +906,7 @@ impl Shop {
             .into_iter()
             .find(|&item| {
                 let offer = &self.offers[item as usize];
-                offer.permitted
+                self.permitted[item as usize]
                     && (!solo || offer.standard_5v5)
                     && offer.combine > 0
                     && offer.combine <= gold
@@ -938,7 +946,7 @@ impl Shop {
             shop.set_standard_5v5(names);
         }
         for d in &OFFERS {
-            let offer = &mut shop.offers[d.kind as usize];
+            let offer = &mut std::sync::Arc::make_mut(&mut shop.offers)[d.kind as usize];
             let Some(row) = data.items.iter().find(|row| row.id == d.name) else {
                 if (d.kind as usize) < 5 {
                     return Err(format!("missing item {}", d.name));
@@ -1057,7 +1065,10 @@ impl Shop {
     }
 
     fn set_standard_5v5(&mut self, names: &std::collections::BTreeSet<String>) {
-        for (offer, definition) in self.offers.iter_mut().zip(&OFFERS) {
+        for (offer, definition) in std::sync::Arc::make_mut(&mut self.offers)
+            .iter_mut()
+            .zip(&OFFERS)
+        {
             offer.standard_5v5 = names.contains(definition.name);
         }
     }
@@ -1133,7 +1144,7 @@ impl World {
             return Err("outside base shop");
         }
         let offer = &self.shop.offers[item as usize];
-        if !offer.permitted
+        if !self.shop.permitted[item as usize]
             || offer.combine == 0
             || (matches!(self.layout, Layout::SoloMid { .. }) && !offer.standard_5v5)
         {
@@ -1285,15 +1296,15 @@ impl World {
     }
 
     pub fn use_catalog_store(&mut self, settings: halcyon_data::items::StoreSettings) {
-        for (offer, definition) in self.shop.offers.iter_mut().zip(&OFFERS) {
+        for (permitted, definition) in self.shop.permitted.iter_mut().zip(&OFFERS) {
             if let Some(allowed) = definition.kind.catalog_store_allows(Some(settings)) {
-                offer.permitted = allowed;
+                *permitted = allowed;
             }
         }
     }
     pub fn use_item_store(&mut self, entries: &[String]) {
-        for (offer, definition) in self.shop.offers.iter_mut().zip(&OFFERS) {
-            offer.permitted = entries.iter().any(|entry| entry == definition.name);
+        for (permitted, definition) in self.shop.permitted.iter_mut().zip(&OFFERS) {
+            *permitted = entries.iter().any(|entry| entry == definition.name);
         }
     }
 
@@ -1481,8 +1492,8 @@ mod tests {
             duration: 40,
             cooldown: 3000,
         });
-        w.shop.offers[SprintBoots as usize].boot_move = 0.3;
-        w.shop.offers[SprintBoots as usize].refund = Some(150);
+        std::sync::Arc::make_mut(&mut w.shop.offers)[SprintBoots as usize].boot_move = 0.3;
+        std::sync::Arc::make_mut(&mut w.shop.offers)[SprintBoots as usize].refund = Some(150);
         let first = w.purchase(1, SprintBoots).unwrap().granted;
         let second = w.purchase(1, SprintBoots).unwrap().granted;
         assert_eq!(w.entities[0].item_stats.boot_speed, 0.3);
@@ -1516,7 +1527,7 @@ mod tests {
         let mut w = World::new(5, 6);
         w.use_six_human_roster().unwrap();
         w.use_aral_lane().unwrap();
-        w.shop.offers[Hourglass as usize].refund = Some(125);
+        std::sync::Arc::make_mut(&mut w.shop.offers)[Hourglass as usize].refund = Some(125);
         let receipt = w.purchase(1, Hourglass).unwrap();
         let held = receipt.granted;
         assert!(w.sell_item(2, held.instance).is_err());
@@ -1665,8 +1676,10 @@ mod tests {
         let mut world = World::new(37, 1);
         let actor = world.entities[0].id;
         world.entities[0].gold = 10_000;
-        world.shop.offers[SwiftShooter as usize].bonuses = vec![(AttackSpeed, 0.125)];
-        world.shop.offers[BlazingSalvo as usize].bonuses = vec![(AttackSpeed, 0.375)];
+        std::sync::Arc::make_mut(&mut world.shop.offers)[SwiftShooter as usize].bonuses =
+            vec![(AttackSpeed, 0.125)];
+        std::sync::Arc::make_mut(&mut world.shop.offers)[BlazingSalvo as usize].bonuses =
+            vec![(AttackSpeed, 0.375)];
         let before = world.entities[0].item_stats.attack_speed;
         let component = world.purchase(actor, SwiftShooter).unwrap();
         assert_eq!(world.entities[0].item_stats.attack_speed, before + 0.125);

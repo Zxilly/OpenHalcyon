@@ -1224,7 +1224,7 @@ mod tests {
     #[test]
     fn ringo_rank_controls_release_debit_range_and_ready_tick() {
         let mut w = duel();
-        w.abilities.achilles = CastRanks {
+        std::sync::Arc::make_mut(&mut w.abilities).achilles = CastRanks {
             range: [8.; 5],
             energy: [40., 45., 50., 55., 60.],
             seconds: [9., 8.5, 8., 7.5, 7.],

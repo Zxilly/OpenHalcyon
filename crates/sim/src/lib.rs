@@ -28,6 +28,8 @@ mod score;
 mod shop;
 mod solo_route;
 mod solo_side;
+mod world_rules;
+pub use world_rules::WorldRules;
 mod yates;
 use combat::{AbilityBook, Cast, SpellEffect, Status};
 pub use combat::{AbilitySlot, CastTarget};
@@ -426,7 +428,7 @@ pub struct World {
     bot_difficulty: Option<halcyon_data::BotDifficulty>,
     first_wave: u64,
     wave_interval: u64,
-    abilities: AbilityBook,
+    abilities: std::sync::Arc<AbilityBook>,
     shop: shop::Shop,
     effects: Vec<SpellEffect>,
     chakrams: Vec<chakram::Chakram>,
@@ -547,50 +549,10 @@ impl World {
     }
 
     pub fn new(seed: u64, human_seats: u8) -> Self {
-        // Confirmed delivery base numbers, usable without distributing extracted assets.
-        let stats = [
-            Stats::new(EntityTemplate::Ringo, 703., 74., 25., 6.2, 3.6),
-            Stats::new(EntityTemplate::OuterTurret5v5, 3000., 190., 100., 9., 0.),
-            Stats::new(EntityTemplate::VainCrystalHome5v5, 20000., 0., 0., 22., 0.),
-            Stats::new(EntityTemplate::VainCrystalAway5v5, 20000., 0., 0., 22., 0.),
-            Stats::new(EntityTemplate::MinionMelee5v5, 575., 13., 0., 1.3, 3.5),
-            Stats::new(EntityTemplate::MinionRange5v5, 475., 15., 0., 4.5, 3.5),
-            Stats::new(EntityTemplate::MinionSiege5v5, 880., 15., 0., 4., 3.5),
-            Stats::new(EntityTemplate::MinionCaptain5v5, 950., 15., 0., 5., 3.5),
-        ];
-        Self::build(seed, human_seats, stats, 900, 600)
+        world_rules::BUILTIN.world(seed, human_seats)
     }
     pub fn from_data(seed: u64, human_seats: u8, data: &GameData) -> Result<Self, String> {
-        let units = NAMES.map(|name| {
-            let unit = data
-                .unit(name)
-                .ok_or_else(|| format!("missing unit {name}"))?;
-            let id = data
-                .type_id(name)
-                .ok_or_else(|| format!("missing manifest entry {name}"))?;
-            Ok::<_, String>(Stats::load(id, unit, data))
-        });
-        let stats: Vec<_> = units.into_iter().collect::<Result<_, _>>()?;
-        let timing = |key: &str| {
-            data.official_rules["five_v_five"]["waves"][key]
-                .as_u64()
-                .and_then(|v| v.checked_mul(TICK_HZ))
-                .filter(|n| *n > 0)
-                .ok_or_else(|| format!("invalid wave timing {key}"))
-        };
-        let mut world = Self::build(
-            seed,
-            human_seats,
-            stats.try_into().expect("eight unit types"),
-            timing("first_spawn_s")?,
-            timing("interval_s")?,
-        );
-        world.aral_units.load(data);
-        world.load_solo_towers(data);
-        world.solo_lane_rewards = data.solo_lane_rewards();
-        world.abilities = AbilityBook::from_data(data)?;
-        world.shop = shop::Shop::load(data)?;
-        Ok(world)
+        Ok(WorldRules::load(data)?.world(seed, human_seats))
     }
     /// Remove the synthetic hero slots from a full six-human roster. Stable
     /// actor IDs for the humans and structures remain unchanged.
@@ -680,31 +642,25 @@ impl World {
         hero.apply_growth(hero.level - 1);
         Ok(())
     }
-    fn build(
-        seed: u64,
-        human_seats: u8,
-        stats: [Stats; 8],
-        first_wave: u64,
-        wave_interval: u64,
-    ) -> Self {
+    fn build(seed: u64, human_seats: u8, rules: &WorldRules) -> Self {
         let mut w = Self {
             tick: 0,
             winner: None,
             entities: Vec::with_capacity(50),
             next_id: 1,
             layout: Layout::default(),
-            aral_units: aral::Units::default(),
-            solo_lane_rewards: None,
-            solo_inner_towers: layout::solo_inner_towers(),
+            aral_units: rules.aral_units,
+            solo_lane_rewards: rules.solo_lane_rewards,
+            solo_inner_towers: rules.solo_inner_towers,
             next_item: 40000,
-            stats,
+            stats: rules.stats,
             seed,
             crit_rng: seed,
             bot_difficulty: None,
-            first_wave,
-            wave_interval,
-            abilities: AbilityBook::default(),
-            shop: Default::default(),
+            first_wave: rules.first_wave,
+            wave_interval: rules.wave_interval,
+            abilities: rules.abilities.clone(),
+            shop: rules.shop.clone(),
             pending_item_events: Vec::new(),
             effects: Vec::new(),
             chakrams: Vec::new(),

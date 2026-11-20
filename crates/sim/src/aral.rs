@@ -19,7 +19,7 @@ const TOWERS: [(u8, EntityTemplate, f32, f32); 5] = [
     (7, EntityTemplate::Turret, 17.06, 1.93),
 ];
 
-#[derive(Serialize)]
+#[derive(Clone, Copy, Serialize)]
 pub(super) struct Units([Stats; 7]);
 impl Default for Units {
     fn default() -> Self {

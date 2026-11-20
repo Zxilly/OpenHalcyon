@@ -108,18 +108,6 @@ pub(super) fn solo_inner_towers() -> [Stats; 2] {
 }
 
 impl World {
-    pub(super) fn load_solo_towers(&mut self, data: &GameData) {
-        for (stats, name) in self
-            .solo_inner_towers
-            .iter_mut()
-            .zip(["Turret5v5", "ArmoryTurret5v5"])
-        {
-            if let Some(unit) = data.unit(name) {
-                *stats = Stats::load(stats.id, unit, data);
-            }
-        }
-    }
-
     /// The native Solo replay has three staggered lanes for each team.
     pub(super) fn spawn_solo_mid_wave(&mut self, events: &mut Vec<Event>) {
         let Some(elapsed) = self.tick.checked_sub(19 * TICK_HZ) else {

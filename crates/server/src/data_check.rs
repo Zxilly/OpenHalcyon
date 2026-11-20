@@ -34,6 +34,7 @@ struct Supplement<'a> {
 }
 
 pub(super) fn inspect(data: &GameData) -> Result<Report<'_>> {
+    halcyon_sim::WorldRules::load(data).map_err(anyhow::Error::msg)?;
     let supplemental = if let Some(reference) = data.references() {
         let combat = data.extra.combat_content();
         let items = data

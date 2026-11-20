@@ -36,3 +36,8 @@
 cargo test -p halcyon-sim
 cargo run --release -p halcyon-sim --example lane_bench -- ../vg/_ana/delivery
 ```
+### 房间初始化
+
+进程启动时用 `WorldRules::load` 编译英雄基础数值、技能、装备和兵线参数。每个新房间共享技能表、商店配方和属性表，单独持有模式商品可用性、装备实例、英雄和计时器。创建不同模式的房间可以并行进行。
+
+在本机实包上执行 `cargo run --release -p halcyon-sim --example room_start_bench -- <delivery> <server_data_extra>`，每轮创建并释放 128 个六人模拟世界，共七轮，交替测两个路径。含规则编译的单房间耗时中位数为 70.426 µs，复用规则为 0.576 µs。每次测量前校验两种入口在同一 seed 的完整初始状态摘要。范围仅含内存中的世界构造与释放，连接、地图开场和 tick 各有单独的测量。

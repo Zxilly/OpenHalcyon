@@ -66,6 +66,7 @@ struct Manager {
     capacity: usize,
     data: Option<Arc<GameData>>,
     catalog: Arc<[[u8; 32]]>,
+    rules: Option<halcyon_sim::WorldRules>,
     rooms: Mutex<HashMap<Uuid, Shared>>,
     finish: Mutex<Option<Finish>>,
     bytes: AtomicU64,
@@ -247,6 +248,14 @@ impl Rooms {
             bind_ip,
             host: advertised_host,
             capacity,
+            rules: data
+                .as_deref()
+                .map(halcyon_sim::WorldRules::load)
+                .transpose()
+                .map_err(|error| {
+                    tracing::error!(%error, "invalid simulation rules");
+                    PlatformError::Invalid("invalid simulation rules")
+                })?,
             catalog: messages::catalog_entries(data.as_deref()),
             data,
             rooms: Mutex::default(),
@@ -600,8 +609,8 @@ impl Rooms {
         let address = self.advertise(port);
         let seed = req.match_id.as_u128() as u64;
         let n = req.players.len() as u8;
-        let mut world = match &self.0.data {
-            Some(d) => World::from_data(seed, n, d).map_err(|_| PlatformError::HostUnavailable)?,
+        let mut world = match &self.0.rules {
+            Some(rules) => rules.world(seed, n),
             None => World::new(seed, n),
         };
         if let Some(settings) =
