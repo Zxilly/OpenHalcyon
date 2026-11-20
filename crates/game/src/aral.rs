@@ -37,6 +37,22 @@ pub(super) fn talent_response(
         };
         level.get()
     };
+    // One independently identified Mobile Bulwark carried slot 1 and level 10.
+    // The reserved level is home-authorized. Other native selections still have only numeric evidence.
+    if hero.type_id == halcyon_data::EntityTemplate::Lyra.as_raw()
+        && let Some(data) = room.data.as_deref()
+    {
+        let actor = hero.id;
+        let talent = (selection == TalentSelection::Slot1 && level == 10).then(|| {
+            (
+                "Talent_Lyra_MobileBulwark",
+                std::num::NonZeroU8::new(10).unwrap(),
+            )
+        });
+        // Older content packages can still serve the numeric equip response.
+        let _ = room.world.set_named_talent(actor, talent, data);
+    }
+    let hero = &room.world.entities[seat];
     let equipped = EquippedTalent {
         actor: u32::from(messages::wire_id(hero.id)),
         selection,
@@ -421,22 +437,6 @@ mod tests {
         until(socket, cipher, done.opcode).await;
     }
 
-    #[test]
-    fn readiness_requires_order_and_authenticated_actor_id() {
-        let mut preamble = crate::scene::Preamble::default();
-        preamble.observe(&Message::known(crate::Opcode::SceneConfirmed, [0; 6]), 1505);
-        preamble.observe(&Message::known(crate::Opcode::RequestScene, [0; 6]), 1505);
-        preamble.observe(
-            &Message::known(crate::Opcode::SceneOwner, [0, 0, 5, 224, 1, 0]),
-            1505,
-        );
-        assert!(!preamble.scene_requested());
-        preamble.observe(
-            &Message::known(crate::Opcode::SceneOwner, [0, 0, 5, 225, 1, 0]),
-            1505,
-        );
-        assert!(preamble.scene_requested());
-        assert!(!preamble.confirmed());
     #[tokio::test]
     #[ignore = "requires original delivery and supplemental combat data"]
     async fn lyra_native_mobile_bulwark_requires_the_seats_named_level_evidence() {
@@ -504,6 +504,22 @@ mod tests {
         assert_eq!(r.world.state_digest(), original);
     }
 
+    #[test]
+    fn readiness_requires_order_and_authenticated_actor_id() {
+        let mut preamble = crate::scene::Preamble::default();
+        preamble.observe(&Message::known(crate::Opcode::SceneConfirmed, [0; 6]), 1505);
+        preamble.observe(&Message::known(crate::Opcode::RequestScene, [0; 6]), 1505);
+        preamble.observe(
+            &Message::known(crate::Opcode::SceneOwner, [0, 0, 5, 224, 1, 0]),
+            1505,
+        );
+        assert!(!preamble.scene_requested());
+        preamble.observe(
+            &Message::known(crate::Opcode::SceneOwner, [0, 0, 5, 225, 1, 0]),
+            1505,
+        );
+        assert!(preamble.scene_requested());
+        assert!(!preamble.confirmed());
         preamble.observe(&Message::known(crate::Opcode::SceneConfirmed, [0; 6]), 1505);
         assert!(preamble.confirmed());
     }
