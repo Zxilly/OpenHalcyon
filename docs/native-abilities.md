@@ -168,16 +168,16 @@ unverified.
 
 ## Cooldown keys and initial state
 
-The keys in the original ARAL records equal 32-bit FNV-1a over the case-sensitive ASCII definition names in the Android string table. The hosted opening sends the following records immediately after the corresponding hero declaration. Both big-endian floats are positive zero. Lorelai's original C/B/A relative order is retained.
+On the first scene, the host sends the observed `048A` cooldown definitions immediately after each supported hero's `03F3` declaration. The records include emotes, withdrawal, hero abilities and additional action keys, in the order recorded for that template. Recognized keys use FNV-1a over the case-sensitive Android definition name. Unknown keys retain their exact integer value. Cooldown initialization does not grant ranks, activate a talent or start a simulated cooldown.
 
-| Definition name | Key in hex | Six configuration bytes in hex |
-|---|---|---|
-| Ability__Lorelai__C | 72761226 | 00 00 01 01 01 00 |
-| Ability__Lorelai__B | 737613b9 | 00 00 01 00 01 00 |
-| Ability__Lorelai__A | 70760f00 | 00 00 01 00 01 00 |
-| Ability__Idris__B | 5cb5e744 | 00 00 01 00 01 00 |
+| Original source | Hero declarations | Distinct templates | Original rows | Rows after deduplication by template |
+|---|---:|---:|---:|---:|
+| Seven bidirectional ARAL matches | 42 | 30 | 322 | 228 |
+| First chunk of one Solo match | 10 | 9 | 79 | 72 |
 
-The seven ARAL matches contained 322 syncs. Two Lorelai openings and two Idris openings repeat these profiles. Idris was observed on his own stream and another player's stream. Android Solo independently repeated Idris B's zero-valued profile in all fourteen replay sections without an intervening B release. The host emits these rows only on the original scene opening, with Solo limited to the Idris B profile. No further actor reference is disclosed.
+Every hero's records immediately followed its declaration at the same recorded timestamp. Repeated templates agreed byte for byte within each mode. Seven templates also appeared in both modes with identical initializations. Subsequent Solo chunks can include items and changed timers. The host sends the template's initialization only during the initial scene, before live grants and item use. The replay writer accepts only the observed combinations of key, initial value, configuration value and flags for a hero actor.
+
+The regression reconstructs the arrays from the production encoder. In ascending order by template, it hashes the two-byte big-endian template ID, one byte of row count, and bytes 4 through 21 from each consecutive same-actor `048A`. The SHA-256 values from the original recordings are `7f7c078337111ee4803bac3b030dcd18884f1443353db2e7db08db48c1a239bd` (ARAL) and `ca7626305d8c7a483cdb0acf6bd448eb5398fa581e300fbbf12ea592953dd05b` (Solo). [Template profiles](../crates/game/src/native_cooldown/profiles.rs) · [Production encoder and regression](../crates/game/src/native_cooldown.rs)
 
 The same seven matches contained 2,000 modify-cooldown records. Across six Lorelai A, five B and one C releases, the caster received no such records for her actor throughout either match. No Idris B key occurred in the 44 changes on his own actor or the 127 on the remote Idris. The only changes coinciding with any of the 38 B releases within 120 ms were two relative zero operands on Idris **A and C**. No same-owner sync occurred within 100 ms of any of the 50 releases. The static receiver selects a relative operation for mode zero and a direct operation for nonzero mode. The charge opcode uses an unsigned slot index and operand. None of these observations supplies a B/ABC start or expiry packet, a late-join nonzero countdown formula, or a teammate cooldown subscription.
 

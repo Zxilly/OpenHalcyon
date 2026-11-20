@@ -166,7 +166,11 @@ pub(super) fn solo_opening(room: &mut Room, seat: usize) -> std::io::Result<Batc
             };
             out.push(message);
             if initial {
-                super::native_cooldown::opening(&mut out, e, false);
+                super::native_cooldown::opening(
+                    &mut out,
+                    e,
+                    halcyon_protocol::ce::NativeMode::SoloBots,
+                );
             }
             messages::append_inventory(&mut out, &room.world, e);
             if visible {

@@ -182,7 +182,11 @@ pub(super) fn opening(room: &mut Room, team: Option<u8>) -> Batch {
                 halcyon_sim::Kind::Hero => {
                     batch.push(declaration);
                     if room.world.tick == 0 && team.is_none() {
-                        super::native_cooldown::opening(&mut batch, actor, true);
+                        super::native_cooldown::opening(
+                            &mut batch,
+                            actor,
+                            halcyon_protocol::ce::NativeMode::Aral,
+                        );
                     }
                     messages::append_inventory(&mut batch, &room.world, actor);
                 }
@@ -325,6 +329,12 @@ mod tests {
             if frame.opcode == probe.opcode {
                 break;
             }
+            if !initial {
+                assert!(
+                    !frame.is(crate::Opcode::CooldownSync),
+                    "rejoin reset an active cooldown"
+                );
+            }
             if frame.is(crate::Opcode::EquipTalent) {
                 talents.push(frame.body.clone());
             }
@@ -349,6 +359,23 @@ mod tests {
                 assert!((1500..1506).contains(&id));
                 assert_eq!(frame.body[745], 16 + (id - 1500) as u8);
                 declared |= id == actor;
+                if initial
+                    && frame.body[..4]
+                        == u32::from(halcyon_data::EntityTemplate::Ringo.as_raw()).to_be_bytes()
+                {
+                    // The two recorded Ringo declarations had this exact adjacent key order.
+                    for expected in [
+                        0xb855d752, 0x1e275dc1, 0x022982b5, 0xcad52059, 0xc9d51ec6, 0xc8d51d33,
+                        0xd60c580b,
+                    ] {
+                        let next_frame = next(socket, cipher).await;
+                        let Fields::CooldownSync { owner, key, .. } = next_frame.fields().unwrap()
+                        else {
+                            panic!("Ringo declaration lacked its opening cooldown block")
+                        };
+                        assert_eq!((owner, key), (id, expected));
+                    }
+                }
                 if initial {
                     assert_eq!(frame.spawn_gold(), Some((2000., 2000.)));
                     let (x, z) = pads[(id - 1500) as usize];
