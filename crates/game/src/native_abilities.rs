@@ -335,9 +335,10 @@ pub(super) fn publish_before_impacts(room: &mut Room, events: &[Event]) {
             source,
             target,
             instance,
+            kind,
         } = *event
         {
-            amael::publish(room, source, target, instance);
+            amael::publish(room, source, target, instance, kind, events);
         }
         if let Event::TwisterDash {
             source,
@@ -1007,6 +1008,7 @@ mod tests {
                         Event::AmaelKick {
                             source: 1,
                             target: 2,
+                            kind: halcyon_sim::KickKind::SuperKick,
                             ..
                         }
                     )
@@ -1024,6 +1026,290 @@ mod tests {
         assert!((motion.speed - 3.2 / 0.30).abs() < 0.001);
         assert!((motion.destination[0] - 21.92).abs() < 0.001);
         assert!((motion.destination[2] - 3.56).abs() < 0.001);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires original delivery and supplemental combat data"]
+    async fn amael_elbow_drop_delivers_owner_release_visible_observer_and_gates_hidden_victims() {
+        use halcyon_protocol::{ACK_FRAME, MatchCipher, async_frame::FrameReader, hello};
+        use std::time::Duration;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpStream;
+        use tokio::time::timeout;
+
+        let data = halcyon_data::GameData::load_with_extra(
+            std::env::var_os("HALCYON_DELIVERY").unwrap(),
+            Some(std::path::Path::new(
+                &std::env::var_os("HALCYON_DATA_EXTRA").unwrap(),
+            )),
+        )
+        .unwrap();
+        let rooms = Rooms::new(
+            "127.0.0.1".parse().unwrap(),
+            "127.0.0.1".into(),
+            1,
+            Some(std::sync::Arc::new(data)),
+        );
+        let id = Uuid::new_v4();
+        rooms
+            .reserve(Reservation {
+                talent_levels: vec![],
+                match_id: id,
+                players: (0..6).map(|_| Uuid::new_v4()).collect(),
+                teams: vec![],
+                mode: "casual_aral".into(),
+                difficulty: None,
+            })
+            .unwrap();
+        let cipher = MatchCipher::new(&id.to_string());
+        let shared = rooms.room(id).unwrap();
+        {
+            let mut room = shared.lock().unwrap();
+            room.phase(crate::RoomPhase::Running);
+            room.world.use_aral_lane().unwrap();
+            room.world.entities[0].type_id = AMAEL;
+            room.world.entities[2].type_id = EntityTemplate::Reim.as_raw();
+            // Step until the first wave starts while heroes remain safely on their home pads.
+            for _ in 0..15 * halcyon_sim::TICK_HZ {
+                room.world.step();
+            }
+        }
+
+        // Attach observer BEFORE spawning the next team-1 minion so the observer knows heroes 1..=6 but NOT the late minion.
+        let (addr, grant) = rooms.observe(id, Uuid::new_v4()).unwrap();
+        let mut obs_sock = TcpStream::connect(&addr).await.unwrap();
+        obs_sock
+            .write_all(&hello("127.0.0.1").unwrap())
+            .await
+            .unwrap();
+        let mut ack = [0; 5];
+        obs_sock.read_exact(&mut ack).await.unwrap();
+        assert_eq!(ack, ACK_FRAME);
+        let identity = Message::known(crate::Opcode::PlayerUuid, grant.to_string().as_bytes());
+        obs_sock
+            .write_all(&cipher.encode(&identity).unwrap())
+            .await
+            .unwrap();
+        let mut obs_reader = FrameReader::new();
+        while let Ok(Ok(Some(raw))) =
+            timeout(Duration::from_millis(50), obs_reader.next(&mut obs_sock)).await
+        {
+            let _ = cipher.decode_owned(raw.into()).unwrap();
+        }
+
+        let (mut owner_rx, mut ally_rx, mut enemy_rx, minion_id) = {
+            let mut room = shared.lock().unwrap();
+            for _ in 0..halcyon_sim::TICK_HZ {
+                room.world.step();
+            }
+            let minion_idx = room
+                .world
+                .entities
+                .iter()
+                .rposition(|e| e.kind == Kind::Minion && e.team == 1)
+                .unwrap();
+            let minion_id = room.world.entities[minion_idx].id;
+
+            room.world.entities[0].level = 6;
+            room.world.entities[0].skill_points = 1;
+            room.world.entities[0].energy = 400.;
+            room.world.entities[0].max_energy = 400.;
+            room.world.entities[0].position = Position { x: 0., y: 0. };
+
+            // Use ally Reim (seat 2) ChillWinds to root primary hero (id=2) via real simulation.
+            room.world.entities[1].max_hp = 2000.;
+            room.world.entities[1].hp = 2000.;
+            room.world.entities[1].position = Position { x: 3., y: 4. };
+            room.world.entities[2].level = 2;
+            room.world.entities[2].skill_points = 1;
+            room.world.entities[2].energy = 400.;
+            room.world.entities[2].max_energy = 400.;
+            room.world.entities[2].position = Position { x: 3., y: 3.5 };
+            room.world
+                .command(3, halcyon_sim::Command::Learn(AbilitySlot::B))
+                .unwrap();
+            room.world
+                .command(
+                    3,
+                    halcyon_sim::Command::Cast {
+                        slot: AbilitySlot::B,
+                        target: CastTarget::SelfCast,
+                    },
+                )
+                .unwrap();
+            room.world.step();
+
+            // Place secondary visible hero (id=4), hidden hero (id=6), and late minion inside Elbow Drop radius at mid-lane.
+            room.world.entities[3].position = Position { x: 3.5, y: 4.5 };
+            room.world.entities[5].position = Position { x: 4., y: 4. };
+            let minion_idx = room
+                .world
+                .entities
+                .iter()
+                .position(|e| e.id == minion_id)
+                .unwrap();
+            room.world.entities[minion_idx].position = Position { x: 2.5, y: 3.5 };
+
+            let (tx0, rx0) = mpsc::channel(32);
+            room.seats[0].peers[0] = Some(Peer {
+                generation: 42,
+                tx: tx0,
+                stalled: watch::channel(false).0,
+            });
+            let (tx1, rx1) = mpsc::channel(32);
+            room.seats[1].peers[1] = Some(Peer {
+                generation: 1,
+                tx: tx1,
+                stalled: watch::channel(false).0,
+            });
+            let (tx2, rx2) = mpsc::channel(32);
+            room.seats[2].peers[1] = Some(Peer {
+                generation: 2,
+                tx: tx2,
+                stalled: watch::channel(false).0,
+            });
+            room.seats[0].world_actor_written = true;
+            for (op, body) in [
+                (crate::wire_opcode::RequestScene, [0; 6]),
+                (crate::wire_opcode::SceneOwner, [0, 0, 5, 220, 1, 0]),
+                (crate::wire_opcode::SceneConfirmed, [0; 6]),
+            ] {
+                room.seats[0]
+                    .preamble
+                    .observe(&Message::new(op, body), 1500);
+            }
+
+            let mut decls = Vec::new();
+            for (idx, slot) in [(0usize, 16u8), (1, 17), (3, 18), (5, 19)] {
+                let mut m = crate::messages::spawn(&room.world.entities[idx], &room.picks, None);
+                m.body[745] = slot;
+                decls.push((idx, m));
+            }
+            let mut minion_decl = crate::messages::spawn(
+                room.world
+                    .entities
+                    .iter()
+                    .find(|e| e.id == minion_id)
+                    .unwrap(),
+                &room.picks,
+                None,
+            );
+            minion_decl.body[745] = 22;
+
+            // Team 0 (seats 0 and 2) knows & sees source(1), primary(2), hero(4), minion; hidden hero(6) is EXCLUDED.
+            for seat_idx in [0, 2] {
+                for (idx, msg) in &decls {
+                    if *idx != 5 {
+                        room.scene_views[seat_idx].declarations(std::slice::from_ref(msg));
+                    }
+                }
+                room.scene_views[seat_idx].declarations(std::slice::from_ref(&minion_decl));
+            }
+            // Team 1 (seat 1) knows & sees everyone including hidden hero(6).
+            for (_, msg) in &decls {
+                room.scene_views[1].declarations(std::slice::from_ref(msg));
+            }
+            room.scene_views[1].declarations(std::slice::from_ref(&minion_decl));
+
+            room.visible[0].extend([1, 2, 4, minion_id]);
+            room.visible[0].remove(&6);
+            room.visible[1].extend([1, 2, 4, 6, minion_id]);
+
+            let learn = Message::known(crate::Opcode::RequestUpgradeAbility, [2, 0, 0, 0, 0, 0]);
+            assert_eq!(
+                receive(&mut room, 0, 0, learn.clone()),
+                [learn, Message::ability_learned(1500, 2)]
+            );
+            let request = Message::known(crate::Opcode::RequestTargetAbility, [0, 0, 5, 221, 2, 0]);
+            receive(&mut room, 0, 0, request);
+            assert!(room.seats[0].native_abilities.cast.is_some());
+
+            let mut elbow_hits = Vec::new();
+            for _ in 0..8 {
+                let ev = room.world.step();
+                for e in &ev {
+                    if let Event::AmaelKick {
+                        source: 1,
+                        target,
+                        kind: halcyon_sim::KickKind::ElbowDrop,
+                        ..
+                    } = *e
+                    {
+                        elbow_hits.push(target);
+                    }
+                }
+                publish_before_impacts(&mut room, &ev);
+                publish(&mut room, &ev);
+            }
+            assert_eq!(elbow_hits, vec![2, 4, 6, minion_id]);
+            (rx0, rx2, rx1, minion_id)
+        };
+
+        let drain = |rx: &mut mpsc::Receiver<Delivery>| -> Vec<Message> {
+            let mut out = Vec::new();
+            while let Ok(d) = rx.try_recv() {
+                out.extend(d.into_records());
+            }
+            out
+        };
+        let owner_msgs = drain(&mut owner_rx);
+        let ally_msgs = drain(&mut ally_rx);
+        let enemy_msgs = drain(&mut enemy_rx);
+
+        // Owner received 0415 + 0403 lunge release.
+        assert_eq!(owner_msgs[0], Message::ability_target_used(1500, 1501, 2));
+        assert!(owner_msgs[1].forced_move().is_some());
+
+        // Bounce actor references per stream:
+        let bounced_actors = |msgs: &[Message]| -> Vec<u32> {
+            msgs.iter()
+                .filter_map(|m| match m.fields() {
+                    Ok(halcyon_protocol::Fields::Live(halcyon_protocol::LiveFields::Motion {
+                        reference,
+                        values,
+                        enabled,
+                    })) if m.is(crate::Opcode::AutoActorBounce)
+                        && values == [6., 5.]
+                        && enabled
+                        && m.body[16..].iter().all(|&b| b == 0) =>
+                    {
+                        Some(reference)
+                    }
+                    _ => None,
+                })
+                .collect()
+        };
+        let hidden_wire = u32::from(wire_id(6));
+        let minion_wire = u32::from(wire_id(minion_id));
+        assert_eq!(bounced_actors(&owner_msgs), vec![1501, 1503, minion_wire]);
+        assert!(!bounced_actors(&owner_msgs).contains(&hidden_wire));
+        assert_eq!(bounced_actors(&ally_msgs), vec![1501, 1503, minion_wire]);
+        assert!(!bounced_actors(&ally_msgs).contains(&hidden_wire));
+        assert_eq!(
+            bounced_actors(&enemy_msgs),
+            vec![1501, 1503, hidden_wire, minion_wire]
+        );
+        assert!(enemy_msgs.iter().any(|m| {
+            m.forced_move().is_some_and(|fm| {
+                fm.actor == 1500 && fm.mode == halcyon_protocol::ForcedMoveMode::Dash
+            })
+        }));
+
+        // Observer receives release + bounces for declared heroes (2, 4, 6), zero frames for undeclared late minion.
+        let mut obs_msgs = Vec::new();
+        while let Ok(Ok(Some(raw))) =
+            timeout(Duration::from_millis(50), obs_reader.next(&mut obs_sock)).await
+        {
+            obs_msgs.push(cipher.decode_owned(raw.into()).unwrap());
+        }
+        assert!(obs_msgs.iter().any(|m| {
+            m.is(crate::Opcode::PlayAbility)
+                && m.body
+                    .starts_with(&Message::ability_target_used(1500, 1501, 2).body)
+                && m.body[9..].iter().all(|&b| b == 0)
+        }));
+        assert_eq!(bounced_actors(&obs_msgs), vec![1501, 1503, hidden_wire]);
+        assert!(!bounced_actors(&obs_msgs).contains(&minion_wire));
     }
 
     #[tokio::test]

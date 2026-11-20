@@ -112,6 +112,7 @@ native_labels! {
 
 native_labels! {
     DamageOperand {
+        AoEDamage => "AoEDamage",
         BonusCrystalDamage => "BonusCrystalDamage",
         BurnDamagePerSecond => "BurnDamagePerSecond",
         Damage => "Damage",
@@ -160,6 +161,48 @@ impl ModeledTalent {
             Self::LongShot => crate::EntityTemplate::Ringo,
             Self::MobileBulwark => crate::EntityTemplate::Lyra,
             Self::SpeedLoader => crate::EntityTemplate::Gwen,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::combat_content::{Ability, CombatContent, DamageVariable};
+    use sha2::{Digest, Sha256};
+    use std::path::Path;
+
+    #[test]
+    fn aoe_damage_operand_resolves_fnv1a_header_and_supplement_amael_c() {
+        assert_eq!(DamageOperand::AoEDamage.as_str(), "AoEDamage");
+        let synthetic = Ability {
+            ability_id: "Ability__Amael__C".into(),
+            damage_variables: vec![DamageVariable {
+                header_u32: 2_853_935_461,
+                ranks: vec![400., 525., 650.],
+                cp_ratio: 1.8,
+                wp_ratio: 1.5,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let aoe = synthetic
+            .damage(DamageOperand::AoEDamage.as_str())
+            .expect("synthetic AoEDamage lookup by FNV-1a header");
+        assert_eq!(aoe.header_u32, 2_853_935_461);
+        assert_eq!(aoe.ranks, [400., 525., 650.]);
+        if let Some(extra) = std::env::var_os("HALCYON_DATA_EXTRA") {
+            let content = CombatContent::load(Path::new(&extra), &mut Sha256::new())
+                .expect("load HALCYON_DATA_EXTRA combat content");
+            let amael_c = content
+                .ability("Amael", "Ability__Amael__C")
+                .expect("Ability__Amael__C");
+            let loaded = amael_c
+                .damage(DamageOperand::AoEDamage.as_str())
+                .expect("Ability__Amael__C AoEDamage");
+            assert_eq!(loaded.header_u32, 2_853_935_461);
+            assert_eq!(loaded.ranks, [400., 525., 650.]);
+            assert_eq!((loaded.cp_ratio, loaded.wp_ratio), (1.8, 1.5));
         }
     }
 }

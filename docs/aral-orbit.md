@@ -78,3 +78,50 @@ The hosted controller uses the build's targeted cast request with selector
 Amael. Tests cover the originating hosted request, registered target and
 release confirmation. Captured owner-side request or reply timing remains
 unverified.
+
+## Amael's Elbow Drop
+
+Across all ten MITM match archives, only two matches include Amael
+(template 925 via `0x03F3`). One archive contains zero Amael selector-2
+`0x0415` releases (all eight `0x0402` bounces have height 10 from Amael
+`0x0416` selector-3 punches or Inara `0x0416` dashes). In the other
+archive, 15 of 17 `0x0402` bounces have height 10 following Amael
+`0x0416` selector-3 punches, and only the two single-target selector-2
+`0x0415` releases against Ylva and Reim produce `0x0402` height 6,
+duration 5. Neither target was stunned or rooted, and zero Elbow Drop
+executions appear anywhere in the capture corpus.
+
+Supplemental combat data (`Ability__Amael__C`) supplies the second damage
+block `AoEDamage` (`header_u32 = 2853935461`, FNV-1a of `"AoEDamage"`,
+ranks 400/525/650, `1.8` CP ratio, `1.5` WP ratio) alongside shared cast
+range 7.0, height 0.8, ranked energy cost 80/95/110 and cooldown 80/65/50
+seconds, while defining no AoE radius or knock-up duration variable.
+
+The hosted cast gate accepts living, visible enemy heroes within 7.0
+units on a clear route even when stunned (`stun_until > tick`) or rooted
+(`root_until > tick`), while still rejecting non-stunned/non-rooted
+movement-impairment-immune targets. At cast release, a stunned or rooted
+primary target selects `KickKind::ElbowDrop` (otherwise `KickKind::SuperKick`)
+with the same 1.8-unit lunge and tick-2 impact. On Elbow Drop impact, the
+simulation gathers all living enemy heroes and minions (`Kind::Hero` or
+`Kind::Minion`) within `ELBOW_DROP_RADIUS` of the primary target's
+impact position in ascending `entity.id` order, reveals each for 30
+ticks, interrupts and applies `ELBOW_DROP_KNOCKUP_TICKS` stun to those
+not blocking movement impairment, emits `Event::AmaelKick` with
+`KickKind::ElbowDrop`, and deals armor-mitigated physical `AoEDamage`
+(`DamageSchool::Weapon`, `ImpactEffect::AmaelKick`, wire `0x041E` family
+74, fields 1/0). For native delivery, `0415` + optional `0403` release
+goes to the owner, visible opposing team and visible observers, while each
+victim's `0402` bounce + `043E` reveal (definition 62, 1.5 s) is gated
+per-victim through `publish_visible(room, &[source, victim], &frames)` so
+hidden or undeclared victims never leak. Amael bot selection prefers a
+castable stunned or rooted visible enemy hero maximizing nearby living
+enemy heroes/minions within `ELBOW_DROP_RADIUS` (breaking ties by
+shortest distance, then lowest `entity.id`).
+
+Unverified Elbow Drop wire and server parameters:
+
+- AoE radius (`ELBOW_DROP_RADIUS = 4.5` world units placeholder; absent from `Ability__Amael__C` variables and captures).
+- Knock-up stun duration (`ELBOW_DROP_KNOCKUP_TICKS = 20` ticks / 1.0 s at 20 Hz placeholder; unmeasured in captures).
+- Elbow Drop `0x0402` bounce height and duration operands (reusing ordinary Super Kick `(6.0, 5.0)` until an Elbow Drop capture is observed).
+- Any Elbow-Drop-specific `0x0419` PFX hash, knock-up `0x043E`/`0x043F` buff definition, or owner-side release differences.

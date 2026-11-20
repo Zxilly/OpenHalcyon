@@ -4,6 +4,7 @@ use halcyon_data::EntityTemplate;
 mod actors;
 mod ai;
 mod amael;
+pub use amael::KickKind;
 mod aral;
 mod arcane_fire;
 mod fixed_tick;
@@ -188,6 +189,7 @@ pub enum Event {
         source: u32,
         target: u32,
         instance: u32,
+        kind: KickKind,
     },
     ChillWindsRoot {
         source: u32,

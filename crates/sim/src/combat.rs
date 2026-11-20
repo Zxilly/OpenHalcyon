@@ -666,11 +666,10 @@ impl Room<'_> {
                 CastTarget::Entity(id),
             ) => {
                 let t = &self.entities[self.index(id).ok_or("unknown target")?];
+                let elbow_drop = t.status.stun_until > self.tick || t.status.root_until > self.tick;
                 if s == Skill::SuperKick
                     && (t.kind != Kind::Hero
-                        || t.status.stun_until > self.tick
-                        || t.status.root_until > self.tick
-                        || t.status.blocks_movement_impairment(self.tick)
+                        || (!elbow_drop && t.status.blocks_movement_impairment(self.tick))
                         || self.bulwark_blocks_leap(i, t.position)
                         || !self.spell_motion_clear(e.position, t.position))
                 {
@@ -821,16 +820,22 @@ impl Room<'_> {
         };
         match s {
             Skill::SuperKick => {
-                let victim = self.entities[aimed.unwrap()].position;
+                let target_entity = &self.entities[aimed.unwrap()];
+                let victim = target_entity.position;
+                let kind = if target_entity.status.stun_until > self.tick
+                    || target_entity.status.root_until > self.tick
+                {
+                    super::amael::KickKind::ElbowDrop
+                } else {
+                    super::amael::KickKind::SuperKick
+                };
                 let distance = origin.dist(victim);
                 let goal = origin.advance(victim, (distance - 1.8).max(0.));
-                let raw = self
-                    .abilities
-                    .super_kick
-                    .as_ref()
-                    .unwrap()
-                    .damage
-                    .at(r, cp, weapon);
+                let rules = self.abilities.super_kick.as_ref().unwrap();
+                let raw = match kind {
+                    super::amael::KickKind::ElbowDrop => rules.aoe_damage.at(r, cp, weapon),
+                    super::amael::KickKind::SuperKick => rules.damage.at(r, cp, weapon),
+                };
                 let channel = self.tick.max(1);
                 self.entities[i].status.channel = channel;
                 self.entities[i].status.channel_until = self.tick + 6;
@@ -853,6 +858,7 @@ impl Room<'_> {
                         goal,
                         step,
                         elapsed: 0,
+                        kind,
                     }),
                     damage: raw,
                     heal: 0.,
