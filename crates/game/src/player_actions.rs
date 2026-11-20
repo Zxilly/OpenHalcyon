@@ -248,7 +248,14 @@ mod tests {
             ..sale
         };
         assert_eq!(execute(cam), ActionDecision::Applied);
-        let device = shared.lock().unwrap().world.vision_devices()[0].id;
+        let device = shared
+            .lock()
+            .unwrap()
+            .world
+            .vision_devices()
+            .next()
+            .unwrap()
+            .id;
         assert!(inspect(players[1]).visible_enemy_cams.is_empty());
         let guess = ActionRequest {
             sequence: 1,

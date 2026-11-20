@@ -447,7 +447,7 @@ pub struct World {
     solo_inner_towers: [Stats; 2],
     solo_lane_rewards: Option<halcyon_data::SoloLaneRewards>,
     next_id: u32,
-    vision_devices: Vec<VisionDevice>,
+    vision_device_ids: Vec<bevy_ecs::entity::Entity>,
     vision_charges: [vision_devices::Charges; 6],
     next_item: u32,
     pending_item_events: Vec<Event>,
@@ -528,8 +528,14 @@ impl World {
             ),
         )
         .expect("finite simulation state");
-        serde_json::to_writer(&mut hash, &(&self.vision_devices, &self.vision_charges))
-            .expect("finite vision device state");
+        serde_json::to_writer(
+            &mut hash,
+            &(
+                self.vision_devices().collect::<Vec<_>>(),
+                &self.vision_charges,
+            ),
+        )
+        .expect("finite vision device state");
         if let Some(rewards) = self.solo_lane_rewards {
             serde_json::to_writer(&mut hash, &rewards).expect("finite unit rewards");
         }
@@ -707,7 +713,7 @@ impl World {
             aral_units: rules.aral_units,
             solo_lane_rewards: rules.solo_lane_rewards,
             solo_inner_towers: rules.solo_inner_towers,
-            vision_devices: Vec::new(),
+            vision_device_ids: Vec::new(),
             vision_charges: Default::default(),
             next_item: 40000,
             stats: rules.stats,

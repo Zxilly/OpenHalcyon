@@ -1,4 +1,5 @@
 use super::*;
+use bevy_ecs::prelude::{Commands, Component, Entity as Handle, In, Query};
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize)]
 pub(super) struct Rules {
@@ -74,7 +75,7 @@ pub enum VisionDeviceKind {
     ScoutCam,
     ScoutTrap,
 }
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Component, Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct VisionDevice {
     pub id: u32,
     pub owner: u32,
@@ -105,8 +106,7 @@ impl World {
             return Vec::new();
         };
         let e = &self.entities[i];
-        self.vision_devices
-            .iter()
+        self.vision_devices()
             .filter(|v| {
                 v.kind == VisionDeviceKind::ScoutCam
                     && v.team != e.team
@@ -116,11 +116,17 @@ impl World {
             .map(|v| v.id)
             .collect()
     }
-    pub fn vision_devices(&self) -> &[VisionDevice] {
-        &self.vision_devices
+    /// Live devices in deployment order. Gameplay and native IDs are independent of ECS handles.
+    pub fn vision_devices(&self) -> impl ExactSizeIterator<Item = &VisionDevice> {
+        self.vision_device_ids.iter().map(|id| {
+            self.entities
+                .ecs
+                .get::<VisionDevice>(*id)
+                .expect("live registered vision device")
+        })
     }
     pub(super) fn device_sight(&self, team: u8, p: Position) -> bool {
-        self.vision_devices.iter().any(|v| {
+        self.vision_devices().any(|v| {
             v.team == team
                 && v.point.dist(p)
                     <= match v.kind {
@@ -140,7 +146,9 @@ impl World {
         instance: u32,
         point: Option<Position>,
     ) -> Result<(), &'static str> {
-        if !matches!(self.layout, Layout::Aral { .. }) || i >= 6 || self.vision_devices.len() >= 256
+        if !matches!(self.layout, Layout::Aral { .. })
+            || i >= 6
+            || self.vision_device_ids.len() >= 256
         {
             return Err("vision deployment unavailable");
         }
@@ -212,17 +220,22 @@ impl World {
             hits: 0,
             detonate: None,
         };
-        self.vision_devices.push(device);
+        let handle = self.entities.ecs.spawn(device).id();
+        self.vision_device_ids.push(handle);
         self.pending_item_events
             .push(Event::VisionDeployed { device, instance });
         Ok(())
     }
     pub(super) fn hit_device(&mut self, i: usize, id: u32) -> Result<(), &'static str> {
         let e = &self.entities[i];
-        let Some(j) = self.vision_devices.iter().position(|v| v.id == id) else {
+        let Some((j, v)) = self
+            .vision_devices()
+            .copied()
+            .enumerate()
+            .find(|(_, v)| v.id == id)
+        else {
             return Err("unknown device");
         };
-        let v = self.vision_devices[j];
         if v.kind != VisionDeviceKind::ScoutCam
             || v.team == e.team
             || self.tick >= v.born + self.shop.vision.stealth
@@ -236,47 +249,71 @@ impl World {
         }
         let interval = self.basic_attack_interval(e);
         self.entities[i].next_attack = self.tick + interval;
-        self.vision_devices[j].hits += 1;
-        if self.vision_devices[j].hits == 5 {
-            self.vision_devices.remove(j);
+        let handle = self.vision_device_ids[j];
+        if v.hits + 1 == 5 {
+            self.entities.ecs.despawn(handle);
+            self.vision_device_ids.remove(j);
+        } else {
+            self.entities
+                .ecs
+                .get_mut::<VisionDevice>(handle)
+                .expect("registered scout cam")
+                .hits += 1;
         }
         Ok(())
     }
     pub(super) fn advance_devices(&mut self) {
-        let tick = self.tick;
-        self.vision_devices.retain_mut(|v| match v.kind {
-            VisionDeviceKind::ScoutCam => tick < v.born + self.shop.vision.life,
-            VisionDeviceKind::ScoutTrap => {
-                if let Some(due) = v.detonate {
-                    if tick < due {
-                        return true;
-                    }
-                    for idx in 0..self.entities.len() {
-                        let e = &mut self.entities[idx];
-                        if e.kind == Kind::Hero
-                            && e.hp > 0.
-                            && e.team != v.team
-                            && e.position.dist(v.point) <= self.shop.vision.blast
-                        {
-                            e.status.reveal_until =
-                                e.status.reveal_until.max(tick + self.shop.vision.reveal);
-                        }
-                    }
-                    return false;
+        if self.vision_device_ids.is_empty() {
+            return;
+        }
+        let input = (self.tick, self.shop.vision);
+        self.entities
+            .ecs
+            .run_system_cached_with(step_devices, input)
+            .expect("vision device system");
+        let ecs = &self.entities.ecs;
+        self.vision_device_ids
+            .retain(|id| ecs.get::<VisionDevice>(*id).is_some());
+    }
+}
+
+fn step_devices(
+    In((tick, rules)): In<(u64, Rules)>,
+    mut devices: Query<(Handle, &mut VisionDevice)>,
+    mut actors: Query<&mut Entity>,
+    mut commands: Commands,
+) {
+    for (handle, mut device) in &mut devices {
+        match device.kind {
+            VisionDeviceKind::ScoutCam => {
+                if tick >= device.born + rules.life {
+                    commands.entity(handle).despawn();
                 }
-                if tick >= v.born + self.shop.vision.arm
-                    && self.entities.iter().any(|e| {
-                        e.kind == Kind::Hero
-                            && e.hp > 0.
-                            && e.team != v.team
-                            && e.position.dist(v.point) <= self.shop.vision.trigger
-                    })
-                {
-                    v.detonate = Some(tick + self.shop.vision.detonate);
-                }
-                true
             }
-        });
+            VisionDeviceKind::ScoutTrap => {
+                let in_range = |actor: &Entity, radius| {
+                    actor.kind == Kind::Hero
+                        && actor.hp > 0.
+                        && actor.team != device.team
+                        && actor.position.dist(device.point) <= radius
+                };
+                if let Some(due) = device.detonate {
+                    if tick >= due {
+                        for mut actor in &mut actors {
+                            if in_range(&actor, rules.blast) {
+                                actor.status.reveal_until =
+                                    actor.status.reveal_until.max(tick + rules.reveal);
+                            }
+                        }
+                        commands.entity(handle).despawn();
+                    }
+                } else if tick >= device.born + rules.arm
+                    && actors.iter().any(|actor| in_range(actor, rules.trigger))
+                {
+                    device.detonate = Some(tick + rules.detonate);
+                }
+            }
+        }
     }
 }
 
@@ -321,7 +358,10 @@ mod tests {
         w.command(1, deploy).unwrap();
         w.command(1, deploy).unwrap();
         assert!(w.command(1, deploy).is_err());
-        assert_ne!(w.vision_devices[0].id, w.vision_devices[1].id);
+        assert_ne!(
+            w.vision_devices().next().unwrap().id,
+            w.vision_devices().nth(1).unwrap().id
+        );
         w.entities[0].position = Position { x: -88., y: 10. };
         assert!(w.device_sight(0, p));
         assert!(!w.device_sight(1, p));
@@ -343,7 +383,7 @@ mod tests {
             point,
         };
         w.command(1, deploy).unwrap();
-        let device = w.vision_devices[0].id;
+        let device = w.vision_devices().next().unwrap().id;
         assert!(w.command(1, Command::HitScoutCam { device }).is_err());
         let enemies: Vec<_> = w
             .entities
@@ -361,9 +401,9 @@ mod tests {
         for &enemy in &enemies[..2] {
             w.command(enemy, Command::HitScoutCam { device }).unwrap();
         }
-        assert!(w.vision_devices.is_empty());
+        assert!(w.vision_devices().len() == 0);
         w.command(1, deploy).unwrap();
-        let second = w.vision_devices[0].id;
+        let second = w.vision_devices().next().unwrap().id;
         w.tick = 60;
         assert!(
             w.command(enemies[0], Command::HitScoutCam { device: second })
@@ -390,13 +430,13 @@ mod tests {
         w.entities[enemy].position = p;
         w.tick = 39;
         w.advance_devices();
-        assert_eq!(w.vision_devices[0].detonate, None);
+        assert_eq!(w.vision_devices().next().unwrap().detonate, None);
         w.tick = 40;
         w.advance_devices();
-        assert_eq!(w.vision_devices[0].detonate, Some(66));
+        assert_eq!(w.vision_devices().next().unwrap().detonate, Some(66));
         w.tick = 66;
         w.advance_devices();
-        assert!(w.vision_devices.is_empty());
+        assert!(w.vision_devices().len() == 0);
         assert_eq!(w.entities[enemy].status.reveal_until, 166);
         assert_eq!(w.entities[0].status.reveal_until, 0);
     }
