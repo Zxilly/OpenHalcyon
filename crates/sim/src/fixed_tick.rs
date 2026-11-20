@@ -99,17 +99,8 @@ fn install(ecs: &mut Ecs) {
     schedule.set_executor(bevy_ecs::schedule::SingleThreadedExecutor::new());
     schedule.add_systems(
         (
-            begin,
-            projectiles,
-            fields,
-            (
-                spawn,
-                upkeep,
-                actor_turns,
-                super::actors::remove_defeated_units,
-            )
-                .chain()
-                .run_if(contested),
+            advance,
+            super::actors::remove_defeated_units.run_if(contested),
             milestones.run_if(milestone_due),
         )
             .chain(),
@@ -123,10 +114,10 @@ fn milestone_due(frame: Res<Frame>) -> bool {
     matches!(frame.state.tick,t if t==300*TICK_HZ || t==600*TICK_HZ)
 }
 
-fn with_room(
+fn with_room<R>(
     ecs: &mut Ecs,
-    f: impl FnOnce(&mut Room<'_>, &mut Vec<Event>, Option<&mut BotDiagnostics>),
-) {
+    f: impl FnOnce(&mut Room<'_>, &mut Vec<Event>, Option<&mut BotDiagnostics>) -> R,
+) -> R {
     ecs.resource_scope(|ecs, mut frame: Mut<Frame>| {
         let Frame {
             state,
@@ -139,45 +130,35 @@ fn with_room(
                 entities,
                 state: StateSlot::Scoped(state),
             };
-            f(&mut room, events, diagnostics.as_mut());
-        });
-    });
+            f(&mut room, events, diagnostics.as_mut())
+        })
+    })
 }
-fn begin(ecs: &mut Ecs) {
-    with_room(ecs, |room, _, _| {
+/// These phases share exclusive access and commit their writes immediately.
+fn advance(ecs: &mut Ecs) {
+    let contested = with_room(ecs, |room, events, diagnostics| {
         room.state.tick += 1;
         room.advance_devices();
-        room.state.nav_budget = 6
-    });
-}
-fn projectiles(ecs: &mut Ecs) {
-    with_room(ecs, |room, events, _| {
+        room.state.nav_budget = 6;
         room.advance_spell_family::<crate::combat::SpellEffect>(events);
         room.advance_spell_family::<crate::chakram::Chakram>(events);
-        room.advance_spell_family::<crate::lorelai::Water>(events)
-    });
-}
-fn fields(ecs: &mut Ecs) {
-    with_room(ecs, |room, events, _| {
+        room.advance_spell_family::<crate::lorelai::Water>(events);
         room.advance_spell_family::<crate::bulwark::Field>(events);
         room.advance_spell_family::<crate::arcane_fire::Pulse>(events);
         room.advance_spell_family::<crate::twister::Dash>(events);
-        room.advance_spell_family::<crate::sigil::Field>(events)
+        room.advance_spell_family::<crate::sigil::Field>(events);
+        if room.winner.is_some() {
+            return false;
+        }
+        room.spawn_tick_waves(events);
+        room.team_upkeep(events);
+        match diagnostics {
+            Some(d) => room.resolve_actor_turns::<true>(events, Some(d)),
+            None => room.resolve_actor_turns::<false>(events, None),
+        }
+        true
     });
-    let mut frame = ecs.resource_mut::<Frame>();
-    frame.after_effects = frame.state.winner.is_none();
-}
-fn spawn(ecs: &mut Ecs) {
-    with_room(ecs, |room, events, _| room.spawn_tick_waves(events));
-}
-fn upkeep(ecs: &mut Ecs) {
-    with_room(ecs, |room, events, _| room.team_upkeep(events));
-}
-fn actor_turns(ecs: &mut Ecs) {
-    with_room(ecs, |room, events, diagnostics| match diagnostics {
-        Some(d) => room.resolve_actor_turns::<true>(events, Some(d)),
-        None => room.resolve_actor_turns::<false>(events, None),
-    });
+    ecs.resource_mut::<Frame>().after_effects = contested;
 }
 fn milestones(ecs: &mut Ecs) {
     with_room(ecs, |room, _, _| {
@@ -231,7 +212,7 @@ mod tests {
                 .unwrap()
                 .add_systems(
                     (|ecs: &mut Ecs| with_room(ecs, |_, _, _| panic!("injected phase failure")))
-                        .after(begin),
+                        .after(advance),
                 );
         });
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| room.step()));
