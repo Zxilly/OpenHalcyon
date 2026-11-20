@@ -460,6 +460,7 @@ impl World {
 #[derive(Clone, Copy, Debug, Serialize)]
 enum Area {
     Target(u32, DamageSchool),
+    NpcWindup(u32),
     Circle(Position, f32),
     Line(Position, Position, f32),
 }
@@ -474,6 +475,18 @@ pub(super) struct SpellEffect {
     channel: u64,
 }
 impl SpellEffect {
+    pub(super) fn npc_windup(due: u64, src: u32, team: u8, target: u32, damage: f32) -> Self {
+        Self {
+            due,
+            src,
+            team,
+            area: Area::NpcWindup(target),
+            damage,
+            heal: 0.,
+            channel: 0,
+        }
+    }
+
     pub fn impact(
         due: u64,
         src: u32,
@@ -493,6 +506,18 @@ impl SpellEffect {
         }
     }
 }
+/// Median launch-to-impact delays by two-unit separation band, quantized to
+/// 20 Hz. The sparse outer bands reuse the last populated band.
+fn npc_flight_ticks(template: u16, distance: f32) -> u64 {
+    let bins = match template {
+        287 => [2, 6, 12, 14, 14],
+        288 => [2, 6, 10, 10, 10],
+        300 | 301 => [4, 4, 6, 10, 14],
+        _ => unreachable!("only measured ARAL templates schedule a windup"),
+    };
+    bins[((distance / 2.) as usize).min(bins.len() - 1)]
+}
+
 pub(super) fn line_distance(p: Position, a: Position, b: Position) -> f32 {
     let dx = b.x - a.x;
     let dy = b.y - a.y;
@@ -516,9 +541,20 @@ impl World {
             .sum();
         (e.hp - incoming).max(0.)
     }
+    pub(super) fn npc_launch_delay(&self, attacker: &Entity) -> Option<u64> {
+        if !matches!(self.layout, Layout::Aral { .. }) {
+            return None;
+        }
+        match (attacker.kind, attacker.type_id) {
+            (Kind::Tower, 300 | 301) => Some(6),
+            (Kind::Minion, 287 | 288) => Some(10),
+            _ => None,
+        }
+    }
+
     pub(super) fn advance_effects(&mut self, events: &mut Vec<Event>) {
         let mut effects = std::mem::take(&mut self.effects);
-        effects.retain(|v| {
+        effects.retain_mut(|v| {
             if self.winner.is_some() {
                 return false;
             }
@@ -531,6 +567,27 @@ impl World {
                 })
             {
                 return false;
+            }
+            if let Area::NpcWindup(target) = v.area {
+                let (Some(a), Some(b)) = (self.index(v.src), self.index(target)) else {
+                    return false;
+                };
+                let (source, victim) = (&self.entities[a], &self.entities[b]);
+                if source.hp <= 0. || victim.hp <= 0. {
+                    return false;
+                }
+                let distance = source.position.dist(victim.position);
+                let ticks = npc_flight_ticks(source.type_id, distance);
+                let id = self.next_id;
+                self.next_id += 1;
+                v.area = Area::Target(target, DamageSchool::Weapon);
+                v.due = self.tick + ticks;
+                events.push(Event::NpcProjectile {
+                    id,
+                    source: v.src,
+                    target,
+                });
+                return true;
             }
             if let Area::Target(id, school) = v.area {
                 if let Some(i) = self.index(id) {
@@ -549,7 +606,7 @@ impl World {
                 let hit = match v.area {
                     Area::Circle(p, r) => p.dist(e.position) <= r,
                     Area::Line(a, b, r) => line_distance(e.position, a, b) <= r,
-                    Area::Target(..) => unreachable!(),
+                    Area::Target(..) | Area::NpcWindup(_) => unreachable!(),
                 };
                 if !hit {
                     continue;
@@ -578,6 +635,105 @@ mod tests {
         w.entities[1].position = Position { x: 29., y: 0. };
         w
     }
+    #[test]
+    fn tracked_npc_shot_keeps_its_due_time_and_never_reuses_an_actor_id() {
+        let mut w = World::new(7, 6);
+        w.use_six_human_roster().unwrap();
+        w.use_aral_lane().unwrap();
+        let tower = w
+            .entities
+            .iter()
+            .position(|e| w.aral_structure_slot(e.id) == Some(7))
+            .unwrap();
+        let victim = w
+            .entities
+            .iter()
+            .position(|e| e.kind == Kind::Hero && e.team != w.entities[tower].team)
+            .unwrap();
+        let source = w.entities[tower].id;
+        let target = w.entities[victim].id;
+        let team = w.entities[tower].team;
+        let origin = w.entities[tower].position;
+        w.entities[victim].position = Position {
+            x: origin.x + 7.,
+            y: origin.y,
+        };
+        let first_id = w.next_id;
+        let mut events = Vec::new();
+        w.effects
+            .push(SpellEffect::npc_windup(6, source, team, target, 42.));
+        for tick in 1..=6 {
+            w.tick = tick;
+            w.advance_effects(&mut events);
+            assert_eq!(events.len(), usize::from(tick == 6));
+        }
+        assert_eq!(
+            events,
+            [Event::NpcProjectile {
+                id: first_id,
+                source,
+                target
+            }]
+        );
+        assert!(w.index(first_id).is_none());
+        assert_eq!(w.next_id, first_id + 1);
+        w.entities[tower].hp = 0.;
+        let hp = w.entities[victim].hp;
+        for tick in 7..=16 {
+            w.tick = tick;
+            w.advance_effects(&mut events);
+            assert_eq!(
+                w.entities[victim].hp,
+                if tick == 16 { hp - 42. } else { hp }
+            );
+        }
+        assert!(
+            matches!(events.last(),Some(Event::Damage{source:a,target:b,..}) if *a==source && *b==target)
+        );
+        w.effects
+            .push(SpellEffect::npc_windup(17, source, team, target, 42.));
+        w.tick = 17;
+        w.advance_effects(&mut events);
+        assert!(w.effects.is_empty());
+        assert_eq!(w.next_id, first_id + 1);
+
+        w.entities[tower].hp = 10.;
+        w.effects
+            .push(SpellEffect::npc_windup(18, source, team, target, 42.));
+        w.tick = 18;
+        w.advance_effects(&mut events);
+        w.entities[victim].hp = 0.;
+        let before = events.len();
+        w.tick = 28;
+        w.advance_effects(&mut events);
+        assert_eq!(events.len(), before);
+        assert!(w.effects.is_empty());
+    }
+
+    #[test]
+    fn only_original_aral_ranged_npcs_use_the_measured_delays() {
+        let mut w = World::new(3, 6);
+        let tower = w.entities.iter().find(|e| e.kind == Kind::Tower).unwrap();
+        assert_eq!(w.npc_launch_delay(tower), None);
+        w.use_six_human_roster().unwrap();
+        w.use_aral_lane().unwrap();
+        for _ in 0..18 * TICK_HZ {
+            w.step();
+        }
+        for e in &w.entities {
+            let delay = match e.type_id {
+                300 | 301 => Some(6),
+                287 | 288 => Some(10),
+                _ => None,
+            };
+            assert_eq!(w.npc_launch_delay(e), delay);
+        }
+        assert_eq!(npc_flight_ticks(287, 5.), 12);
+        assert_eq!(npc_flight_ticks(288, 5.), 10);
+        assert_eq!(npc_flight_ticks(300, 5.), 6);
+        assert_eq!(npc_flight_ticks(301, 9.), 14);
+    }
+
     #[test]
     fn windup_interrupt_and_release_charge_once() {
         let mut w = duel();

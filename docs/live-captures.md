@@ -317,3 +317,44 @@ or server chooses among the minion animations. Tower selectors 2 and 3 target
 the tower itself in all 232 pairs in ARAL and 42 in Solo. No matching basic
 release was observed from template 339. Hero basic-attack selectors and
 native projectile generation remain separate evidence gaps.
+
+### Measured ARAL projectile timing
+
+For the preceding directed releases, the audit paired a launch with the
+latest matching `0415`, then looked for a negative `041E` within 1.5 s of
+launch with the same actors. Ambiguous overlapping shots were excluded from
+the impact counts. The first two entries of the `040D` slot triple must
+identify the shooter and the third the target. Times are observed receive
+times. The distances use source and target X/Z at launch from declarations
+or `042E` updates. For moving actors the distance-band sample requires a
+position no more than one second old.
+
+| Template | Paired launches | Paired impacts | Median release to launch | Median launch to impact |
+|---|---:|---:|---:|---:|
+| 287 | 1317 | 1034 | 0.517 s | 0.601 s |
+| 288 | 1094 | 924 | 0.517 s | 0.320 s |
+| 300 | 265 | 251 | 0.313 s | 0.402 s |
+| 301 | 77 | 66 | 0.307 s | 0.509 s |
+
+The host quantizes release-to-launch to ten simulation ticks for minions
+and six for towers. It estimates flight time from distance at launch.
+For example, template 287 produced median delays of 0.104, 0.287, 0.617
+and 0.712 s over the 0–2, 2–4, 4–6 and 6–8 unit bands, with 82, 203, 413
+and 149 samples. For tower 300 the 2–4, 4–6, 6–8 and 8–10 unit bands gave
+0.197, 0.305, 0.511 and 0.693 s. The simulator uses the closest populated
+band at its limits. This estimates impact timing without assigning a native
+projectile velocity or treating the `040D` float as damage.
+
+The shooter and target must survive to launch. The projectile then has its
+own room-local ID and can hit after the shooter dies. The seven streams had
+80 shots with a matching impact after shooter death and 182 where the
+target died and no matching impact followed within 1.5 s. There were zero
+matched negative impacts after target death in that window. A missing or dead
+target consumes the pending impact. No same-projectile `040E`, `0410` or
+`040B` terminal record was established for these tracked shots.
+
+Solo 340 had 71 tracked launches and 67 paired impacts, with only seven
+impacts having recent actor positions within one second. Its median
+release-to-launch delay was 0.092 s. The Solo impact timing and source
+positions do not support reusing the ARAL tower curve. The validation
+map, Solo simulation and ARAL melee 289 retain their existing timing.

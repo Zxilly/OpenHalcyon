@@ -122,6 +122,12 @@ pub enum Event {
         source: u32,
         target: u32,
     },
+    /// A native NPC projectile has launched and now owns a pending impact.
+    NpcProjectile {
+        id: u32,
+        source: u32,
+        target: u32,
+    },
     Damage {
         source: u32,
         target: u32,
@@ -991,6 +997,7 @@ impl World {
                     } else {
                         0.
                     };
+                    let npc_launch = self.npc_launch_delay(e);
                     let ranged = e.kind == Kind::Hero && e.stats.range >= 4.;
                     let travel = (e.position.dist(t.position) * TICK_HZ as f32 / 18.).ceil() as u64;
                     let interval =
@@ -1004,7 +1011,15 @@ impl World {
                         self.entities[j].status.slow_until = self.tick + 20;
                         self.entities[j].status.slow_factor = 0.4;
                     }
-                    if ranged {
+                    if let Some(delay) = npc_launch {
+                        self.effects.push(SpellEffect::npc_windup(
+                            self.tick + delay,
+                            source,
+                            team,
+                            id,
+                            damage,
+                        ));
+                    } else if ranged {
                         self.effects.push(SpellEffect::impact(
                             self.tick + travel,
                             source,
