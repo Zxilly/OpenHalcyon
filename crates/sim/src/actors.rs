@@ -1,5 +1,5 @@
-use super::Entity;
-use bevy_ecs::{entity::Entity as Handle, world::World};
+use super::{Entity, Position};
+use bevy_ecs::{component::Component, entity::Entity as Handle, world::World};
 use std::ops::{Index, IndexMut};
 
 /// Authoritative room ECS. The ordered index stores only generational handles;
@@ -104,6 +104,42 @@ impl<'a> IntoIterator for &'a Actors<'_> {
         self.iter()
     }
 }
+// Lazily present for any automated actor that has acquired a target. A sparse
+// component keeps the actor table layout independent of its presence.
+#[derive(Component)]
+#[component(storage = "SparseSet")]
+struct LastSeenTarget(u32, Position, u64);
+
+impl Actors<'_> {
+    pub(super) fn last_seen(&self, index: usize) -> Option<(u32, Position, u64)> {
+        let LastSeenTarget(target, position, tick) = self.ecs.get(*self.meta.order.get(index)?)?;
+        Some((*target, *position, *tick))
+    }
+
+    pub(super) fn remember_target(
+        &mut self,
+        index: usize,
+        target: u32,
+        position: Position,
+        tick: u64,
+    ) {
+        let actor = self.meta.order[index];
+        let sighting = LastSeenTarget(target, position, tick);
+        if let Some(mut last_seen) = self.ecs.get_mut::<LastSeenTarget>(actor) {
+            *last_seen = sighting;
+        } else {
+            self.ecs.entity_mut(actor).insert(sighting);
+        }
+    }
+
+    pub(super) fn forget_target(&mut self, index: usize) {
+        let actor = self.meta.order[index];
+        if self.ecs.get::<LastSeenTarget>(actor).is_some() {
+            self.ecs.entity_mut(actor).remove::<LastSeenTarget>();
+        }
+    }
+}
+
 impl serde::Serialize for Actors<'_> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         serializer.collect_seq(self.iter())
@@ -223,6 +259,72 @@ mod tests {
         assert_eq!(
             room.entities.iter().map(|e| e.id).collect::<Vec<_>>(),
             ids[1..]
+        );
+    }
+
+    #[test]
+    fn targeting_memory_is_private_and_bound_to_the_living_actor() {
+        use crate::{Command, DamageSchool, ImpactEffect, Kind, TICK_HZ, World, base};
+
+        let mut world = World::new(3, 0);
+        world.entities.truncate(2);
+        let visible_point = Position { x: 6., y: 0. };
+        world.entities[1].position = visible_point;
+        world.tick = 3;
+        world.step();
+        let observer = world.entities.meta.order[0];
+        let sighting = Some((2, visible_point, world.tick));
+        assert_eq!(world.entities.last_seen(0), sighting);
+        let mut observed = world.entities.ecs.query::<(&Entity, &LastSeenTarget)>();
+        let (actor, memory) = observed.get(&world.entities.ecs, observer).unwrap();
+        assert_eq!(
+            (actor.id, memory.0, memory.1, memory.2),
+            (1, 2, visible_point, world.tick)
+        );
+        let snapshot = serde_json::to_value(&world.entities).unwrap();
+        assert!(snapshot[0].get("last_seen").is_none());
+
+        world.entities[1].position = base(1);
+        assert!(!world.visible(0, &world.entities[1]));
+        assert_eq!(world.decide(0), Command::MoveTo(visible_point));
+        world.tick += 2 * TICK_HZ + 1;
+        assert_ne!(world.decide(0), Command::MoveTo(visible_point));
+        // Expiration only affects decisions. Checkpoints retain the last observation.
+        assert_eq!(world.entities.last_seen(0), sighting);
+
+        let hp = world.entities[0].hp;
+        world.apply_damage(
+            2,
+            1,
+            0,
+            hp,
+            (DamageSchool::Weapon, ImpactEffect::Standard),
+            &mut Vec::new(),
+        );
+        assert_eq!(world.entities.last_seen(0), None);
+        assert!(observed.get(&world.entities.ecs, observer).is_err());
+
+        // A reused ECS slot and gameplay ID cannot inherit an old component.
+        world.entities.remember_target(1, 1, base(0), world.tick);
+        let old = world.entities.meta.order[1];
+        world.entities.truncate(1);
+        world.next_id = 2;
+        assert_eq!(world.spawn(1, Kind::Hero, 0, base(1), true), 2);
+        assert_ne!(world.entities.meta.order[1], old);
+        assert_eq!(world.entities.last_seen(1), None);
+        assert!(world.entities.ecs.get::<LastSeenTarget>(old).is_none());
+    }
+
+    #[test]
+    fn automated_room_keeps_pre_migration_checkpoint() {
+        let mut world = crate::World::new(0, 0);
+        for _ in 0..8_000 {
+            world.step();
+        }
+        assert!((0..world.entities.len()).any(|index| world.entities.last_seen(index).is_some()));
+        assert_eq!(
+            world.state_digest(),
+            "5e6afe4771a219ccf220b3f33df28b565ddba8c4354a0f3b860be18a11550706"
         );
     }
 

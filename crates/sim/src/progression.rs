@@ -251,12 +251,14 @@ impl Room<'_> {
         t.winding = None;
         t.cast = None;
         t.status = Default::default();
-        t.last_seen = None;
         events.push(Event::Death { id, killer: src });
+        if kind != Kind::Armory {
+            t.respawn = self.state.tick + RESPAWN + (self.state.tick / 60).min(900);
+        }
+        self.entities.forget_target(i);
         if kind == Kind::Armory {
             return;
         }
-        t.respawn = self.state.tick + RESPAWN + (self.state.tick / 60).min(900);
         if enemy
             && matches!(self.state.layout, Layout::Aral { .. })
             && let Some(killer) = src

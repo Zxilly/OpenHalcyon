@@ -76,7 +76,7 @@ impl Room<'_> {
             return Command::Attack(t.id);
         }
         if e.kind == Kind::Hero {
-            if let Some((_, point, at)) = e.last_seen
+            if let Some((_, point, at)) = self.entities.last_seen(i)
                 && self.tick.saturating_sub(at) <= 2 * TICK_HZ
                 && e.position.dist(point) > 1.
             {

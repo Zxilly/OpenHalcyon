@@ -416,8 +416,6 @@ pub struct Entity {
     status: Status,
     #[serde(skip)]
     path: nav::Path,
-    #[serde(skip)]
-    last_seen: Option<(u32, Position, u64)>,
     // Last waypoint actually stepped toward by this lane minion. A pursued
     // actor is retained so network projections can filter its position by sight.
     #[serde(skip)]
@@ -565,7 +563,7 @@ impl Room<'_> {
         if let Some(difficulty) = self.bot_difficulty {
             hash.update(difficulty.as_str().as_bytes());
         }
-        for e in &self.entities {
+        for (i, e) in self.entities.iter().enumerate() {
             serde_json::to_writer(
                 &mut hash,
                 &(
@@ -579,7 +577,7 @@ impl Room<'_> {
                     e.cooldown,
                     &e.status,
                     &e.path,
-                    e.last_seen,
+                    self.entities.last_seen(i),
                     e.bonus_hp,
                 ),
             )
@@ -818,7 +816,6 @@ impl Room<'_> {
             cast: None,
             cooldown: [0; 3],
             status: Status::default(),
-            last_seen: None,
             lane_step: None,
             solo_route_index: 0,
             solo_side: 0,
@@ -1331,7 +1328,8 @@ impl Room<'_> {
                     && let Some(j) = self.index(id)
                     && self.entities[j].team != self.entities[i].team
                 {
-                    self.entities[i].last_seen = Some((id, self.entities[j].position, self.tick));
+                    let position = self.entities[j].position;
+                    self.entities.remember_target(i, id, position, self.tick);
                 }
                 if DIAG && let Some(elapsed) = elapsed {
                     diagnostics.as_deref_mut().unwrap().decision(
