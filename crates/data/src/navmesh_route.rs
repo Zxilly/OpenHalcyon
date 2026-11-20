@@ -368,7 +368,8 @@ impl NavMesh {
     }
 
     /// Finds a ground-only corridor between projected start and destination.
-    /// Each returned point is a portal midpoint or the projected destination.
+    /// Uses `polyanya::Mesh` any-angle optimal pathfinding when available,
+    /// falling back to `RouteSearch` for disconnected or degenerate segments.
     pub fn route(
         &self,
         start: [f32; 2],
@@ -380,6 +381,20 @@ impl NavMesh {
 
     /// The same corridor query with scratch storage retained across calls.
     pub fn route_with(
+        &self,
+        start: [f32; 2],
+        destination: [f32; 2],
+        radius: f32,
+        search: &mut RouteSearch,
+    ) -> Option<Vec<[f32; 2]>> {
+        if let Some(path) = self.polyanya_route(start, destination, radius) {
+            return Some(path);
+        }
+        self.route_with_graph(start, destination, radius, search)
+    }
+
+    /// Fallback corridor A* query over Detour polygon portals with retained scratch storage.
+    pub fn route_with_graph(
         &self,
         start: [f32; 2],
         destination: [f32; 2],
