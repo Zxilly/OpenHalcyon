@@ -287,7 +287,7 @@ pub(super) fn append_inventory(out: &mut Vec<Message>, world: &World, entity: &E
         // HP, max energy, armor, shield and weapon power already include
         // equipment in the full declaration. Restore the remaining modifiers.
         for (stat, bonus) in world.item_bonuses(held.kind) {
-            if matches!(stat, 3 | 5 | 9 | 11 | 15 | 18 | 25) {
+            if matches!(stat, 3 | 5 | 9 | 11 | 15 | 18 | 25 | 30 | 31) {
                 out.push(modifier(actor, stat, bonus));
             }
         }
@@ -478,6 +478,46 @@ mod combat_tests {
                 (18, 2, 0.08)
             ]
         );
+    }
+
+    #[test]
+    fn native_crit_upgrade_removes_components_and_restores_final_modifiers() {
+        use halcyon_protocol::AttributeChange;
+        use halcyon_sim::BasicItem::*;
+        let mut world = World::new(12, 10);
+        world.entities[0].gold = 2900;
+        for item in [SixSins, MinionsFoot, LuckyStrike] {
+            world.purchase(1, item).unwrap();
+        }
+        let receipt = world.purchase(1, TyrantsMonocle).unwrap();
+        let mut frames = Vec::new();
+        append_purchase(&mut frames, &world, &receipt, true);
+        assert_eq!(
+            frames.iter().map(|m| m.opcode).collect::<Vec<_>>(),
+            [
+                0x41d, 0x41c, 0x44b, 0x41c, 0x41c, 0x44b, 0x43d, 0x41c, 0x41c, 0x41c
+            ]
+        );
+        let modifiers = |msgs: &[Message]| {
+            msgs.iter()
+                .filter_map(AttributeChange::read)
+                .map(|v| (v.index, v.value, v.layer, v.set_mode))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            modifiers(&frames),
+            [
+                (4, -25., 1, 0),
+                (30, -0.2, 1, 0),
+                (31, -0.05, 1, 0),
+                (4, 60., 1, 0),
+                (30, 0.35, 1, 0),
+                (31, 0.15, 1, 0)
+            ]
+        );
+        frames.clear();
+        append_inventory(&mut frames, &world, &world.entities[0]);
+        assert_eq!(modifiers(&frames), [(30, 0.35, 1, 0), (31, 0.15, 1, 0)]);
     }
 
     #[test]

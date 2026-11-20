@@ -159,13 +159,33 @@ bypassed mitigation at 100%. Pulseweave amplifies movement speed throughout
 movement and its new modifier is restored on first visibility. Bonesaw's
 on-hit shred and Pulseweave's reactive burst need their trigger/stack rules.
 
-Together with the preceding table the host covers 269 of 341 paired receipts
-and 55 of 63 witnessed templates, plus the published Dragonheart component.
-The remaining 72 paired receipts have the following evidence.
+### Critical weapon items
+
+| Template | Paired receipts | Observed debit and consumed components | Modifiers in grant order |
+|---|---:|---|---|
+| 517 Minion's Foot | 1 | 300 | 30 +0.10, 31 +0.05 |
+| 508 Lucky Strike | 2 | 900 directly or 600 with Minion's Foot | 30 +0.20, 31 +0.05 |
+| 491 Tyrant's Monocle | 2 | 2900 directly or 1350 with Six Sins and Lucky Strike | 4 +60, 30 +0.35, 31 +0.15 |
+
+Stat 30 adds critical chance and 31 adds critical damage. The 4.13 captures supply
+the item values. A hero's critical basic weapon hit deals its weapon component
+times `1.5 + total critical damage bonus` before mitigation. The official guide
+demonstrates the additive critical damage calculation on hero and minion basic
+attacks. [Official weapon guide](https://www.vainglorygame.com/news/just-beginning-to-vainglorious-explaining-red-items/)
+
+Each world uses a seeded SplitMix64 stream. A hero with positive critical chance
+draws once when a basic weapon attack on a hero or minion completes windup.
+Chance is capped at 100% for the draw, preserving surplus equipment modifiers.
+A launched projectile retains its damage. Cancelled windups consume no draw.
+Spells, attached damage components and hits on buildings retain their normal
+damage. The host RNG distribution is a project choice. The original packet's
+critical-hit flag is unverified.
+
+The host covers 274 of 341 paired receipts and 58 of 63 witnessed templates,
+plus the published Dragonheart component. The remaining 67 paired receipts follow.
 
 | Templates (matched receipts) | Evidence and remaining question |
 |---|---|
-| 517 Minion's Foot (1), 508 Lucky Strike (2), 491 Tyrant's Monocle (2) | Flat stat pairs 30/31 add 0.10/0.05, 0.20/0.05 and 0.35/0.15. These are critical chance and critical damage. The delivered hero definitions omit the base critical multiplier, and the impact records lack a verified critical-basic-hit discriminator. |
 | 493 Weapon Infusion (18), 494 Crystal Infusion (6) | The definitions contain stat ranges and 150 s duration. Same-instance activation appeared within 100 ms of 7 and 2 grants respectively, and later for another 2 and 4. These observations do not establish unconditional consumption on purchase. |
 | 481 Flare (11), 495 Scout Trap (31) | No immediate activation. Later activation and removal of the same instance appeared for 2 flares and 9 traps. One trap was sold. Complete charge/slot rules and an attributable authenticated use request are unresolved. |
 | 534 Capacitor Plate (1) | Two equal 0.15 modifiers have different wire indices and layers (36/2 and 34/0). The definition names heal and barrier amplification. The sample does not distinguish the stat-to-effect mapping or the outgoing/received scope. |

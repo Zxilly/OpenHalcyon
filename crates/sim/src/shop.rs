@@ -58,6 +58,9 @@ pub enum BasicItem {
     Bonesaw,
     BrokenMyth,
     Pulseweave,
+    MinionsFoot,
+    LuckyStrike,
+    TyrantsMonocle,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HeldItem {
@@ -101,7 +104,7 @@ const fn def(
     }
 }
 
-const OFFERS: [Definition; 56] = [
+const OFFERS: [Definition; 59] = [
     def(WeaponBlade, 458, "Item_WeaponBlade", 300, &[], &[(4, 10.)]),
     def(LightArmor, 469, "Item_LightArmor", 300, &[], &[(7, 25.)]),
     def(LightShield, 501, "Item_LightShield", 300, &[], &[(8, 25.)]),
@@ -508,6 +511,30 @@ const OFFERS: [Definition; 56] = [
         &[Dragonheart, Lifespring],
         &[(0, 600.), (18, 0.08)],
     ),
+    def(
+        MinionsFoot,
+        517,
+        "Item_MinionsFoot",
+        300,
+        &[],
+        &[(30, 0.10), (31, 0.05)],
+    ),
+    def(
+        LuckyStrike,
+        508,
+        "Item_LuckyStrike",
+        600,
+        &[MinionsFoot],
+        &[(30, 0.20), (31, 0.05)],
+    ),
+    def(
+        TyrantsMonocle,
+        491,
+        "Item_TyrantsMonocle",
+        1350,
+        &[SixSins, LuckyStrike],
+        &[(4, 60.), (30, 0.35), (31, 0.15)],
+    ),
 ];
 
 impl BasicItem {
@@ -681,7 +708,7 @@ impl World {
         }
         // Apply the net modifier once. Upgrading an HP component must preserve
         // missing health when the completed item grants the same HP.
-        let mut delta = [0.; 26];
+        let mut delta = [0.; 32];
         for used in &consumed {
             for &(stat, value) in &self.shop.offers[used.kind as usize].bonuses {
                 delta[stat as usize] -= value;
@@ -705,6 +732,8 @@ impl World {
         h.item_stats.move_speed_amp += delta[18];
         h.item_stats.attack_speed += delta[15];
         h.item_stats.cooldown += delta[25];
+        h.item_stats.crit_chance += delta[30];
+        h.item_stats.crit_damage += delta[31];
         h.gold -= price as u32;
         h.inventory.push(granted);
         Ok(Some(Purchase {
@@ -718,6 +747,8 @@ impl World {
 
 #[derive(Clone, Copy, Default, Debug, Serialize)]
 pub struct ItemStats {
+    pub crit_chance: f32,
+    pub crit_damage: f32,
     pub armor_pierce: f32,
     pub shield_pierce: f32,
     pub move_speed_amp: f32,
@@ -726,6 +757,24 @@ pub struct ItemStats {
     pub energy_regen: f32,
     pub cooldown: f32,
 }
+/// One SplitMix64 draw per eligible released weapon attack. The top 24 bits
+/// map uniformly onto the f32 grid in [0, 1). This is the host's RNG policy.
+pub(super) fn weapon_multiplier(state: &mut u64, stats: ItemStats) -> f32 {
+    if stats.crit_chance <= 0. {
+        return 1.;
+    }
+    *state = state.wrapping_add(0x9e37_79b9_7f4a_7c15);
+    let mut bits = *state;
+    bits = (bits ^ (bits >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    bits = (bits ^ (bits >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    let roll = ((bits ^ (bits >> 31)) >> 40) as f32 / 16_777_216.;
+    if roll < stats.crit_chance.min(1.) {
+        1.5 + stats.crit_damage
+    } else {
+        1.
+    }
+}
+
 /// The delivered damage rules attribute this formula to contemporary guides.
 /// Penetration bypasses a fraction of mitigation for this attacker's damage.
 pub(super) fn mitigated(raw: f32, defense: f32, pierce: f32) -> f32 {
@@ -918,6 +967,95 @@ mod tests {
         let ordinary = origin.dist(slow.entities[0].position);
         assert!(ordinary > 0.);
         assert!((origin.dist(fast.entities[0].position) - ordinary * 1.08).abs() < 0.00001);
+    }
+
+    #[test]
+    fn crit_recipes_credit_components_and_replace_their_modifiers() {
+        let mut w = World::new(7, 10);
+        w.entities[0].gold = 20_000;
+        let foot = w.purchase(1, MinionsFoot).unwrap();
+        let lucky = w.purchase(1, LuckyStrike).unwrap();
+        assert_eq!((foot.paid, lucky.paid), (300, 600));
+        assert_eq!(lucky.consumed, [foot.granted]);
+        let sins = w.purchase(1, SixSins).unwrap();
+        let monocle = w.purchase(1, TyrantsMonocle).unwrap();
+        assert_eq!(monocle.consumed, [sins.granted, lucky.granted]);
+        assert_eq!(monocle.paid, 1350);
+        assert_eq!(w.entities[0].item_stats.crit_chance, 0.35);
+        assert_eq!(w.entities[0].item_stats.crit_damage, 0.15);
+        assert_eq!(w.purchase(1, LuckyStrike).unwrap().paid, 900);
+        assert_eq!(w.purchase(1, TyrantsMonocle).unwrap().paid, 2000);
+        assert_eq!(w.purchase(1, TyrantsMonocle).unwrap().paid, 2900);
+        let stats = w.entities[0].item_stats;
+        assert!(stats.crit_chance > 1.);
+        for mut seed in 0..64 {
+            assert!((weapon_multiplier(&mut seed, stats) - 1.95).abs() < 1e-5);
+        }
+    }
+
+    #[test]
+    fn critical_roll_is_seeded_and_only_drawn_on_a_released_hero_weapon_attack() {
+        let run = |seed: u64, retire: bool| {
+            let mut w = World::new(seed, 10);
+            w.entities[0].gold = 2900;
+            w.purchase(1, TyrantsMonocle).unwrap();
+            let pos = Position { x: 0., y: 0. };
+            w.entities[0].position = pos;
+            w.entities[1].position = Position { x: 4., y: 0. };
+            w.entities[0].stats.range = 6.;
+            w.entities[1].stats.armor = 0.;
+            w.command(1, Command::Attack(2)).unwrap();
+            w.step();
+            w.command(1, Command::Stop).unwrap();
+            for _ in 0..5 {
+                w.step();
+            }
+            assert_eq!(w.crit_rng, seed);
+            w.command(1, Command::Attack(2)).unwrap();
+            let raw = w.entities[0].stats.weapon;
+            let mut expected_state = seed;
+            let expected = raw * weapon_multiplier(&mut expected_state, w.entities[0].item_stats);
+            while !w.step().iter().any(|v| {
+                matches!(
+                    v,
+                    Event::Attack {
+                        source: 1,
+                        target: 2
+                    }
+                )
+            }) {
+                assert_eq!(w.crit_rng, seed);
+                assert!(w.tick < 20);
+            }
+            assert_eq!(w.crit_rng, expected_state);
+            w.command(1, Command::Stop).unwrap();
+            if retire {
+                w.entities[1].hp = 0.;
+                w.entities[1].respawn = u64::MAX;
+            }
+            let hits: Vec<_> = (0..10)
+                .flat_map(|_| w.step())
+                .filter_map(|v| match v {
+                    Event::Damage {
+                        source: 1,
+                        target: 2,
+                        amount,
+                        ..
+                    } => Some(amount),
+                    _ => None,
+                })
+                .collect();
+            if retire {
+                assert!(hits.is_empty());
+            } else {
+                assert_eq!(hits.len(), 1);
+                assert!((hits[0] - expected).abs() < 0.001);
+            }
+            assert_eq!(w.crit_rng, expected_state);
+            expected > raw
+        };
+        assert_eq!(run(3, false), run(3, true));
+        assert_ne!(run(3, false), run(0, false));
     }
 
     #[test]

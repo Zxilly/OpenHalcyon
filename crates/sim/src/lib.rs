@@ -301,6 +301,7 @@ pub struct World {
     next_id: u32,
     next_item: u32,
     seed: u64,
+    crit_rng: u64,
     bot_difficulty: Option<halcyon_data::BotDifficulty>,
     first_wave: u64,
     wave_interval: u64,
@@ -353,7 +354,7 @@ impl World {
             &(
                 self.tick,
                 self.winner,
-                self.seed,
+                (self.seed, self.crit_rng),
                 self.next_id,
                 self.next_item,
                 self.first_wave,
@@ -560,6 +561,7 @@ impl World {
             next_item: 40000,
             stats,
             seed,
+            crit_rng: seed,
             bot_difficulty: None,
             first_wave,
             wave_interval,
@@ -994,8 +996,15 @@ impl World {
                     } else if e.kind == Kind::Crystal {
                         t.max_hp * 0.04
                     } else {
+                        let multiplier = if e.kind == Kind::Hero
+                            && matches!(t.kind, Kind::Hero | Kind::Minion)
+                        {
+                            shop::weapon_multiplier(&mut self.crit_rng, e.item_stats)
+                        } else {
+                            1.
+                        };
                         shop::mitigated(
-                            e.stats.weapon + bonus,
+                            e.stats.weapon * multiplier + bonus,
                             t.stats.armor,
                             e.item_stats.armor_pierce,
                         )
