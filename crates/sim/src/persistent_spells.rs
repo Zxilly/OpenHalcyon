@@ -2,7 +2,7 @@
 //! impacts recheck the handle generation after running combat callbacks.
 use super::{Event, Room, arcane_fire::Pulse};
 use bevy_ecs::component::Mutable;
-use bevy_ecs::prelude::{Commands, Component, Entity, In, InMut, Query, Res, Resource};
+use bevy_ecs::prelude::{Component, Entity, Mut, Resource};
 use std::marker::PhantomData;
 
 #[derive(Resource)]
@@ -64,30 +64,27 @@ impl super::Actors<'_> {
         self.spawn_spell(spell);
     }
 }
-fn schedule<T: TimedSpell>(
-    (In(tick), InMut(jobs)): (In<u64>, InMut<Agenda>),
-    order: Res<CastOrder<T>>,
-    spells: Query<&T>,
-    mut commands: Commands,
-) {
-    jobs.clear();
-    for &id in &order.handles {
-        let Ok(spell) = spells.get(id) else {
-            continue;
-        };
-        if spell.expired_before_step(tick) {
-            commands.entity(id).despawn();
-        } else {
-            jobs.push(id);
-        }
-    }
-}
 impl Room<'_> {
     fn resolve_spells<T: TimedSpell>(&mut self, jobs: &mut Agenda, events: &mut Vec<Event>) {
+        let tick = self.state.tick;
+        jobs.clear();
+        // Freeze cast order before callbacks. A despawned handle can stay in
+        // the index until this pass; generation-checked readers skip it.
         self.entities
             .ecs
-            .run_system_cached_with(schedule::<T>, (self.state.tick, &mut *jobs))
-            .expect("registered spell scheduling system");
+            .resource_scope(|ecs, mut order: Mut<CastOrder<T>>| {
+                order.handles.retain(|&id| {
+                    let Some(spell) = ecs.get::<T>(id) else {
+                        return false;
+                    };
+                    if spell.expired_before_step(tick) {
+                        ecs.despawn(id);
+                        return false;
+                    }
+                    jobs.push(id);
+                    true
+                });
+            });
         for &id in jobs.iter() {
             let Some(mut spell) = self
                 .entities
@@ -122,11 +119,6 @@ impl Room<'_> {
         }
         let mut jobs = std::mem::take(&mut self.entities.meta.spell_jobs);
         self.resolve_spells::<T>(&mut jobs, events);
-        self.entities
-            .ecs
-            .resource_scope(|ecs, mut order: bevy_ecs::prelude::Mut<CastOrder<T>>| {
-                order.handles.retain(|id| ecs.get::<T>(*id).is_some());
-            });
         self.entities.meta.spell_jobs = jobs;
     }
 }
@@ -134,6 +126,46 @@ impl Room<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(Component, Clone, Copy)]
+    struct OrderedProbe(u32);
+    impl TimedSpell for OrderedProbe {
+        fn expired_before_step(&self, _: u64) -> bool {
+            self.0 == 2
+        }
+        fn begin_impact(&mut self) -> Self {
+            *self
+        }
+        fn advance(&mut self, room: &mut Room<'_>, _: &mut Vec<Event>) -> bool {
+            assert!(room.entities.spells::<Self>().all(|p| p.0 != 2));
+            // Advance the decimal sequence to make callback order observable.
+            room.next_id = room.next_id * 10 + self.0;
+            if self.0 == 1 {
+                room.entities.spawn_spell(Self(4));
+            }
+            false
+        }
+    }
+    #[test]
+    fn expiry_precedes_callbacks_and_new_casts_wait_for_the_next_pass() {
+        let mut room = crate::World::new(1, 1);
+        room.next_id = 0;
+        for n in 1..=3 {
+            room.entities.spawn_spell(OrderedProbe(n));
+        }
+        room.advance_spell_family::<OrderedProbe>(&mut Vec::new());
+        assert_eq!(room.next_id, 13);
+        room.advance_spell_family::<OrderedProbe>(&mut Vec::new());
+        assert_eq!(room.next_id, 134);
+        room.advance_spell_family::<OrderedProbe>(&mut Vec::new());
+        assert!(
+            room.entities
+                .ecs
+                .resource::<CastOrder<OrderedProbe>>()
+                .handles
+                .is_empty()
+        );
+    }
 
     #[derive(Component, Clone, Copy)]
     struct ReplacementProbe(u8);
