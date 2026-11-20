@@ -1,7 +1,14 @@
 //! Read the separately supplied 4.13.4 delivery. Unknown fields retain their original names and values.
 mod ability_parameter;
 pub use ability_parameter::{AbilityParameter, DamageOperand, ModeledTalent, TalentParameter};
+mod ability_slots;
+pub use ability_slots::{
+    AbilityEntryKind, AbilityForm, AbilitySetEntry, AbilitySlot, HeroAbilitySlots,
+    all_hero_ability_slots, lookup_hero_ability_slots, lookup_hero_ability_slots_by_id,
+    lookup_hero_ability_slots_by_raw,
+};
 pub mod combat_content;
+pub use combat_content::TalentRarity;
 mod difficulty;
 mod entity_template;
 mod extra;
@@ -9,6 +16,7 @@ mod item_bonuses;
 pub mod items;
 mod native_maps;
 mod navmesh;
+pub use polyanya;
 pub mod reference;
 pub use native_maps::{
     Area, CampOrMode, CampSpawn, ExtractedParameter, LevelLayout, MeshHeader, MeshInfo, NativeMaps,

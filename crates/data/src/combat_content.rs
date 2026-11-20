@@ -146,11 +146,53 @@ pub struct FullUnit {
     pub bounty_extra_388: f32,
 }
 
+/// Canonical rarity tier for hero-bound talents in `talents_full.json`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TalentRarity {
+    Rare,
+    Epic,
+    Legendary,
+}
+
+impl TalentRarity {
+    pub const ALL: [Self; 3] = [Self::Rare, Self::Epic, Self::Legendary];
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Rare => "rare",
+            Self::Epic => "epic",
+            Self::Legendary => "legendary",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "rare" => Some(Self::Rare),
+            "epic" => Some(Self::Epic),
+            "legendary" => Some(Self::Legendary),
+            _ => None,
+        }
+    }
+
+    pub const fn index(self) -> usize {
+        self as usize
+    }
+}
+
+impl Talent {
+    pub fn rarity_kind(&self) -> Option<TalentRarity> {
+        TalentRarity::parse(self.rarity.as_deref()?)
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct CombatContent {
     heroes: BTreeMap<String, HeroAbilities>,
     units: BTreeMap<String, FullUnit>,
     talents: BTreeMap<String, Talent>,
+    talents_by_official_id: BTreeMap<String, String>,
+    talents_by_hero: BTreeMap<String, [Option<String>; 3]>,
 }
 
 impl CombatContent {
@@ -236,16 +278,60 @@ impl CombatContent {
                 }
             }
         }
+        let talents = indexed(
+            crate::read(dir, "talents_full.json", hash)?,
+            |t: &Talent| &t.id,
+        )?;
+        let mut talents_by_official_id = BTreeMap::new();
+        let mut talents_by_hero: BTreeMap<String, [Option<String>; 3]> = BTreeMap::new();
+        for talent in talents.values() {
+            if let Some(official_id) = talent.official_id.as_deref()
+                && (official_id.is_empty()
+                    || talents_by_official_id
+                        .insert(official_id.to_owned(), talent.id.clone())
+                        .is_some())
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("empty or duplicate talent official_id {official_id}"),
+                ));
+            }
+            match (talent.hero.as_deref(), talent.rarity.as_deref()) {
+                (Some(hero), Some(rarity)) => {
+                    let rarity = TalentRarity::parse(rarity).ok_or_else(|| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            format!("unknown talent rarity {rarity} on {}", talent.id),
+                        )
+                    })?;
+                    let slot =
+                        &mut talents_by_hero.entry(hero.to_owned()).or_default()[rarity.index()];
+                    if slot.is_some() {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            format!("duplicate {rarity:?} talent for hero {hero}"),
+                        ));
+                    }
+                    *slot = Some(talent.id.clone());
+                }
+                (None, None) => {}
+                _ => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("inconsistent hero/rarity metadata on talent {}", talent.id),
+                    ));
+                }
+            }
+        }
         Ok(Self {
             heroes,
             units: indexed(
                 crate::read(dir, "units_full.json", hash)?,
                 |u: &FullUnit| &u.name,
             )?,
-            talents: indexed(
-                crate::read(dir, "talents_full.json", hash)?,
-                |t: &Talent| &t.id,
-            )?,
+            talents,
+            talents_by_official_id,
+            talents_by_hero,
         })
     }
     pub fn heroes(&self) -> impl ExactSizeIterator<Item = &HeroAbilities> {
@@ -257,12 +343,64 @@ impl CombatContent {
     pub fn talents(&self) -> impl ExactSizeIterator<Item = &Talent> {
         self.talents.values()
     }
+    pub fn hero(&self, hero: &str) -> Option<&HeroAbilities> {
+        self.heroes.get(hero)
+    }
+    pub fn hero_for(&self, template: crate::EntityTemplate) -> Option<&HeroAbilities> {
+        self.heroes.get(template.hero_id()?)
+    }
     pub fn ability(&self, hero: &str, id: &str) -> Option<&Ability> {
         self.heroes
             .get(hero)?
             .abilities
             .iter()
             .find(|a| a.ability_id == id)
+    }
+    pub fn ability_for_slot(
+        &self,
+        template: crate::EntityTemplate,
+        slot: crate::AbilitySlot,
+    ) -> Option<&Ability> {
+        let slots = crate::lookup_hero_ability_slots(template)?;
+        self.ability(slots.hero_id, slots.ability_id(slot))
+    }
+    pub fn ability_for_form(
+        &self,
+        template: crate::EntityTemplate,
+        slot: crate::AbilitySlot,
+        form: crate::AbilityForm,
+    ) -> Option<&Ability> {
+        let slots = crate::lookup_hero_ability_slots(template)?;
+        self.ability(slots.hero_id, slots.ability_id_for_form(slot, form)?)
+    }
+    pub fn talent(&self, id: &str) -> Option<&Talent> {
+        self.talents.get(id)
+    }
+    pub fn talent_by_official_id(&self, official_id: &str) -> Option<&Talent> {
+        let id = self.talents_by_official_id.get(official_id)?;
+        self.talents.get(id)
+    }
+    pub fn hero_talent(&self, hero: &str, rarity: TalentRarity) -> Option<&Talent> {
+        let id = self.talents_by_hero.get(hero)?[rarity.index()].as_deref()?;
+        self.talents.get(id)
+    }
+    pub fn hero_talent_for(
+        &self,
+        template: crate::EntityTemplate,
+        rarity: TalentRarity,
+    ) -> Option<&Talent> {
+        self.hero_talent(template.hero_id()?, rarity)
+    }
+    pub fn hero_talents(&self, hero: &str) -> [Option<&Talent>; 3] {
+        let Some(ids) = self.talents_by_hero.get(hero) else {
+            return [None, None, None];
+        };
+        std::array::from_fn(|i| ids[i].as_deref().and_then(|id| self.talents.get(id)))
+    }
+    pub fn hero_talents_for(&self, template: crate::EntityTemplate) -> [Option<&Talent>; 3] {
+        template
+            .hero_id()
+            .map_or([None, None, None], |hero| self.hero_talents(hero))
     }
 }
 impl Ability {
@@ -276,17 +414,77 @@ impl Ability {
     }
 }
 impl crate::GameData {
+    pub fn combat_content(&self) -> &CombatContent {
+        self.extra.combat_content()
+    }
     pub fn hero_abilities(&self, name: &str) -> Option<&HeroAbilities> {
-        self.extra.combat_content().heroes.get(name)
+        self.extra.combat_content().hero(name)
+    }
+    pub fn hero_abilities_for(&self, template: crate::EntityTemplate) -> Option<&HeroAbilities> {
+        self.extra.combat_content().hero_for(template)
     }
     pub fn ability(&self, hero: &str, id: &str) -> Option<&Ability> {
         self.extra.combat_content().ability(hero, id)
+    }
+    pub fn ability_for_slot(
+        &self,
+        template: crate::EntityTemplate,
+        slot: crate::AbilitySlot,
+    ) -> Option<&Ability> {
+        self.extra.combat_content().ability_for_slot(template, slot)
+    }
+    pub fn ability_for_form(
+        &self,
+        template: crate::EntityTemplate,
+        slot: crate::AbilitySlot,
+        form: crate::AbilityForm,
+    ) -> Option<&Ability> {
+        self.extra
+            .combat_content()
+            .ability_for_form(template, slot, form)
+    }
+    pub fn ability_ranks_for_slot(
+        &self,
+        template: crate::EntityTemplate,
+        slot: crate::AbilitySlot,
+        variable: &str,
+    ) -> Option<&[f32]> {
+        self.ability_for_slot(template, slot)?
+            .variable(variable)?
+            .ranks
+            .as_deref()
     }
     pub fn full_unit(&self, name: &str) -> Option<&FullUnit> {
         self.extra.combat_content().units.get(name)
     }
     pub fn talent_definition(&self, id: &str) -> Option<&Talent> {
-        self.extra.combat_content().talents.get(id)
+        self.extra.combat_content().talent(id)
+    }
+    pub fn talent_by_official_id(&self, official_id: &str) -> Option<&Talent> {
+        self.extra
+            .combat_content()
+            .talent_by_official_id(official_id)
+    }
+    pub fn hero_talent(&self, hero: &str, rarity: TalentRarity) -> Option<&Talent> {
+        self.extra.combat_content().hero_talent(hero, rarity)
+    }
+    pub fn hero_talent_for(
+        &self,
+        template: crate::EntityTemplate,
+        rarity: TalentRarity,
+    ) -> Option<&Talent> {
+        self.extra
+            .combat_content()
+            .hero_talent_for(template, rarity)
+    }
+    pub fn hero_talents(&self, hero: &str) -> [Option<&Talent>; 3] {
+        self.extra.combat_content().hero_talents(hero)
+    }
+    pub fn hero_talents_for(&self, template: crate::EntityTemplate) -> [Option<&Talent>; 3] {
+        self.extra.combat_content().hero_talents_for(template)
+    }
+    pub fn talents(&self) -> impl ExactSizeIterator<Item = &Talent> {
+        self.extra.combat_content().talents()
     }
 }
 impl TalentModifier {
@@ -389,6 +587,96 @@ mod tests {
     }
 
     #[test]
+    fn indexed_talent_and_slot_lookups_work_without_supplement() {
+        let mut content = CombatContent::default();
+        content.heroes.insert(
+            "Hero009".into(),
+            HeroAbilities {
+                hero_id: "Hero009".into(),
+                abilities: vec![
+                    Ability {
+                        ability_id: "Ability__Krul__A".into(),
+                        variables: vec![AbilityVariable {
+                            name: "Cooldown".into(),
+                            ranks: Some(vec![9., 8.5, 8., 7.5, 7.]),
+                            ..Default::default()
+                        }],
+                        ..Default::default()
+                    },
+                    Ability {
+                        ability_id: "Ability__Krul__B".into(),
+                        ..Default::default()
+                    },
+                    Ability {
+                        ability_id: "Ability__Krul__C".into(),
+                        ..Default::default()
+                    },
+                ],
+                ..Default::default()
+            },
+        );
+        content.talents.insert(
+            "Talent_Krul_DeadMansBarrier".into(),
+            Talent {
+                id: "Talent_Krul_DeadMansBarrier".into(),
+                official_id: Some("krul_rare".into()),
+                hero: Some("Hero009".into()),
+                rarity: Some("rare".into()),
+                ..Default::default()
+            },
+        );
+        content
+            .talents_by_official_id
+            .insert("krul_rare".into(), "Talent_Krul_DeadMansBarrier".into());
+        content.talents_by_hero.insert(
+            "Hero009".into(),
+            [Some("Talent_Krul_DeadMansBarrier".into()), None, None],
+        );
+
+        assert_eq!(
+            content
+                .ability_for_slot(crate::EntityTemplate::Hero009, crate::AbilitySlot::A)
+                .unwrap()
+                .ability_id,
+            "Ability__Krul__A"
+        );
+        assert_eq!(
+            content
+                .ability_for_slot(crate::EntityTemplate::Hero009, crate::AbilitySlot::A)
+                .unwrap()
+                .variable("Cooldown")
+                .unwrap()
+                .ranks
+                .as_deref(),
+            Some([9., 8.5, 8., 7.5, 7.].as_slice())
+        );
+        assert_eq!(
+            content
+                .talent_by_official_id("krul_rare")
+                .unwrap()
+                .rarity_kind(),
+            Some(TalentRarity::Rare)
+        );
+        assert_eq!(
+            content
+                .hero_talent_for(crate::EntityTemplate::Hero009, TalentRarity::Rare)
+                .unwrap()
+                .id,
+            "Talent_Krul_DeadMansBarrier"
+        );
+        assert!(
+            content
+                .hero_talent_for(crate::EntityTemplate::Hero009, TalentRarity::Epic)
+                .is_none()
+        );
+        assert_eq!(
+            TalentRarity::parse("legendary"),
+            Some(TalentRarity::Legendary)
+        );
+        assert_eq!(TalentRarity::parse("mythic"), None);
+    }
+
+    #[test]
     #[ignore = "requires the original delivery and supplement"]
     fn shipped_full_combat_definitions_preserve_headers_modifiers_and_rank_tables() {
         let base = std::env::var_os("HALCYON_DELIVERY").unwrap();
@@ -450,6 +738,48 @@ mod tests {
                 .unwrap()
                 .value_at(NonZeroU8::new(5).unwrap(), 0., 0.),
             Some(4.)
+        );
+        assert_eq!(
+            data.talent_by_official_id("ringo_rare").unwrap().id,
+            "Talent_Ringo_LongShot"
+        );
+        assert_eq!(
+            data.hero_talent_for(crate::EntityTemplate::Ringo, TalentRarity::Rare)
+                .unwrap()
+                .id,
+            "Talent_Ringo_LongShot"
+        );
+        assert_eq!(
+            data.hero_talents_for(crate::EntityTemplate::Idris)
+                .into_iter()
+                .flatten()
+                .count(),
+            3
+        );
+        assert_eq!(data.talents().len(), 189);
+        assert_eq!(
+            data.ability_for_slot(crate::EntityTemplate::Catherine, crate::AbilitySlot::A)
+                .unwrap()
+                .ability_id,
+            "Ability__Catherine__A"
+        );
+        assert_eq!(
+            data.ability_for_form(
+                crate::EntityTemplate::Malene,
+                crate::AbilitySlot::B,
+                crate::AbilityForm::Alternate
+            )
+            .unwrap()
+            .ability_id,
+            "Ability__Malene__B2"
+        );
+        assert!(
+            data.ability_ranks_for_slot(
+                crate::EntityTemplate::Idris,
+                crate::AbilitySlot::B,
+                "Cooldown"
+            )
+            .is_some()
         );
     }
 }
