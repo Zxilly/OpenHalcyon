@@ -7,12 +7,12 @@ use super::RpcEnvelope;
 use super::{echo_clock, login, pool, until};
 use argon2::{Argon2, PasswordHasher, password_hash::SaltString};
 use halcyon_ce_platform::{LobbyState, RpcMethod};
-use halcyon_federation::{MemberChange, Members, PoolAdmin as FederationAdmin};
+use halcyon_federation::{Members, PoolAdmin as FederationAdmin};
 use halcyon_protocol::{Fields, MatchCipher, Message, Opcode, wire_opcode};
 use reqwest::{Certificate, Client};
 use serde_json::Value;
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeMap,
     fs,
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
@@ -1050,37 +1050,60 @@ async fn wait_raft_members(probe: &Node, previous_leader: Option<Uuid>) -> Membe
     .expect("raft cluster did not elect a leader in time")
 }
 
-async fn ensure_non_host_leader(nodes: &[Node], host_id: Uuid) -> usize {
-    let all: BTreeSet<Uuid> = nodes.iter().map(|n| n.id).collect();
-    let homes: BTreeSet<Uuid> = nodes[..2].iter().map(|n| n.id).collect();
-    let admin = pool_admin(&nodes[0]);
-    timeout(Duration::from_secs(45), async {
-        loop {
-            if let Ok(members) = admin.members().await {
-                if members.configurations == vec![all.clone()] && members.leader != host_id {
-                    return nodes.iter().position(|n| n.id == members.leader).unwrap();
-                }
-                if members.configurations == vec![all.clone()] && members.leader == host_id {
-                    let _ = admin
-                        .change(&MemberChange {
-                            expected: all.clone(),
-                            voters: homes.clone(),
-                        })
-                        .await;
-                } else if members.configurations.len() == 1 && members.configurations[0] == homes {
-                    let _ = admin
-                        .change(&MemberChange {
-                            expected: homes.clone(),
-                            voters: all.clone(),
-                        })
-                        .await;
-                }
-            }
-            sleep(Duration::from_millis(150)).await;
-        }
-    })
-    .await
-    .expect("failed to establish a non-host Raft leader")
+async fn ensure_initial_non_host_leader(
+    nodes: &mut [Node],
+    client: &Client,
+    cookies: &mut [String],
+) -> usize {
+    let host_id = nodes[2].id;
+    let mut members = wait_raft_members(&nodes[0], None).await;
+    while members.leader == host_id {
+        nodes[2].stop();
+        let _ = wait_raft_members(&nodes[0], Some(host_id)).await;
+        nodes[2].start();
+        cookies[2] = admin(client, &nodes[2]).await;
+        members = wait_raft_members(&nodes[0], None).await;
+    }
+    nodes.iter().position(|n| n.id == members.leader).unwrap()
+}
+
+struct FailoverRoom<'a> {
+    id: &'a str,
+    created_at: &'a str,
+    identities: &'a [(Uuid, Value)],
+}
+
+async fn failover_running_non_host_leader(
+    nodes: &mut [Node],
+    client: &Client,
+    cookies: &mut [String],
+    pumps: &LiveClockPumps,
+    running_leader: usize,
+    room: &FailoverRoom<'_>,
+) {
+    let running_leader_id = nodes[running_leader].id;
+    nodes[running_leader].stop();
+    let during_running = wait_raft_members(&nodes[2], Some(running_leader_id)).await;
+    assert_ne!(during_running.leader, running_leader_id);
+    pumps
+        .assert_all_echoes_advance(
+            2,
+            Duration::from_secs(6),
+            "during mid-match leader failover",
+        )
+        .await;
+    nodes[running_leader].start();
+    cookies[running_leader] = admin(client, &nodes[running_leader]).await;
+    pumps
+        .assert_all_echoes_advance(2, Duration::from_secs(5), "after mid-match leader restart")
+        .await;
+    let detail = admin_match_detail(client, &nodes[2], &cookies[2], room.id).await;
+    assert_eq!(detail.phase, "running");
+    assert_eq!(detail.created_at, room.created_at);
+    for (node, (_, token)) in nodes[..2].iter().zip(room.identities) {
+        let resumed = state(client, node, token, LobbyState::Playing).await;
+        assert_eq!(resumed["matchId"], room.id);
+    }
 }
 
 struct LiveClockPumps {
@@ -1183,7 +1206,7 @@ async fn subprocess_leader_failover_during_prepare_and_running_preserves_room() 
     let dir = tempfile::tempdir().unwrap();
     let (mut nodes, client, mut cookies) = start_cluster(dir.path(), None).await;
     let host_id = nodes[2].id;
-    let initial_leader = ensure_non_host_leader(&nodes, host_id).await;
+    let initial_leader = ensure_initial_non_host_leader(&mut nodes, &client, &mut cookies).await;
 
     let identities = join_5v5_casual_on_homes(&client, &nodes[..2]).await;
     for i in 0..2 {
@@ -1236,7 +1259,6 @@ async fn subprocess_leader_failover_during_prepare_and_running_preserves_room() 
     assert_ne!(after_prepare.leader, initial_leader_id);
     nodes[initial_leader].start();
     cookies[initial_leader] = admin(&client, &nodes[initial_leader]).await;
-    let running_leader = ensure_non_host_leader(&nodes, host_id).await;
 
     let still_preparing = admin_match_detail(&client, &nodes[2], &cookies[2], &room_id).await;
     assert_eq!(still_preparing.phase, "allocated");
@@ -1270,30 +1292,25 @@ async fn subprocess_leader_failover_during_prepare_and_running_preserves_room() 
         .assert_all_echoes_advance(2, Duration::from_secs(5), "before mid-match failover")
         .await;
 
-    // Failover 2: restart the elected non-host Raft leader mid-match during Running.
-    let running_leader_id = nodes[running_leader].id;
-    nodes[running_leader].stop();
-    let during_running = wait_raft_members(&nodes[2], Some(running_leader_id)).await;
-    assert_ne!(during_running.leader, running_leader_id);
-    pumps
-        .assert_all_echoes_advance(
-            2,
-            Duration::from_secs(6),
-            "during mid-match leader failover",
+    let failover_room = FailoverRoom {
+        id: &room_id,
+        created_at: &initial_created,
+        identities: &identities,
+    };
+    let mut mid_match_failover_done = false;
+    let current = wait_raft_members(&nodes[2], None).await;
+    if current.leader != host_id {
+        let running_leader = nodes.iter().position(|n| n.id == current.leader).unwrap();
+        failover_running_non_host_leader(
+            &mut nodes,
+            &client,
+            &mut cookies,
+            &pumps,
+            running_leader,
+            &failover_room,
         )
         .await;
-    nodes[running_leader].start();
-    cookies[running_leader] = admin(&client, &nodes[running_leader]).await;
-    pumps
-        .assert_all_echoes_advance(2, Duration::from_secs(5), "after mid-match leader restart")
-        .await;
-    let after_running_failover =
-        admin_match_detail(&client, &nodes[2], &cookies[2], &room_id).await;
-    assert_eq!(after_running_failover.phase, "running");
-    assert_eq!(after_running_failover.created_at, initial_created);
-    for i in 0..2 {
-        let resumed = state(&client, &nodes[i], &identities[i].1, LobbyState::Playing).await;
-        assert_eq!(resumed["matchId"], room_id);
+        mid_match_failover_done = true;
     }
 
     // Minority / quorum-loss: stop both non-host nodes while the room runs.
@@ -1337,6 +1354,18 @@ async fn subprocess_leader_failover_during_prepare_and_running_preserves_room() 
     pumps
         .assert_all_echoes_advance(3, Duration::from_secs(5), "after quorum recovery")
         .await;
+    if !mid_match_failover_done && recovered.leader != host_id {
+        let running_leader = nodes.iter().position(|n| n.id == recovered.leader).unwrap();
+        failover_running_non_host_leader(
+            &mut nodes,
+            &client,
+            &mut cookies,
+            &pumps,
+            running_leader,
+            &failover_room,
+        )
+        .await;
+    }
 
     // Clear the aborted minority attempt, then verify new cross-home queuing recovers.
     rpc(
