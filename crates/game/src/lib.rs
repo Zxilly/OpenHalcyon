@@ -84,7 +84,7 @@ struct Seat {
     draft_sync_sent: bool,
     recommended_path: Option<u8>,
     equipped_talent: Option<halcyon_protocol::EquippedTalent>,
-    aral_reorder_view: bool,
+    aral_reorder_view: Option<aral_inventory::ProjectedSlots>,
     preamble: scene::Preamble,
     loading_roster_sent: bool,
     control_world: bool,
@@ -770,7 +770,7 @@ impl Room {
             self.seats[idx].loading_roster_sent = false;
             self.seats[idx].scene_written = false;
             self.seats[idx].world_actor_written = false;
-            self.seats[idx].aral_reorder_view = false;
+            self.seats[idx].aral_reorder_view = None;
             self.scene_views[idx] = Default::default();
             self.seats[idx].draft_sync_sent = false;
             self.seats[idx].preamble = Default::default();
@@ -861,6 +861,9 @@ impl Room {
             .is_some_and(|p| p.generation == generation)
         {
             self.seats[i].peers[ch] = None;
+            if ch == 0 {
+                self.seats[i].aral_reorder_view = None;
+            }
             self.seats[i].last = Some(Utc::now());
             self.event(
                 "connection",
@@ -1213,10 +1216,6 @@ impl Room {
                         scene::solo_opening(self, i)?
                     } else {
                         scene::announce_aral_entry(self, i, &m);
-                        self.seats[i].aral_reorder_view = self.world.entities[i]
-                            .aral_inventory
-                            .as_deref()
-                            .is_some_and(halcyon_sim::AralInventory::is_dense);
                         aral::opening(self, team)
                     };
                     out.push(Message::new(0x046e, [0; 6]));

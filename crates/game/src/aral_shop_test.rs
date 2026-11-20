@@ -136,6 +136,19 @@ pub(super) async fn shop_sequence(
         }
         assert!(room.world.entities[0].gold >= 2150);
     }
+    let boots = shop_request(socket, cipher, 1500, 478).await;
+    let boots = boots
+        .iter()
+        .find_map(|m| match m.fields().ok()? {
+            Fields::ItemGrant {
+                item: 478,
+                instance,
+                ..
+            } => Some(instance),
+            _ => None,
+        })
+        .unwrap();
+
     let frames = shop_request(socket, cipher, 1500, 509).await;
     let start = frames.iter().position(|m| m.opcode == 0x439).unwrap();
     let frames = &frames[start..];
@@ -164,19 +177,6 @@ pub(super) async fn shop_sequence(
     else {
         panic!()
     };
-    let boots = shop_request(socket, cipher, 1500, 478).await;
-    let boots = boots
-        .iter()
-        .find_map(|m| match m.fields().ok()? {
-            Fields::ItemGrant {
-                item: 478,
-                instance,
-                ..
-            } => Some(instance),
-            _ => None,
-        })
-        .unwrap();
-
     socket.shutdown().await.unwrap();
     timeout(Duration::from_secs(3), async {
         while shared.lock().unwrap().seats[0].peers[0].is_some() {
@@ -237,4 +237,35 @@ pub(super) async fn shop_sequence(
     assert_eq!(restored_modifiers, [(5, 45.), (15, 0.4)]);
     let (gold, worth) = balance.unwrap();
     assert_eq!(worth - gold, 3450.);
+
+    back.write_all(&cipher.encode(&Message::new(0x046d, [0; 6])).unwrap())
+        .await
+        .unwrap();
+    until(&mut back, cipher, 0x046d).await;
+    let inventory = || {
+        shared.lock().unwrap().world.entities[0]
+            .aral_inventory
+            .as_deref()
+            .unwrap()
+            .clone()
+    };
+    let before = inventory();
+    assert_eq!(before.slots()[3], None);
+    assert_eq!(before.slots()[2].unwrap().instance, current);
+    assert_eq!(before.slots()[4].unwrap().instance, boots);
+    let swap = halcyon_protocol::ItemAction::Reorder {
+        actor: 1500,
+        slots: [2, 3],
+    }
+    .reorder_message()
+    .unwrap();
+    let barrier = Message::new(0, [0; 6]);
+    for expected in [boots, current] {
+        let mut request = cipher.encode(&swap).unwrap();
+        request.extend(cipher.encode(&barrier).unwrap());
+        back.write_all(&request).await.unwrap();
+        until(&mut back, cipher, 0).await;
+        assert_eq!(inventory().slots()[2].unwrap().instance, expected);
+    }
+    assert_eq!(inventory(), before);
 }

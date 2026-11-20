@@ -57,19 +57,19 @@ impl Delivery {
         }
     }
 
-    fn contains(&self, opcode: u16) -> bool {
-        let messages = match self {
+    fn messages(&self) -> &[Message] {
+        match self {
             Self::Private(messages) => messages,
-            Self::Team(team) => &team.messages,
-        };
-        messages.iter().any(|m| m.opcode == opcode)
+            Self::Team(team) => team.messages(),
+        }
     }
+
+    fn contains(&self, opcode: u16) -> bool {
+        self.messages().iter().any(|m| m.opcode == opcode)
+    }
+
     fn declares_actor(&self, actor: u16, slot: u8) -> bool {
-        let messages = match self {
-            Self::Private(messages) => messages,
-            Self::Team(team) => &team.messages,
-        };
-        messages.iter().any(|message| {
+        self.messages().iter().any(|message| {
             message.opcode == 0x03f3
                 && message.body.get(10..12) == Some(actor.to_be_bytes().as_slice())
                 && message.body.get(745) == Some(&slot)
@@ -195,7 +195,7 @@ async fn connection(mut sock: TcpStream, room: Shared, manager: Rooms) -> io::Re
     let write_loop = async {
         let mut next = Some(Delivery::Private(initial));
         let mut bytes = Vec::new();
-        let (mut waiting_for_scene, mut registration) = {
+        let (mut waiting_for_scene, mut registration, aral_owner) = {
             let state = room.lock().unwrap();
             let solo = ch == 0 && state.solo_scene();
             let actor = &state.world.entities[seat];
@@ -206,10 +206,47 @@ async fn connection(mut sock: TcpStream, room: Shared, manager: Rooms) -> io::Re
             } else {
                 None
             };
-            (solo, slot.map(|slot| (wire_id(actor.id), slot)))
+            let registration = slot.map(|slot| (wire_id(actor.id), slot));
+            let aral_owner = if state.legacy_aral() {
+                registration
+            } else {
+                None
+            };
+            (solo, registration, aral_owner)
         };
-        while let Some(batch) = next {
+        let mut aral_inventory_known = false;
+        while let Some(mut batch) = next {
+            if let Some((actor, slot)) = aral_owner
+                && aral_inventory_known
+                && batch.declares_actor(actor, slot)
+                && let Some(filtered) =
+                    aral_inventory::without_existing_baseline(batch.messages(), u32::from(actor))
+            {
+                batch = Delivery::Private(filtered);
+            }
             write(&mut wr, &manager.0, batch.bytes(&cipher, &mut bytes)?).await?;
+            if let Some((actor, _)) = aral_owner {
+                let actor = u32::from(actor);
+                if batch
+                    .messages()
+                    .iter()
+                    .any(|m| aral_inventory::affects_owner(m, actor))
+                {
+                    let mut state = room.lock().unwrap();
+                    let seat = &mut state.seats[seat];
+                    if seat.peers[ch]
+                        .as_ref()
+                        .is_some_and(|peer| peer.generation == generation)
+                    {
+                        aral_inventory::record_delivery(
+                            &mut seat.aral_reorder_view,
+                            actor,
+                            batch.messages(),
+                        );
+                        aral_inventory_known = seat.aral_reorder_view.is_some();
+                    }
+                }
+            }
             if waiting_for_scene && batch.contains(0x046f) {
                 let mut state = room.lock().unwrap();
                 let seat = &mut state.seats[seat];

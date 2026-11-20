@@ -40,12 +40,19 @@ calls its reorder callback in server mode. Peer broadcasts therefore
 carry the observed packet shape, while native peer UI updates are unverified.
 
 The six-byte form contains no application request ID. Two consecutive
-identical messages on the authenticated stream perform two swaps. A
-reconnect never replays the previous swap. It receives only current
-items in ascending authoritative slot order, with the original instances.
-First-free grants can reconstruct a dense prefix exactly. A live
-inventory with an internal gap remains sparse on the server. The fresh
-client's grant projection may compact that gap, so the server disables
-slot swaps for that connection. It emits no transient grants, removals
-or extra stat or currency changes to fill holes. The seven played streams contain 42 hero declarations, all during opening.
-No later hero declaration demonstrates a native slot-addressed snapshot.
+identical messages on the authenticated stream perform two swaps. For
+reconnect the server sends only the current items in ascending
+authoritative slot order, with their original instances. The client's
+first-free grants can compact gaps. The server projects that stream's
+slot order separately and translates requests by the two live instance
+IDs back to the authoritative slots. It updates the projection only
+after its own grant and removal frames are written. It discards the
+projection when that connection ends. A stale request for a consumed
+instance cannot move the replacement.
+
+A repeated own-hero declaration omits duplicate inventory grants and
+their attached modifiers on the same connection. The server never
+replays previous swaps or emits temporary grants or extra charges to
+fill holes. Peer notices carry authoritative indices. The seven played
+archives contain 42 hero declarations, all during opening. A sparse
+reconnect's rendered inventory still needs native client validation.
