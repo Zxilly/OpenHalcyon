@@ -24,7 +24,10 @@ impl Room<'_> {
                 return;
             }
             let d = e.position.dist(t.position);
-            if d > sensor || !self.layout.clear(e.position, t.position) {
+            if d > sensor
+                || !self.layout.clear(e.position, t.position)
+                || self.solo_structure_protected(t)
+            {
                 return;
             }
             // A teammate, reveal or vision device can expose a target across a brush boundary.

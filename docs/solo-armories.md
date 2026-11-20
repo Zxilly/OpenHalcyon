@@ -20,3 +20,9 @@ has already fallen.
 
 The map identifies a lane-minion empowerment upon destroying an enemy armory.
 The exact wave enhancement remains unresolved.
+
+## First breach and crystal damage
+
+The 147219 client ships an explicit prerequisite in `SIDEBAR_ARDAN_TUTORIAL2A_DIALOG_LINE_VAINCRYSTALB`: the attacking team must first destroy an enemy armory to damage that team's Vain crystal. The Solo host checks this first breach when damage lands, before HP, damage credit or victory can change. Destroying a base turret alone opens its lane armory. It does not satisfy the crystal prerequisite. The published 5v5 rules independently describe crystals having an invulnerable state. Update 3.9 removed the earlier damage reduction per standing armory, so the host applies ordinary damage after the first breach. [Update 3.7](https://id.vainglorygame.com/news/update-3-7-yates-the-reclaimer/) · [Update 3.9](https://www.vainglorygame.com/news/update-3-9-magnus-arcane-prince/)
+
+The fourteen Solo replay chunks contain 84 armory declarations and 28 crystal declarations, with no attack-target, health-impact or death record for either kind. They establish the structure identities. The tooltip and patch notes leave re-locking after a rebuild unspecified. The host retains the first-breach fact for the remainder of that match. Its currently living armories still control the crystal's own missiles.

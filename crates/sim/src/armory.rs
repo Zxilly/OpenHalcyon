@@ -15,7 +15,17 @@ impl Room<'_> {
         }
     }
 
-    pub(super) fn armory_protected(&self, node: &Entity) -> bool {
+    pub(super) fn solo_structure_protected(&self, target: &Entity) -> bool {
+        match target.kind {
+            Kind::Armory => self.armory_protected(target),
+            Kind::Crystal if matches!(self.layout, Layout::SoloMid { .. }) => {
+                self.team_scores[usize::from(1 - target.team)].armories_destroyed == 0
+            }
+            _ => false,
+        }
+    }
+
+    fn armory_protected(&self, node: &Entity) -> bool {
         if !matches!(self.layout, Layout::SoloMid { .. }) {
             return false;
         }
@@ -101,6 +111,90 @@ mod tests {
             assert!(matches!(events.as_slice(), [Event::Damage { .. }]));
         }
     }
+    #[test]
+    fn first_armory_breach_opens_only_its_own_crystal_to_damage() {
+        for (team, crystal, opposite, node, turret) in
+            [(0, 2007, 2006, 2004, 2107), (1, 2006, 2007, 2001, 2065)]
+        {
+            let mut w = World::new(0, 10);
+            w.use_solo_mid_lane().unwrap();
+            let source = w
+                .entities
+                .iter()
+                .find(|e| e.kind == Kind::Hero && e.team == team)
+                .unwrap()
+                .id;
+            let crystal = w.index(crystal - 1499).unwrap();
+            let other = w.index(opposite - 1499).unwrap();
+            let node = w.index(node - 1499).unwrap();
+            let turret = w.index(turret - 1499).unwrap();
+            let hp = w.entities[crystal].hp;
+            let mut events = vec![];
+            w.hurt(source, team, crystal, hp, DamageSchool::True, &mut events);
+            assert!(events.is_empty());
+            assert_eq!(w.entities[crystal].hp, hp);
+            assert!(w.winner.is_none());
+            w.hurt(
+                source,
+                team,
+                turret,
+                100_000.,
+                DamageSchool::True,
+                &mut events,
+            );
+            events.clear();
+            w.hurt(source, team, crystal, hp, DamageSchool::True, &mut events);
+            assert!(events.is_empty());
+            w.hurt(
+                source,
+                team,
+                node,
+                100_000.,
+                DamageSchool::True,
+                &mut events,
+            );
+            events.clear();
+            w.hurt(
+                source,
+                team,
+                crystal,
+                20.,
+                DamageSchool::Weapon,
+                &mut events,
+            );
+            assert_eq!(w.entities[crystal].hp, hp - 20.);
+            assert!(matches!(events.as_slice(), [Event::Damage { .. }]));
+            events.clear();
+            let enemy = w
+                .entities
+                .iter()
+                .find(|e| e.kind == Kind::Hero && e.team != team)
+                .unwrap()
+                .id;
+            w.hurt(
+                enemy,
+                1 - team,
+                other,
+                50.,
+                DamageSchool::Crystal,
+                &mut events,
+            );
+            assert!(events.is_empty());
+            w.tick = w.entities[node].respawn;
+            w.advance_armory(node, &mut events);
+            assert_eq!(w.entities[node].hp, w.entities[node].max_hp);
+            w.hurt(
+                source,
+                team,
+                crystal,
+                25.,
+                DamageSchool::Crystal,
+                &mut events,
+            );
+            assert_eq!(w.entities[crystal].hp, hp - 45.);
+        }
+    }
+
     #[test]
     fn solo_crystal_resumes_shooting_after_an_armory_returns() {
         let mut w = World::new(10, 10);

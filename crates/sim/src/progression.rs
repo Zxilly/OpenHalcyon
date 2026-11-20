@@ -118,7 +118,7 @@ impl Room<'_> {
         events: &mut Vec<Event>,
     ) {
         let t = &self.entities[i];
-        if t.hp <= 0. || n <= 0. || (t.kind == Kind::Armory && self.armory_protected(t)) {
+        if t.hp <= 0. || n <= 0. || self.solo_structure_protected(t) {
             return;
         }
         let is_outer_tower = self.is_outer_tower(t);
