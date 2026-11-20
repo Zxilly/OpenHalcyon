@@ -45,8 +45,13 @@ impl MapPing {
         let mut body = [0; 22];
         body[..4].copy_from_slice(&self.actor.to_be_bytes());
         body[4..8].copy_from_slice(&self.target.unwrap_or(u32::MAX).to_be_bytes());
-        for (dest, value) in body[8..20].chunks_exact_mut(4).zip(self.position) {
-            dest.copy_from_slice(&value.to_be_bytes());
+        for (dest, value) in body[8..20]
+            .as_chunks_mut::<4>()
+            .0
+            .iter_mut()
+            .zip(self.position)
+        {
+            *dest = value.to_be_bytes();
         }
         body[20] = self.selector;
         body[21] = self.qualifier;
