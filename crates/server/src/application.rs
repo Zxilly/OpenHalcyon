@@ -24,7 +24,6 @@ struct LocalServices {
     rooms: Rooms,
     state: AppState,
     authority: String,
-    rules_digest: String,
 }
 
 #[derive(Resource)]
@@ -92,7 +91,6 @@ fn open_local_services(c: &Config) -> Result<LocalServices> {
         .map(|dir| GameData::load_with_extra(dir, c.data_extra_dir.as_deref()))
         .transpose()?
         .map(Arc::new);
-    let digest = halcyon_sim::rules_digest(data.as_deref());
     let rooms = Rooms::with_policy(
         c.game_bind,
         c.public_host.clone(),
@@ -113,7 +111,7 @@ fn open_local_services(c: &Config) -> Result<LocalServices> {
         },
         Arc::new(rooms.clone()),
     )?;
-    let stopped = state.recover_local_rooms(|id| rooms.detail(id).is_some())?;
+    let stopped = state.recover_local_rooms(|id| rooms.contains(id))?;
     if stopped > 0 {
         tracing::info!(stopped, "released matches lost on instance restart");
     }
@@ -121,7 +119,6 @@ fn open_local_services(c: &Config) -> Result<LocalServices> {
         rooms,
         state,
         authority,
-        rules_digest: digest,
     })
 }
 
@@ -184,7 +181,7 @@ pub(crate) async fn serve(c: Config, shutdown: impl Future<Output = io::Result<(
         let network = Network::start(
             peers,
             settings.instance_id,
-            local.rules_digest.clone(),
+            halcyon_sim::rules_digest(local.rooms.game_data().map(Arc::as_ref)),
             local.state.clone(),
             local.rooms.clone(),
         )
