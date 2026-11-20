@@ -31,6 +31,7 @@ enum Skill {
     Wind,
     Strike,
     Chakram,
+    Bulwark,
     Stormguard,
     BlastTremor,
     WolfMaw,
@@ -64,6 +65,7 @@ fn skill(hero: u16, slot: AbilitySlot) -> Option<Skill> {
         (EntityTemplate::Ringo, C) => Hellfire,
         (EntityTemplate::Adagio, A) => Gift,
         (EntityTemplate::Adagio, B) => Agent,
+        (EntityTemplate::Lyra, B) => Bulwark,
         (EntityTemplate::Lyra, A) => Sigil,
         (EntityTemplate::Saw, B) => Suppress,
         (EntityTemplate::Karas, B) => Wind,
@@ -79,6 +81,8 @@ pub(super) struct Cast {
 }
 #[derive(Clone, Copy, Default, Debug, Serialize)]
 pub(super) struct Status {
+    pub(super) bulwark_slow_until: u64,
+    pub(super) bulwark_slow_factor: f32,
     pub(super) silence_until: u64,
     pub(super) reveal_until: u64,
     pub(super) stormguard: Option<super::catherine::Bubble>,
@@ -189,6 +193,7 @@ impl ExtraCast {
 #[derive(Clone, Debug, Serialize)]
 pub(super) struct AbilityBook {
     extra_casts: [ExtraCast; Skill::Waterwall as usize + 1],
+    pub(super) bulwark: Option<super::bulwark::Rules>,
     pub(super) stormguard: Option<super::catherine::Stormguard>,
     pub(super) tremor: Option<super::catherine::Tremor>,
     pub(super) flail: Option<super::yates::Flail>,
@@ -224,6 +229,7 @@ impl Default for AbilityBook {
     fn default() -> Self {
         Self {
             extra_casts: Default::default(),
+            bulwark: None,
             stormguard: None,
             tremor: None,
             flail: None,
@@ -304,6 +310,7 @@ impl AbilityBook {
         for (skill, hero, slot, ranks) in [
             (Skill::Chakram, "Idris", "B", 5),
             (Skill::WinterSpire, "Reim", "A", 5),
+            (Skill::Bulwark, "Lyra", "B", 5),
             (Skill::Stormguard, "Catherine", "B", 5),
             (Skill::BlastTremor, "Catherine", "C", 3),
             (Skill::WolfMaw, "Yates", "A", 5),
@@ -331,6 +338,7 @@ impl AbilityBook {
         }
         Ok(Self {
             extra_casts,
+            bulwark: super::bulwark::Rules::load(data)?,
             stormguard: super::catherine::Stormguard::load(data)?,
             tremor: super::catherine::Tremor::load(data)?,
             flail: super::yates::Flail::load(data)?,
@@ -384,6 +392,12 @@ impl World {
     fn rules(&self, s: Skill, rank: usize) -> Rules {
         let (range, cost, windup, seconds) = match s {
             Skill::WinterSpire => (0., 0., 2, 0.),
+            Skill::Bulwark => (
+                0.,
+                0.,
+                self.abilities.bulwark.as_ref().unwrap().windup(rank),
+                0.,
+            ),
             Skill::Stormguard => (0., 0., 1, 0.),
             Skill::BlastTremor => (
                 0.,
@@ -435,6 +449,7 @@ impl World {
     fn modeled_skill(&self, hero: u16, slot: AbilitySlot) -> Option<Skill> {
         skill(hero, slot).filter(|s| match s {
             Skill::WinterSpire => self.abilities.winter_spire.is_some(),
+            Skill::Bulwark => self.abilities.bulwark.is_some(),
             Skill::Stormguard => self.abilities.stormguard.is_some(),
             Skill::BlastTremor => self.abilities.tremor.is_some(),
             Skill::WolfMaw => self.abilities.flail.is_some(),
@@ -513,7 +528,8 @@ impl World {
         }
         let point = match (s, target) {
             (
-                Skill::Stormguard
+                Skill::Bulwark
+                | Skill::Stormguard
                 | Skill::Pursuit
                 | Skill::Overwhelm
                 | Skill::ChillWinds
@@ -561,6 +577,9 @@ impl World {
             }
             _ => return Err("invalid cast target"),
         };
+        if s == Skill::IronMandate && self.bulwark_blocks_leap(i, point) {
+            return Err("bulwark blocks leap");
+        }
         if (matches!(s, Skill::BlastTremor | Skill::WolfMaw | Skill::Chakram)
             && e.position.dist(point) < 0.001)
             || point.dist(e.position) > r.range
@@ -633,6 +652,7 @@ impl World {
             _ => origin,
         };
         match s {
+            Skill::Bulwark => self.create_bulwark(i, r, events),
             Skill::Stormguard => self.raise_stormguard(i, r),
             Skill::BlastTremor => self.blast_tremor(i, r, point, events),
             Skill::WolfMaw => self.launch_flail(i, r, point),

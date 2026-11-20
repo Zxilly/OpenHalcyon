@@ -185,7 +185,7 @@ fn sanitize(m: &mut Message) -> bool {
         Some(crate::Opcode::PlayAbility)
             if matches!(
                 m.body.as_slice(),
-                [0, 0, 5, 220..=225, 255, 255, 255, 255, 1]
+                [0, 0, 5, 220..=225, 255, 255, 255, 255, 1 | 2]
             ) => {}
         Some(crate::Opcode::PlayAbility) if super::npc_attack::actors(m).is_some() => {}
         Some(crate::Opcode::PlayAbility)

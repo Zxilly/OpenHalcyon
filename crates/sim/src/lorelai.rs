@@ -150,6 +150,8 @@ impl World {
                 let ally = &mut self.entities[i];
                 ally.status.stun_until = 0;
                 ally.status.root_until = 0;
+                ally.status.silence_until = 0;
+                ally.status.bulwark_slow_until = 0;
                 ally.status.slow_until = 0;
                 ally.status.water_slow_until = 0;
                 let strength = rules.map_or_else(
@@ -439,10 +441,14 @@ mod tests {
         );
         let e = &mut w.entities[2];
         e.status.stun_until = 40;
+        e.status.silence_until = 40;
+        e.status.bulwark_slow_until = 40;
         e.status.water_slow_until = 20;
         let starting = e.hp;
         cast(&mut w, slot, CastTarget::Entity(3));
         assert_eq!(w.entities[2].status.stun_until, 0);
+        assert_eq!(w.entities[2].status.silence_until, 0);
+        assert_eq!(w.entities[2].status.bulwark_slow_until, 0);
         assert_eq!(w.entities[2].status.water_slow_until, 0);
         let mut events = vec![];
         w.hurt(2, 1, 2, 490., DamageSchool::Weapon, &mut events);

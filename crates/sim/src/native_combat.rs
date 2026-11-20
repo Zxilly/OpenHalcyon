@@ -101,9 +101,22 @@ impl super::World {
         }
         let Some((id, level)) = equipped else {
             e.long_shot = None;
+            e.mobile_bulwark_bonus = None;
             return Ok(());
         };
         let talent = data.talent_definition(id).ok_or("unknown talent")?;
+        if id == "Talent_Lyra_MobileBulwark"
+            && talent.hero.as_deref() == Some("Lyra")
+            && e.type_id == super::EntityTemplate::Lyra.as_raw()
+        {
+            let bonus = talent
+                .modifier(TalentParameter::BonusDuration.as_str())
+                .and_then(|m| m.value_at(level, e.item_stats.crystal, e.stats.weapon))
+                .filter(|v| *v >= 0.)
+                .ok_or("unsupported talent duration")?;
+            e.mobile_bulwark_bonus = Some(bonus);
+            return Ok(());
+        }
         if id != "Talent_Ringo_LongShot"
             || talent.hero.as_deref() != Some("Ringo")
             || e.type_id != super::EntityTemplate::Ringo.as_raw()

@@ -37,6 +37,10 @@ native_labels! {
         ImpactSplashRadius => "ImpactSplashRadius",
         MinionDamageReduction => "MINION_DAMAGE_REDUCTION",
         PostStunAttackLock => "PostStunAttackLock",
+        Startup => "Startup",
+        NonDecayingSlowAmount => "NonDecaying Slow Amount",
+        BulwarkSlowDuration => "Slow Duration",
+        ImmunityDuration => "Immunity Duration",
         BubbleDuration => "BubbleDuration",
         BurnRange => "BurnRange",
         BaseHealthThreshold => "Base_Health_Threshold",
@@ -101,6 +105,7 @@ native_labels! {
 
 native_labels! {
     TalentParameter {
+        BonusDuration => "BONUS_DURATION",
         BonusRange => "BONUS_RANGE",
         CooldownModifier => "COOLDOWN_MODIFIER",
         DamageModifier => "DAMAGE_MODIFIER",

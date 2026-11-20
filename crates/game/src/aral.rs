@@ -437,6 +437,73 @@ mod tests {
         );
         assert!(preamble.scene_requested());
         assert!(!preamble.confirmed());
+    #[tokio::test]
+    #[ignore = "requires original delivery and supplemental combat data"]
+    async fn lyra_native_mobile_bulwark_requires_the_seats_named_level_evidence() {
+        use halcyon_protocol::TalentSelection::*;
+        let data = std::sync::Arc::new(
+            halcyon_data::GameData::load_with_extra(
+                std::env::var_os("HALCYON_DELIVERY").unwrap(),
+                Some(std::path::Path::new(
+                    &std::env::var_os("HALCYON_DATA_EXTRA").unwrap(),
+                )),
+            )
+            .unwrap(),
+        );
+        let rooms = Rooms::new(
+            "127.0.0.1".parse().unwrap(),
+            "127.0.0.1".into(),
+            1,
+            Some(data.clone()),
+        );
+        let id = Uuid::new_v4();
+        rooms
+            .reserve(Reservation {
+                talent_levels: Vec::new(),
+                match_id: id,
+                players: (0..6).map(|_| Uuid::new_v4()).collect(),
+                mode: "casual_aral".into(),
+                teams: vec![0, 1, 0, 1, 0, 1],
+                difficulty: None,
+            })
+            .unwrap();
+        let shared = rooms.room(id).unwrap();
+        let mut r = shared.lock().unwrap();
+        r.world.select_hero(0, "Lyra", &data).unwrap();
+        r.phase = crate::RoomPhase::Running;
+        r.seats[0].world_actor_written = true;
+        let (tx, _rx) = tokio::sync::mpsc::channel(2);
+        r.seats[0].peers[0] = Some(crate::Peer {
+            generation: 1,
+            tx,
+            stalled: tokio::sync::watch::channel(false).0,
+        });
+        for m in [
+            Message::known(crate::Opcode::RequestScene, [0; 6]),
+            Message::known(crate::Opcode::SceneOwner, [0, 0, 5, 220, 1, 0]),
+            Message::known(crate::Opcode::SceneConfirmed, [0; 6]),
+        ] {
+            r.seats[0].preamble.observe(&m, 1500);
+        }
+        r.talent_levels = vec![Default::default(); 6];
+        let original = r.world.state_digest();
+        assert!(talent_response(&mut r, 0, 0, Slot1).is_empty());
+        let template = halcyon_data::EntityTemplate::Lyra.as_raw();
+        r.talent_levels[1].insert(template, std::num::NonZeroU8::new(10).unwrap());
+        assert!(talent_response(&mut r, 0, 0, Slot1).is_empty());
+        r.talent_levels[0].insert(template, std::num::NonZeroU8::new(9).unwrap());
+        assert_eq!(talent_response(&mut r, 0, 0, Slot1).len(), 2);
+        assert_eq!(r.world.state_digest(), original);
+        r.talent_levels[0].insert(template, std::num::NonZeroU8::new(10).unwrap());
+        assert_eq!(talent_response(&mut r, 0, 0, Slot1).len(), 2);
+        let equipped = r.world.state_digest();
+        assert_ne!(equipped, original);
+        assert_eq!(talent_response(&mut r, 0, 0, Slot1).len(), 2);
+        assert_eq!(r.world.state_digest(), equipped);
+        assert_eq!(talent_response(&mut r, 0, 0, NoTalent).len(), 2);
+        assert_eq!(r.world.state_digest(), original);
+    }
+
         preamble.observe(&Message::known(crate::Opcode::SceneConfirmed, [0; 6]), 1505);
         assert!(preamble.confirmed());
     }

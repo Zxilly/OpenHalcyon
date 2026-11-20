@@ -362,7 +362,7 @@ impl Room {
             true
         });
     }
-    pub(super) fn publish_observer_item(&mut self, actor: u32, batch: &Batch) {
+    pub(super) fn publish_observer_actor(&mut self, actor: u32, batch: &Batch) {
         self.observers.retain(|_, o| {
             let Some(tx) = &o.live else { return true };
             if o.scene.is_some() && o.view.knows(actor) && tx.try_send(batch.clone()).is_err() {
@@ -447,6 +447,78 @@ impl Room {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn bulwark_release_reaches_a_registered_visible_opponent_and_registered_observer() {
+        let rooms = Rooms::new("127.0.0.1".parse().unwrap(), "127.0.0.1".into(), 1, None);
+        let id = Uuid::new_v4();
+        rooms
+            .reserve(Reservation {
+                talent_levels: Vec::new(),
+                match_id: id,
+                players: (0..6).map(|_| Uuid::new_v4()).collect(),
+                mode: "casual_aral".into(),
+                teams: vec![0, 0, 1, 1, 0, 1],
+                difficulty: None,
+            })
+            .unwrap();
+        let shared = rooms.room(id).unwrap();
+        let mut r = shared.lock().unwrap();
+        r.world.entities[0].type_id = halcyon_data::EntityTemplate::Lyra.as_raw();
+        let mut caster = crate::messages::spawn(&r.world.entities[0], &r.picks, None);
+        caster.body[745] = 16;
+        let mut seats = Vec::new();
+        for i in 0..4 {
+            let (tx, rx) = mpsc::channel(2);
+            r.seats[i].peers[1] = Some(Peer {
+                generation: 1,
+                tx,
+                stalled: watch::channel(false).0,
+            });
+            if i < 3 {
+                r.scene_views[i].declarations(std::slice::from_ref(&caster));
+            }
+            seats.push(rx);
+        }
+        let mut observers = Vec::new();
+        for registered in [true, false] {
+            let (tx, rx) = mpsc::channel(2);
+            let mut view = tower_aggro::View::default();
+            if registered {
+                view.declarations(std::slice::from_ref(&caster));
+            }
+            let scene = tower_aggro::ObserverScene::new(&r);
+            r.observers.insert(
+                Uuid::new_v4(),
+                Observer {
+                    view,
+                    scene,
+                    exit: None,
+                    viewer: Uuid::new_v4(),
+                    address: String::new(),
+                    stop: watch::channel(false).0,
+                    live: Some(tx),
+                    expires: Instant::now() + Duration::from_secs(60),
+                },
+            );
+            observers.push(rx);
+        }
+        let cast = Event::Cast {
+            source: 1,
+            slot: halcyon_sim::AbilitySlot::B,
+            target: halcyon_sim::CastTarget::SelfCast,
+        };
+        r.visible[1].insert(1);
+        crate::native_abilities::publish_before_impacts(&mut r, std::slice::from_ref(&cast));
+        let expected = vec![Message::ability_target_used(1500, u32::MAX, 2)];
+        assert_eq!(seats[2].try_recv().unwrap().into_records(), expected);
+        assert_eq!(observers[0].try_recv().unwrap(), expected);
+        assert!(observers[1].try_recv().is_err());
+        assert!(seats.iter_mut().all(|rx| rx.try_recv().is_err()));
+        r.visible[1].remove(&1);
+        crate::native_abilities::publish_before_impacts(&mut r, &[cast]);
+        assert!(seats[2].try_recv().is_err());
+    }
 
     #[tokio::test]
     async fn delayed_aral_lifecycle_is_timed_and_bound_to_original_world_streams() {

@@ -231,7 +231,7 @@ A complete native Reim client interaction still needs that evidence.
 | --- | --- | --- |
 | Idris, Lorelai | Idris B; Lorelai A, B, C | All 16 originating casts in the nine TCP archives belong to these four skills. |
 | Reim | A and B with the supplement | ARAL witness releases and grants. |
-| Ringo, Adagio, Lyra, SAW, Karas, Shin | Ringo A/B/C; Adagio A/B; Lyra A; SAW B; Karas B; Shin C | Modeled subsets of their asset effects. Numeric weapon and gear effects also apply to basic attacks. |
+| Ringo, Adagio, Lyra, SAW, Karas, Shin | Ringo A/B/C; Adagio A/B; Lyra A/B; SAW B; Karas B; Shin C | Modeled subsets of their asset effects. Numeric weapon and gear effects also apply to basic attacks. |
 | Other advertised heroes | Shared movement, basic attacks, items and progression | Hero009 and Yates have confirmed native learn grants. A rank grant alone supplies no cast mechanism. |
 
 The 57-hero advertisement and the static definitions for 61 hero entries are
@@ -260,3 +260,10 @@ Both use the supplied rank costs, cooldowns and crystal ratios. The host uses it
 * **Yates C, Iron Mandate.** The jump channels for one second and can be interrupted before release. Landing uses the chosen ground location, bypasses intervening ground obstacles, damages and slows enemies, and grants nearby allied heroes a barrier. A pending Overwhelm whose delay expires during the jump waits for landing. The barrier uses its named rank amount and 125% crystal-power ratio. The separate 8% health-ratio field has no identified base in either tooltip and is excluded from the barrier calculation.
 
 These four skills share the existing Bot command, energy, cooldown, visibility and damage paths. Their dedicated native presentation and client input bindings still lack independently verified selectors.
+
+
+### Lyra B, Bright Bulwark
+
+The supplemental ability activates eight simulation ticks after self-cast and maintains a fixed circle of radius 5.5 at her release position for 60 ticks. It deals 80/160/240/320/400 plus 30% crystal power on activation or a subsequent eligible boundary crossing. Nearby enemies remain slowed by 30%, or 50% on overdrive. The slow lingers for 1.5 seconds, or 2.5 seconds on overdrive. The host applies the asset's 2.5-second immunity per enemy to repeated boundary damage. Walk orders remain valid. An opposing Yates cannot leap from inside or across the active wall. Bots use the same learned-rank, energy, cooldown and proximity checks. Lyra C remains outside the authoritative skill set. The separate orbit and zone lifetime and their capture coverage are documented in [ARAL orbit actions](aral-orbit.md).
+
+Mobile Bulwark moves the combat circle with Lyra and extends it using its named duration modifier. In the one hostile witness recording, Lyra equipped selector 1 at level ten. The host accepts that binding only for a matching authenticated home grant. Clearing the selection restores the stationary field for new casts. The talent's separate passive crystal-power variable has numeric unit tag 6 without an independently verified calculation basis, so the damage calculation continues to use equipped crystal power.

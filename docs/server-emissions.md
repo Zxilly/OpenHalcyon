@@ -40,7 +40,7 @@ The host paths are in [room dispatch](../crates/game/src/lib.rs), [transport](..
 | `0410` | 376 | R | [ActionDetonateProjectile](native-projectiles.md) |
 | `0412` | 842 | E | ActionRequestActivateAbility · Accepted Idris B or Lorelai A/B point request on its originating connection |
 | `0414` | 48 | R | ActionRequestCancelAbility_Client |
-| `0415` | 9,106 | A | ActionPlayAbility · Released Lorelai C, witnessed Reim B self-cast and native lane-minion/tower basic attacks with visible actors |
+| `0415` | 9,106 | A | ActionPlayAbility · Released Lorelai C, witnessed Reim and Lyra B self-casts and native lane-minion/tower basic attacks with visible actors |
 | `0416` | 886 | A | ActionPlayAbility · Released Idris B or Lorelai A/B with visible caster |
 | `0419` | 12 | A | [ARAL Reim B area effect after an authoritative release](native-abilities.md#reim-b-chill-winds) |
 | `041A` | 534 | A | ActionOverrideAbility · [ARAL Ringo Double Down after a last hit](aral-ability-overrides.md) |

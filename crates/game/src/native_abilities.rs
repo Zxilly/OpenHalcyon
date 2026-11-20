@@ -231,11 +231,58 @@ fn witness(
     room.publish_observers(std::slice::from_ref(message));
 }
 
+fn deliver_registered(
+    room: &mut Room,
+    source: u32,
+    team: u8,
+    target: Option<u32>,
+    out: &[Message],
+) {
+    let mut shared = None;
+    for (index, seat) in room.seats.iter().enumerate() {
+        let viewer = &room.world.entities[index];
+        let visible = &room.visible[usize::from(team)];
+        if viewer.id != source
+            && viewer.team == team
+            && visible.contains(&source)
+            && room.scene_views[index].knows(source)
+            && target.is_none_or(|id| visible.contains(&id) && room.scene_views[index].knows(id))
+            && (seat.world_actor_written || seat.peers[1].is_some())
+            && let Some(peer) = seat.gameplay_peer()
+        {
+            peer.send(Delivery::Team(
+                shared
+                    .get_or_insert_with(|| super::transport::TeamBatch::new(out.to_vec()))
+                    .clone(),
+            ));
+        }
+    }
+}
+
 pub(super) fn publish_before_impacts(room: &mut Room, events: &[Event]) {
     if !room.legacy_aral() {
         return;
     }
     for event in events {
+        if let Event::Cast {
+            source,
+            slot: AbilitySlot::B,
+            target: CastTarget::SelfCast,
+        } = *event
+            && let Some(index) = source.checked_sub(1)
+            && let Some(caster) = room.world.entities.get(index as usize)
+            && caster.id == source
+            && caster.type_id == EntityTemplate::Lyra.as_raw()
+        {
+            let batch = vec![Message::ability_target_used(
+                u32::from(wire_id(source)),
+                u32::MAX,
+                2,
+            )];
+            let enemy_team = 1 - caster.team;
+            deliver_registered(room, source, enemy_team, None, &batch);
+            room.publish_observer_actor(source, &batch);
+        }
         if let Event::ChillWinds {
             source,
             position,

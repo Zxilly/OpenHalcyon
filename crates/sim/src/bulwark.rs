@@ -1,0 +1,278 @@
+use super::*;
+use crate::native_combat::{Damage, ranks};
+use halcyon_data::{AbilityParameter as P, DamageOperand};
+use std::collections::BTreeMap;
+
+#[derive(Clone, Debug, Serialize)]
+pub(super) struct Rules {
+    damage: Damage<5>,
+    startup: [f32; 5],
+    radius: [f32; 5],
+    duration: [f32; 5],
+    slow: [f32; 5],
+    linger: [f32; 5],
+    immunity: [f32; 5],
+}
+#[derive(Debug, Serialize)]
+pub(super) struct Field {
+    origin: Position,
+    mobile: bool,
+    source: u32,
+    team: u8,
+    end: u64,
+    radius: f32,
+    damage: f32,
+    pierce: f32,
+    slow: f32,
+    linger: u64,
+    immunity: u64,
+    targets: BTreeMap<u32, Contact>,
+}
+#[derive(Default, Debug, Serialize)]
+struct Contact {
+    inside: bool,
+    ready: u64,
+}
+fn ticks(v: f32) -> u64 {
+    (v * TICK_HZ as f32).round() as u64
+}
+impl Rules {
+    pub fn load(d: &GameData) -> Result<Option<Self>, String> {
+        let Some(a) = d.ability("Lyra", "Ability__Lyra__B") else {
+            return Ok(None);
+        };
+        Ok(Some(Self {
+            damage: Damage::named(a, DamageOperand::Damage)?,
+            startup: ranks(a, P::Startup)?,
+            radius: ranks(a, P::Radius)?,
+            duration: ranks(a, P::Duration)?,
+            slow: ranks(a, P::NonDecayingSlowAmount)?,
+            linger: ranks(a, P::BulwarkSlowDuration)?,
+            immunity: ranks(a, P::ImmunityDuration)?,
+        }))
+    }
+    pub fn windup(&self, r: usize) -> u64 {
+        ticks(self.startup[r])
+    }
+}
+impl Field {
+    fn sample(&mut self, w: &mut World, center: Position, events: &mut Vec<Event>) {
+        for j in 0..w.entities.len() {
+            let t = &w.entities[j];
+            if t.hp <= 0.
+                || self.team == t.team
+                || !matches!(t.kind, Kind::Hero | Kind::Minion | Kind::Neutral)
+            {
+                continue;
+            }
+            let inside = t.position.dist(center) <= self.radius;
+            if !inside && !self.targets.contains_key(&t.id) {
+                continue;
+            }
+            let state = self.targets.entry(t.id).or_default();
+            if !w.layout.clear(center, t.position) {
+                state.inside = false;
+                continue;
+            }
+            let crossed = inside != state.inside;
+            state.inside = inside;
+            let hit = crossed && w.tick >= state.ready;
+            let target = &mut w.entities[j];
+            if inside || hit {
+                let until = w.tick + self.linger;
+                let previous = if target.status.bulwark_slow_until > w.tick {
+                    target.status.bulwark_slow_factor
+                } else {
+                    1.
+                };
+                target.status.bulwark_slow_until = target.status.bulwark_slow_until.max(until);
+                target.status.bulwark_slow_factor = previous.min(self.slow);
+            }
+            if hit {
+                state.ready = w.tick + self.immunity;
+                let amount = shop::mitigated(self.damage, target.stats.shield, self.pierce);
+                w.hurt(
+                    self.source,
+                    self.team,
+                    j,
+                    amount,
+                    DamageSchool::Crystal,
+                    events,
+                );
+            }
+        }
+    }
+}
+impl World {
+    pub(super) fn bulwark_reaches(&self, i: usize, p: Position) -> bool {
+        let e = &self.entities[i];
+        let Some(r) = e.ability_ranks[AbilitySlot::B as usize].checked_sub(1) else {
+            return false;
+        };
+        self.abilities
+            .bulwark
+            .as_ref()
+            .is_some_and(|b| e.position.dist(p) <= b.radius[usize::from(r)])
+    }
+    pub(super) fn create_bulwark(&mut self, i: usize, r: usize, events: &mut Vec<Event>) {
+        let a = self.abilities.bulwark.as_ref().unwrap();
+        let e = &self.entities[i];
+        let pos = e.position;
+        let mut field = Field {
+            origin: pos,
+            mobile: e.mobile_bulwark_bonus.is_some(),
+            source: e.id,
+            team: e.team,
+            end: self.tick + ticks(a.duration[r] + e.mobile_bulwark_bonus.unwrap_or(0.)),
+            radius: a.radius[r],
+            damage: a.damage.at(r, e.item_stats.crystal, 0.),
+            pierce: e.item_stats.shield_pierce,
+            slow: 1. - a.slow[r],
+            linger: ticks(a.linger[r]),
+            immunity: ticks(a.immunity[r]),
+            targets: BTreeMap::new(),
+        };
+        field.sample(self, pos, events);
+        self.bulwarks.push(field);
+    }
+    pub(super) fn advance_bulwarks(&mut self, events: &mut Vec<Event>) {
+        if self.bulwarks.is_empty() {
+            return;
+        }
+        let mut fields = std::mem::take(&mut self.bulwarks);
+        fields.retain_mut(|f| {
+            let Some(i) = self.index(f.source) else {
+                return false;
+            };
+            if self.tick >= f.end || self.entities[i].hp <= 0. {
+                return false;
+            }
+            let center = if f.mobile {
+                self.entities[i].position
+            } else {
+                f.origin
+            };
+            f.sample(self, center, events);
+            true
+        });
+        self.bulwarks = fields;
+    }
+    pub(super) fn bulwark_blocks_leap(&self, i: usize, destination: Position) -> bool {
+        let e = &self.entities[i];
+        self.bulwarks.iter().any(|f| {
+            if f.team == e.team || self.tick >= f.end {
+                return false;
+            }
+            self.index(f.source).is_some_and(|s| {
+                let c = &self.entities[s];
+                c.hp > 0.
+                    && combat::line_distance(
+                        if f.mobile { c.position } else { f.origin },
+                        e.position,
+                        destination,
+                    ) <= f.radius
+            })
+        })
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+    #[test]
+    #[ignore = "requires original delivery and supplemental combat data"]
+    fn start_boundary_immunity_fixed_center_and_leap_gate_share_three_second_clock() {
+        let d = GameData::load_with_extra(
+            std::env::var_os("HALCYON_DELIVERY").unwrap(),
+            Some(Path::new(&std::env::var_os("HALCYON_DATA_EXTRA").unwrap())),
+        )
+        .unwrap();
+        let mut w = World::from_data(42, 6, &d).unwrap();
+        w.use_six_human_roster().unwrap();
+        w.select_hero(0, "Lyra", &d).unwrap();
+        w.select_hero(1, "Yates", &d).unwrap();
+        w.use_aral_lane().unwrap();
+        for e in w.entities.iter_mut().take(6) {
+            e.position = Position { x: 25., y: 0. };
+            e.energy = 500.;
+            e.skill_points = 3;
+            e.level = 6;
+            e.stats.shield = 0.;
+        }
+        w.entities[0].position = Position::default();
+        w.entities[0].item_stats.crystal = 40.;
+        w.entities[1].position.x = 5.5;
+        w.entities[2].position.x = 1.;
+        w.entities[3].position.x = 5.51;
+        w.command(1, Command::Learn(AbilitySlot::B)).unwrap();
+        w.command(2, Command::Learn(AbilitySlot::C)).unwrap();
+        let cmd = Command::Cast {
+            slot: AbilitySlot::B,
+            target: CastTarget::SelfCast,
+        };
+        let leap = Command::Cast {
+            slot: AbilitySlot::C,
+            target: CastTarget::Point(Position { x: -9., y: 0. }),
+        };
+        assert_eq!(w.decide(0), cmd);
+        w.command(1, cmd).unwrap();
+        let mut out = Vec::new();
+        let hp = w.entities[1].hp;
+        let ally = w.entities[2].hp;
+        let outside = w.entities[3].hp;
+        w.tick = 7;
+        w.advance_cast(0, &mut out);
+        assert_eq!(w.entities[1].hp, hp);
+        assert_eq!(w.entities[0].energy, 500.);
+        w.tick = 8;
+        w.advance_cast(0, &mut out);
+        assert_eq!(w.entities[0].energy, 440.);
+        assert_eq!(w.entities[1].hp, hp - 92.);
+        assert_eq!(w.entities[2].hp, ally);
+        assert_eq!(w.entities[3].hp, outside);
+        assert_eq!(w.entities[1].status.bulwark_slow_factor, 0.7);
+        assert_eq!(w.entities[1].status.bulwark_slow_until, 38);
+        assert!(w.command(2, leap).is_err());
+        w.entities[1].position.x = 8.;
+        w.tick = 9;
+        w.advance_bulwarks(&mut out);
+        assert_eq!(w.entities[1].hp, hp - 92.);
+        assert!(w.command(2, leap).is_err());
+        w.entities[0].position.x = 3.;
+        w.tick = 57;
+        w.advance_bulwarks(&mut out);
+        assert_eq!(w.entities[3].hp, outside);
+        w.entities[1].position.x = 5.5;
+        w.tick = 58;
+        w.advance_bulwarks(&mut out);
+        assert_eq!(w.entities[1].hp, hp - 184.);
+        assert_eq!(w.entities[3].hp, outside);
+        w.tick = 68;
+        w.advance_bulwarks(&mut out);
+        assert!(w.bulwarks.is_empty());
+        w.command(2, leap).unwrap();
+        // The named, home-authorized level ten extends three seconds to eight.
+        w.set_named_talent(
+            1,
+            Some((
+                "Talent_Lyra_MobileBulwark",
+                std::num::NonZeroU8::new(10).unwrap(),
+            )),
+            &d,
+        )
+        .unwrap();
+        w.entities[0].cooldown[1] = 0;
+        w.entities[0].position = Position::default();
+        w.entities[3].position.x = 12.;
+        w.command(1, cmd).unwrap();
+        w.tick = 76;
+        w.advance_cast(0, &mut out);
+        assert_eq!(w.bulwarks[0].end, 236);
+        w.entities[0].position.x = 12.;
+        w.tick = 77;
+        w.advance_bulwarks(&mut out);
+        assert_eq!(w.entities[3].hp, outside - 92.);
+        w.set_named_talent(1, None, &d).unwrap();
+        assert!(w.entities[0].mobile_bulwark_bonus.is_none());
+    }
+}

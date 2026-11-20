@@ -30,7 +30,8 @@ pub(super) fn publish(room: &mut Room, source: u32, position: Position, heading:
             .to_message(),
         );
     }
-    deliver(room, source, team, None, &out);
+    deliver_registered(room, source, team, None, &out);
+    room.publish_observers(&out);
 }
 
 pub(super) fn root(room: &mut Room, source: u32, target: u32, instance: u32) {
@@ -60,29 +61,14 @@ pub(super) fn root(room: &mut Room, source: u32, target: u32, instance: u32) {
     }
     .to_message()
     .expect("fixed buff fields");
-    deliver(room, source, caster.team, Some(target), &[buff]);
-}
-fn deliver(room: &mut Room, source: u32, team: u8, target: Option<u32>, out: &[Message]) {
-    let mut shared = None;
-    for (index, seat) in room.seats.iter().enumerate() {
-        let viewer = &room.world.entities[index];
-        let visible = &room.visible[usize::from(team)];
-        if viewer.id != source
-            && viewer.team == team
-            && visible.contains(&source)
-            && room.scene_views[index].knows(source)
-            && target.is_none_or(|id| visible.contains(&id) && room.scene_views[index].knows(id))
-            && (seat.world_actor_written || seat.peers[1].is_some())
-            && let Some(peer) = seat.gameplay_peer()
-        {
-            peer.send(Delivery::Team(
-                shared
-                    .get_or_insert_with(|| super::super::transport::TeamBatch::new(out.to_vec()))
-                    .clone(),
-            ));
-        }
-    }
-    room.publish_observers(out);
+    deliver_registered(
+        room,
+        source,
+        caster.team,
+        Some(target),
+        std::slice::from_ref(&buff),
+    );
+    room.publish_observers(&[buff]);
 }
 pub(in crate::native_abilities) fn recordable_pfx(m: &Message) -> bool {
     m.play_pfx_at_location().is_some_and(|p| {

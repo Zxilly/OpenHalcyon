@@ -8,6 +8,7 @@ mod armory;
 mod bot_diagnostics;
 pub use aral_inventory::{ARAL_ITEM_CAPACITY, AralInventory, AralItem};
 pub use bot_diagnostics::{BotDiagnostics, BotHeroDiagnostics};
+mod bulwark;
 #[cfg(test)]
 mod captain_tests;
 mod catherine;
@@ -359,6 +360,7 @@ impl Stats {
 }
 #[derive(Debug, Clone, Serialize)]
 pub struct Entity {
+    mobile_bulwark_bonus: Option<f32>,
     long_shot: Option<native_combat::LongShot>,
     pub id: u32,
     pub team: u8,
@@ -432,6 +434,7 @@ pub struct World {
     shop: shop::Shop,
     effects: Vec<SpellEffect>,
     chakrams: Vec<chakram::Chakram>,
+    bulwarks: Vec<bulwark::Field>,
     water: Vec<lorelai::Water>,
     nav_budget: u8,
     native_navigation: Option<Box<native_navigation::NativeNavigation>>,
@@ -491,7 +494,7 @@ impl World {
                 (&self.scores, &self.team_scores),
                 self.rally,
                 self.nav_budget,
-                (&self.effects, &self.chakrams, &self.water),
+                (&self.effects, &self.chakrams, &self.water, &self.bulwarks),
             ),
         )
         .expect("finite simulation state");
@@ -632,6 +635,7 @@ impl World {
         let id = data
             .type_id(name)
             .ok_or_else(|| format!("missing manifest entry {name}"))?;
+        hero.mobile_bulwark_bonus = None;
         hero.long_shot = None;
         hero.stats = Stats::load(id, unit, data);
         hero.energy = unit.energy;
@@ -664,6 +668,7 @@ impl World {
             pending_item_events: Vec::new(),
             effects: Vec::new(),
             chakrams: Vec::new(),
+            bulwarks: Vec::new(),
             water: Vec::new(),
             nav_budget: 0,
             native_navigation: None,
@@ -715,6 +720,7 @@ impl World {
             self.scores[(id - 1) as usize].gold_income.starting_balance = starting_gold;
         }
         self.entities.push(Entity {
+            mobile_bulwark_bonus: None,
             long_shot: None,
             id,
             team,
@@ -908,6 +914,11 @@ impl World {
         } else {
             1.
         }
+        .min(if e.status.bulwark_slow_until > self.tick {
+            e.status.bulwark_slow_factor
+        } else {
+            1.
+        })
         .min(if e.status.water_slow_until > self.tick {
             e.status.water_slow_factor
         } else {
@@ -1022,6 +1033,7 @@ impl World {
         self.advance_effects(events);
         self.advance_chakrams(events);
         self.advance_water(events);
+        self.advance_bulwarks(events);
         if self.winner.is_some() {
             return;
         }

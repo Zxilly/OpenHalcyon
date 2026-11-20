@@ -124,7 +124,7 @@ impl Room {
                     peer.send(transport::Delivery::Private(batch.clone()));
                 }
             }
-            self.publish_observer_item(id, &batch);
+            self.publish_observer_actor(id, &batch);
         }
     }
 }
