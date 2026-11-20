@@ -61,6 +61,8 @@ pub enum Error {
     Internal,
     #[error("metadata storage error")]
     Storage(#[from] rusqlite::Error),
+    #[error("ORM storage error")]
+    Orm(#[from] diesel::result::Error),
     #[error("{0}")]
     Config(&'static str),
     #[error(transparent)]
@@ -140,6 +142,8 @@ impl Platform {
                 .cloned()
                 .ok_or(Error::Config("manifest is missing returnValue"))
         };
+        let community = halcyon_community::Community::open(database)?;
+        provider::initialize_orm(&community)?;
         Ok(Arc::new(Self {
             game_data: None,
             app,
@@ -150,7 +154,7 @@ impl Platform {
             xmpp: Default::default(),
             sites: Default::default(),
             versions: Default::default(),
-            community: halcyon_community::Community::open(database)?,
+            community,
             meta: meta::Meta::open(database)?,
             provider: None,
             content: Default::default(),
@@ -403,7 +407,7 @@ async fn dispatch(s: &Platform, m: RpcMethod, params: &[Value]) -> Result<(Strin
         | RpcMethod::VerifyGovernmentId
         | RpcMethod::StorePrepareIAP
         | RpcMethod::StoreProcessIAP => {
-            provider::dispatch(s.provider.as_ref(), &s.meta, id, m, &params[1..]).await?
+            provider::dispatch(s.provider.as_ref(), &s.community, id, m, &params[1..]).await?
         }
         RpcMethod::Authenticate | RpcMethod::StartSessionForPlayer => {
             s.community

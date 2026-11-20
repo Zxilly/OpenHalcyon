@@ -1,10 +1,10 @@
 pub(crate) mod store;
 
-use rusqlite::{OptionalExtension, Transaction, params};
+use diesel::SqliteConnection;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::{Community, CommunityError, Result, ensure_player, validated};
+use crate::{Community, CommunityError, Result, validated};
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -104,39 +104,15 @@ impl Community {
             .await
     }
 
-    /// Apply the grant inside a caller-owned transaction with its source receipt.
-    pub fn award_item_in_transaction(
-        tx: &Transaction<'_>,
+    /// Apply the grant inside a caller-owned Diesel transaction with its source receipt.
+    pub fn award_item_in_orm_transaction(
+        db: &mut SqliteConnection,
         grant: Uuid,
         player: Uuid,
         item: &str,
         count: u32,
     ) -> Result<()> {
-        let item = key(item.to_owned())?;
-        if count == 0 {
-            return Err(CommunityError::Invalid("item count must be positive"));
-        }
-        let player = player.to_string();
-        let grant = grant.to_string();
-        ensure_player(tx, &player)?;
-        item_slot(tx, &item)?;
-        let inserted = tx.execute(
-            "INSERT INTO community_item_grants(id,player,item,count) VALUES(?,?,?,?) ON CONFLICT DO NOTHING",
-            params![grant, player, item, count],
-        )?;
-        if inserted == 1 {
-            add_item(tx, &player, &item, count)?;
-        } else {
-            let same: bool = tx.query_row(
-                "SELECT player=? AND item=? AND count=? FROM community_item_grants WHERE id=?",
-                params![player, item, count, grant],
-                |row| row.get(0),
-            )?;
-            if !same {
-                return Err(CommunityError::Conflict("grant id is already in use"));
-            }
-        }
-        Ok(())
+        store::award_item(db, grant, player, item, count)
     }
 
     /// Apply verified progress exactly once per trusted event id.
@@ -154,28 +130,4 @@ impl Community {
         self.orm_transaction(move |db| store::record_progress(db, event, player, &quest, amount))
             .await
     }
-}
-
-fn item_slot(tx: &Transaction<'_>, item: &str) -> Result<String> {
-    tx.query_row(
-        "SELECT slot FROM community_items WHERE id=?",
-        [item],
-        |row| row.get(0),
-    )
-    .optional()?
-    .ok_or(CommunityError::Missing("item does not exist"))
-}
-
-pub(super) fn add_item(tx: &Transaction<'_>, player: &str, item: &str, count: u32) -> Result<()> {
-    let updated = tx.execute(
-        "INSERT INTO community_inventory(player,item,count) VALUES(?,?,?)
-         ON CONFLICT(player,item) DO UPDATE SET count=count+excluded.count WHERE count+excluded.count <= 4294967295",
-        params![player, item, count],
-    )?;
-    if updated == 0 {
-        return Err(CommunityError::Conflict(
-            "inventory count exceeds the supported range",
-        ));
-    }
-    Ok(())
 }

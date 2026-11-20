@@ -20,7 +20,6 @@ impl Meta {
                 PRIMARY KEY(player,match_id));")?;
         let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         super::activity::initialize(&tx)?;
-        super::provider::initialize(&tx)?;
         tx.commit()?;
         Ok(Self(Arc::new(Mutex::new(db))))
     }

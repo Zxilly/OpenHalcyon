@@ -662,3 +662,54 @@ async fn opens_existing_community_rows_and_retains_privacy_and_receipt_idempoten
         0
     );
 }
+
+#[tokio::test]
+async fn award_item_in_orm_transaction_commits_replays_and_rolls_back_with_caller_tx() {
+    let dir = tempfile::tempdir().unwrap();
+    let database = dir.path().join("orm-grant.sqlite");
+    let store = Community::open(&database).unwrap();
+    let actor = players(&store, &["Quartermaster"]).await[0];
+    store
+        .define_item(ItemDefinition {
+            id: "gem".into(),
+            slot: "currency".into(),
+            name: "Gem".into(),
+        })
+        .await
+        .unwrap();
+
+    let rolled_back = Uuid::new_v4();
+    let error = store
+        .orm_try_transaction(move |db| {
+            Community::award_item_in_orm_transaction(db, rolled_back, actor, "gem", 7)?;
+            Err::<(), CommunityError>(CommunityError::Conflict("simulated receipt abort"))
+        })
+        .await;
+    assert!(matches!(error, Err(CommunityError::Conflict(_))));
+    assert!(store.inventory_balances(actor).await.unwrap().is_empty());
+
+    let committed = Uuid::new_v4();
+    for _ in 0..2 {
+        store
+            .orm_transaction(move |db| {
+                Community::award_item_in_orm_transaction(db, committed, actor, "gem", 5)
+            })
+            .await
+            .unwrap();
+    }
+    assert_eq!(
+        store.inventory_balances(actor).await.unwrap(),
+        [("gem".to_owned(), 5)].into()
+    );
+
+    let conflict = store
+        .orm_transaction(move |db| {
+            Community::award_item_in_orm_transaction(db, committed, actor, "gem", 9)
+        })
+        .await;
+    assert!(matches!(conflict, Err(CommunityError::Conflict(_))));
+    assert_eq!(
+        store.inventory_balances(actor).await.unwrap(),
+        [("gem".to_owned(), 5)].into()
+    );
+}

@@ -20,9 +20,8 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use diesel::SqliteConnection;
+use diesel::{Connection, SqliteConnection, connection::SimpleConnection};
 use diesel_migrations::MigrationHarness;
-use rusqlite::{Connection, Transaction};
 use serde_json::Value;
 use uuid::Uuid;
 
@@ -165,45 +164,32 @@ pub enum Action {
 }
 
 #[derive(Clone)]
-pub struct Community(Arc<Mutex<Connections>>);
-
-struct Connections {
-    legacy: Connection,
-    orm: SqliteConnection,
-}
+pub struct Community(Arc<Mutex<SqliteConnection>>);
 
 impl Community {
     /// Can share a SQLite path with the platform. Only community tables are used.
     pub fn open(path: &Path) -> Result<Self> {
         let address = halcyon_storage::DatabaseAddress::new(path);
-        let db = Connection::open(address.path())?;
-        db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")?;
         let mut orm = address.connect().map_err(orm::connection_error)?;
+        orm.batch_execute("PRAGMA journal_mode=WAL;")?;
         orm.immediate_transaction(|db| {
             db.run_pending_migrations(orm::MIGRATIONS)
                 .map_err(orm::connection_error)?;
             Ok::<_, CommunityError>(())
         })?;
-        Ok(Self(Arc::new(Mutex::new(Connections { legacy: db, orm }))))
+        Ok(Self(Arc::new(Mutex::new(orm))))
     }
 
-    async fn run<T, F>(&self, work: F) -> Result<T>
+    /// Run a synchronous trusted integration operation inside a single Diesel transaction.
+    pub fn orm_transaction_sync<T, F>(&self, work: F) -> Result<T>
     where
-        F: FnOnce(&Transaction<'_>) -> Result<T> + Send + 'static,
-        T: Send + 'static,
+        F: FnOnce(&mut SqliteConnection) -> Result<T>,
     {
-        let db = self.0.clone();
-        tokio::task::spawn_blocking(move || {
-            let mut db = db.lock().map_err(|_| CommunityError::WorkerUnavailable)?;
-            let tx = db
-                .legacy
-                .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-            let value = work(&tx)?;
-            tx.commit()?;
-            Ok(value)
-        })
-        .await
-        .map_err(|_| CommunityError::WorkerUnavailable)?
+        let mut db = self
+            .0
+            .lock()
+            .map_err(|_| CommunityError::WorkerUnavailable)?;
+        db.immediate_transaction(work)
     }
 
     /// Run a trusted integration operation inside a single Diesel transaction.
@@ -212,8 +198,28 @@ impl Community {
         F: FnOnce(&mut SqliteConnection) -> Result<T> + Send + 'static,
         T: Send + 'static,
     {
-        self.with_orm(move |db| db.immediate_transaction(work))
+        self.orm_try_transaction(work).await
+    }
+
+    /// Run a trusted integration write with caller-defined error mapping inside an immediate Diesel transaction.
+    pub async fn orm_try_transaction<T, E, F>(&self, work: F) -> std::result::Result<T, E>
+    where
+        F: FnOnce(&mut SqliteConnection) -> std::result::Result<T, E> + Send + 'static,
+        T: Send + 'static,
+        E: From<CommunityError> + From<diesel::result::Error> + Send + 'static,
+    {
+        self.with_orm_result(move |db| db.immediate_transaction(work))
             .await
+    }
+
+    /// Run a trusted integration read inside a single deferred Diesel transaction.
+    pub async fn orm_read<T, E, F>(&self, work: F) -> std::result::Result<T, E>
+    where
+        F: FnOnce(&mut SqliteConnection) -> std::result::Result<T, E> + Send + 'static,
+        T: Send + 'static,
+        E: From<CommunityError> + From<diesel::result::Error> + Send + 'static,
+    {
+        self.with_orm_result(move |db| db.transaction(work)).await
     }
 
     async fn with_orm<T, F>(&self, work: F) -> Result<T>
@@ -221,22 +227,22 @@ impl Community {
         F: FnOnce(&mut SqliteConnection) -> Result<T> + Send + 'static,
         T: Send + 'static,
     {
+        self.with_orm_result(work).await
+    }
+
+    async fn with_orm_result<T, E, F>(&self, work: F) -> std::result::Result<T, E>
+    where
+        F: FnOnce(&mut SqliteConnection) -> std::result::Result<T, E> + Send + 'static,
+        T: Send + 'static,
+        E: From<CommunityError> + Send + 'static,
+    {
         let db = self.0.clone();
         tokio::task::spawn_blocking(move || {
             let mut db = db.lock().map_err(|_| CommunityError::WorkerUnavailable)?;
-            work(&mut db.orm)
+            work(&mut db)
         })
         .await
-        .map_err(|_| CommunityError::WorkerUnavailable)?
-    }
-
-    /// Run a trusted integration operation in the community database transaction.
-    pub async fn transaction<T, F>(&self, work: F) -> Result<T>
-    where
-        F: FnOnce(&Transaction<'_>) -> Result<T> + Send + 'static,
-        T: Send + 'static,
-    {
-        self.run(work).await
+        .map_err(|_| E::from(CommunityError::WorkerUnavailable))?
     }
 
     /// Execute actions as an already-authenticated player.
@@ -271,17 +277,6 @@ impl Community {
             _ => groups::store::execute(db, &actor, action),
         }
     }
-}
-
-fn ensure_player(tx: &Transaction<'_>, player: &str) -> Result<()> {
-    if !tx.query_row(
-        "SELECT EXISTS(SELECT 1 FROM community_players WHERE id=?)",
-        [player],
-        |row| row.get(0),
-    )? {
-        return Err(CommunityError::Missing("player does not exist"));
-    }
-    Ok(())
 }
 
 fn validated(value: String, max: usize, required: bool) -> Result<String> {

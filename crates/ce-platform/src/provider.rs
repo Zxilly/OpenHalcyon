@@ -1,14 +1,40 @@
 //! Optional operator attestations. The verifier holds only a public key.
-use crate::RpcMethod;
-use crate::{Error, Platform, meta::Meta, now};
+use crate::{Error, Platform, RpcMethod, now};
+use diesel::{
+    connection::SimpleConnection, dsl::exists, prelude::*, sql_types::BigInt, upsert::excluded,
+};
 use halcyon_community::Community;
 use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode};
-use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
 use uuid::Uuid;
+
+diesel::table! {
+    ce_provider_orders (id) {
+        id -> Text,
+        player -> Text,
+        request -> Text,
+        product -> Text,
+        item -> Text,
+        quantity -> BigInt,
+        expires -> BigInt,
+        receipt -> Nullable<Binary>,
+    }
+}
+
+diesel::table! {
+    ce_provider_identity (player) {
+        player -> Text,
+        valid_until -> BigInt,
+    }
+}
+
+diesel::define_sql_function! {
+    #[sql_name = "max"]
+    fn max_valid_until(a: BigInt, b: BigInt) -> BigInt;
+}
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -114,12 +140,21 @@ enum Proof {
     Verified { valid_until: i64 },
 }
 
-pub(crate) fn initialize(db: &Connection) -> Result<(), Error> {
-    db.execute_batch("CREATE TABLE IF NOT EXISTS ce_provider_orders(
-        id TEXT PRIMARY KEY, player TEXT NOT NULL, request TEXT NOT NULL, product TEXT NOT NULL, item TEXT NOT NULL,
-        quantity INTEGER NOT NULL, expires INTEGER NOT NULL, receipt BLOB UNIQUE, UNIQUE(player,request));
-        CREATE TABLE IF NOT EXISTS ce_provider_identity(player TEXT PRIMARY KEY, valid_until INTEGER NOT NULL);")?;
+pub(crate) fn initialize_orm(community: &Community) -> Result<(), Error> {
+    community.orm_transaction_sync(|db| {
+        db.batch_execute(
+            "CREATE TABLE IF NOT EXISTS ce_provider_orders(
+                id TEXT PRIMARY KEY, player TEXT NOT NULL, request TEXT NOT NULL, product TEXT NOT NULL, item TEXT NOT NULL,
+                quantity INTEGER NOT NULL, expires INTEGER NOT NULL, receipt BLOB UNIQUE, UNIQUE(player,request));
+             CREATE TABLE IF NOT EXISTS ce_provider_identity(player TEXT PRIMARY KEY, valid_until INTEGER NOT NULL);",
+        )?;
+        Ok(())
+    })?;
     Ok(())
+}
+
+fn checked_timestamp(seconds: u64) -> Result<i64, Error> {
+    i64::try_from(seconds).map_err(|_| Error::Internal)
 }
 
 #[derive(Deserialize, Serialize)]
@@ -163,54 +198,69 @@ struct Verification {
 }
 
 fn prepare_order(
-    tx: &rusqlite::Transaction<'_>,
+    db: &mut SqliteConnection,
     player: &str,
     request: Prepare,
     grant: ProviderProduct,
 ) -> Result<Value, Error> {
     let request_id = request.request_id.unwrap_or_else(Uuid::new_v4).to_string();
-    let expires = now() + 3600;
-    tx.execute(
-        "INSERT INTO ce_provider_orders(id,player,request,product,item,quantity,expires)
-         VALUES(?,?,?,?,?,?,?) ON CONFLICT(player,request) DO NOTHING",
-        params![
-            Uuid::new_v4().to_string(),
-            player,
-            request_id,
-            request.product,
-            grant.item,
-            grant.count,
-            expires
-        ],
-    )?;
-    let (order, product, expiry): (String, String, u64) = tx.query_row(
-        "SELECT id,product,expires FROM ce_provider_orders WHERE player=? AND request=?",
-        params![player, request_id],
-        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-    )?;
+    let expires = checked_timestamp(now().checked_add(3600).ok_or(Error::Internal)?)?;
+    diesel::insert_into(ce_provider_orders::table)
+        .values((
+            ce_provider_orders::id.eq(Uuid::new_v4().to_string()),
+            ce_provider_orders::player.eq(player),
+            ce_provider_orders::request.eq(&request_id),
+            ce_provider_orders::product.eq(&request.product),
+            ce_provider_orders::item.eq(&grant.item),
+            ce_provider_orders::quantity.eq(i64::from(grant.count)),
+            ce_provider_orders::expires.eq(expires),
+        ))
+        .on_conflict((ce_provider_orders::player, ce_provider_orders::request))
+        .do_nothing()
+        .execute(db)?;
+    let (order, product, expiry) = ce_provider_orders::table
+        .filter(ce_provider_orders::player.eq(player))
+        .filter(ce_provider_orders::request.eq(&request_id))
+        .select((
+            ce_provider_orders::id,
+            ce_provider_orders::product,
+            ce_provider_orders::expires,
+        ))
+        .first::<(String, String, i64)>(db)?;
     if product != request.product {
         return Err(Error::Invalid);
     }
     Ok(serde_json::to_value(PreparedOrder {
         order_id: order,
         product,
-        expires_at: expiry,
+        expires_at: u64::try_from(expiry).map_err(|_| Error::Internal)?,
     })?)
 }
 
 fn fulfill(
-    tx: &rusqlite::Transaction<'_>,
+    db: &mut SqliteConnection,
     account: Uuid,
     order: Uuid,
     product: String,
     reference: Vec<u8>,
 ) -> Result<Value, Error> {
     let order_id = order.to_string();
-    let (item, count, expires, previous) = tx.query_row(
-        "SELECT item,quantity,expires,receipt FROM ce_provider_orders WHERE id=? AND player=? AND product=?",
-        params![order_id,account.to_string(),product],
-        |r| Ok((r.get::<_,String>(0)?, r.get::<_,u32>(1)?, r.get::<_,u64>(2)?, r.get::<_,Option<Vec<u8>>>(3)?)),
-    ).optional()?.ok_or(Error::Invalid)?;
+    let player = account.to_string();
+    let (item, quantity, expires, previous) = ce_provider_orders::table
+        .find(&order_id)
+        .filter(ce_provider_orders::player.eq(&player))
+        .filter(ce_provider_orders::product.eq(&product))
+        .select((
+            ce_provider_orders::item,
+            ce_provider_orders::quantity,
+            ce_provider_orders::expires,
+            ce_provider_orders::receipt,
+        ))
+        .first::<(String, i64, i64, Option<Vec<u8>>)>(db)
+        .optional()?
+        .ok_or(Error::Invalid)?;
+    let count = u32::try_from(quantity).map_err(|_| Error::Internal)?;
+    let expires = u64::try_from(expires).map_err(|_| Error::Internal)?;
     if let Some(previous) = previous {
         if previous != reference {
             return Err(Error::Invalid);
@@ -219,19 +269,17 @@ fn fulfill(
         if expires <= now() {
             return Err(Error::Invalid);
         }
-        let used: bool = tx.query_row(
-            "SELECT EXISTS(SELECT 1 FROM ce_provider_orders WHERE receipt=?)",
-            [&reference],
-            |r| r.get(0),
-        )?;
+        let used = diesel::select(exists(
+            ce_provider_orders::table.filter(ce_provider_orders::receipt.eq(&reference)),
+        ))
+        .get_result::<bool>(db)?;
         if used {
             return Err(Error::Invalid);
         }
-        Community::award_item_in_transaction(tx, order, account, &item, count)?;
-        tx.execute(
-            "UPDATE ce_provider_orders SET receipt=? WHERE id=?",
-            params![reference, order_id],
-        )?;
+        Community::award_item_in_orm_transaction(db, order, account, &item, count)?;
+        diesel::update(ce_provider_orders::table.find(&order_id))
+            .set(ce_provider_orders::receipt.eq(Some(&reference[..])))
+            .execute(db)?;
     }
     Ok(serde_json::to_value(FulfilledOrder {
         success: true,
@@ -244,20 +292,25 @@ fn fulfill(
 
 pub(crate) async fn dispatch(
     provider: Option<&Verifier>,
-    meta: &Meta,
+    community: &Community,
     account: Uuid,
     method: RpcMethod,
     args: &[Value],
 ) -> Result<Value, Error> {
     let player = account.to_string();
     if method == RpcMethod::IsGovernmentIdVerified {
-        return meta.transaction(move |tx| {
-            let verified: bool = tx.query_row(
-                "SELECT EXISTS(SELECT 1 FROM ce_provider_identity WHERE player=? AND valid_until>?)",
-                params![player,now()], |r| r.get(0),
-            )?;
-            Ok(serde_json::to_value(Verification { verified })?)
-        }).await;
+        let current = checked_timestamp(now())?;
+        return community
+            .orm_read(move |db| {
+                let verified = diesel::select(exists(
+                    ce_provider_identity::table
+                        .find(&player)
+                        .filter(ce_provider_identity::valid_until.gt(current)),
+                ))
+                .get_result::<bool>(db)?;
+                Ok(serde_json::to_value(Verification { verified })?)
+            })
+            .await;
     }
     let unavailable = if method == RpcMethod::VerifyGovernmentId {
         "identity verification provider unavailable"
@@ -272,27 +325,33 @@ pub(crate) async fn dispatch(
             .get(&request.product)
             .cloned()
             .ok_or(Error::Invalid)?;
-        return meta
-            .with_behavior(TransactionBehavior::Immediate, move |tx| {
-                prepare_order(tx, &player, request, grant)
-            })
+        return community
+            .orm_try_transaction(move |db| prepare_order(db, &player, request, grant))
             .await;
     }
     let signed: Attestation = input(args)?;
     let claims = verifier.verify(&signed.attestation, account)?;
     match (method, claims.proof) {
         (RpcMethod::VerifyGovernmentId, Proof::Verified { valid_until })
-            if valid_until > now() as i64 =>
+            if valid_until > checked_timestamp(now())? =>
         {
-            meta.with_behavior(TransactionBehavior::Immediate, move |tx| {
-                tx.execute(
-                    "INSERT INTO ce_provider_identity VALUES(?,?) ON CONFLICT(player) DO UPDATE
-                     SET valid_until=MAX(valid_until,excluded.valid_until)",
-                    params![player, valid_until],
-                )?;
-                Ok(serde_json::to_value(Verification { verified: true })?)
-            })
-            .await
+            community
+                .orm_try_transaction(move |db| {
+                    diesel::insert_into(ce_provider_identity::table)
+                        .values((
+                            ce_provider_identity::player.eq(&player),
+                            ce_provider_identity::valid_until.eq(valid_until),
+                        ))
+                        .on_conflict(ce_provider_identity::player)
+                        .do_update()
+                        .set(ce_provider_identity::valid_until.eq(max_valid_until(
+                            ce_provider_identity::valid_until,
+                            excluded(ce_provider_identity::valid_until),
+                        )))
+                        .execute(db)?;
+                    Ok(serde_json::to_value(Verification { verified: true })?)
+                })
+                .await
         }
         (
             RpcMethod::StoreProcessIAP,
@@ -313,10 +372,9 @@ pub(crate) async fn dispatch(
             digest.update([0]);
             digest.update(receipt.as_bytes());
             let reference = digest.finalize().to_vec();
-            meta.with_behavior(TransactionBehavior::Immediate, move |tx| {
-                fulfill(tx, account, order, product, reference)
-            })
-            .await
+            community
+                .orm_try_transaction(move |db| fulfill(db, account, order, product, reference))
+                .await
         }
         _ => Err(Error::Unauthorized),
     }
@@ -331,6 +389,7 @@ mod tests {
     };
     use halcyon_community::ItemDefinition;
     use jsonwebtoken::{EncodingKey, Header, encode};
+    use rusqlite::Connection;
 
     fn key(seed: u8) -> (String, EncodingKey) {
         let signing = SigningKey::from_bytes(&[seed; 32]);
@@ -343,6 +402,7 @@ mod tests {
             EncodingKey::from_ed_der(private.as_bytes()),
         )
     }
+
     #[derive(Serialize)]
     struct TestAttestation {
         iss: &'static str,
@@ -372,27 +432,10 @@ mod tests {
         })
         .unwrap()
     }
-    async fn prepare(v: &Verifier, m: &Meta, id: Uuid, request: Uuid) -> Value {
-        dispatch(
-            Some(v),
-            m,
-            id,
-            RpcMethod::StorePrepareIAP,
-            &[serde_json::to_value(Prepare {
-                product: "credits".into(),
-                request_id: Some(request),
-            })
-            .unwrap()],
-        )
-        .await
-        .unwrap()
-    }
-    #[tokio::test]
-    async fn signed_grants_are_scoped_replay_safe_and_atomic() {
-        let dir = tempfile::tempdir().unwrap();
-        let db = dir.path().join("test.db");
-        let path = dir.path().join("provider.pub");
-        let (public, signer) = key(17);
+
+    fn test_verifier(dir: &std::path::Path, seed: u8) -> (Verifier, EncodingKey) {
+        let path = dir.join("provider.pub");
+        let (public, signer) = key(seed);
         std::fs::write(&path, public).unwrap();
         let verifier = Verifier::new(ProviderConfig {
             public_key_pem: path,
@@ -407,6 +450,70 @@ mod tests {
             )]),
         })
         .unwrap();
+        (verifier, signer)
+    }
+
+    fn open_provider_community(db: &std::path::Path) -> Community {
+        let community = Community::open(db).unwrap();
+        initialize_orm(&community).unwrap();
+        community
+    }
+
+    async fn prepare(v: &Verifier, c: &Community, id: Uuid, request: Uuid) -> Value {
+        dispatch(
+            Some(v),
+            c,
+            id,
+            RpcMethod::StorePrepareIAP,
+            &[serde_json::to_value(Prepare {
+                product: "credits".into(),
+                request_id: Some(request),
+            })
+            .unwrap()],
+        )
+        .await
+        .unwrap()
+    }
+
+    fn purchase_arg(sub: Uuid, order: Uuid, receipt: &str, signer: &EncodingKey) -> Value {
+        sign(
+            &claims(
+                sub,
+                Proof::Purchase {
+                    order,
+                    product: "credits".into(),
+                    receipt: receipt.into(),
+                },
+            ),
+            signer,
+        )
+    }
+
+    async fn define_coin(community: &Community) {
+        community
+            .define_item(ItemDefinition {
+                id: "coin".into(),
+                name: "Coin".into(),
+                slot: "currency".into(),
+            })
+            .await
+            .unwrap();
+    }
+
+    fn inventory_balance(conn: &Connection, player: Uuid) -> i64 {
+        conn.query_row(
+            "SELECT COALESCE(SUM(count), 0) FROM community_inventory WHERE player = ?",
+            [player.to_string()],
+            |r| r.get::<_, i64>(0),
+        )
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn signed_grants_are_scoped_replay_safe_and_atomic() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("test.db");
+        let (verifier, signer) = test_verifier(dir.path(), 17);
         struct NoHost;
         impl halcyon_platform::MatchHost for NoHost {
             fn reserve(
@@ -425,8 +532,7 @@ mod tests {
             Arc::new(NoHost),
         )
         .unwrap();
-        let community = Community::open(&db).unwrap();
-        let meta = Meta::open(&db).unwrap();
+        let community = open_provider_community(&db);
         let id = Uuid::new_v4();
         let other = Uuid::new_v4();
         community
@@ -438,8 +544,8 @@ mod tests {
             .await
             .unwrap();
         let request = Uuid::new_v4();
-        let order = prepare(&verifier, &meta, id, request).await;
-        assert_eq!(order, prepare(&verifier, &meta, id, request).await);
+        let order = prepare(&verifier, &community, id, request).await;
+        assert_eq!(order, prepare(&verifier, &community, id, request).await);
         let valid = claims(
             id,
             Proof::Purchase {
@@ -453,7 +559,7 @@ mod tests {
         assert!(
             dispatch(
                 Some(&verifier),
-                &meta,
+                &community,
                 id,
                 RpcMethod::StoreProcessIAP,
                 std::slice::from_ref(&signed)
@@ -461,14 +567,7 @@ mod tests {
             .await
             .is_err()
         );
-        community
-            .define_item(ItemDefinition {
-                id: "coin".into(),
-                name: "Coin".into(),
-                slot: "currency".into(),
-            })
-            .await
-            .unwrap();
+        define_coin(&community).await;
         for (field, bad) in [
             ("sub", serde_json::to_value(other).unwrap()),
             ("aud", Value::from("wrong")),
@@ -483,7 +582,7 @@ mod tests {
             assert!(
                 dispatch(
                     Some(&verifier),
-                    &meta,
+                    &community,
                     id,
                     RpcMethod::StoreProcessIAP,
                     &[sign(&forged, &signer)]
@@ -496,7 +595,7 @@ mod tests {
         assert!(
             dispatch(
                 Some(&verifier),
-                &meta,
+                &community,
                 id,
                 RpcMethod::StoreProcessIAP,
                 &[sign(&valid, &key(3).1)]
@@ -506,18 +605,30 @@ mod tests {
         );
         let args = std::slice::from_ref(&signed);
         let (a, b) = tokio::join!(
-            dispatch(Some(&verifier), &meta, id, RpcMethod::StoreProcessIAP, args),
-            dispatch(Some(&verifier), &meta, id, RpcMethod::StoreProcessIAP, args)
+            dispatch(
+                Some(&verifier),
+                &community,
+                id,
+                RpcMethod::StoreProcessIAP,
+                args
+            ),
+            dispatch(
+                Some(&verifier),
+                &community,
+                id,
+                RpcMethod::StoreProcessIAP,
+                args
+            )
         );
         assert_eq!(a.unwrap(), b.unwrap());
-        let second = prepare(&verifier, &meta, other, Uuid::new_v4()).await;
+        let second = prepare(&verifier, &community, other, Uuid::new_v4()).await;
         let mut reused = valid.clone();
         reused["sub"] = serde_json::to_value(other).unwrap();
         reused["order"] = second["orderId"].clone();
         assert!(
             dispatch(
                 Some(&verifier),
-                &meta,
+                &community,
                 other,
                 RpcMethod::StoreProcessIAP,
                 &[sign(&reused, &signer)]
@@ -543,24 +654,27 @@ mod tests {
         );
         let get = RpcMethod::IsGovernmentIdVerified;
         assert_eq!(
-            dispatch(None, &meta, id, get, &[]).await.unwrap()["verified"],
+            dispatch(None, &community, id, get, &[]).await.unwrap()["verified"],
             false
         );
         assert!(matches!(
-            dispatch(None, &meta, id, RpcMethod::VerifyGovernmentId, &[]).await,
+            dispatch(None, &community, id, RpcMethod::VerifyGovernmentId, &[]).await,
             Err(Error::Unavailable(_))
         ));
+        let longer = now() as i64 + 7200;
+        let shorter = now() as i64 + 3600;
+        let longest = now() as i64 + 10800;
         let proof = claims(
             id,
             Proof::Verified {
-                valid_until: now() as i64 + 3600,
+                valid_until: longer,
             },
         );
         let signed_id = sign(&proof, &signer);
         assert!(
             dispatch(
                 Some(&verifier),
-                &meta,
+                &community,
                 id,
                 RpcMethod::StoreProcessIAP,
                 std::slice::from_ref(&signed_id)
@@ -570,14 +684,66 @@ mod tests {
         );
         dispatch(
             Some(&verifier),
-            &meta,
+            &community,
             id,
             RpcMethod::VerifyGovernmentId,
             &[signed_id],
         )
         .await
         .unwrap();
-        let reopened = Meta::open(&db).unwrap();
+        dispatch(
+            Some(&verifier),
+            &community,
+            id,
+            RpcMethod::VerifyGovernmentId,
+            &[sign(
+                &claims(
+                    id,
+                    Proof::Verified {
+                        valid_until: shorter,
+                    },
+                ),
+                &signer,
+            )],
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            conn.query_row(
+                "SELECT valid_until FROM ce_provider_identity WHERE player = ?",
+                [id.to_string()],
+                |r| r.get::<_, i64>(0),
+            )
+            .unwrap(),
+            longer
+        );
+        dispatch(
+            Some(&verifier),
+            &community,
+            id,
+            RpcMethod::VerifyGovernmentId,
+            &[sign(
+                &claims(
+                    id,
+                    Proof::Verified {
+                        valid_until: longest,
+                    },
+                ),
+                &signer,
+            )],
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            conn.query_row(
+                "SELECT valid_until FROM ce_provider_identity WHERE player = ?",
+                [id.to_string()],
+                |r| r.get::<_, i64>(0),
+            )
+            .unwrap(),
+            longest
+        );
+        let reopened = open_provider_community(&db);
         assert_eq!(
             dispatch(None, &reopened, id, get, &[]).await.unwrap()["verified"],
             true
@@ -585,6 +751,389 @@ mod tests {
         assert_eq!(
             dispatch(None, &reopened, other, get, &[]).await.unwrap()["verified"],
             false
+        );
+        assert_eq!(
+            conn.query_row(
+                "SELECT count(*) FROM sqlite_master WHERE type='table' AND name IN ('ce_provider_orders','ce_provider_identity')",
+                [],
+                |r| r.get::<_, i64>(0),
+            )
+            .unwrap(),
+            2
+        );
+        assert_eq!(
+            conn.query_row(
+                "SELECT count(*) FROM __diesel_schema_migrations WHERE version = '20261120000005'",
+                [],
+                |r| r.get::<_, i64>(0),
+            )
+            .unwrap(),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn duplicate_receipt_delivery_grants_once_and_rejects_reuse() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("duplicate.db");
+        let (verifier, signer) = test_verifier(dir.path(), 31);
+        let community = open_provider_community(&db);
+        let player = Uuid::new_v4();
+        let other = Uuid::new_v4();
+        community
+            .observe_player(player, "buyer".into(), true)
+            .await
+            .unwrap();
+        community
+            .observe_player(other, "other".into(), true)
+            .await
+            .unwrap();
+        define_coin(&community).await;
+
+        let first = prepare(&verifier, &community, player, Uuid::new_v4()).await;
+        let first_id: Uuid = serde_json::from_value(first["orderId"].clone()).unwrap();
+        let same_player_second = prepare(&verifier, &community, player, Uuid::new_v4()).await;
+        let same_player_second_id: Uuid =
+            serde_json::from_value(same_player_second["orderId"].clone()).unwrap();
+        let other_player_order = prepare(&verifier, &community, other, Uuid::new_v4()).await;
+        let other_player_order_id: Uuid =
+            serde_json::from_value(other_player_order["orderId"].clone()).unwrap();
+
+        let receipt_arg = purchase_arg(player, first_id, "shared-receipt-001", &signer);
+        let (c1, c2, c3) = tokio::join!(
+            dispatch(
+                Some(&verifier),
+                &community,
+                player,
+                RpcMethod::StoreProcessIAP,
+                std::slice::from_ref(&receipt_arg)
+            ),
+            dispatch(
+                Some(&verifier),
+                &community,
+                player,
+                RpcMethod::StoreProcessIAP,
+                std::slice::from_ref(&receipt_arg)
+            ),
+            dispatch(
+                Some(&verifier),
+                &community,
+                player,
+                RpcMethod::StoreProcessIAP,
+                std::slice::from_ref(&receipt_arg)
+            ),
+        );
+        let r1 = c1.unwrap();
+        assert_eq!(r1, c2.unwrap());
+        assert_eq!(r1, c3.unwrap());
+
+        let sequential = dispatch(
+            Some(&verifier),
+            &community,
+            player,
+            RpcMethod::StoreProcessIAP,
+            &[receipt_arg],
+        )
+        .await
+        .unwrap();
+        assert_eq!(r1, sequential);
+
+        // Same order with a different receipt fails.
+        assert!(
+            dispatch(
+                Some(&verifier),
+                &community,
+                player,
+                RpcMethod::StoreProcessIAP,
+                &[purchase_arg(
+                    player,
+                    first_id,
+                    "different-receipt-002",
+                    &signer
+                )],
+            )
+            .await
+            .is_err()
+        );
+        // Same receipt on another order of the same player fails.
+        assert!(
+            dispatch(
+                Some(&verifier),
+                &community,
+                player,
+                RpcMethod::StoreProcessIAP,
+                &[purchase_arg(
+                    player,
+                    same_player_second_id,
+                    "shared-receipt-001",
+                    &signer
+                )],
+            )
+            .await
+            .is_err()
+        );
+        // Same receipt on another player's order fails.
+        assert!(
+            dispatch(
+                Some(&verifier),
+                &community,
+                other,
+                RpcMethod::StoreProcessIAP,
+                &[purchase_arg(
+                    other,
+                    other_player_order_id,
+                    "shared-receipt-001",
+                    &signer
+                )],
+            )
+            .await
+            .is_err()
+        );
+
+        let conn = Connection::open(&db).unwrap();
+        assert_eq!(inventory_balance(&conn, player), 5);
+        assert_eq!(inventory_balance(&conn, other), 0);
+        assert_eq!(
+            conn.query_row("SELECT count(*) FROM community_item_grants", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_award_or_receipt_update_rolls_back_atomically_and_retries_cleanly() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("rollback.db");
+        let (verifier, signer) = test_verifier(dir.path(), 41);
+        let community = open_provider_community(&db);
+        let player = Uuid::new_v4();
+        community
+            .observe_player(player, "atomic".into(), true)
+            .await
+            .unwrap();
+
+        let prepared = prepare(&verifier, &community, player, Uuid::new_v4()).await;
+        let order_id: Uuid = serde_json::from_value(prepared["orderId"].clone()).unwrap();
+        let signed = purchase_arg(player, order_id, "atomic-receipt-001", &signer);
+
+        // Missing item fails and rolls back cleanly.
+        assert!(
+            dispatch(
+                Some(&verifier),
+                &community,
+                player,
+                RpcMethod::StoreProcessIAP,
+                std::slice::from_ref(&signed),
+            )
+            .await
+            .is_err()
+        );
+        let conn = Connection::open(&db).unwrap();
+        assert_eq!(inventory_balance(&conn, player), 0);
+        assert_eq!(
+            conn.query_row("SELECT count(*) FROM community_item_grants", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        let pending_receipt: Option<Vec<u8>> = conn
+            .query_row(
+                "SELECT receipt FROM ce_provider_orders WHERE id = ?",
+                [order_id.to_string()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(pending_receipt.is_none());
+
+        // Define item, then force receipt update failure via SQLite trigger so the
+        // reward grant and inventory credit must both roll back.
+        define_coin(&community).await;
+        conn.execute_batch(
+            "CREATE TRIGGER fail_receipt_update BEFORE UPDATE ON ce_provider_orders
+             BEGIN
+                 SELECT RAISE(ABORT, 'simulated receipt update failure');
+             END;",
+        )
+        .unwrap();
+
+        assert!(
+            dispatch(
+                Some(&verifier),
+                &community,
+                player,
+                RpcMethod::StoreProcessIAP,
+                std::slice::from_ref(&signed),
+            )
+            .await
+            .is_err()
+        );
+        assert_eq!(inventory_balance(&conn, player), 0);
+        assert_eq!(
+            conn.query_row("SELECT count(*) FROM community_item_grants", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        let still_pending: Option<Vec<u8>> = conn
+            .query_row(
+                "SELECT receipt FROM ce_provider_orders WHERE id = ?",
+                [order_id.to_string()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(still_pending.is_none());
+
+        conn.execute_batch("DROP TRIGGER fail_receipt_update;")
+            .unwrap();
+        let fulfilled = dispatch(
+            Some(&verifier),
+            &community,
+            player,
+            RpcMethod::StoreProcessIAP,
+            &[signed],
+        )
+        .await
+        .unwrap();
+        assert_eq!(fulfilled["success"], true);
+        assert_eq!(inventory_balance(&conn, player), 5);
+        assert_eq!(
+            conn.query_row("SELECT count(*) FROM community_item_grants", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        let receipt_len: i64 = conn
+            .query_row(
+                "SELECT length(receipt) FROM ce_provider_orders WHERE id = ?",
+                [order_id.to_string()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(receipt_len, 32);
+    }
+
+    #[tokio::test]
+    async fn provider_orders_and_identity_survive_restart_across_prepare_rollback_and_fulfill() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("restart.db");
+        let (verifier, signer) = test_verifier(dir.path(), 53);
+        let player = Uuid::new_v4();
+        let req_a = Uuid::new_v4();
+        let req_b = Uuid::new_v4();
+
+        let (order_a, order_b) = {
+            let community = open_provider_community(&db);
+            community
+                .observe_player(player, "survivor".into(), true)
+                .await
+                .unwrap();
+            dispatch(
+                Some(&verifier),
+                &community,
+                player,
+                RpcMethod::VerifyGovernmentId,
+                &[sign(
+                    &claims(
+                        player,
+                        Proof::Verified {
+                            valid_until: now() as i64 + 3600,
+                        },
+                    ),
+                    &signer,
+                )],
+            )
+            .await
+            .unwrap();
+            let prepared_a = prepare(&verifier, &community, player, req_a).await;
+            let prepared_b = prepare(&verifier, &community, player, req_b).await;
+            let id_a: Uuid = serde_json::from_value(prepared_a["orderId"].clone()).unwrap();
+            let id_b: Uuid = serde_json::from_value(prepared_b["orderId"].clone()).unwrap();
+            // Trigger a rollback before restart by attempting to fulfill an undefined item.
+            assert!(
+                dispatch(
+                    Some(&verifier),
+                    &community,
+                    player,
+                    RpcMethod::StoreProcessIAP,
+                    &[purchase_arg(player, id_a, "restart-receipt-a", &signer)],
+                )
+                .await
+                .is_err()
+            );
+            (prepared_a, id_b)
+        };
+
+        let id_a: Uuid = serde_json::from_value(order_a["orderId"].clone()).unwrap();
+        {
+            let restarted = open_provider_community(&db);
+            assert_eq!(
+                dispatch(
+                    None,
+                    &restarted,
+                    player,
+                    RpcMethod::IsGovernmentIdVerified,
+                    &[]
+                )
+                .await
+                .unwrap()["verified"],
+                true
+            );
+            assert_eq!(prepare(&verifier, &restarted, player, req_a).await, order_a);
+            define_coin(&restarted).await;
+            let fulfilled_a = dispatch(
+                Some(&verifier),
+                &restarted,
+                player,
+                RpcMethod::StoreProcessIAP,
+                &[purchase_arg(player, id_a, "restart-receipt-a", &signer)],
+            )
+            .await
+            .unwrap();
+            assert_eq!(fulfilled_a["orderId"], id_a.to_string());
+        }
+
+        let final_community = open_provider_community(&db);
+        assert_eq!(
+            dispatch(
+                None,
+                &final_community,
+                player,
+                RpcMethod::IsGovernmentIdVerified,
+                &[]
+            )
+            .await
+            .unwrap()["verified"],
+            true
+        );
+        // Replay order A idempotently after second restart.
+        dispatch(
+            Some(&verifier),
+            &final_community,
+            player,
+            RpcMethod::StoreProcessIAP,
+            &[purchase_arg(player, id_a, "restart-receipt-a", &signer)],
+        )
+        .await
+        .unwrap();
+        // Fulfill order B prepared before both restarts.
+        dispatch(
+            Some(&verifier),
+            &final_community,
+            player,
+            RpcMethod::StoreProcessIAP,
+            &[purchase_arg(player, order_b, "restart-receipt-b", &signer)],
+        )
+        .await
+        .unwrap();
+
+        let conn = Connection::open(&db).unwrap();
+        assert_eq!(inventory_balance(&conn, player), 10);
+        assert_eq!(
+            conn.query_row("SELECT count(*) FROM community_item_grants", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            2
         );
     }
 }
