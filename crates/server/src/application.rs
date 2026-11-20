@@ -99,6 +99,7 @@ fn open_local_services(c: &Config) -> Result<LocalServices> {
         c.admission,
         c.game_port_range,
     )?;
+    rooms.set_free_aral_reroll(c.free_aral_reroll);
     if let Some(dir) = &c.replay_dir {
         rooms.set_replay_directory(dir)?;
     }

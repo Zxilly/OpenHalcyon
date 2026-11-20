@@ -63,6 +63,7 @@ type Shared = Arc<Mutex<Room>>;
 #[derive(Clone)]
 pub struct Rooms(Arc<Manager>);
 struct Manager {
+    free_aral_reroll: AtomicBool,
     bind_ip: IpAddr,
     replay_directory: Mutex<Option<std::path::PathBuf>>,
     gate: Mutex<admission::Gate>,
@@ -97,6 +98,7 @@ impl Peer {
 }
 #[derive(Default)]
 struct Seat {
+    used_aral_reroll: bool,
     presence: player_presence::Presence,
     action_receipts: player_actions::Receipts,
     locked: bool,
@@ -143,6 +145,7 @@ struct FederationOrigin {
 }
 
 struct Room {
+    free_aral_reroll: bool,
     federation: Option<FederationOrigin>,
     scene_views: Vec<tower_aggro::View>,
     ringo_attacks: ringo::AttackHistory,
@@ -217,6 +220,7 @@ impl Rooms {
         let ports = admission::Ports::new(game_port_range)?;
         let capacity = capacity.min(ports.slots());
         let this = Self(Arc::new(Manager {
+            free_aral_reroll: AtomicBool::default(),
             gate: Mutex::new(admission::Gate::new(policy)?),
             monitor_started: AtomicBool::default(),
             ports,
@@ -240,6 +244,10 @@ impl Rooms {
         }));
         this.monitor_resources();
         Ok(this)
+    }
+    /// Apply the optional free draft reroll to rooms reserved after this call.
+    pub fn set_free_aral_reroll(&self, enabled: bool) {
+        self.0.free_aral_reroll.store(enabled, Ordering::Relaxed);
     }
     pub fn set_finish_handler(&self, handler: Finish) {
         *self.0.finish.lock().unwrap() = Some(handler);
@@ -671,6 +679,7 @@ impl Rooms {
         let (stop, stopped) = watch::channel(false);
         let t = Utc::now();
         let mut room = Room {
+            free_aral_reroll: self.0.free_aral_reroll.load(Ordering::Relaxed),
             federation,
             ringo_attacks: Default::default(),
             scene_views: (0..req.players.len()).map(|_| Default::default()).collect(),
@@ -1318,6 +1327,15 @@ impl Room {
                 if game && actor == u32::from(wire_id(i as u32 + 1)) =>
             {
                 out = self.buy(i, actor, item);
+            }
+            Fields::ControlByte {
+                value: 0,
+                remaining,
+            } if m.is(crate::Opcode::DraftRerollHero)
+                && ch == 0
+                && remaining.iter().all(|&byte| byte == 0) =>
+            {
+                out = aral::reroll(self, i);
             }
             Fields::ControlByte { value, remaining }
                 if ch == 0

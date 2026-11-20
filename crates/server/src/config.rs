@@ -26,6 +26,8 @@ pub struct Config {
     pub game_port_range: Option<halcyon_game::PortRange>,
     #[serde(default)]
     pub admission: halcyon_game::AdmissionPolicy,
+    #[serde(default)]
+    pub free_aral_reroll: bool,
     pub max_rooms: usize,
     pub seats_per_match: usize,
     pub database: PathBuf,
@@ -97,6 +99,7 @@ impl Config {
             .map_err(|e| anyhow::anyhow!(e.to_string()))?
             .to_string();
         let config = Self {
+            free_aral_reroll: false,
             instance_id: Uuid::new_v4(),
             public_host: host.clone(),
             bootstrap_listen: SocketAddr::new(bound, 8080),

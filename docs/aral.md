@@ -151,5 +151,8 @@ The immediately preceding roster changed the hero template of exactly one
 seat in every case. The Android call path increments a reroll counter and
 references gold, but the recordings and supplied rules give neither the
 authoritative per-use fee nor a replay-safe transaction key binding the
-home account debit to the room's new hero. Hosted rooms leave this paid
-action unavailable.
+home account debit to the room's new hero. The host can set
+`free_aral_reroll = true` to enable one free, deterministic hero change per draft
+seat when hero data is available. This optional rule defaults to disabled and
+does not debit any account currency. The host sends the updated roster before
+the zero-operand echo and sends the replacement default skin to its owner.
