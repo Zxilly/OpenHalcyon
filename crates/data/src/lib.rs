@@ -379,18 +379,13 @@ pub fn catalog_from_trace(trace: impl io::BufRead) -> io::Result<Vec<String>> {
             continue;
         }
         let hex = row["payload"].as_str().ok_or_else(invalid)?;
-        if hex.len() != 76 || !hex.is_ascii() {
+        let mut bytes = [0; 38];
+        if hex.len() != bytes.len() * 2 {
             return Err(invalid());
         }
-        let bytes = hex
-            .as_bytes()
-            .as_chunks::<2>()
-            .0
-            .iter()
-            .map(|pair| {
-                u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).map_err(|_| invalid())
-            })
-            .collect::<io::Result<Vec<_>>>()?;
+        data_encoding::HEXLOWER_PERMISSIVE
+            .decode_mut(hex.as_bytes(), &mut bytes)
+            .map_err(|_| invalid())?;
         let end = bytes.iter().position(|b| *b == 0).unwrap_or(bytes.len());
         let name = std::str::from_utf8(&bytes[..end]).map_err(|_| invalid())?;
         validate_name(name)?;

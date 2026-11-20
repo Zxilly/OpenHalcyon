@@ -1026,6 +1026,7 @@ dependencies = [
 name = "halcyon-data"
 version = "1.0.0-draft.1"
 dependencies = [
+ "data-encoding",
  "halcyon-protocol",
  "serde",
  "serde_json",
