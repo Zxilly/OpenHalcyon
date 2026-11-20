@@ -17,9 +17,13 @@ fn collect_sources(dir: &Path, paths: &mut Vec<String>) -> io::Result<()> {
 }
 
 fn main() -> io::Result<()> {
-    println!("cargo:rerun-if-changed=src");
     let mut paths = Vec::new();
-    collect_sources(Path::new("src"), &mut paths)?;
+    // The data crate evaluates native geometry and ranked combat values. Peers
+    // can load identical files while running different interpreters for them.
+    for directory in ["src", "../data/src"] {
+        println!("cargo:rerun-if-changed={directory}");
+        collect_sources(Path::new(directory), &mut paths)?;
+    }
     paths.sort_unstable();
     let mut digest = Sha256::new();
     for name in paths {
