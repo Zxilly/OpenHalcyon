@@ -13,7 +13,7 @@ impl AppState {
             let mut stopped = 0;
             for id in ids {
                 if !is_running(parse_id(&id)?) {
-                    abort(tx, &id, "host_restarted")?;
+                    abort(tx, &id, crate::AbortReason::HostRestarted)?;
                     stopped += 1;
                 }
             }

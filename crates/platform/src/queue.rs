@@ -1,7 +1,7 @@
+use crate::EventBody;
 use halcyon_community::{CommunityError, queue as community_queue};
 use halcyon_data::{BotDifficulty, THREE_PER_SIDE_SEATS, three_per_side};
 use rusqlite::{Transaction, params};
-use serde_json::json;
 use uuid::Uuid;
 
 use super::{AppState, PlatformError, Result, announce, digest, event, player};
@@ -223,7 +223,7 @@ impl AppState {
                         "INSERT INTO tickets(player, mode, batch, seat_limit, difficulty, queued_at_ms) VALUES(?, ?, ?, ?, ?, ?)",
                         params![participant, mode, batch, seats, difficulty, queued_at_ms],
                     )?;
-                    event(tx, &participant, json!({"type":"queued", "mode":mode}))?;
+                    event(tx, &participant, EventBody::Queued { mode: &mode })?;
                 }
                 if let Some(participants) = find_group(tx, &mode, seats, state.seats_per_match(), difficulty)? {
                     let match_id = Uuid::new_v4().to_string();
@@ -240,7 +240,7 @@ impl AppState {
                     announce(
                         tx,
                         &match_id,
-                        json!({"type":"match_offered", "matchId":match_id, "mode":mode}),
+                        EventBody::MatchOffered { match_id: crate::parse_id(&match_id)?, mode: &mode },
                     )?;
                 }
                 Ok(())

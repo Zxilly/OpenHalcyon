@@ -1,6 +1,7 @@
+use crate::{EventBody, LobbyPhase};
 use halcyon_community::queue as community_queue;
 use rusqlite::{Connection, OptionalExtension, Row, Transaction, params};
-use serde_json::{Value, json};
+use serde_json::Value;
 use std::collections::BTreeMap;
 use uuid::Uuid;
 
@@ -251,7 +252,7 @@ impl AppState {
                 params![ticket, id, pool.to_string(), mode, seats, difficulty.map(BotDifficulty::as_str)],
             )?;
             if !estimates.is_empty() {
-                tx.execute("INSERT INTO federated_site_reports(ticket,estimates) VALUES(?,?)",params![ticket,json!(estimates).to_string()])?;
+                tx.execute("INSERT INTO federated_site_reports(ticket,estimates) VALUES(?,?)",params![ticket,serde_json::to_string(&estimates).map_err(|_| PlatformError::WorkerUnavailable)?])?;
             }
             for (index, member) in roster.players.iter().enumerate() {
                 tx.execute(
@@ -481,29 +482,31 @@ impl AppState {
         address: Option<String>,
         result: Option<Value>,
     ) -> Result<()> {
+        let phase = LobbyPhase::parse(phase)
+            .ok_or(PlatformError::Invalid("invalid federated projection"))?;
         match phase {
-            "queued" | "closed" => {}
-            "offered" | "finished" if match_id.is_some() => {}
-            "playing"
-                if match_id.is_some() && address.as_ref().is_some_and(|s| !s.trim().is_empty()) => {
+            LobbyPhase::Queued | LobbyPhase::Closed => {}
+            LobbyPhase::Offered | LobbyPhase::Finished if match_id.is_some() => {}
+            LobbyPhase::Playing
+                if match_id.is_some() && address.as_ref().is_some_and(|a| !a.trim().is_empty()) => {
             }
             _ => return Err(PlatformError::Invalid("invalid federated projection")),
         }
-        let phase = phase.to_owned();
         let ticket = ticket.to_string();
         self.run(move |state| state.transaction(|tx| {
             let Some(intent) = intent_by_ticket(tx, &ticket)? else {
                 return Ok(());
             };
-            if intent.phase == phase && intent.match_id == match_id && intent.address == address && intent.result == result {
+            let previous=LobbyPhase::parse(&intent.phase);
+            if previous == Some(phase) && intent.match_id == match_id && intent.address == address && intent.result == result {
                 return Ok(());
             }
-            if intent.phase == "closed" || (intent.phase == "finished" && phase != "closed")
-                || (intent.phase == "playing" && !matches!(phase.as_str(), "playing" | "finished" | "closed"))
+            if previous == Some(LobbyPhase::Closed) || (previous == Some(LobbyPhase::Finished) && phase != LobbyPhase::Closed)
+                || (previous == Some(LobbyPhase::Playing) && !matches!(phase, LobbyPhase::Playing | LobbyPhase::Finished | LobbyPhase::Closed))
             {
                 return Err(PlatformError::Conflict("stale federated state"));
             }
-            if matches!(intent.phase.as_str(), "playing" | "finished") && phase != "closed" && match_id != intent.match_id {
+            if matches!(previous, Some(LobbyPhase::Playing | LobbyPhase::Finished)) && phase != LobbyPhase::Closed && match_id != intent.match_id {
                 return Err(PlatformError::Conflict("federated match identity changed"));
             }
             let match_string = match_id.map(|id| id.to_string());
@@ -511,7 +514,7 @@ impl AppState {
                 .map(|id| id.to_string());
             tx.execute(
                 "UPDATE federated_queue SET phase=?, match_id=?, address=?, result=?, accepted_match=? WHERE ticket=?",
-                params![phase, match_string, address, result.as_ref().map(Value::to_string), accepted, ticket],
+                params![phase.as_str(), match_string, address, result.as_ref().map(Value::to_string), accepted, ticket],
             )?;
             if intent.match_id != match_id {
                 tx.execute(
@@ -519,23 +522,21 @@ impl AppState {
                     [&ticket],
                 )?;
             }
-            if matches!(phase.as_str(), "closed" | "finished") {
+            if matches!(phase, LobbyPhase::Closed | LobbyPhase::Finished) {
                 community_queue::release(tx, &ticket).map_err(community_error)?;
             }
-            let message = match phase.as_str() {
-                "queued" => json!({"type":"queued", "mode":intent.mode}),
-                "offered" => json!({"type":"match_offered", "matchId":match_id, "mode":intent.mode}),
-                "playing" => json!({"type":"match_playing", "matchId":match_id, "address":address}),
-                "finished" => json!({"type":"match_finished", "matchId":match_id, "result":result}),
-                "closed" if intent.match_id.or(match_id).is_some() => json!({
-                    "type":"match_aborted", "matchId":match_id.or(intent.match_id), "reason":"federation_closed"
-                }),
-                _ => json!({"type":"queue_left"}),
+            let message = match phase {
+                LobbyPhase::Queued => EventBody::Queued { mode: &intent.mode },
+                LobbyPhase::Offered => EventBody::MatchOffered { match_id: match_id.ok_or(PlatformError::HostUnavailable)?, mode: &intent.mode },
+                LobbyPhase::Playing => EventBody::MatchPlaying { match_id: match_id.ok_or(PlatformError::HostUnavailable)?, address: address.as_deref().ok_or(PlatformError::HostUnavailable)? },
+                LobbyPhase::Finished => EventBody::MatchFinished { match_id: match_id.ok_or(PlatformError::HostUnavailable)?, result: result.as_ref() },
+                LobbyPhase::Closed if intent.match_id.or(match_id).is_some() => EventBody::MatchAborted { match_id: match_id.or(intent.match_id).ok_or(PlatformError::HostUnavailable)?, reason: crate::AbortReason::FederationClosed },
+                _ => EventBody::QueueLeft,
             };
             tx.execute(
                 "INSERT INTO events(player,body) SELECT player, ? FROM federated_queue_members
                  WHERE ticket=? AND released=0 ORDER BY pos",
-                params![message.to_string(), ticket],
+                params![message.encode()?, ticket],
             )?;
             Ok(())
         })).await
@@ -639,7 +640,9 @@ fn acknowledge(tx: &Transaction<'_>, intent: &FederatedIntent, player: &str) -> 
         event(
             tx,
             player,
-            json!({"type":"post_match_left", "matchId":intent.match_id}),
+            EventBody::PostMatchLeft {
+                match_id: intent.match_id,
+            },
         )?;
     }
     tx.execute(

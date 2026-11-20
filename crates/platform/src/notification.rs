@@ -1,7 +1,8 @@
+use crate::EventBody;
 use std::time::Duration;
 
 use rusqlite::{OptionalExtension, Transaction, params};
-use serde_json::{Value, json};
+use serde_json::Value;
 use uuid::Uuid;
 
 use super::{AppState, Event, PlatformError, Result, digest, event, player};
@@ -65,7 +66,7 @@ impl AppState {
         self.run(move |state| {
             state.transaction(|tx| {
                 for id in players {
-                    event(tx, &id.to_string(), json!({"type":"friends_changed"}))?;
+                    event(tx, &id.to_string(), EventBody::FriendsChanged)?;
                 }
                 Ok(())
             })

@@ -1,5 +1,5 @@
+use crate::EventBody;
 use rusqlite::{Connection, OptionalExtension, Row, Transaction, params};
-use serde_json::json;
 use uuid::Uuid;
 
 use super::{
@@ -166,7 +166,7 @@ impl AppState {
                 params![hosted.address,new_id,request],
             )?;
             if row.2.as_deref()!=Some(new_id.as_str()) {
-                event(tx,&row.0,json!({"type":"spectator_entered","matchId":row.1}))?;
+                event(tx,&row.0,EventBody::SpectatorEntered { match_id: super::parse_id(&row.1)? })?;
             }
             Ok(())
         })).await
@@ -233,7 +233,7 @@ impl AppState {
                 [request.to_string()],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,Option<String>>(2)?)),
             ).optional()?;
             if let Some((viewer,room,Some(_)))=prior {
-                event(tx,&viewer,json!({"type":"spectator_left","matchId":room}))?;
+                event(tx,&viewer,EventBody::SpectatorLeft { match_id: super::parse_id(&room)? })?;
             }
             Ok(())
         })).await

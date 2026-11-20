@@ -1,3 +1,4 @@
+use crate::EventBody;
 use rusqlite::params;
 use uuid::Uuid;
 
@@ -57,15 +58,13 @@ impl AppState {
                 if fresh == 0 {
                     return Ok(());
                 }
-                let event = serde_json::json!({
-                    "type": "chat", "matchId": room, "playerId": sender, "text": text
-                });
+                let event = EventBody::Chat { match_id: super::parse_id(&room)?, player_id: sender, text: &text };
                 let recipients = tx.execute(
                     "INSERT INTO events(player,body)
                      SELECT m.player, ? FROM federated_queue_members m JOIN federated_queue f USING(ticket)
                      WHERE f.pool=? AND f.match_id=? AND f.phase IN ('offered','playing') AND m.released=0
                      ORDER BY m.player",
-                    params![event.to_string(), pool, room],
+                    params![event.encode()?, pool, room],
                 )?;
                 if expected_seats == 0 || recipients != expected_seats {
                     return Err(PlatformError::Conflict("waiting for the active room roster"));

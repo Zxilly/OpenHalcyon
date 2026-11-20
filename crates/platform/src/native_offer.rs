@@ -104,7 +104,7 @@ impl AppState {
                 if !offered {
                     return Ok(false);
                 }
-                abort(tx, &room, "player_left")?;
+                abort(tx, &room, crate::AbortReason::PlayerLeft)?;
                 tx.execute(
                     "INSERT INTO native_rejections(player,room) VALUES(?,?)",
                     params![actor, room],

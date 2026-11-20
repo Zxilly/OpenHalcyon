@@ -4,8 +4,11 @@ pub use halcyon_data::{
 };
 mod accounts;
 mod chat;
+mod event_body;
 mod federation;
 mod native_offer;
+use event_body::EventBody;
+pub use event_body::{AbortReason, LobbyPhase};
 mod notification;
 pub use native_offer::{NativeOffer, NativeSeat};
 pub use notification::record_external_notification;
@@ -37,7 +40,7 @@ use axum::{
 };
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 use tokio::sync::watch;
 use uuid::Uuid;
@@ -120,7 +123,11 @@ impl IntoResponse for PlatformError {
                 (StatusCode::INTERNAL_SERVER_ERROR, "platform unavailable")
             }
         };
-        (status, Json(json!({ "error": message }))).into_response()
+        #[derive(Serialize)]
+        struct ErrorResponse {
+            error: &'static str,
+        }
+        (status, Json(ErrorResponse { error: message })).into_response()
     }
 }
 
@@ -157,6 +164,12 @@ pub struct Lobby {
     pub settled_at_ms: Option<i64>,
     #[serde(skip_serializing)]
     pub queued_at_ms: Option<i64>,
+}
+
+impl Lobby {
+    pub fn phase_kind(&self) -> Option<LobbyPhase> {
+        LobbyPhase::parse(&self.phase)
+    }
 }
 
 #[derive(Serialize)]
@@ -350,7 +363,7 @@ impl AppState {
                 if let Err(error) = result {
                     tracing::warn!(%match_id, %error, "match host rejected reservation");
                 }
-                self.transaction(|tx| abort(tx, &match_id, "host_unavailable"))?;
+                self.transaction(|tx| abort(tx, &match_id, AbortReason::HostUnavailable))?;
                 return Err(PlatformError::HostUnavailable);
             }
         };
@@ -362,7 +375,10 @@ impl AppState {
             announce(
                 tx,
                 &match_id,
-                json!({"type":"match_playing", "matchId":match_id, "address":host.address}),
+                EventBody::MatchPlaying {
+                    match_id: parse_id(&match_id)?,
+                    address: &host.address,
+                },
             )
         })
     }
@@ -377,7 +393,7 @@ impl AppState {
                 })
                 .optional()?;
             match phase.as_deref() {
-                Some("playing") => abort(tx, &match_id, "host_stopped"),
+                Some("playing") => abort(tx, &match_id, AbortReason::HostStopped),
                 Some("aborted") => Ok(()),
                 _ => Err(PlatformError::Conflict("match is not playing")),
             }
@@ -395,7 +411,7 @@ impl AppState {
                     .query_map([], |row| row.get::<_, String>(0))?
                     .collect::<rusqlite::Result<Vec<_>>>()?;
                 for id in ids {
-                    abort(tx, &id, "offer_expired")?;
+                    abort(tx, &id, AbortReason::OfferExpired)?;
                 }
                 Ok(())
             })
@@ -433,7 +449,10 @@ impl AppState {
             announce(
                 tx,
                 &match_id,
-                json!({"type":"match_finished", "matchId":match_id, "result":result}),
+                EventBody::MatchFinished {
+                    match_id: parse_id(&match_id)?,
+                    result: Some(&result),
+                },
             )?;
             Ok(())
         })
@@ -840,18 +859,18 @@ fn read_profile(row: &rusqlite::Row<'_>) -> rusqlite::Result<PlayerProfile> {
     })
 }
 
-fn event(tx: &Transaction<'_>, id: &str, body: Value) -> Result<()> {
+fn event(tx: &Transaction<'_>, id: &str, body: EventBody<'_>) -> Result<()> {
     tx.execute(
         "INSERT INTO events(player, body) VALUES(?, ?)",
-        params![id, body.to_string()],
+        params![id, body.encode()?],
     )?;
     Ok(())
 }
 
-fn announce(tx: &Transaction<'_>, match_id: &str, body: Value) -> Result<()> {
+fn announce(tx: &Transaction<'_>, match_id: &str, body: EventBody<'_>) -> Result<()> {
     tx.execute(
         "INSERT INTO events(player, body) SELECT player, ? FROM tickets WHERE match_id=? ORDER BY serial",
-        params![body.to_string(), match_id],
+        params![body.encode()?, match_id],
     )?;
     Ok(())
 }
@@ -880,14 +899,17 @@ impl AppState {
     }
 }
 
-fn abort(tx: &Transaction<'_>, match_id: &str, reason: &'static str) -> Result<()> {
+fn abort(tx: &Transaction<'_>, match_id: &str, reason: AbortReason) -> Result<()> {
     queue::release_matches(tx, match_id)?;
     spectator::close_match(tx, match_id)?;
     tx.execute("UPDATE matches SET phase='aborted' WHERE id=?", [match_id])?;
     announce(
         tx,
         match_id,
-        json!({"type":"match_aborted", "matchId":match_id, "reason":reason}),
+        EventBody::MatchAborted {
+            match_id: parse_id(match_id)?,
+            reason,
+        },
     )?;
     tx.execute("DELETE FROM tickets WHERE match_id=?", [match_id])?;
     Ok(())
@@ -912,13 +934,13 @@ impl AppState {
         ).optional()?;
                 if let Some((match_id, phase)) = lobby {
                     match phase.as_str() {
-                        "offered" => abort(tx, &match_id, "player_left")?,
+                        "offered" => abort(tx, &match_id, AbortReason::PlayerLeft)?,
                         "finished" => {
                             tx.execute("DELETE FROM tickets WHERE player=?", [&id])?;
                             event(
                                 tx,
                                 &id,
-                                json!({"type":"post_match_left", "matchId":match_id}),
+                                EventBody::PostMatchLeft { match_id: Some(parse_id(&match_id)?) },
                             )?;
                         }
                         _ => {
@@ -934,12 +956,12 @@ impl AppState {
                     if let Some(batch) = batch {
                         tx.execute(
                             "INSERT INTO events(player, body) SELECT player, ? FROM tickets WHERE batch=? ORDER BY serial",
-                            params![json!({"type":"queue_left"}).to_string(), batch],
+                            params![EventBody::QueueLeft.encode()?, batch],
                         )?;
                         tx.execute("DELETE FROM tickets WHERE batch=?", [&batch])?;
                         halcyon_community::queue::release(tx, &batch).map_err(queue::community_error)?;
                     } else if tx.execute("DELETE FROM tickets WHERE player=?", [&id])? != 0 {
-                        event(tx, &id, json!({"type":"queue_left"}))?;
+                        event(tx, &id, EventBody::QueueLeft)?;
                     }
                 }
                 Ok(())
@@ -1029,7 +1051,11 @@ impl AppState {
                 announce(
                     tx,
                     &match_id,
-                    json!({"type":"chat", "matchId":id, "playerId":player_id, "text":message}),
+                    EventBody::Chat {
+                        match_id: id,
+                        player_id: parse_id(&player_id)?,
+                        text: &message,
+                    },
                 )?;
                 Ok(())
             })

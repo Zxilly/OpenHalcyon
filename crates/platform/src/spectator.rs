@@ -1,5 +1,5 @@
+use crate::EventBody;
 use rusqlite::{OptionalExtension, Transaction, params};
-use serde_json::json;
 use uuid::Uuid;
 
 use super::{
@@ -27,11 +27,13 @@ pub(super) fn initialize(tx: &Transaction<'_>) -> Result<()> {
 }
 
 pub(super) fn close_match(tx: &Transaction<'_>, match_id: &str) -> Result<()> {
-    let message = json!({"type":"spectator_left","matchId":match_id});
+    let message = EventBody::SpectatorLeft {
+        match_id: parse_id(match_id)?,
+    };
     tx.execute(
         "INSERT INTO events(player,body) SELECT player, ? FROM spectator_sessions
          WHERE match_id=? AND spectator_id IS NOT NULL ORDER BY player",
-        params![message.to_string(), match_id],
+        params![message.encode()?, match_id],
     )?;
     tx.execute(
         "DELETE FROM spectator_sessions WHERE match_id=?",
@@ -68,7 +70,7 @@ impl AppState {
                 event(
                     &tx,
                     &player.to_string(),
-                    json!({"type":"spectator_left","matchId":room}),
+                    EventBody::SpectatorLeft { match_id: room },
                 )?;
             }
             tx.commit()?;
@@ -138,7 +140,7 @@ impl AppState {
                         if updated == 0 {
                             return Err(PlatformError::Conflict("spectator session was closed"));
                         }
-                        event(tx, &actor, json!({"type":"spectator_entered","matchId":match_id}))
+                        event(tx, &actor, EventBody::SpectatorEntered { match_id })
                     });
                     if published.is_err() {
                         let _ = state.host.stop_spectating(match_id, hosted.spectator_id);
@@ -187,7 +189,7 @@ impl AppState {
             state.host.stop_spectating(room, spectator)?;
             state.transaction(|tx| {
                 if tx.execute("DELETE FROM spectator_sessions WHERE request=?", [&request])? > 0 {
-                    event(tx, &actor, json!({"type":"spectator_left","matchId":room}))?;
+                    event(tx, &actor, EventBody::SpectatorLeft { match_id: room })?;
                 }
                 Ok(())
             })
