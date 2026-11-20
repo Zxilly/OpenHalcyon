@@ -1,4 +1,7 @@
 use super::*;
+
+mod skills;
+mod targeting;
 impl World {
     pub(super) fn update_rally(&mut self) {
         self.rally = [None; 2];
@@ -39,60 +42,7 @@ impl World {
         if e.kind == Kind::Hero && e.hp < e.max_hp * 0.23 {
             return Command::MoveTo(home);
         }
-        let sensor = if matches!(e.kind, Kind::Tower | Kind::Crystal) {
-            e.stats.range.min(e.stats.sight())
-        } else {
-            e.stats.sight()
-        };
-        let mut candidate = None;
-        let mut best = (u8::MAX, f32::MAX, u32::MAX);
-        for t in &self.entities {
-            if t.hp <= 0. || t.team == e.team {
-                continue;
-            }
-            let d = e.position.dist(t.position);
-            if d > sensor || !self.layout.clear(e.position, t.position) {
-                continue;
-            }
-            // A teammate, reveal or vision device can expose a target across a brush boundary.
-            if self
-                .native_navigation
-                .as_ref()
-                .is_some_and(|map| !map.can_see(e.position, t.position) && !self.visible(e.team, t))
-            {
-                continue;
-            }
-            let hit_tick = self.tick + 3 + (d * TICK_HZ as f32 / 18.).ceil() as u64;
-            let predicted = if t.kind == Kind::Minion && e.kind == Kind::Hero {
-                self.predicted_hp(t, hit_tick)
-            } else {
-                t.hp
-            };
-            if predicted <= 0. {
-                continue;
-            }
-            let priority = match t.kind {
-                Kind::Minion if e.kind == Kind::Hero && predicted <= e.stats.weapon => 0,
-                Kind::Minion if e.kind == Kind::Tower => 0,
-                Kind::Tower | Kind::Crystal if e.kind == Kind::Minion => 0,
-                Kind::Hero => 1,
-                Kind::Minion => 2,
-                Kind::Tower | Kind::Armory => 3,
-                Kind::Crystal => 4,
-                Kind::Neutral => continue,
-            };
-            let stick = if e.order == Command::Attack(t.id) {
-                0.6
-            } else {
-                0.
-            };
-            let rank = (priority, d - stick, t.id);
-            if rank < best {
-                best = rank;
-                candidate = Some(t);
-            }
-        }
-        if let Some(t) = candidate {
+        if let Some(t) = self.choose_target(e) {
             if e.kind == Kind::Hero
                 && t.kind == Kind::Tower
                 && !self.entities.iter().any(|a| {
@@ -109,124 +59,11 @@ impl World {
                 }
                 return Command::MoveTo(p);
             }
-            if e.kind == Kind::Hero && t.kind == Kind::Hero {
-                if e.type_id == EntityTemplate::Lyra.as_raw()
-                    && let Some(cmd) = self.sigil_order(i, t)
-                {
-                    return cmd;
-                }
-                if e.type_id == EntityTemplate::Karas.as_raw()
-                    && self.abilities.twister.is_some()
-                    && self.can_cast(i, AbilitySlot::B, CastTarget::Point(t.position))
-                {
-                    return Command::Cast {
-                        slot: AbilitySlot::B,
-                        target: CastTarget::Point(t.position),
-                    };
-                }
-                if e.type_id == EntityTemplate::Lyra.as_raw()
-                    && self.bulwark_reaches(i, t.position)
-                    && self.can_cast(i, AbilitySlot::B, CastTarget::SelfCast)
-                {
-                    return Command::Cast {
-                        slot: AbilitySlot::B,
-                        target: CastTarget::SelfCast,
-                    };
-                }
-                if e.type_id == EntityTemplate::Catherine.as_raw()
-                    && self.pursuit_reaches(i, t.position)
-                    && self.can_cast(i, AbilitySlot::A, CastTarget::SelfCast)
-                {
-                    return Command::Cast {
-                        slot: AbilitySlot::A,
-                        target: CastTarget::SelfCast,
-                    };
-                }
-                if e.type_id == EntityTemplate::Catherine.as_raw() {
-                    for (slot, target) in [
-                        (AbilitySlot::B, CastTarget::SelfCast),
-                        (AbilitySlot::C, CastTarget::Point(t.position)),
-                    ] {
-                        if (slot != AbilitySlot::B
-                            || e.position.dist(t.position) <= t.stats.range.max(e.stats.range) + 1.)
-                            && self.can_cast(i, slot, target)
-                        {
-                            return Command::Cast { slot, target };
-                        }
-                    }
-                }
-                if e.type_id == EntityTemplate::Yates.as_raw()
-                    && self.overwhelm_reaches(i, t.position)
-                    && self.can_cast(i, AbilitySlot::B, CastTarget::SelfCast)
-                {
-                    return Command::Cast {
-                        slot: AbilitySlot::B,
-                        target: CastTarget::SelfCast,
-                    };
-                }
-                if e.type_id == EntityTemplate::Yates.as_raw() {
-                    for slot in [AbilitySlot::A, AbilitySlot::C] {
-                        let target = CastTarget::Point(t.position);
-                        if self.can_cast(i, slot, target) {
-                            return Command::Cast { slot, target };
-                        }
-                    }
-                }
-                if e.type_id == lorelai::HERO
-                    && let Some(cmd) = self.lorelai_action(i, t.position)
-                {
-                    return cmd;
-                }
-                if e.type_id == EntityTemplate::Reim.as_raw()
-                    && self
-                        .chill_winds_radius(i)
-                        .is_some_and(|radius| e.position.dist(t.position) <= radius)
-                    && self.can_cast(i, AbilitySlot::B, CastTarget::SelfCast)
-                {
-                    return Command::Cast {
-                        slot: AbilitySlot::B,
-                        target: CastTarget::SelfCast,
-                    };
-                }
-                if e.type_id == EntityTemplate::Reim.as_raw()
-                    && self.can_cast(i, AbilitySlot::A, CastTarget::Point(t.position))
-                {
-                    return Command::Cast {
-                        slot: AbilitySlot::A,
-                        target: CastTarget::Point(t.position),
-                    };
-                }
-                if e.type_id == EntityTemplate::Idris.as_raw()
-                    && self.can_cast(i, AbilitySlot::B, CastTarget::Point(t.position))
-                {
-                    return Command::Cast {
-                        slot: AbilitySlot::B,
-                        target: CastTarget::Point(t.position),
-                    };
-                }
-                let target = CastTarget::Entity(t.id);
-                let finisher =
-                    t.hp < t.max_hp * 0.35 && e.position.dist(t.position) > e.stats.range;
-                if finisher && self.can_cast(i, AbilitySlot::C, target) {
-                    return Command::Cast {
-                        slot: AbilitySlot::C,
-                        target,
-                    };
-                }
-                if self.can_cast(i, AbilitySlot::A, target) {
-                    return Command::Cast {
-                        slot: AbilitySlot::A,
-                        target,
-                    };
-                }
-                if e.position.dist(t.position) <= e.stats.range
-                    && self.can_cast(i, AbilitySlot::B, CastTarget::SelfCast)
-                {
-                    return Command::Cast {
-                        slot: AbilitySlot::B,
-                        target: CastTarget::SelfCast,
-                    };
-                }
+            if e.kind == Kind::Hero
+                && t.kind == Kind::Hero
+                && let Some(cast) = self.hero_combat_order(i, t)
+            {
+                return cast;
             }
             if e.kind == Kind::Hero
                 && t.kind == Kind::Hero
