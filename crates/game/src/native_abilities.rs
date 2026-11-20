@@ -298,7 +298,7 @@ fn deliver_registered(
     }
 }
 
-fn twister_message(source: u32, goal: Position, speed: f32) -> Message {
+fn aral_dash_message(source: u32, goal: Position, speed: f32) -> Message {
     halcyon_protocol::ForcedMove {
         actor: u32::from(wire_id(source)),
         speed,
@@ -308,7 +308,7 @@ fn twister_message(source: u32, goal: Position, speed: f32) -> Message {
     .message()
 }
 
-pub(super) fn recordable_twister(m: &Message) -> bool {
+pub(super) fn recordable_dash(m: &Message) -> bool {
     m.forced_move().is_some_and(|motion| {
         (1500..1506).contains(&motion.actor)
             && motion.mode == halcyon_protocol::ForcedMoveMode::Dash
@@ -349,7 +349,7 @@ pub(super) fn publish_before_impacts(room: &mut Room, events: &[Event]) {
             && actor.id == source
             && actor.type_id == EntityTemplate::Karas.as_raw()
         {
-            let message = twister_message(source, goal, speed);
+            let message = aral_dash_message(source, goal, speed);
             let team = 1 - actor.team;
             deliver_registered(room, source, team, None, std::slice::from_ref(&message));
             room.publish_observer_actors(&[source], std::slice::from_ref(&message));
@@ -596,6 +596,21 @@ pub(super) fn publish(room: &mut Room, events: &[Event]) {
         } else {
             None
         };
+        let lunge = match events.get(event_index + 1) {
+            Some(Event::AmaelLunge {
+                source: caster,
+                target: victim,
+                goal,
+                speed,
+            }) if aral
+                && cast == NativeCast::AmaelC
+                && *caster == source
+                && Some(*victim) == target_id =>
+            {
+                Some(aral_dash_message(source, *goal, *speed))
+            }
+            _ => None,
+        };
         let team = actor.team;
         let position = actor.position;
         let mut stop = None;
@@ -639,6 +654,7 @@ pub(super) fn publish(room: &mut Room, events: &[Event]) {
                 };
                 batch.push(apply.to_message().expect("fixed Waterwall format"));
             }
+            batch.extend(lunge.iter().cloned());
             batch.extend(chakram.iter().flatten().cloned());
             peer.send(Delivery::Private(batch));
         }
@@ -654,14 +670,9 @@ pub(super) fn publish(room: &mut Room, events: &[Event]) {
         if cast == NativeCast::AmaelC
             && let Some(victim) = target_id
         {
-            deliver_registered(
-                room,
-                source,
-                1 - team,
-                Some(victim),
-                std::slice::from_ref(&message),
-            );
-            room.publish_observer_actors(&[source, victim], std::slice::from_ref(&message));
+            let release: Batch = std::iter::once(message).chain(lunge).collect();
+            deliver_registered(room, source, 1 - team, Some(victim), &release);
+            room.publish_observer_actors(&[source, victim], &release);
         } else {
             witness(room, source, target_id, &message, ally_release);
         }
@@ -679,7 +690,7 @@ mod tests {
 
     #[test]
     fn twister_writes_speed_before_destination_and_only_accepts_the_flat_aral_profile() {
-        let mut m = twister_message(
+        let mut m = aral_dash_message(
             3,
             Position {
                 x: -5.930279,
@@ -687,14 +698,14 @@ mod tests {
             },
             21.875313,
         );
-        assert!(recordable_twister(&m));
+        assert!(recordable_dash(&m));
         assert_eq!(u32::from_be_bytes(m.body[0..4].try_into().unwrap()), 1502);
         assert_eq!(&m.body[4..8], &21.875313f32.to_be_bytes());
         assert_eq!(&m.body[8..12], &(-5.930279f32).to_be_bytes());
         assert_eq!(&m.body[12..16], &0x3d192e1fu32.to_be_bytes());
         assert_eq!(&m.body[16..20], &4.824222f32.to_be_bytes());
         m.body[20] = 1;
-        assert!(!recordable_twister(&m));
+        assert!(!recordable_dash(&m));
     }
     #[tokio::test]
     async fn learns_once_and_only_confirms_the_registered_caster_after_release() {
@@ -1004,10 +1015,15 @@ mod tests {
             publish(&mut room, &ev);
         }
         assert_eq!(hits, 1);
-        assert_eq!(
-            rx.try_recv().unwrap().into_records(),
-            [Message::ability_target_used(1500, 1501, 2)]
-        );
+        let release = rx.try_recv().unwrap().into_records();
+        assert_eq!(release.len(), 2);
+        assert_eq!(release[0], Message::ability_target_used(1500, 1501, 2));
+        let motion = release[1].forced_move().unwrap();
+        assert_eq!(motion.actor, 1500);
+        assert_eq!(motion.mode, halcyon_protocol::ForcedMoveMode::Dash);
+        assert!((motion.speed - 3.2 / 0.30).abs() < 0.001);
+        assert!((motion.destination[0] - 21.92).abs() < 0.001);
+        assert!((motion.destination[2] - 3.56).abs() < 0.001);
     }
 
     #[tokio::test]

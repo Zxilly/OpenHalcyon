@@ -834,6 +834,15 @@ impl Room<'_> {
                 let channel = self.tick.max(1);
                 self.entities[i].status.channel = channel;
                 self.entities[i].status.channel_until = self.tick + 6;
+                let step = origin.dist(goal) / 6.;
+                if step > 0. {
+                    events.push(Event::AmaelLunge {
+                        source: src,
+                        target: id,
+                        goal,
+                        speed: step * TICK_HZ as f32,
+                    });
+                }
                 self.entities.spawn_spell(SpellEffect {
                     due: self.tick + 1,
                     src,
@@ -842,7 +851,7 @@ impl Room<'_> {
                         target: id,
                         range: rule.range,
                         goal,
-                        step: origin.dist(goal) / 6.,
+                        step,
                         elapsed: 0,
                     }),
                     damage: raw,

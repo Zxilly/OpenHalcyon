@@ -186,7 +186,7 @@ fn sanitize(m: &mut Message) -> bool {
         ) if super::native_abilities::recordable_spell_projectile(m) => {}
         Some(crate::Opcode::EntityProp | crate::Opcode::AutoActorBounce)
             if super::native_abilities::recordable_amael(m) => {}
-        Some(crate::Opcode::AutoMoveTo) if super::native_abilities::recordable_twister(m) => {}
+        Some(crate::Opcode::AutoMoveTo) if super::native_abilities::recordable_dash(m) => {}
         Some(crate::Opcode::FireProjectile) if super::npc_projectile::recordable(m) => {}
         Some(crate::Opcode::EntityData | crate::Opcode::DecrementBuffStack)
             if super::aral_guard::recordable(m) => {}

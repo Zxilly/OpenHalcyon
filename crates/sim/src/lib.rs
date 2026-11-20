@@ -178,6 +178,12 @@ pub enum Event {
         speed_seconds: f32,
         talent_reset: bool,
     },
+    AmaelLunge {
+        source: u32,
+        target: u32,
+        goal: Position,
+        speed: f32,
+    },
     AmaelKick {
         source: u32,
         target: u32,
