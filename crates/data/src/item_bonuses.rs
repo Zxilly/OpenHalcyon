@@ -9,28 +9,59 @@ struct Item {
     bonuses: Vec<Bonus>,
 }
 
+// The text and numeric ID are separate fields in the delivery. Checking both
+// prevents a new or mislabeled stat from entering the accumulator.
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+#[repr(u8)]
+enum StatChannel {
+    EnergyRegen = 3,
+    AttackSpeedDisplay = 15,
+    CooldownSpeed = 25,
+    CritChance = 30,
+    CritDamage = 31,
+    #[serde(other)]
+    Unknown,
+}
+
+#[repr(u8)]
+enum ScalarField {
+    Amplifier = 2,
+    Percent = 3,
+}
+
+impl StatChannel {
+    fn scalar(self) -> Option<ScalarField> {
+        match self {
+            Self::EnergyRegen => Some(ScalarField::Percent),
+            Self::AttackSpeedDisplay
+            | Self::CooldownSpeed
+            | Self::CritChance
+            | Self::CritDamage => Some(ScalarField::Amplifier),
+            Self::Unknown => None,
+        }
+    }
+}
+
 #[derive(Deserialize)]
 struct Bonus {
     stat_id: u8,
-    stat: Option<String>,
+    stat: Option<StatChannel>,
     value: f32,
     layer: u8,
     field: u8,
 }
 
 impl Bonus {
-    // These five layer-zero channels use the same units in the supplement,
-    // the original shop modifiers, and the simulation stat accumulator.
     fn supported(&self) -> bool {
-        self.layer == 0
-            && matches!(
-                (self.stat_id, self.field, self.stat.as_deref()),
-                (3, 3, Some("ENERGY_REGEN"))
-                    | (15, 2, Some("ATTACK_SPEED_DISPLAY"))
-                    | (25, 2, Some("COOLDOWN_SPEED"))
-                    | (30, 2, Some("CRIT_CHANCE"))
-                    | (31, 2, Some("CRIT_DAMAGE"))
-            )
+        const BASE_LAYER: u8 = 0;
+        self.layer == BASE_LAYER
+            && self.stat.is_some_and(|channel| {
+                channel as u8 == self.stat_id
+                    && channel
+                        .scalar()
+                        .is_some_and(|field| field as u8 == self.field)
+            })
     }
 }
 
@@ -83,13 +114,16 @@ mod tests {
           {"stat_id":25,"stat":"COOLDOWN_SPEED","field":2,"layer":0,"value":0.15},
           {"stat_id":15,"stat":"ATTACK_SPEED_DISPLAY","field":1,"layer":0,"value":0.10},
           {"stat_id":3,"stat":"ENERGY_REGEN","field":3,"layer":1,"value":0.25},
-          {"stat_id":30,"stat":"UNRESOLVED","field":2,"layer":0,"value":0.20}
+          {"stat_id":30,"stat":"UNRESOLVED","field":2,"layer":0,"value":0.20},
+          {"stat_id":31,"stat":"CRIT_DAMAGE","field":253,"layer":0,"value":0.20},
+          {"stat_id":255,"stat":"CRIT_CHANCE","field":2,"layer":0,"value":0.20},
+          {"stat_id":32,"stat":null,"field":2,"layer":0,"value":0.20}
         ]}]"#,
         )
         .unwrap();
         let values = ItemBonuses::from_rows(rows).unwrap();
         assert_eq!(values.get("test", 25), Some(0.15));
-        for id in [15, 3, 30] {
+        for id in [15, 3, 30, 31, 32, 255] {
             assert_eq!(values.get("test", id), None);
         }
     }

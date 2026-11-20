@@ -805,8 +805,8 @@ mod tests {
     #[test]
     #[ignore = "requires the operator's delivery and supplement directories"]
     fn original_supplement_supplies_verified_nonflat_item_bonuses() {
-        let delivery = std::env::var_os("HALCYON_TEST_DELIVERY").expect("HALCYON_TEST_DELIVERY");
-        let extra = std::env::var_os("HALCYON_TEST_SUPPLEMENT").expect("HALCYON_TEST_SUPPLEMENT");
+        let delivery = std::env::var_os("HALCYON_DELIVERY").expect("HALCYON_DELIVERY");
+        let extra = std::env::var_os("HALCYON_DATA_EXTRA").expect("HALCYON_DATA_EXTRA");
         let data = GameData::load_with_extra(delivery, Some(std::path::Path::new(&extra))).unwrap();
         let shop = Shop::load(&data).unwrap();
         for (kind, stat, value) in [
