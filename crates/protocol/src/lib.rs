@@ -222,6 +222,11 @@ impl Message {
     }
     pub fn fields(&self) -> io::Result<Fields<'_>> {
         let b = &self.body;
+        if self.is(Opcode::CreateZoneOfControlVariantC)
+            && let Some(zone) = self.zone_action()
+        {
+            return Ok(Fields::Zone(zone));
+        }
         if let Some(application) = BuffApplication::decode(self.opcode, b) {
             return Ok(Fields::BuffApplication(application));
         }
@@ -704,6 +709,7 @@ pub enum DraftHeroChoice {
 
 #[derive(Debug, PartialEq)]
 pub enum Fields<'a> {
+    Zone(ZoneAction<'a>),
     Live(LiveFields<'a>),
     StaticAction(StaticAction<'a>),
     Outbound(OutboundAction<'a>),

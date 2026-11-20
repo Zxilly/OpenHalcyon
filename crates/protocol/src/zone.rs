@@ -1,7 +1,7 @@
 use super::{Message, invalid};
 use std::io;
 
-/// Actor-anchored zone records. The other create variants have different layouts.
+/// Native actor-anchored and rectangular zone declarations and removal.
 #[derive(Debug, PartialEq, Eq)]
 pub enum ZoneAction<'a> {
     Create {
@@ -11,6 +11,14 @@ pub enum ZoneAction<'a> {
         /// The original scalar words, preserving unknown meanings and float bits.
         parameters: [u32; 3],
         flag: u8,
+        suffix: &'a [u8],
+    },
+    /// Two X/Z points. Original IEEE-754 bits are retained, without assuming corner order.
+    Rectangle {
+        id: u32,
+        owner: u32,
+        p0_xz_bits: [u32; 2],
+        p1_xz_bits: [u32; 2],
         suffix: &'a [u8],
     },
     Destroy {
@@ -33,6 +41,15 @@ impl Message {
                     parameters: [word(12), word(16), word(20)],
                     flag: body[24],
                     suffix: &body[25..],
+                })
+            }
+            (crate::wire_opcode::CreateZoneOfControlVariantC, 24 | 30) => {
+                Some(ZoneAction::Rectangle {
+                    id: word(0),
+                    owner: word(4),
+                    p0_xz_bits: [word(8), word(12)],
+                    p1_xz_bits: [word(16), word(20)],
+                    suffix: &body[24..],
                 })
             }
             (crate::wire_opcode::DestroyZoneOfControl, 4 | 6) => Some(ZoneAction::Destroy {
@@ -66,6 +83,23 @@ impl ZoneAction<'_> {
                     body,
                 ))
             }
+            Self::Rectangle {
+                id,
+                owner,
+                p0_xz_bits,
+                p1_xz_bits,
+                suffix,
+            } if matches!(suffix.len(), 0 | 6) => {
+                let mut body = Vec::with_capacity(24 + suffix.len());
+                for word in [id, owner].into_iter().chain(p0_xz_bits).chain(p1_xz_bits) {
+                    body.extend(word.to_be_bytes());
+                }
+                body.extend_from_slice(suffix);
+                Ok(Message::known(
+                    crate::Opcode::CreateZoneOfControlVariantC,
+                    body,
+                ))
+            }
             Self::Destroy { id, suffix } if matches!(suffix.len(), 0 | 2) => {
                 let mut body = Vec::with_capacity(4 + suffix.len());
                 body.extend(id.to_be_bytes());
@@ -82,9 +116,36 @@ mod tests {
     use super::*;
 
     #[test]
+    fn rectangle_preserves_coordinates_and_padding_as_received() {
+        let body = [
+            0, 0, 8, 1, 0, 0, 5, 220, 0x80, 0, 0, 0, 0x7f, 0x80, 0, 1, 0xbf, 0x80, 0, 0, 0x40, 0,
+            0, 0, 1, 2, 3, 4, 5, 6,
+        ];
+        let m = Message::known(crate::Opcode::CreateZoneOfControlVariantC, body);
+        let expected = ZoneAction::Rectangle {
+            id: 2049,
+            owner: 1500,
+            p0_xz_bits: [0x80000000, 0x7f800001],
+            p1_xz_bits: [0xbf800000, 0x40000000],
+            suffix: &body[24..],
+        };
+        assert_eq!(expected.to_message().unwrap(), m);
+        assert_eq!(m.fields().unwrap(), crate::Fields::Zone(expected));
+        let invalid = ZoneAction::Rectangle {
+            id: 1,
+            owner: 2,
+            p0_xz_bits: [0; 2],
+            p1_xz_bits: [0; 2],
+            suffix: &[0],
+        };
+        assert!(invalid.to_message().is_err());
+    }
+
+    #[test]
     fn native_and_aligned_zone_actions_retain_all_bits() {
         for (opcode, lengths) in [
             (crate::wire_opcode::CreateZoneOfControlVariantB, [25, 30]),
+            (crate::wire_opcode::CreateZoneOfControlVariantC, [24, 30]),
             (crate::wire_opcode::DestroyZoneOfControl, [4, 6]),
         ] {
             for len in lengths {

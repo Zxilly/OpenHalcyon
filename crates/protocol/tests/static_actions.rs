@@ -44,6 +44,13 @@ fn every_static_entry_keeps_payload_and_padding_losslessly() {
                 Fields::Heartbeat => {
                     assert_eq!(layout.opcode, halcyon_protocol::wire_opcode::Heartbeat)
                 }
+                Fields::Zone(zone) => {
+                    assert_eq!(
+                        layout.opcode,
+                        halcyon_protocol::wire_opcode::CreateZoneOfControlVariantC
+                    );
+                    assert_eq!(zone.to_message().unwrap().body, body[..size]);
+                }
                 Fields::AbilityCharges { .. } => assert_eq!(
                     layout.opcode,
                     halcyon_protocol::wire_opcode::ModifyAbilityCharges
@@ -67,7 +74,7 @@ fn every_static_entry_keeps_payload_and_padding_losslessly() {
             assert!(layout.read(&body[..len - 1]).is_none());
         }
     }
-    assert_eq!(added, 32);
+    assert_eq!(added, 31);
 }
 
 #[test]
