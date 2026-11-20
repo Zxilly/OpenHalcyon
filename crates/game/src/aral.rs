@@ -385,8 +385,14 @@ mod tests {
         play_six_seats(Scenario::LanePaths).await;
     }
 
+    #[tokio::test]
+    async fn tower_release_reaches_the_registered_players_and_observer_before_impact() {
+        play_six_seats(Scenario::NpcAttack).await;
+    }
+
     #[derive(Clone, Copy, PartialEq, Eq)]
     enum Scenario {
+        NpcAttack,
         Crystal,
         Surrender,
         Shop,
@@ -764,6 +770,56 @@ mod tests {
             let cleared = until(socket, &cipher, 0x0481).await;
             assert_eq!(cleared.body, [0, 0, 5, 220, 255, 0]);
         }
+        if scenario == Scenario::NpcAttack {
+            let wire_tower = {
+                let mut state = room.lock().unwrap();
+                let tower = state
+                    .world
+                    .entities
+                    .iter()
+                    .find(|e| state.world.aral_structure_slot(e.id) == Some(7))
+                    .unwrap();
+                let (tower_id, pos) = (tower.id, tower.position);
+                state.world.entities[1].position = halcyon_sim::Position {
+                    x: pos.x + 1.,
+                    y: pos.y,
+                };
+                for _ in 0..14 {
+                    state.tick();
+                }
+                u32::from(crate::messages::wire_id(tower_id))
+            };
+            for socket in clients
+                .iter_mut()
+                .take(2)
+                .chain(std::iter::once(&mut observer))
+            {
+                tokio::time::timeout(Duration::from_secs(2), async {
+                    let mut releases = 0;
+                    loop {
+                        let msg = next(socket, &cipher).await;
+                        if msg.opcode == 0x415
+                            && msg.body[..4] == wire_tower.to_be_bytes()
+                            && msg.body[4..8] == 1501u32.to_be_bytes()
+                        {
+                            assert_eq!(msg.body[8], 0);
+                            releases += 1;
+                        }
+                        if msg.opcode == 0x41e
+                            && msg.body[..4] == 1501u32.to_be_bytes()
+                            && msg.body[4..8] == wire_tower.to_be_bytes()
+                        {
+                            assert_eq!(releases, 1);
+                            break;
+                        }
+                    }
+                })
+                .await
+                .unwrap();
+            }
+            rooms.revoke_observer(room_id, grant).unwrap();
+            return;
+        }
         if scenario == Scenario::LanePaths {
             let (wire_actor, destination) = {
                 let mut state = room.lock().unwrap();
@@ -784,6 +840,8 @@ mod tests {
             };
             for viewer in [&mut clients[2], &mut observer] {
                 let mut registered = None;
+                let mut rows = Vec::new();
+                let mut saw_path = false;
                 tokio::time::timeout(Duration::from_secs(2), async {
                     loop {
                         let m = next(viewer, &cipher).await;
@@ -796,12 +854,48 @@ mod tests {
                             let expected =
                                 crate::point_move::destination(registered.unwrap(), destination);
                             assert_eq!(m.body[..9], expected.body);
-                            break;
+                            saw_path = true;
+                        }
+                        if m.opcode == 0x042b && m.body[..4] == wire_actor.to_be_bytes() {
+                            assert!(saw_path && registered.is_some());
+                            rows.push(<[u8; 4]>::try_from(&m.body[4..8]).unwrap());
+                            if rows.len() == 7 {
+                                assert_eq!(
+                                    rows,
+                                    [
+                                        [0, 1, 0, 0],
+                                        [1, 1, 15, 0],
+                                        [3, 1, 0, 0],
+                                        [4, 1, 0, 0],
+                                        [5, 1, 0, 0],
+                                        [6, 1, 0, 0],
+                                        [7, 1, 0, 0]
+                                    ]
+                                );
+                                break;
+                            }
                         }
                     }
                 })
                 .await
                 .unwrap();
+            }
+            let hidden = wire_actor.to_be_bytes();
+            clients[3]
+                .write_all(&cipher.encode(&barrier).unwrap())
+                .await
+                .unwrap();
+            loop {
+                let m = next(&mut clients[3], &cipher).await;
+                if m == barrier {
+                    break;
+                }
+                if m.opcode == 0x042b {
+                    assert_ne!(m.body[..4], hidden);
+                }
+                if matches!(m.opcode, 0x03f2 | 0x03f3) {
+                    assert_ne!(m.body[8..12], hidden);
+                }
             }
         }
         rooms.revoke_observer(room_id, grant).unwrap();

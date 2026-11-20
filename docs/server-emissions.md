@@ -49,7 +49,7 @@ The host paths are in [room dispatch](../crates/game/src/lib.rs), [transport](..
 | `0424` | 2,268 | E | ActionRequestModifyBasicAttackTarget · Accepted ARAL basic attack target |
 | `0425` | 5 | R | ActionModifyBasicAttackTarget |
 | `0428` | 2,000 | R | ActionModifyCooldown |
-| `042B` | 53,111 | R | ActionModifyVisibility |
+| `042B` | 53,111 | A | ActionModifyVisibility · [Initial ARAL lane-minion deltas](native-visibility.md) after the first waypoint |
 | `042E` | 62,855 | A | ActionMoveToCorrection · Simulated positions visible to the recipient |
 | `042F` | 3 | R | ActionActorUndead |
 | `0430` | 1,032 | A | ActionActorDie · Visible death with its authoritative source |

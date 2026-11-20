@@ -201,6 +201,50 @@ fn pristine_minion(entity: &Entity, slot: u8) -> Message {
     Message::new(0x03f2, body)
 }
 
+/// Established visibility deltas for a newly declared, pristine ARAL wave actor.
+/// The opposing index varies even for identical declarations.
+#[derive(Clone, Copy)]
+pub(super) struct InitialVisibility {
+    actor: u32,
+    team: u8,
+    changed: u8,
+}
+
+impl InitialVisibility {
+    pub(super) fn read(declaration: &Message) -> Option<Self> {
+        let b = &declaration.body;
+        if declaration.opcode != 0x03f2 || b.len() != 122 || b[117] != 1 || !recordable(b) {
+            return None;
+        }
+        let actor = u32::from_be_bytes(b[8..12].try_into().unwrap());
+        let team = b[121];
+        let mut changed = 0;
+        for index in 0..8u8 {
+            if index == 3 - team {
+                continue;
+            }
+            let i = usize::from(index);
+            let mask = if index == team { 15 } else { 0 };
+            if [b[88 + i], b[96 + i], b[104 + i]] != [1, mask, 0] {
+                changed |= 1 << index;
+            }
+        }
+        (changed != 0).then_some(Self {
+            actor,
+            team,
+            changed,
+        })
+    }
+    pub(super) fn rows(self) -> impl Iterator<Item = Message> {
+        (0..8)
+            .filter(move |&index| self.changed & (1 << index) != 0)
+            .map(move |index| {
+                let mask = if index == self.team { 15 } else { 0 };
+                Message::actor_visibility(self.actor, index, 1, [mask, 0])
+            })
+    }
+}
+
 pub(super) fn recordable(body: &[u8]) -> bool {
     if body.len() != 122 || body[112..116] != [255; 4] {
         return false;
@@ -312,6 +356,17 @@ mod tests {
                 .unwrap();
             assert_eq!(fresh.opcode, 0x03f2);
             assert!(recordable(&fresh.body));
+            let team = fresh.body[121];
+            let mut prefilled = fresh.clone();
+            prefilled.body[88 + 6] = 1;
+            let rows: Vec<_> = InitialVisibility::read(&prefilled)
+                .unwrap()
+                .rows()
+                .collect();
+            assert_eq!(rows.len(), 6);
+            assert!(rows.iter().all(|m| m.body[4] != 6 && m.body[4] != 3 - team));
+            assert!(rows.iter().any(|m| m.body[4..8] == [team, 1, 15, 0]));
+
             let mut malformed = fresh.body.clone();
             malformed[120] ^= 1;
             assert!(!recordable(&malformed));
@@ -328,6 +383,7 @@ mod tests {
             .declaration(&world, &damaged, &[], None, 1, false)
             .unwrap();
         assert_eq!(restored.opcode, 0x03f3);
+        assert!(InitialVisibility::read(&restored).is_none());
         assert_eq!(restored.body[745], 22);
         assert_eq!(restored.body[42..46], damaged.hp.to_be_bytes());
         assert_eq!(restored.body[46..50], damaged.max_hp.to_be_bytes());

@@ -132,6 +132,11 @@ fn sanitize(m: &mut Message) -> bool {
                     m.body[116..122],
                     [52..=199, 0, 0, 1, 1, 1] | [52..=199, 0, 0, 1, 4, 2]
                 )) || super::aral_spawn::recordable(&m.body)) => {}
+        0x42b
+            if matches!(
+                m.body.as_slice(),
+                [0, 0, _, _, 0..=7, 1, 0 | 15, 0, 0, 0, 0, 0, 0, 0]
+            ) => {}
         0x3f8
             if m.body.len() == 9
                 && (14..=199).contains(&m.body[0])

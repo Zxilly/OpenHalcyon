@@ -13,6 +13,7 @@ pub(super) struct View {
     // Target identity distinguishes two successive occupants of a recycled slot.
     previous: HashMap<u32, Option<(u32, u8)>>,
     lane_paths: HashMap<u8, LanePath>,
+    spawn_visibility: HashMap<u8, super::aral_spawn::InitialVisibility>,
 }
 
 struct LanePath {
@@ -40,6 +41,11 @@ impl View {
             let Some(id) = wire.checked_sub(1499) else {
                 continue;
             };
+            if let Some(initial) = super::aral_spawn::InitialVisibility::read(m) {
+                self.spawn_visibility.insert(slot, initial);
+            } else {
+                self.spawn_visibility.remove(&slot);
+            }
             if let Some(old) = self.slots.insert(slot, id)
                 && old != id
             {
@@ -50,6 +56,7 @@ impl View {
                 && old != slot
             {
                 self.slots.remove(&old);
+                self.spawn_visibility.remove(&old);
                 self.previous.remove(&id);
             }
         }
@@ -66,6 +73,7 @@ impl View {
             return;
         };
         if actor.hp <= 0. || !visible(actor.id) {
+            self.spawn_visibility.remove(&slot);
             self.lane_paths.remove(&slot);
             return;
         }
@@ -92,6 +100,9 @@ impl View {
             },
         );
         out.push(super::point_move::destination(slot, destination));
+        if let Some(initial) = self.spawn_visibility.remove(&slot) {
+            out.extend(initial.rows());
+        }
     }
 
     pub fn append(&mut self, world: &World, visible: impl Fn(u32) -> bool, out: &mut Batch) {
@@ -164,6 +175,7 @@ impl ObserverScene {
         data: Option<&halcyon_data::GameData>,
         view: &mut View,
         batch: &mut Batch,
+        fresh_spawns: bool,
     ) {
         batch.retain_mut(|message| {
             if message.opcode != 0x03f3 {
@@ -178,7 +190,7 @@ impl ObserverScene {
             };
             let actor = &world.entities[i];
             let replacement = match self {
-                Self::Aral(slots) => slots.declaration(world, actor, picks, data, 0, false),
+                Self::Aral(slots) => slots.declaration(world, actor, picks, data, 0, fresh_spawns),
                 Self::Solo(slots) => slots.declaration(world, actor, picks, data),
             };
             if let Some(m) = replacement {
@@ -403,7 +415,7 @@ mod tests {
                 super::super::messages::spawn(e, &picks, None)
             })
             .collect();
-        scene.prepare(&world, &picks, None, &mut view, &mut batch);
+        scene.prepare(&world, &picks, None, &mut view, &mut batch, false);
         assert_eq!(batch[0].body[116], 7);
         let slot = batch[1].body[745];
         assert_eq!(
@@ -414,7 +426,7 @@ mod tests {
             })
         );
         let mut next = Vec::new();
-        scene.prepare(&world, &picks, None, &mut view, &mut next);
+        scene.prepare(&world, &picks, None, &mut view, &mut next, false);
         assert!(next.is_empty());
     }
 }

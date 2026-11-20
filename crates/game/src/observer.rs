@@ -149,7 +149,14 @@ async fn client(
         let mut scene = tower_aggro::ObserverScene::new(&r);
         let mut view = tower_aggro::View::default();
         if let Some(scene) = &mut scene {
-            scene.prepare(&r.world, &r.picks, r.data.as_deref(), &mut view, &mut b);
+            scene.prepare(
+                &r.world,
+                &r.picks,
+                r.data.as_deref(),
+                &mut view,
+                &mut b,
+                false,
+            );
         }
         let o = r.observers.get_mut(&grant).unwrap();
         o.scene = scene;
@@ -291,6 +298,7 @@ impl Room {
                     self.data.as_deref(),
                     &mut o.view,
                     &mut batch,
+                    true,
                 );
             }
             if !batch.is_empty() && tx.try_send(batch).is_err() {
