@@ -70,6 +70,8 @@ def measure(args, root, humans, cpu):
             text = re.sub(r'(?m)^origin = .*$', f'origin = "{origin}"', text)
             if args.data_dir:
                 text = "data_dir = " + json.dumps(str(args.data_dir.resolve())) + "\n" + text
+            if args.data_extra_dir:
+                text = "data_extra_dir = " + json.dumps(str(args.data_extra_dir.resolve())) + "\n" + text
             cfg.write_text(text, encoding="utf-8")
             server_log = teardown.enter_context((run / "server.log").open("wb"))
             server = subprocess.Popen([server_bin, "serve", "--config", cfg], env=env, stdout=server_log, stderr=subprocess.STDOUT, creationflags=subprocess.CREATE_NO_WINDOW)
@@ -218,6 +220,7 @@ def main():
     parser.add_argument("--client-workers",type=int,help="load-process Tokio workers (default: one per specified client CPU)")
     parser.add_argument("--client-cpus",type=int,nargs="+",required=True)
     parser.add_argument("--data-dir",type=Path)
+    parser.add_argument("--data-extra-dir",type=Path,help="load supplemental CE rules alongside --data-dir")
     modes = parser.add_mutually_exclusive_group()
     modes.add_argument("--native-aral",action="store_true",help="six native ARAL seats per room; use --humans 6")
     modes.add_argument("--native-solo",action="store_true",help="one stock-protocol seat and nine bots per room; use --humans 1")
@@ -227,6 +230,8 @@ def main():
     parser.add_argument("--output",type=Path,required=True)
     parser.add_argument("--binary-dir",type=Path,default=ROOT/"target"/"release")
     args=parser.parse_args()
+    if args.data_extra_dir and not args.data_dir:
+        parser.error("--data-extra-dir requires --data-dir")
     if args.native_aral and args.humans != [6]:
         parser.error("--native-aral requires --humans 6")
     if args.native_solo and args.humans != [1]:
@@ -240,7 +245,9 @@ def main():
     for name in ("openhalcyon.exe","halcyon-loadtest.exe"):
         dst=binaries/name;shutil.copy2(args.binary_dir/name,dst)
         sha[name]=hashlib.sha256(dst.read_bytes()).hexdigest()
-    write_json(root/"environment.json",{"platform":platform.platform(),"cpu":platform.processor(),"logical_cpus":psutil.cpu_count(),"logical_to_physical_count":psutil.cpu_count(logical=False),"timestamp":time.time(),"binaries_sha256":sha,"git_head":subprocess.check_output(["git","rev-parse","HEAD"],cwd=ROOT,text=True).strip(),"dirty":bool(subprocess.check_output(["git","status","--porcelain"],cwd=ROOT)),"args":vars(args)|{"output":str(root),"data_dir":str(args.data_dir),"binary_dir":str(args.binary_dir)}})
+    paths = {key: str(value) if value is not None else None for key, value in vars(args).items()
+             if isinstance(value, Path) or key in ("data_dir", "data_extra_dir")}
+    write_json(root/"environment.json",{"platform":platform.platform(),"cpu":platform.processor(),"logical_cpus":psutil.cpu_count(),"logical_to_physical_count":psutil.cpu_count(logical=False),"timestamp":time.time(),"binaries_sha256":sha,"git_head":subprocess.check_output(["git","rev-parse","HEAD"],cwd=ROOT,text=True).strip(),"dirty":bool(subprocess.check_output(["git","status","--porcelain"],cwd=ROOT)),"args":vars(args)|paths|{"output":str(root)}})
     with concurrent.futures.ThreadPoolExecutor() as executor:
         tasks=[executor.submit(measure,args,root,h,c) for h,c in zip(args.humans,args.server_cpus)]
         results=[t.result() for t in tasks]
