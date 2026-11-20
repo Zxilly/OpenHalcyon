@@ -2,6 +2,22 @@
 
 The Android reader table supplies 171 opcode entries. Fixed sizes in that table include the length and opcode and precede encryption padding. Some entries have variable sizes, and recorded server messages can have multiple forms. A reader entry establishes that the client recognizes a frame shape. The typed decoder extracts the fields listed below and preserves opaque bodies for other opcodes. [Reader table](../crates/protocol/src/metadata.rs) · [Typed decoder](../crates/protocol/src/lib.rs)
 
+## Build 147219 catalog
+
+The Rust `Opcode` registry maps all 173 rows of the operator's `protocol_spec/protocol.csv` to canonical names and 16-bit values. For example, `ActionModifyCooldown` is `0x0428`. Use `str::parse::<Opcode>()` for a name, `Opcode::try_from(id)` for an ID, and `as_str()` or `raw()` to retrieve either representation. Human-readable Serde formats write the canonical string and accept a registered name or unsigned numeric ID. Binary Serde formats encode the numeric ID. CE game frames carry the ID as two big-endian bytes. Unknown frames retain their numeric ID and body in `Message`.
+
+The catalog supplies direction and phase for all entries. For the 118 published layouts, `Message::spec_view()` reads named fields from a native or padded body. The view preserves float bits and borrows byte arrays. Specialized readers accept verified alternate forms. The six-byte `045E` fixture carries hero and flags, while the eight-byte Android packer carries hero and skin. The supplied plaintext server ACK is a constructed sample. The network handshake uses the ACK recorded on Android connections.
+
+Set `HALCYON_PROTOCOL_SPEC` to the local specification directory and run the following from the repository root.
+
+```powershell
+python tools/import_protocol_spec.py $env:HALCYON_PROTOCOL_SPEC
+cargo test --locked -p halcyon-protocol --test opcode_names
+cargo test --locked -p halcyon-protocol --test operator_spec -- --ignored
+```
+
+The fixture test checks named fields in all 147 samples, including recordings and binary-constructed examples. The server emission matrix tracks the events that generate messages during play. [Opcode registry](../crates/protocol/src/opcode.rs) · [Field layouts](../crates/protocol/src/spec/catalog.rs)
+
 The inventory tools verify byte-level round trips on every complete input. The
 live audit reproduced the encrypted length prefix and ciphertext for all 1,824
 client frames and 398,293 server frames in the nine recorded sessions. The VGR
@@ -314,11 +330,5 @@ Every action has a big-endian 32-bit key and value, then six zero alignment byte
 
 ## Actor flags
 
-The Windows receiver passes the actor ID and the value 1 to two different
-setters for `03EA` and `03EB`. For `03EC` it calls both setters with zero.
-Each path first looks up the actor. The Rust codec reads the same four-byte
-big-endian ID and preserves the two padding bytes when present. The nine TCP
-captures contain ten first-flag sets, zero second-flag sets and six clears.
-Every clear follows a first-flag set for the same actor. The gameplay names
-and the server events that set these flags remain unknown.
+The Android scoreboard uses `03EA` for AFK and `03EB` for deserter. A `03EC` reconnect clears both flags. The nine TCP captures contain ten AFK sets, six reconnects and zero deserter sets. The host emits AFK when a player's last established world channel closes during play, and reconnect after the replacement stream receives its world declaration. Late arrivals receive the current AFK roster. A stale close from a previous socket generation has no effect.
 [First setter](https://github.com/TurnaboutHero/vainglory-replay-decoder/blob/f4743be743564e3aadef1566499fe25d9d0f9ffc/vg/docs/evidence/2026-09-09-binary-events/branches/03ea.c.txt) · [Second setter](https://github.com/TurnaboutHero/vainglory-replay-decoder/blob/f4743be743564e3aadef1566499fe25d9d0f9ffc/vg/docs/evidence/2026-09-09-binary-events/branches/03eb.c.txt) · [Clear](https://github.com/TurnaboutHero/vainglory-replay-decoder/blob/f4743be743564e3aadef1566499fe25d9d0f9ffc/vg/docs/evidence/2026-09-09-binary-events/branches/03ec.c.txt)
