@@ -370,6 +370,41 @@ async fn running_pool(dir: &Path) -> RunningPool {
     }
 }
 
+#[derive(serde::Deserialize)]
+struct PoolList {
+    items: Vec<ObservedPool>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ObservedPool {
+    leader_id: Option<Uuid>,
+}
+
+async fn wait_for_leader(
+    client: &Client,
+    node: &Node,
+    cookie: &str,
+    previous: Option<Uuid>,
+) -> Uuid {
+    timeout(Duration::from_secs(40), async {
+        loop {
+            // The admin sampler may still expose its pre-election snapshot while rooms are live.
+            let sample: PoolList =
+                serde_json::from_value(get(client, node, cookie, "federation/pools").await)
+                    .expect("valid federation pool response");
+            if let Some(id) = sample.items.first().and_then(|pool| pool.leader_id)
+                && Some(id) != previous
+            {
+                return id;
+            }
+            sleep(Duration::from_secs(1)).await;
+        }
+    })
+    .await
+    .expect("admin observer did not report an elected leader")
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "three local OS processes; waits for a natural simulated crystal death"]
 async fn subprocess_match_finishes_on_both_homes() {
@@ -385,29 +420,11 @@ async fn subprocess_match_finishes_on_both_homes() {
     } = running_pool(dir.path()).await;
     let id = room_id.as_str();
     let room_path = format!("matches/{id}");
-    let pool = get(&client, &nodes[2], &cookies[2], "federation/pools").await;
-    let leader: Uuid = pool["items"][0]["leaderId"]
-        .as_str()
-        .unwrap()
-        .parse()
-        .unwrap();
-    let leader = usize::try_from(leader.as_u128() - 1).unwrap();
+    let elected = wait_for_leader(&client, &nodes[2], &cookies[2], None).await;
+    let leader = usize::try_from(elected.as_u128() - 1).unwrap();
     if leader < 2 {
         nodes[leader].stop();
-        timeout(Duration::from_secs(40), async {
-            loop {
-                let p = get(&client, &nodes[2], &cookies[2], "federation/pools").await;
-                if p["items"][0]["leaderId"]
-                    .as_str()
-                    .is_some_and(|s| s != Uuid::from_u128(leader as u128 + 1).to_string())
-                {
-                    break;
-                }
-                sleep(Duration::from_secs(1)).await;
-            }
-        })
-        .await
-        .unwrap();
+        wait_for_leader(&client, &nodes[2], &cookies[2], Some(elected)).await;
         nodes[leader].start();
         cookies[leader] = admin(&client, &nodes[leader]).await;
         let resumed = state(
