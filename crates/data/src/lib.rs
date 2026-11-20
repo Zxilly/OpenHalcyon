@@ -219,23 +219,28 @@ pub const ARAL_TALENT_HEROES: [AralTalentHero; 25] = [
     },
 ];
 
+/// Returns whether a queue mode uses equippable Hero Talents (ARAL or Blitz).
+pub fn supports_talents(mode: &str) -> bool {
+    mode == LEGACY_ARAL_QUEUE
+        || KnownQueue::parse(mode).is_some_and(|queue| queue.mode().is_blitz())
+}
+
 pub fn valid_talent_levels(mode: &str, seats: usize, grants: &[TalentLevels]) -> bool {
+    let blitz = KnownQueue::parse(mode).is_some_and(|queue| queue.mode().is_blitz());
     grants.is_empty()
-        || (mode == LEGACY_ARAL_QUEUE
+        || (supports_talents(mode)
             && seats == grants.len()
             && grants.iter().flatten().all(|(hero, _)| {
                 ARAL_TALENT_HEROES
                     .iter()
                     .any(|entry| entry.template == *hero)
+                    || (blitz && *hero > 0)
             }))
 }
 
 /// These exact queue IDs advertise three human seats on each team.
 pub fn three_per_side(mode: &str) -> bool {
-    matches!(
-        KnownQueue::parse(mode),
-        Some(KnownQueue::CasualAral | KnownQueue::Ranked)
-    )
+    KnownQueue::parse(mode).is_some_and(|queue| queue.mode().is_three_per_side())
 }
 
 use serde::{Deserialize, de::DeserializeOwned};

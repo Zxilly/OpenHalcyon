@@ -223,7 +223,7 @@ impl AppState {
     pub fn seats_for_mode(&self, mode: &str) -> usize {
         match KnownQueue::parse(mode) {
             Some(queue) if queue.mode() == NativeMode::SoloBots => 1,
-            Some(KnownQueue::CasualAral | KnownQueue::Ranked) => halcyon_data::THREE_PER_SIDE_SEATS,
+            Some(queue) if queue.mode().is_three_per_side() => halcyon_data::THREE_PER_SIDE_SEATS,
             _ => self.seats_per_match(),
         }
     }

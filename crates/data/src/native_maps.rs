@@ -238,6 +238,22 @@ impl NativeMaps {
         self.levels.get("TestingGrounds_ARAL")
     }
 
+    pub fn halcyon_fold(&self) -> Option<&LevelLayout> {
+        self.levels.get("HalcyonFoldLevel_Base")
+    }
+
+    pub fn halcyon_fold_placements(&self) -> Option<&LevelLayout> {
+        self.levels.get("TestingGrounds_HF")
+    }
+
+    pub fn blitz(&self) -> Option<&LevelLayout> {
+        self.levels.get("Blitz_Revamp_Level")
+    }
+
+    pub fn camp_or_mode(&self, id: &str) -> Option<&CampOrMode> {
+        self.modes_and_camps.get(id)
+    }
+
     pub fn placed_camps<'a>(
         &'a self,
         level: &'a LevelLayout,

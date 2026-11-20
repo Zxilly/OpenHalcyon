@@ -75,7 +75,8 @@ impl StoreSettings {
     pub const fn for_mode(mode: NativeMode) -> Option<Self> {
         match mode {
             NativeMode::Aral => None,
-            NativeMode::RankedFold => Some(Self::HalcyonFold),
+            NativeMode::CasualFold | NativeMode::RankedFold => Some(Self::HalcyonFold),
+            NativeMode::Blitz => Some(Self::BlitzRevamp),
             NativeMode::Practice => Some(Self::Practice),
             NativeMode::CasualFive
             | NativeMode::RankedFive

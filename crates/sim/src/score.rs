@@ -116,6 +116,8 @@ impl Room<'_> {
     pub(super) fn native_passive_income(&mut self, events: &mut Vec<Event>) {
         let (first_second, gold, xp) = match self.layout {
             Layout::SoloMid { .. } => (40, 3, 0.6),
+            Layout::HalcyonFold { .. } => (35, 4, 0.6),
+            Layout::Blitz { .. } => (5, 10, 1.5),
             Layout::Aral { .. } => (30, 15, 1.8),
             Layout::Validation => return,
         };

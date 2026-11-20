@@ -215,6 +215,12 @@ impl Room<'_> {
         if matches!(self.layout, Layout::SoloMid { .. }) {
             self.install_native_camps(data)?;
         }
+        if matches!(self.layout, Layout::HalcyonFold { .. }) {
+            self.install_halcyon_fold_units(data);
+        }
+        if matches!(self.layout, Layout::Blitz { .. }) {
+            self.install_blitz_units(data);
+        }
         Ok(())
     }
     /// Install the operator-supplied map on a newly constructed native room.
@@ -227,6 +233,12 @@ impl Room<'_> {
         }
         let (level, is_aral) = match self.layout {
             Layout::Aral { .. } => (maps.aral(), true),
+            Layout::HalcyonFold { .. } => (
+                maps.halcyon_fold()
+                    .or_else(|| maps.halcyon_fold_placements()),
+                true,
+            ),
+            Layout::Blitz { .. } => (maps.blitz(), true),
             Layout::SoloMid { .. } => (maps.solo(), false),
             Layout::Validation => {
                 return Err("native map requires a native simulation layout".into());
@@ -274,7 +286,11 @@ impl Room<'_> {
                 (7, "OuterTurret"),
             ];
             for e in &self.entities {
-                let Some(slot) = self.aral_structure_slot(e.id) else {
+                let Some(slot) = self
+                    .aral_structure_slot(e.id)
+                    .or_else(|| self.halcyon_fold_structure_slot(e.id))
+                    .or_else(|| self.blitz_structure_slot(e.id))
+                else {
                     continue;
                 };
                 let (_, base) = names
@@ -295,9 +311,14 @@ impl Room<'_> {
                     .ok_or("ARAL structure placement missing")?;
                 replacements.push((e.id, point(p.pos)));
             }
-            self.layout = Layout::Aral {
-                hero_starts: starts,
-            };
+            match &mut self.layout {
+                Layout::Aral { hero_starts }
+                | Layout::HalcyonFold { hero_starts }
+                | Layout::Blitz { hero_starts } => {
+                    *hero_starts = starts;
+                }
+                _ => {}
+            }
             for idx in 0..6 {
                 let e = &mut self.entities[idx];
                 e.position = self.state.layout.home(e);
@@ -333,6 +354,7 @@ impl Room<'_> {
                 .native_navigation
                 .as_ref()
                 .is_some_and(|map| map.at_shop(actor))
+            || self.at_jungle_shop(actor)
     }
 }
 
