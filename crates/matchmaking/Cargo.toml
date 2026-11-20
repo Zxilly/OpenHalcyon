@@ -12,3 +12,6 @@ serde_json.workspace = true
 sha2 = "0.10"
 thiserror.workspace = true
 uuid.workspace = true
+
+[lints]
+workspace = true

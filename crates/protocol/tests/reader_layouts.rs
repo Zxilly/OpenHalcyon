@@ -12,7 +12,7 @@ fn all_android_prefixes_preserve_surplus_bytes_and_reject_short_bodies() {
                 fixed += 1;
                 bytes - 4
             }
-            None if opcode == 0 => {
+            None if opcode == halcyon_protocol::Opcode::ClockSync.raw() => {
                 assert_eq!(layout, AndroidLayout::Clock);
                 4
             }

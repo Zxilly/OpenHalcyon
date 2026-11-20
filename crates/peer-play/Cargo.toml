@@ -22,3 +22,6 @@ uuid = { version = "1", features = ["v5"] }
 [dev-dependencies]
 rcgen = "0.13"
 tempfile = "3"
+
+[lints]
+workspace = true

@@ -8,6 +8,9 @@ version = "1.0.0-draft.1"
 license = "MIT"
 repository = "https://github.com/Zxilly/OpenHalcyon"
 
+[workspace.lints.clippy]
+disallowed_macros = "deny"
+
 [workspace.dependencies]
 axum = { version = "0.8", features = ["ws"] }
 bytes = "1"

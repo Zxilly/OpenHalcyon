@@ -13,3 +13,6 @@ sha2 = "0.10"
 
 [build-dependencies]
 sha2 = "0.10"
+
+[lints]
+workspace = true

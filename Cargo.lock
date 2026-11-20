@@ -1155,6 +1155,7 @@ dependencies = [
  "md-5",
  "serde",
  "serde_json",
+ "syn 2.0.119",
  "uuid",
 ]
 
