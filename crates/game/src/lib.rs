@@ -15,6 +15,7 @@ mod compact;
 mod hero_progress;
 mod messages;
 mod native_abilities;
+mod native_abilities_catalog;
 mod native_cooldown;
 mod npc_attack;
 mod npc_projectile;
