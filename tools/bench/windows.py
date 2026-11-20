@@ -103,7 +103,7 @@ def measure(args, root, humans, cpu):
         client_log = teardown.enter_context(client_path.open("wb"))
         client_err = teardown.enter_context((run / "client.err").open("wb"))
         load_env = env | {"TOKIO_WORKER_THREADS": str(args.client_workers or len(args.client_cpus))}
-        client = subprocess.Popen([load_bin,"--platform",origin,"--certificate",instance/"tls.pem","--rooms",str(args.rooms),"--humans",str(humans),"--seconds",str(args.seconds),"--slow-reader-ms",str(args.slow_reader_ms)]+(["--ramp-seconds",str(args.ramp_seconds)] if args.ramp_seconds else [])+(["--allow-admin-rotation"] if args.rotate_seconds else [])+(["--native-solo"] if args.native_solo else []),
+        client = subprocess.Popen([load_bin,"--platform",origin,"--certificate",instance/"tls.pem","--rooms",str(args.rooms),"--humans",str(humans),"--seconds",str(args.seconds),"--slow-reader-ms",str(args.slow_reader_ms)]+(["--ramp-seconds",str(args.ramp_seconds)] if args.ramp_seconds else [])+(["--allow-admin-rotation"] if args.rotate_seconds else [])+(["--native-solo"] if args.native_solo else [])+(["--native-aral"] if args.native_aral else []),
             env=load_env, stdout=client_log,stderr=client_err,creationflags=subprocess.CREATE_NO_WINDOW)
         teardown.callback(client.wait)
         teardown.callback(client.kill)
@@ -192,7 +192,7 @@ def measure(args, root, humans, cpu):
         byte_delta=end["client"]["gs_bytes"]-start["client"]["gs_bytes"]
         frame_delta=end["client"]["frames"]-start["client"]["frames"]
         cpu_delta=end["cpu_s"]-start["cpu_s"]
-        report={"humans_per_room":humans,"bots_per_room":10-humans,"rooms":args.rooms,"duration_s":elapsed,
+        report={"humans_per_room":humans,"bots_per_room":0 if args.native_aral else 10-humans,"rooms":args.rooms,"duration_s":elapsed,
             "logical_cpu":cpu,"commit_limit_bytes":1024**3,"server_cpu_percent":100*cpu_delta/elapsed,
             "server_cpu_seconds":cpu_delta,"decoded_gs_frames":frame_delta,"received_gs_bytes":byte_delta,
             "server_cpu_us_per_decoded_frame":cpu_delta*1e6/frame_delta if frame_delta else None,
@@ -218,13 +218,17 @@ def main():
     parser.add_argument("--client-workers",type=int,help="load-process Tokio workers (default: one per specified client CPU)")
     parser.add_argument("--client-cpus",type=int,nargs="+",required=True)
     parser.add_argument("--data-dir",type=Path)
-    parser.add_argument("--native-solo",action="store_true",help="one stock-protocol seat and nine bots per room; use --humans 1")
+    modes = parser.add_mutually_exclusive_group()
+    modes.add_argument("--native-aral",action="store_true",help="six native ARAL seats per room; use --humans 6")
+    modes.add_argument("--native-solo",action="store_true",help="one stock-protocol seat and nine bots per room; use --humans 1")
     parser.add_argument("--slow-reader-ms",type=int,default=0)
     parser.add_argument("--ramp-seconds",type=int,default=0)
     parser.add_argument("--rotate-seconds",type=int,default=0)
     parser.add_argument("--output",type=Path,required=True)
     parser.add_argument("--binary-dir",type=Path,default=ROOT/"target"/"release")
     args=parser.parse_args()
+    if args.native_aral and args.humans != [6]:
+        parser.error("--native-aral requires --humans 6")
     if args.native_solo and args.humans != [1]:
         parser.error("--native-solo requires --humans 1")
     if os.name!="nt" or (args.room_capacity is not None and args.room_capacity<args.rooms) or (args.client_workers is not None and args.client_workers<1) or len(args.server_cpus)!=len(args.humans) or len(set(args.server_cpus))!=len(args.server_cpus) or set(args.server_cpus)&set(args.client_cpus):

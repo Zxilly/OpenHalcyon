@@ -25,3 +25,12 @@ python -B tools/bench/windows.py --rooms 4 --seconds 1810 --server-cpus 4 8 12 -
 
 
 使用 `--native-solo --humans 1` 时，每个房间使用 `5v5_bots_solo` 队列。一个协议客户端在同一条 TCP 连接上锁定、加载、确认开局并行动，其余九个英雄由服务端 Bot 驱动。计时从全部房间进入游戏开始。开发者可以用它分别衡量服务端 Bot 负载和满员协议连接负载。获胜标记由带有效胜方和原因的 `0x03F1` 识别，每局完成仍以平台结算为准。
+
+## Native ARAL load
+
+Use `--native-aral --humans 6` with the Windows harness to exercise six
+authenticated players and no server bots in each ARAL match. Each client joins
+the shared public queue, reads its seat from the original roster, drains the
+timed draft, and submits scene readiness on the same encrypted stream. The
+harness keeps each test cohort together during matchmaking and drains the six
+sockets concurrently. All rooms continue running concurrently during play.

@@ -41,8 +41,11 @@ struct Args {
     #[arg(long, default_value_t = 0)]
     slow_reader_ms: u64,
     /// Play one native Solo control stream with nine server bots per room.
-    #[arg(long)]
+    #[arg(long, conflicts_with = "native_aral")]
     native_solo: bool,
+    /// Play six native human seats on the ARAL control streams.
+    #[arg(long)]
+    native_aral: bool,
     /// The operator is deliberately terminating rooms via the admin API.
     #[arg(long)]
     allow_admin_rotation: bool,
@@ -95,6 +98,7 @@ impl Stats {
 struct Api {
     base: String,
     client: Client,
+    aral_queue: Arc<tokio::sync::Mutex<()>>,
 }
 impl Api {
     async fn rpc(&self, method: &str, args: Value) -> Result<Value> {
@@ -193,18 +197,20 @@ impl Socket {
         self.stats.received(len + 2, &msg);
         Ok(msg)
     }
-    async fn until(&mut self, op: u16) -> Result<()> {
+    async fn until(&mut self, op: u16) -> Result<Message> {
         timeout(
-            Duration::from_secs(if op == 0x046c { 15 } else { 8 }),
+            Duration::from_secs(if op == 0x046c { 40 } else { 8 }),
             async {
                 loop {
-                    if self.read().await?.opcode == op {
-                        return Ok(());
+                    let message = self.read().await?;
+                    if message.opcode == op {
+                        return Ok(message);
                     }
                 }
             },
         )
-        .await?
+        .await
+        .with_context(|| format!("waiting for opcode {op:#06x}"))?
     }
     async fn play(
         self,
@@ -272,12 +278,70 @@ impl Socket {
         tokio::select! {v=reader=>v,v=writer=>v,_=stop.changed()=>Ok(false)}
     }
 }
+async fn aral_streams(
+    players: &[Player],
+    addr: &str,
+    room: &str,
+    stats: &Arc<Stats>,
+) -> Result<Vec<(Option<Socket>, Socket)>> {
+    let mut entrants = JoinSet::new();
+    for (index, player) in players.iter().enumerate() {
+        let (id, addr, room, stats) = (player.id, addr.to_owned(), room.to_owned(), stats.clone());
+        // Every seat must continuously drain the timed draft roster broadcasts.
+        entrants.spawn(async move {
+            let mut socket = Socket::connect(&addr, &room, id, stats).await?;
+            let draft = socket.until(0x045a).await?;
+            let roster = halcyon_protocol::AralRoster::new(&draft.body)?;
+            let identity = id.to_string();
+            let seat = (0..6)
+                .find(|&i| roster.identity(i) == Some(identity.as_bytes()))
+                .context("ARAL player absent from assigned roster")?;
+            socket.until(0x046c).await?;
+            socket.write(Message::new(0x046e, [0; 6])).await?;
+            let mut request = [0; 6];
+            request[..4].copy_from_slice(&(1500 + seat as u32).to_be_bytes());
+            request[4] = 1;
+            socket.write(Message::new(0x0471, request)).await?;
+            // Peer entry also triggers 046E/0471 notices. Wait for our own actor.
+            timeout(Duration::from_secs(10), async {
+                loop {
+                    let echoed = socket.read().await?;
+                    if echoed.opcode == 0x0471 && echoed.body == request {
+                        return Ok::<_, anyhow::Error>(());
+                    }
+                }
+            })
+            .await
+            .context("waiting for own ARAL scene confirmation")??;
+            socket.write(Message::new(0x046d, [0; 6])).await?;
+            socket.until(0x03ef).await?;
+            Ok::<_, anyhow::Error>((index, socket))
+        });
+    }
+    let mut playing = Vec::with_capacity(players.len());
+    while let Some(entrant) = entrants.join_next().await {
+        playing.push(entrant??);
+    }
+    playing.sort_unstable_by_key(|(index, _)| *index);
+    Ok(playing
+        .into_iter()
+        .map(|(_, socket)| (None, socket))
+        .collect())
+}
+
 async fn setup(
     api: &Api,
     players: &[Player],
     mode: &str,
     stats: &Arc<Stats>,
 ) -> Result<(String, Vec<(Option<Socket>, Socket)>)> {
+    // Cohorts use the same native queue. Serialize lobby entry only so that a
+    // later cohort cannot consume seats belonging to this one.
+    let group = if mode == "casual_aral" {
+        Some(api.aral_queue.lock().await)
+    } else {
+        None
+    };
     for p in players {
         api.rpc("joinLobby", json!([p.token,{"lobby":mode},"147219"]))
             .await?;
@@ -308,6 +372,12 @@ async fn setup(
     }
     let room = match_id.context("no seats")?;
     let addr = endpoint.context("no endpoint")?;
+    drop(group);
+    if mode == "casual_aral" {
+        let sockets = aral_streams(players, &addr, &room, stats).await?;
+        stats.opened.fetch_add(1, Ordering::Relaxed);
+        return Ok((room, sockets));
+    }
     let mut controls = Vec::new();
     for p in players {
         let mut s = Socket::connect(&addr, &room, p.id, stats.clone()).await?;
@@ -343,6 +413,7 @@ async fn setup(
 enum Workload {
     Validation(usize),
     NativeSolo,
+    NativeAral,
 }
 async fn room(
     api: Api,
@@ -354,6 +425,7 @@ async fn room(
     stop: watch::Receiver<bool>,
 ) -> Result<()> {
     let (human_count, mode) = match workload {
+        Workload::NativeAral => (6, "casual_aral".to_owned()),
         Workload::NativeSolo => (1, "5v5_bots_solo".to_owned()),
         Workload::Validation(n) => (n, format!("bench_{number}")),
     };
@@ -445,12 +517,14 @@ async fn main() -> Result<()> {
         a.platform.starts_with("https://")
             && (1..=10).contains(&a.humans)
             && (!a.native_solo || a.humans == 1)
+            && (!a.native_aral || a.humans == 6)
             && a.rooms > 0
             && a.seconds > 0,
         "invalid benchmark parameters"
     );
     let api = Api {
         base: a.platform,
+        aral_queue: Arc::default(),
         client: Client::builder()
             .no_proxy()
             .timeout(Duration::from_secs(10))
@@ -463,7 +537,9 @@ async fn main() -> Result<()> {
     for i in 0..a.rooms {
         let worker = room(
             api.clone(),
-            if a.native_solo {
+            if a.native_aral {
+                Workload::NativeAral
+            } else if a.native_solo {
                 Workload::NativeSolo
             } else {
                 Workload::Validation(a.humans)
