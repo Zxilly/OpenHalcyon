@@ -396,6 +396,15 @@ async fn android_guest_lobby_notifications_and_recovery() {
     )
     .await;
     assert_eq!(aral["returnValue"], sample("queue_status"));
+    let token = &resumed["sessionToken"];
+    assert_eq!(
+        rpc(&r, RpcMethod::NotifyExitPostMatch.as_str(), (token,)).await["code"],
+        -2
+    );
+    assert_eq!(
+        rpc(&r, RpcMethod::Update.as_str(), (token,)).await["returnValue"]["state"],
+        "pending_auto"
+    );
     let exit = rpc(
         &r,
         RpcMethod::ExitLobby.as_str(),

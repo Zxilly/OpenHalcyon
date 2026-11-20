@@ -583,6 +583,15 @@ async fn party_game_survives_two_home_elections_and_replays_result_once() {
             .map(|(session, _)| session),
     )
     .await;
+    assert_eq!(
+        rpc_result(
+            &node(&cluster, homes[1]).rpc,
+            RpcMethod::NotifyExitPostMatch.as_str(),
+            (&tokens[1],),
+        )
+        .await["code"],
+        -2,
+    );
     rpc(
         &node(&cluster, homes[1]).rpc,
         RpcMethod::AcceptMatch.as_str(),
@@ -699,6 +708,19 @@ async fn party_game_survives_two_home_elections_and_replays_result_once() {
             .map(|(session, _)| session),
     )
     .await;
+
+    for (index, token) in tokens.iter().enumerate() {
+        let home = &node(&cluster, homes[index]).rpc;
+        for method in [RpcMethod::ExitLobby, RpcMethod::Update] {
+            let snapshot = rpc(home, method.as_str(), (token,)).await;
+            for field in ["state", "matchId", "host", "port", "site"] {
+                assert_eq!(
+                    snapshot["returnValue"][field], a[field],
+                    "{method:?} changed {field} after recovery"
+                );
+            }
+        }
+    }
 
     let viewer_home = &node(&cluster, homes[0]).rpc;
     rpc(

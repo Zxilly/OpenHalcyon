@@ -550,20 +550,20 @@ async fn dispatch(s: &Platform, m: RpcMethod, params: &[Value]) -> Result<(Strin
                 })
             }
         }
-        RpcMethod::ExitLobby | RpcMethod::RejectMatch | RpcMethod::NotifyExitPostMatch => {
+        RpcMethod::NotifyExitPostMatch => {
+            s.app.acknowledge_post_match(&session).await?;
+            serde_json::to_value(Success { success: true })?
+        }
+        RpcMethod::ExitLobby | RpcMethod::RejectMatch => {
             if spectator::is_spectating(&profile) || profile.lobby.is_none() {
                 spectator::leave(s, &session).await?;
             } else if profile.lobby.is_some() {
                 s.cancel_queue(&session).await?;
             }
-            if m == RpcMethod::NotifyExitPostMatch {
-                serde_json::to_value(Success { success: true })?
-            } else {
-                s.state_response(
-                    id,
-                    StateSnapshot::from_profile(&s.app.profile(&session).await?),
-                )?
-            }
+            s.state_response(
+                id,
+                StateSnapshot::from_profile(&s.app.profile(&session).await?),
+            )?
         }
         RpcMethod::RenamePlayerHandle | RpcMethod::SetPlayerHandle => {
             let native = m == RpcMethod::RenamePlayerHandle

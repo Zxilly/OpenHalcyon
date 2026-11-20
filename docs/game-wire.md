@@ -235,7 +235,10 @@ TCP authentication, followed by exitLobby. The menus response in the older
 official exitLobby sample describes the idle case. During active play, the CE
 adapter responds to exitLobby with the ordinary playing state and keeps the
 seat and endpoint. Canceling an outstanding offer and leaving post-match keep
-their existing behavior. The restart trace establishes that the client calls
+their existing behavior through `exitLobby`. The separate `notifyExitPostMatch`
+acknowledges the current finished result, or succeeds when none remains. An
+active queue, offer, or game rejects the acknowledgement and retains its
+assignment. The restart trace establishes that the client calls
 exitLobby after reauthentication. An on-device check is still needed to
 determine whether this response alone is sufficient to return to the scene.
 

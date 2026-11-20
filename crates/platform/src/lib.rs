@@ -962,6 +962,22 @@ async fn leave(
     matches.cancel_queue(bearer(&headers)?).await?;
     Ok(StatusCode::NO_CONTENT)
 }
+fn acknowledge_local_result(
+    tx: &rusqlite::Transaction<'_>,
+    id: &str,
+    match_id: &str,
+) -> Result<()> {
+    tx.execute("DELETE FROM tickets WHERE player=?", [id])?;
+    event(
+        tx,
+        id,
+        EventBody::PostMatchLeft {
+            match_id: Some(parse_id(match_id)?),
+        },
+    )?;
+    Ok(())
+}
+
 impl AppState {
     pub async fn leave(&self, session_token: &str) -> Result<()> {
         let key = digest(session_token);
@@ -975,14 +991,7 @@ impl AppState {
                 if let Some((match_id, phase)) = lobby {
                     match LobbyPhase::parse(&phase) {
                         Some(LobbyPhase::Offered) => abort(tx, &match_id, AbortReason::PlayerLeft)?,
-                        Some(LobbyPhase::Finished) => {
-                            tx.execute("DELETE FROM tickets WHERE player=?", [&id])?;
-                            event(
-                                tx,
-                                &id,
-                                EventBody::PostMatchLeft { match_id: Some(parse_id(&match_id)?) },
-                            )?;
-                        }
+                        Some(LobbyPhase::Finished) => acknowledge_local_result(tx, &id, &match_id)?,
                         _ => {
                             return Err(PlatformError::Conflict(
                                 "match is already starting or playing",
