@@ -24,6 +24,7 @@ pub enum LiveFields<'a> {
         y: f32,
     },
     TalentSelection(TalentSelection),
+    RecommendedBuildPath(super::RecommendedBuildPath),
     TalentEquipped(EquippedTalent),
     Motion {
         reference: u32,
@@ -102,6 +103,13 @@ pub(super) fn fields(op: u16, b: &[u8]) -> Option<Fields<'_>> {
         }
         crate::wire_opcode::SetSurrenderStateRequest if expected(1) => {
             return Some(Fields::Live(LiveFields::SurrenderRequest(b[0])));
+        }
+        crate::wire_opcode::RequestRecommendedBuildPath
+            if expected(1)
+                && b[1..].iter().all(|&byte| byte == 0)
+                && let Some(path) = super::RecommendedBuildPath::from_repr(b[0]) =>
+        {
+            return Some(Fields::Live(LiveFields::RecommendedBuildPath(path)));
         }
         crate::wire_opcode::Unresolved0456
         | crate::wire_opcode::Unresolved0461

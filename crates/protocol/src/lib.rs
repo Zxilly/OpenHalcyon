@@ -26,6 +26,8 @@ mod surrender;
 pub use surrender::AralSurrenderBoard;
 mod talent;
 pub use talent::{EquippedTalent, TalentSelection};
+mod recommended_build;
+pub use recommended_build::RecommendedBuildPath;
 mod statistics;
 pub use statistics::{
     MatchStatistics, MatchStatisticsMut, PlayerStatistics, StatisticsReport, TeamStatistics,

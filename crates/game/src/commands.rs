@@ -1,4 +1,4 @@
-use halcyon_protocol::LiveFields;
+use halcyon_protocol::{LiveFields, RecommendedBuildPath};
 use halcyon_sim::{Command, Position};
 
 use super::wire_id;
@@ -19,30 +19,29 @@ pub(super) fn from_live(request: LiveFields<'_>) -> Option<Command> {
     }
 }
 
-fn build_path(actor: u32, value: u8) -> super::Message {
-    let mut body = u32::from(wire_id(actor)).to_be_bytes().to_vec();
-    body.push(value);
-    super::Message::known(crate::Opcode::SetRecommendedBuildPath, body)
-}
-
 impl super::Room {
     pub(super) fn recommended_paths(&self, viewer_team: Option<u8>) -> super::Batch {
         self.seats
             .iter()
             .zip(&self.world.entities)
             .filter(|(_, actor)| self.legacy_aral() || viewer_team.is_none_or(|t| t == actor.team))
-            .filter_map(|(seat, actor)| Some(build_path(actor.id, seat.recommended_path?)))
+            .filter_map(|(seat, actor)| {
+                Some(seat.recommended_path?.applied_to(wire_id(actor.id).into()))
+            })
             .collect()
     }
 
-    pub(super) fn set_recommended_path(&mut self, i: usize, value: u8) -> super::Batch {
+    pub(super) fn set_recommended_path(
+        &mut self,
+        i: usize,
+        path: RecommendedBuildPath,
+    ) -> super::Batch {
         let actor = &self.world.entities[i];
-        let applied = build_path(actor.id, value);
         let response = vec![
-            super::Message::known(crate::Opcode::RequestRecommendedBuildPath, [value]),
-            applied,
+            path.announcement(),
+            path.applied_to(wire_id(actor.id).into()),
         ];
-        if self.seats[i].recommended_path.replace(value) != Some(value) {
+        if self.seats[i].recommended_path.replace(path) != Some(path) {
             for (j, seat) in self.seats.iter().enumerate() {
                 if j != i
                     && (self.legacy_aral() || self.world.entities[j].team == actor.team)

@@ -99,7 +99,7 @@ struct Seat {
     action_receipts: player_actions::Receipts,
     locked: bool,
     draft_sync_sent: bool,
-    recommended_path: Option<u8>,
+    recommended_path: Option<halcyon_protocol::RecommendedBuildPath>,
     equipped_talent: Option<halcyon_protocol::EquippedTalent>,
     aral_reorder_view: Option<aral_inventory::ProjectedSlots>,
     preamble: scene::Preamble,
@@ -1187,21 +1187,18 @@ impl Room {
         }
         let mut out = vec![];
         match m.fields()? {
-            Fields::ControlByte { value, remaining }
-                if m.is(crate::Opcode::RequestRecommendedBuildPath)
-                    && (game
-                        || pending_world_input
-                        || (legacy
-                            && ch == 0
-                            && self.seats[i].preamble.scene_requested()
-                            && matches!(
-                                self.phase,
-                                crate::RoomPhase::Loading | crate::RoomPhase::Running
-                            )))
-                    && matches!(value, 0 | 1 | 2 | 0xfe)
-                    && remaining.iter().all(|v| *v == 0) =>
+            Fields::Live(halcyon_protocol::LiveFields::RecommendedBuildPath(path))
+                if game
+                    || pending_world_input
+                    || (legacy
+                        && ch == 0
+                        && self.seats[i].preamble.scene_requested()
+                        && matches!(
+                            self.phase,
+                            crate::RoomPhase::Loading | crate::RoomPhase::Running
+                        )) =>
             {
-                out = self.set_recommended_path(i, value);
+                out = self.set_recommended_path(i, path);
                 accepted_world_input = pending_world_input;
             }
             Fields::Live(halcyon_protocol::LiveFields::MovePoint { x, y })

@@ -218,8 +218,8 @@ fn sanitize(m: &mut Message) -> bool {
                 m.body.as_slice(),
                 [0, 0, 5, 220..=225, 255, 0] | [0, 0, 5, 220..=225, 0..=2, 1..=255]
             ) => {}
-        Some(crate::Opcode::SetRecommendedBuildPath)
-            if matches!(m.body.as_slice(), [0, 0, _, _, 0..=2 | 254]) => {}
+        Some(crate::Opcode::SetRecommendedBuildPath) if matches!(m.body.as_slice(), [0, 0, _, _, value] if halcyon_protocol::RecommendedBuildPath::from_repr(*value).is_some()) =>
+            {}
         Some(crate::Opcode::SceneReadiness)
             if matches!(m.body.len(), 96 | 102) && m.body[96..].iter().all(|&v| v == 0) => {}
         Some(crate::Opcode::TickSyncA) if m.body.is_empty() || m.body == [0; 6] => {}
