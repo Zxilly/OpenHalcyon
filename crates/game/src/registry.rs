@@ -86,7 +86,7 @@ mod tests {
         Reservation {
             match_id: id,
             players: vec![player],
-            mode: "5v5_bots_solo".into(),
+            mode: halcyon_protocol::ce::KnownQueue::SoloBots.as_str().into(),
             teams: vec![],
             talent_levels: vec![],
             difficulty: None,
