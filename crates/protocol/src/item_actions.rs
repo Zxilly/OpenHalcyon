@@ -234,8 +234,8 @@ impl<'a> ItemAction<'a> {
 }
 
 fn put_words(dst: &mut [u8], words: &[u32]) {
-    for (chunk, value) in dst.chunks_exact_mut(4).zip(words) {
-        chunk.copy_from_slice(&value.to_be_bytes());
+    for (chunk, value) in dst.as_chunks_mut::<4>().0.iter_mut().zip(words) {
+        *chunk = value.to_be_bytes();
     }
 }
 
