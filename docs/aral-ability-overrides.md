@@ -12,6 +12,20 @@ Seven battlefield streams among nine complete archived connections contain the f
 | `042F` | 3 | All identify a remote Alpha. None has a matching death, dead-state or respawn action for Alpha within four seconds. |
 | `043C` | 1,351 | The trailing 16-bit flag is zero 1,149 times and one 202 times. Multi-selector blocks differ by hero, and flag-one operands also include values 2000 and 2001. A generic stun or death does not establish which selectors the receiver should cancel. |
 
+## Idris attack target after a kill
+
+Five server `0425` records occur in one of seven ARAL battlefield captures. For each record, take the preceding and following server `0415` from the authenticated Idris with selector 14 or 15. Match the previous attack target to the victim in `0430` and Idris to the killer. All five kills attributed to Idris in that stream appear below. Each `0425` actor word equals the next attack target.
+
+| Time in stream (s) | New target | Kill to `0425` (ms) | `0425` to next attack (ms) | Next selector |
+| ---: | --- | ---: | ---: | ---: |
+| 195.267 | Lead minion | 97 | 314 | 14 |
+| 217.669 | Tank minion | 100 | 315 | 14 |
+| 218.793 | Ranged minion | 95 | 414 | 14 |
+| 223.012 | Tank minion | 2507 | 2351 | 15 |
+| 226.870 | Blackfeather | 97 | 298 | 15 |
+
+The latest client `0424` before each record names a different actor. The lead minion had been requested 1.508 s earlier, followed by a request for another actor 0.908 s before the change. At the Blackfeather change, the last reported X/Z positions put an opposing tank minion 4.038 units from Idris and Blackfeather 5.538 units away, using spawn positions updated by `042E`. Position samples are asynchronous and one receiver observes only part of the battlefield. The five records establish ordering on the attacker's connection. Target priority and delivery to other seats remain unknown.
+
 ## Ringo Double Down
 
 All 60 override blocks follow a death credited to Ringo. Each contains three `041A` actions on the killer with selectors 8, 9 and 10 replaced by selector 3. A definition-379 buff accompanies the blocks. Two more last hits while already primed produced no second block. All 59 matching clear blocks follow Ringo's selector-3 targeted `0415` within 215 ms. They clear selectors 3, 8, 9 and 10 in that order. The receiver saw 47 grants and 46 clears for allied Ringos, and 13 of each for enemy Ringos. The archive has no first-person Ringo stream.
