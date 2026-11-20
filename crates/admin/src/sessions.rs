@@ -84,7 +84,7 @@ impl Sessions {
             let remaining = WINDOW.saturating_sub(now.duration_since(*first));
             let mut response = Problem::new(
                 StatusCode::TOO_MANY_REQUESTS,
-                "rate_limited",
+                super::ProblemCode::RateLimited,
                 "Too many login attempts",
             );
             response.retry = Some(remaining.as_secs().saturating_add(1));

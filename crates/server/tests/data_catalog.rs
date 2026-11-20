@@ -1,5 +1,5 @@
 use halcyon_data::GameData;
-use serde_json::json;
+use halcyon_protocol::wire_opcode;
 use std::{fs, process::Command};
 
 #[test]
@@ -26,15 +26,30 @@ fn exported_catalog_loads_on_a_peer_without_the_trace() {
                 .map(|b| format!("{b:02x}"))
                 .collect::<String>()
         );
-        json!({"dir":"S2C", "opcode":0x453, "payload":field}).to_string()
+        serde_json::to_string(&CatalogPacket {
+            dir: Direction::Server,
+            opcode: wire_opcode::HeroCatalog,
+            payload: &field,
+        })
+        .unwrap()
     };
     let trace = root.path().join("match_decoded.jsonl");
     fs::write(
         &trace,
         [
-            json!({"dir":"C2S", "opcode":0x453, "payload":"private"}).to_string(),
+            serde_json::to_string(&CatalogPacket {
+                dir: Direction::Client,
+                opcode: wire_opcode::HeroCatalog,
+                payload: "private",
+            })
+            .unwrap(),
             catalog_record("*Hero*"),
-            json!({"dir":"S2C", "opcode":0x3ed, "handle":"private"}).to_string(),
+            serde_json::to_string(&HandlePacket {
+                dir: Direction::Server,
+                opcode: wire_opcode::PlayerHandle,
+                handle: "private",
+            })
+            .unwrap(),
             catalog_record("Hero_Skin_Snow"),
         ]
         .join("\n"),
@@ -62,4 +77,26 @@ fn exported_catalog_loads_on_a_peer_without_the_trace() {
     assert_eq!(peer.content_digest, original.content_digest);
     assert_eq!(peer.hero_names, ["Hero"]);
     assert_eq!(peer.skin_names, ["Hero_Skin_Snow"]);
+}
+
+#[derive(serde::Serialize)]
+struct HandlePacket<'a> {
+    dir: Direction,
+    opcode: u16,
+    handle: &'a str,
+}
+
+#[derive(serde::Serialize)]
+struct CatalogPacket<'a> {
+    dir: Direction,
+    opcode: u16,
+    payload: &'a str,
+}
+
+#[derive(serde::Serialize)]
+enum Direction {
+    #[serde(rename = "S2C")]
+    Server,
+    #[serde(rename = "C2S")]
+    Client,
 }

@@ -1,0 +1,86 @@
+{
+  "aral_rules": {
+    "five_v_five": {
+      "waves": {
+        "first_spawn_s": 45,
+        "interval_s": 30
+      }
+    },
+    "patch_413_ability_deltas": {
+      "changes": [
+        {
+          "hero": "Idris",
+          "B_weapon_ratio": 0.8
+        },
+        {
+          "hero": "Adagio",
+          "cooldown_s": [
+            1,
+            1,
+            1,
+            1,
+            1
+          ],
+          "burst_heal_health_ratio": 1,
+          "empowered_attacks": [
+            1,
+            1,
+            1,
+            1,
+            1
+          ]
+        },
+        {
+          "hero": "Lyra",
+          "A_heal_per_second": [
+            1,
+            1,
+            1,
+            1,
+            1
+          ],
+          "A_cooldown_s": [
+            1,
+            1,
+            1,
+            1,
+            1
+          ],
+          "A_hot_health_ratio": 1
+        },
+        {
+          "hero": "SAW",
+          "B_dps": [
+            1,
+            1,
+            1,
+            1,
+            1
+          ],
+          "B_cooldown_s": [
+            1,
+            1,
+            1,
+            1,
+            1
+          ]
+        },
+        {
+          "hero": "Karas",
+          "B_damage": [
+            1,
+            1,
+            1,
+            1,
+            1
+          ]
+        },
+        {
+          "hero": "Shin",
+          "C_damage_per_hit": 1,
+          "C_hits": 1
+        }
+      ]
+    }
+  }
+}

@@ -1,10 +1,11 @@
 use crate::config::Peers;
 use anyhow::{Result, ensure};
+use halcyon_admin::{PoolHealth, PoolRole, PoolStatus};
 use halcyon_federation::Federation;
+use halcyon_federation::ServerState;
 use halcyon_game::Rooms;
 use halcyon_peer_play::PeerPlay;
 use halcyon_platform::AppState;
-use serde_json::{Value, json};
 use std::{collections::BTreeSet, sync::Arc, time::Duration};
 use uuid::Uuid;
 
@@ -43,7 +44,7 @@ impl Network {
                 max_latency_ms: settings.max_latency_ms,
             },
         )?;
-        let (tx, rx) = tokio::sync::watch::channel(Vec::<Value>::new());
+        let (tx, rx) = tokio::sync::watch::channel(Vec::<PoolStatus>::new());
         let source = node.clone();
         let observer = tokio::spawn(async move {
             let mut last = None;
@@ -69,10 +70,28 @@ impl Network {
                     .map(|h| h.id)
                     .collect::<BTreeSet<_>>()
                     .len();
-                let role = format!("{:?}", metrics.state).to_lowercase();
-                tx.send_replace(vec![json!({"poolId":pool_id,"state":if healthy{"online"}else{"no_quorum"},
-                    "localRole":role,"leaderId":metrics.current_leader,"voterCount":metrics.membership_config.voter_ids().count(),
-                    "lastContactAt":last,"eligibleHosts":if healthy{Some(hosts)}else{None},"localTickets":local_tickets})]);
+                let role = match metrics.state {
+                    ServerState::Learner => PoolRole::Learner,
+                    ServerState::Follower => PoolRole::Follower,
+                    ServerState::Candidate => PoolRole::Candidate,
+                    ServerState::Leader => PoolRole::Leader,
+                    ServerState::Shutdown => PoolRole::Shutdown,
+                };
+                let status = PoolStatus {
+                    pool_id,
+                    state: if healthy {
+                        PoolHealth::Online
+                    } else {
+                        PoolHealth::NoQuorum
+                    },
+                    local_role: role,
+                    leader_id: metrics.current_leader,
+                    voter_count: metrics.membership_config.voter_ids().count(),
+                    last_contact_at: last,
+                    eligible_hosts: healthy.then_some(hosts),
+                    local_tickets,
+                };
+                tx.send_replace(vec![status]);
                 tokio::time::sleep(Duration::from_secs(5)).await;
             }
         });

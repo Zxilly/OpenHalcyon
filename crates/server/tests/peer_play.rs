@@ -1,3 +1,9 @@
+#[path = "../../ce-platform/tests/support/native_rpc.rs"]
+mod native_rpc;
+use halcyon_ce_platform::{LobbyState, RpcMethod};
+use halcyon_platform::{Chat, CreateGuest, Queue};
+use halcyon_protocol::wire_opcode;
+use native_rpc::{RpcEnvelope, android_guest};
 #[path = "support/aral_talent_pool.rs"]
 mod aral_talent_pool;
 #[path = "../../federation/tests/support/pool.rs"]
@@ -14,7 +20,7 @@ use halcyon_matchmaking::{Phase, Pool, Ticket, TicketPhase};
 use halcyon_peer_play::{Config, PeerPlay};
 use halcyon_platform::{AppState, PlatformConfig};
 use halcyon_protocol::{ACK_FRAME, MatchCipher, Message, hello_with_port};
-use serde_json::{Value, json};
+use serde_json::Value;
 use std::{
     collections::BTreeMap,
     net::Ipv4Addr,
@@ -29,26 +35,31 @@ use tokio::{
 };
 use tower::ServiceExt;
 use uuid::Uuid;
-async fn rpc_result(router: &Router, method: &str, args: Value) -> Value {
+async fn rpc_result(router: &Router, method: &str, args: impl serde::Serialize) -> Value {
     let req = Request::post(format!("/JSONRpc/{method}"))
         .header("Content-Type", "application/x-www-form-urlencoded")
         .body(Body::from(
-            json!({"method":method,"params":args}).to_string(),
+            serde_json::to_string(&RpcEnvelope {
+                method,
+                params: args,
+            })
+            .unwrap(),
         ))
         .unwrap();
     let res = router.clone().oneshot(req).await.unwrap();
     serde_json::from_slice(&to_bytes(res.into_body(), 1 << 20).await.unwrap()).unwrap()
 }
 
-async fn rpc(router: &Router, method: &str, args: Value) -> Value {
+async fn rpc(router: &Router, method: &str, args: impl serde::Serialize) -> Value {
     let payload = rpc_result(router, method, args).await;
     assert_eq!(payload["code"], 0, "{method}: {payload}");
     payload
 }
-async fn state(router: &Router, token: &Value, expected: &str) -> Value {
+async fn state(router: &Router, token: &Value, expected: LobbyState) -> Value {
+    let expected = expected.as_str();
     timeout(Duration::from_secs(20), async {
         loop {
-            let v = rpc(router, "update", json!([token])).await;
+            let v = rpc(router, RpcMethod::Update.as_str(), (&token,)).await;
             if v["returnValue"]["state"] == expected {
                 return v["returnValue"].clone();
             }
@@ -71,9 +82,12 @@ async fn login(addr: &str, id: Uuid, c: &MatchCipher) -> TcpStream {
     assert_eq!(ack, ACK_FRAME);
     let mut body = [0; 70];
     body[..36].copy_from_slice(id.to_string().as_bytes());
-    s.write_all(&c.encode(&Message::new(0x3e8, body)).unwrap())
-        .await
-        .unwrap();
+    s.write_all(
+        &c.encode(&Message::new(wire_opcode::PlayerUuid, body))
+            .unwrap(),
+    )
+    .await
+    .unwrap();
     s
 }
 
@@ -338,7 +352,12 @@ async fn recover<'a>(
     let member = Member::start(root, index, config, None, host).await;
     wait_pool(&member, |_| true).await;
     for (player, token) in sessions {
-        let resumed = rpc(&member.rpc, "startSessionForPlayer", json!([token])).await;
+        let resumed = rpc(
+            &member.rpc,
+            RpcMethod::StartSessionForPlayer.as_str(),
+            (&token,),
+        )
+        .await;
         assert_eq!(resumed["returnValue"]["playerUUID"], player.to_string());
         *token = resumed["sessionToken"].clone();
     }
@@ -364,7 +383,11 @@ async fn echo_clock(socket: &mut TcpStream, cipher: &MatchCipher, value: f32) {
     let mut body = [0; 6];
     body[..4].copy_from_slice(&value.to_be_bytes());
     socket
-        .write_all(&cipher.encode(&Message::new(0, body)).unwrap())
+        .write_all(
+            &cipher
+                .encode(&Message::known(halcyon_protocol::Opcode::ClockSync, body))
+                .unwrap(),
+        )
         .await
         .unwrap();
     timeout(Duration::from_secs(4), async {
@@ -373,7 +396,7 @@ async fn echo_clock(socket: &mut TcpStream, cipher: &MatchCipher, value: f32) {
             let mut packet = vec![0; len as usize];
             socket.read_exact(&mut packet).await.unwrap();
             let m = cipher.decode(&packet).unwrap();
-            if m.opcode == 0 && m.body == body {
+            if m.is(halcyon_protocol::Opcode::ClockSync) && m.body == body {
                 break;
             }
         }
@@ -402,28 +425,14 @@ async fn party_game_survives_two_home_elections_and_replays_result_once() {
         let home = &node(&cluster, home).rpc;
         let guest = rpc(
             home,
-            "createGuestPlayer",
-            json!([
-                "kindred",
-                "en",
-                "US",
-                "production",
-                "en",
-                "BAKLAVA",
-                "android",
-                "",
-                "147219",
-                1,
-                "device",
-                "model",
-                "0"
-            ]),
+            RpcMethod::CreateGuestPlayer.as_str(),
+            android_guest("device", "0"),
         )
         .await;
         let session = rpc(
             home,
-            "startSessionForPlayer",
-            json!([guest["returnValue"]["playerUUID"]]),
+            RpcMethod::StartSessionForPlayer.as_str(),
+            (&guest["returnValue"]["playerUUID"],),
         )
         .await;
         players.push(
@@ -433,21 +442,31 @@ async fn party_game_survives_two_home_elections_and_replays_result_once() {
     }
     let party = rpc(
         &node(&cluster, homes[0]).rpc,
-        "createParty",
-        json!([tokens[0], {"partyQueueMode":"5v5_pvp_casual"}]),
+        RpcMethod::CreateParty.as_str(),
+        (
+            &tokens[0],
+            PartyQueue {
+                party_queue_mode: "5v5_pvp_casual",
+            },
+        ),
     )
     .await;
     let party_id = party["returnValue"]["partyUUID"].clone();
     rpc(
         &node(&cluster, homes[0]).rpc,
-        "partyInviteSend",
-        json!([tokens[0], {"playerUUID":players[1]}]),
+        RpcMethod::PartyInviteSend.as_str(),
+        (
+            &tokens[0],
+            PartyMember {
+                player_uuid: players[1],
+            },
+        ),
     )
     .await;
     let invite = rpc(
         &node(&cluster, homes[1]).rpc,
-        "queryPartyInvites",
-        json!([tokens[1]]),
+        RpcMethod::QueryPartyInvites.as_str(),
+        (&tokens[1],),
     )
     .await;
     assert_eq!(
@@ -456,15 +475,26 @@ async fn party_game_survives_two_home_elections_and_replays_result_once() {
     );
     rpc(
         &node(&cluster, homes[1]).rpc,
-        "partyInviteConfirm",
-        json!([tokens[1], {"partyUUID":party_id}]),
+        RpcMethod::PartyInviteConfirm.as_str(),
+        (
+            &tokens[1],
+            PartyInvite {
+                party_uuid: serde_json::from_value(party_id.clone()).unwrap(),
+            },
+        ),
     )
     .await;
     for i in [0, 2] {
         rpc(
             &node(&cluster, homes[i]).rpc,
-            "joinLobby",
-            json!([tokens[i], {"lobby":"5v5_pvp_casual"}, "147219"]),
+            RpcMethod::JoinLobby.as_str(),
+            (
+                &tokens[i],
+                LobbyJoin {
+                    lobby: "5v5_pvp_casual",
+                },
+                "147219",
+            ),
         )
         .await;
     }
@@ -485,18 +515,18 @@ async fn party_game_survives_two_home_elections_and_replays_result_once() {
         assert!((1..=ticket.max_latency_ms).contains(&ticket.latency_ms[&host_id]));
     }
     for (home, token) in homes.iter().zip(&tokens) {
-        state(&node(&cluster, *home).rpc, token, "match_pending").await;
+        state(&node(&cluster, *home).rpc, token, LobbyState::MatchPending).await;
     }
     rpc(
         &node(&cluster, homes[0]).rpc,
-        "acceptMatch",
-        json!([tokens[0]]),
+        RpcMethod::AcceptMatch.as_str(),
+        (&tokens[0],),
     )
     .await;
     rpc(
         &node(&cluster, homes[2]).rpc,
-        "acceptMatch",
-        json!([tokens[2]]),
+        RpcMethod::AcceptMatch.as_str(),
+        (&tokens[2],),
     )
     .await;
     let snapshot = wait_pool(node(&cluster, first_leader), |pool| {
@@ -555,13 +585,28 @@ async fn party_game_survives_two_home_elections_and_replays_result_once() {
     .await;
     rpc(
         &node(&cluster, homes[1]).rpc,
-        "acceptMatch",
-        json!([tokens[1]]),
+        RpcMethod::AcceptMatch.as_str(),
+        (&tokens[1],),
     )
     .await;
-    let a = state(&node(&cluster, homes[0]).rpc, &tokens[0], "playing").await;
-    let b = state(&node(&cluster, homes[2]).rpc, &tokens[2], "playing").await;
-    let party_member = state(&node(&cluster, homes[1]).rpc, &tokens[1], "playing").await;
+    let a = state(
+        &node(&cluster, homes[0]).rpc,
+        &tokens[0],
+        LobbyState::Playing,
+    )
+    .await;
+    let b = state(
+        &node(&cluster, homes[2]).rpc,
+        &tokens[2],
+        LobbyState::Playing,
+    )
+    .await;
+    let party_member = state(
+        &node(&cluster, homes[1]).rpc,
+        &tokens[1],
+        LobbyState::Playing,
+    )
+    .await;
     assert_eq!(a["matchId"], party_member["matchId"]);
     assert_eq!(a["matchId"], b["matchId"]);
     assert_eq!(a["port"], b["port"]);
@@ -586,28 +631,32 @@ async fn party_game_survives_two_home_elections_and_replays_result_once() {
     let mut controls = Vec::new();
     for player in &players {
         let mut c = login(&addr, *player, &cipher).await;
-        assert_casual_mode(&until(&mut c, &cipher, 0x3e9).await, 32);
-        assert_casual_mode(&until(&mut c, &cipher, 0x454).await, 4);
-        until(&mut c, &cipher, 0x459).await;
-        c.write_all(&cipher.encode(&Message::new(0x455, [0; 6])).unwrap())
-            .await
-            .unwrap();
-        until(&mut c, &cipher, 0x455).await;
+        assert_casual_mode(&until(&mut c, &cipher, wire_opcode::GameSetup).await, 32);
+        assert_casual_mode(&until(&mut c, &cipher, wire_opcode::GameMode).await, 4);
+        until(&mut c, &cipher, wire_opcode::Snapshot5V5).await;
+        c.write_all(
+            &cipher
+                .encode(&Message::new(wire_opcode::HeroLock, [0; 6]))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+        until(&mut c, &cipher, wire_opcode::HeroLock).await;
         controls.push(c);
     }
     let mut games = Vec::new();
     for player in &players {
         let mut g = login(&addr, *player, &cipher).await;
-        assert_casual_mode(&until(&mut g, &cipher, 0x3e9).await, 32);
-        assert_casual_mode(&until(&mut g, &cipher, 0x46f).await, 0);
-        until(&mut g, &cipher, 0x3f3).await;
+        assert_casual_mode(&until(&mut g, &cipher, wire_opcode::GameSetup).await, 32);
+        assert_casual_mode(&until(&mut g, &cipher, wire_opcode::ModeName).await, 0);
+        until(&mut g, &cipher, wire_opcode::EntitySpawn).await;
         games.push(g);
     }
     games[0]
         .write_all(&cipher.encode(&Message::movement(4., 0.)).unwrap())
         .await
         .unwrap();
-    until(&mut games[0], &cipher, 0x42e).await;
+    until(&mut games[0], &cipher, wire_opcode::Position).await;
     assert_eq!(
         node(&cluster, 2).rooms.detail(id).unwrap()["phase"],
         "running"
@@ -654,34 +703,20 @@ async fn party_game_survives_two_home_elections_and_replays_result_once() {
     let viewer_home = &node(&cluster, homes[0]).rpc;
     rpc(
         viewer_home,
-        "renamePlayerHandle",
-        json!([tokens[0], "HarborCaptain"]),
+        RpcMethod::RenamePlayerHandle.as_str(),
+        (&tokens[0], "HarborCaptain"),
     )
     .await;
     let guest = rpc(
         viewer_home,
-        "createGuestPlayer",
-        json!([
-            "kindred",
-            "en",
-            "US",
-            "production",
-            "en",
-            "BAKLAVA",
-            "android",
-            "",
-            "147219",
-            1,
-            "device",
-            "model",
-            "0"
-        ]),
+        RpcMethod::CreateGuestPlayer.as_str(),
+        android_guest("device", "0"),
     )
     .await;
     let viewer = rpc(
         viewer_home,
-        "startSessionForPlayer",
-        json!([guest["returnValue"]["playerUUID"]]),
+        RpcMethod::StartSessionForPlayer.as_str(),
+        (&guest["returnValue"]["playerUUID"],),
     )
     .await;
     let viewer_id: Uuid =
@@ -689,8 +724,8 @@ async fn party_game_survives_two_home_elections_and_replays_result_once() {
     let viewer_token = &viewer["sessionToken"];
     let denied = rpc_result(
         viewer_home,
-        "spectateFriend",
-        json!([viewer_token, players[0]]),
+        RpcMethod::SpectateFriend.as_str(),
+        (&viewer_token, &players[0]),
     )
     .await;
     assert_ne!(
@@ -718,19 +753,19 @@ async fn party_game_survives_two_home_elections_and_replays_result_once() {
     rpc(
         viewer_home,
         "friendRequestIssueByHandle",
-        json!([viewer_token, "HarborCaptain"]),
+        (&viewer_token, "HarborCaptain"),
     )
     .await;
     rpc(
         viewer_home,
-        "friendRequestConfirm",
-        json!([tokens[0], viewer_id]),
+        RpcMethod::FriendRequestConfirm.as_str(),
+        (&tokens[0], &viewer_id),
     )
     .await;
     let grant = rpc(
         viewer_home,
-        "spectateFriend",
-        json!([viewer_token, players[0]]),
+        RpcMethod::SpectateFriend.as_str(),
+        (&viewer_token, &players[0]),
     )
     .await;
     let observation = &grant["returnValue"];
@@ -770,11 +805,16 @@ async fn party_game_survives_two_home_elections_and_replays_result_once() {
             .is_empty()
     );
     let mut viewing = login(&observer_address, grant_id, &cipher).await;
-    until(&mut viewing, &cipher, 0x459).await;
+    until(&mut viewing, &cipher, wire_opcode::Snapshot5V5).await;
     let occupied = rpc_result(
         viewer_home,
-        "joinLobby",
-        json!([viewer_token,{"lobby":"5v5_casual"}]),
+        RpcMethod::JoinLobby.as_str(),
+        (
+            &viewer_token,
+            LobbyJoin {
+                lobby: "5v5_casual",
+            },
+        ),
     )
     .await;
     assert_ne!(
@@ -782,10 +822,14 @@ async fn party_game_survives_two_home_elections_and_replays_result_once() {
         "an active observer holds an exclusive home claim"
     );
     viewing
-        .write_all(&cipher.encode(&Message::new(0x0474, [0])).unwrap())
+        .write_all(
+            &cipher
+                .encode(&Message::new(wire_opcode::SpectatorExitMatchRequest, [0]))
+                .unwrap(),
+        )
         .await
         .unwrap();
-    state(viewer_home, viewer_token, "menus").await;
+    state(viewer_home, viewer_token, LobbyState::Menus).await;
     timeout(Duration::from_secs(3), async {
         let mut bytes = [0; 4096];
         while viewing.read(&mut bytes).await.unwrap_or(0) != 0 {}
@@ -824,36 +868,26 @@ async fn party_game_survives_two_home_elections_and_replays_result_once() {
     );
     let renewed = rpc(
         viewer_home,
-        "spectateFriend",
-        json!([viewer_token, players[0]]),
+        RpcMethod::SpectateFriend.as_str(),
+        (&viewer_token, &players[0]),
     )
     .await;
     assert_eq!(renewed["returnValue"]["state"], "spectating");
     assert_ne!(renewed["returnValue"]["spectatorId"], grant_id.to_string());
-    rpc(
-        viewer_home,
-        "setPresenceInvisibility",
-        json!([tokens[0], true]),
-    )
-    .await;
-    state(viewer_home, viewer_token, "menus").await;
+    rpc(viewer_home, "setPresenceInvisibility", (&tokens[0], true)).await;
+    state(viewer_home, viewer_token, LobbyState::Menus).await;
     let hidden = rpc_result(
         viewer_home,
-        "spectateFriend",
-        json!([viewer_token, players[0]]),
+        RpcMethod::SpectateFriend.as_str(),
+        (&viewer_token, &players[0]),
     )
     .await;
     assert_ne!(hidden["code"], 0);
-    rpc(
-        viewer_home,
-        "setPresenceInvisibility",
-        json!([tokens[0], false]),
-    )
-    .await;
+    rpc(viewer_home, "setPresenceInvisibility", (&tokens[0], false)).await;
     let reap = rpc(
         viewer_home,
-        "spectateFriend",
-        json!([viewer_token, players[0]]),
+        RpcMethod::SpectateFriend.as_str(),
+        (&viewer_token, &players[0]),
     )
     .await;
     assert_eq!(reap["returnValue"]["state"], "spectating");
@@ -894,9 +928,14 @@ async fn party_game_survives_two_home_elections_and_replays_result_once() {
     cluster[2] = Some(cluster[2].take().unwrap().reopen_worker(2));
     for (p, home) in homes.iter().enumerate() {
         let member = node(&cluster, *home);
-        state(&member.rpc, &tokens[p], "post_match").await;
-        rpc(&member.rpc, "notifyExitPostMatch", json!([tokens[p]])).await;
-        state(&member.rpc, &tokens[p], "menus").await;
+        state(&member.rpc, &tokens[p], LobbyState::PostMatch).await;
+        rpc(
+            &member.rpc,
+            RpcMethod::NotifyExitPostMatch.as_str(),
+            (&tokens[p],),
+        )
+        .await;
+        state(&member.rpc, &tokens[p], LobbyState::Menus).await;
         let db = rusqlite::Connection::open(&member.path).unwrap();
         let recorded: String = db.query_row(
             "SELECT json_extract(body,'$.result') FROM events WHERE player=?1 AND json_extract(body,'$.type')='match_finished' AND json_extract(body,'$.matchId')=?2",
@@ -918,7 +957,12 @@ async fn party_game_survives_two_home_elections_and_replays_result_once() {
             "exactly one settlement was applied for each player"
         );
     }
-    state(&node(&cluster, homes[0]).rpc, viewer_token, "menus").await;
+    state(
+        &node(&cluster, homes[0]).rpc,
+        viewer_token,
+        LobbyState::Menus,
+    )
+    .await;
     let host = node(&cluster, 2);
     let pool = wait_pool(host, |state| {
         state.allocations()[&id].phase == Phase::Finished
@@ -1017,10 +1061,13 @@ async fn enqueue_freezes_before_quorum_and_resumes_with_the_same_payload() {
     );
     assert_eq!(
         serde_json::to_value(&expected.queue).unwrap(),
-        json!({
-            "name": "5v5_bots_coop", "build": 147219, "seats": 3,
-            "rules_digest": expected.queue.rules_digest
-        }),
+        serde_json::to_value(QueueVariant {
+            name: "5v5_bots_coop",
+            build: 147219,
+            seats: 3,
+            rules_digest: &expected.queue.rules_digest
+        })
+        .unwrap(),
         "replicated queue keeps the existing field layout"
     );
     home.stop().await;
@@ -1094,38 +1141,31 @@ async fn enqueue_freezes_before_quorum_and_resumes_with_the_same_payload() {
     let home = node(&cluster, 0);
     let guest = rpc(
         &home.rpc,
-        "createGuestPlayer",
-        json!([
-            "kindred",
-            "en",
-            "US",
-            "production",
-            "en",
-            "BAKLAVA",
-            "android",
-            "",
-            "147219",
-            1,
-            "device",
-            "model",
-            "0"
-        ]),
+        RpcMethod::CreateGuestPlayer.as_str(),
+        android_guest("device", "0"),
     )
     .await;
     let session = rpc(
         &home.rpc,
-        "startSessionForPlayer",
-        json!([guest["returnValue"]["playerUUID"]]),
+        RpcMethod::StartSessionForPlayer.as_str(),
+        (&guest["returnValue"]["playerUUID"],),
     )
     .await;
     let ce_token = &session["sessionToken"];
     rpc(
         &home.rpc,
-        "joinLobby",
-        json!([ce_token,{"lobby":"5v5_bots_solo","difficulty":"very_easy"},"147219"]),
+        RpcMethod::JoinLobby.as_str(),
+        (
+            &ce_token,
+            LobbyDifficulty {
+                lobby: "5v5_bots_solo",
+                difficulty: "very_easy",
+            },
+            "147219",
+        ),
     )
     .await;
-    let playing = state(&home.rpc, ce_token, "playing").await;
+    let playing = state(&home.rpc, ce_token, LobbyState::Playing).await;
     let room_id: Uuid = serde_json::from_value(playing["matchId"].clone()).unwrap();
     let room = node(&cluster, 2).rooms.detail(room_id).unwrap();
     assert_eq!(room["queue"], "5v5_bots_solo");
@@ -1165,34 +1205,20 @@ async fn local_friend_spectates_read_only_and_revokes_on_exit() {
     for name in ["Operator", "Watcher"] {
         let guest = rpc(
             &rpc_router,
-            "createGuestPlayer",
-            json!([
-                "kindred",
-                "en",
-                "US",
-                "production",
-                "en",
-                "BAKLAVA",
-                "android",
-                "",
-                "147219",
-                1,
-                "device",
-                "model",
-                "0"
-            ]),
+            RpcMethod::CreateGuestPlayer.as_str(),
+            android_guest("device", "0"),
         )
         .await;
         let session = rpc(
             &rpc_router,
-            "startSessionForPlayer",
-            json!([guest["returnValue"]["playerUUID"]]),
+            RpcMethod::StartSessionForPlayer.as_str(),
+            (&guest["returnValue"]["playerUUID"],),
         )
         .await;
         rpc(
             &rpc_router,
-            "renamePlayerHandle",
-            json!([session["sessionToken"], name]),
+            RpcMethod::RenamePlayerHandle.as_str(),
+            (&session["sessionToken"], &name),
         )
         .await;
         sessions.push(session);
@@ -1205,12 +1231,18 @@ async fn local_friend_spectates_read_only_and_revokes_on_exit() {
         serde_json::from_value(sessions[1]["returnValue"]["playerUUID"].clone()).unwrap();
     rpc(
         &rpc_router,
-        "joinLobby",
-        json!([player,{"lobby":"5v5_bots_solo","difficulty":"hard"}]),
+        RpcMethod::JoinLobby.as_str(),
+        (
+            &player,
+            LobbyDifficulty {
+                lobby: "5v5_bots_solo",
+                difficulty: "hard",
+            },
+        ),
     )
     .await;
-    rpc(&rpc_router, "acceptMatch", json!([player])).await;
-    let playing = state(&rpc_router, player, "playing").await;
+    rpc(&rpc_router, RpcMethod::AcceptMatch.as_str(), (&player,)).await;
+    let playing = state(&rpc_router, player, LobbyState::Playing).await;
     let id: Uuid = serde_json::from_value(playing["matchId"].clone()).unwrap();
     let room = rooms.detail(id).unwrap();
     assert_eq!(room["queue"], "5v5_bots_solo");
@@ -1218,47 +1250,56 @@ async fn local_friend_spectates_read_only_and_revokes_on_exit() {
     let addr = format!("{}:{}", playing["host"].as_str().unwrap(), playing["port"]);
     let cipher = MatchCipher::new(&id.to_string());
     let mut control = login(&addr, player_id, &cipher).await;
-    until(&mut control, &cipher, 0x459).await;
+    until(&mut control, &cipher, wire_opcode::Snapshot5V5).await;
     control
-        .write_all(&cipher.encode(&Message::new(0x455, [0; 6])).unwrap())
+        .write_all(
+            &cipher
+                .encode(&Message::new(wire_opcode::HeroLock, [0; 6]))
+                .unwrap(),
+        )
         .await
         .unwrap();
-    until(&mut control, &cipher, 0x455).await;
+    until(&mut control, &cipher, wire_opcode::HeroLock).await;
     let mut game = login(&addr, player_id, &cipher).await;
-    until(&mut game, &cipher, 0x3f3).await;
+    until(&mut game, &cipher, wire_opcode::EntitySpawn).await;
 
-    let denied = rpc_result(&rpc_router, "spectateFriend", json!([watcher, player_id])).await;
+    let denied = rpc_result(
+        &rpc_router,
+        RpcMethod::SpectateFriend.as_str(),
+        (&watcher, &player_id),
+    )
+    .await;
     assert_ne!(denied["code"], 0);
     rpc(
         &rpc_router,
         "friendRequestIssueByHandle",
-        json!([watcher, "Operator"]),
+        (&watcher, "Operator"),
     )
     .await;
     rpc(
         &rpc_router,
-        "friendRequestConfirm",
-        json!([player, watcher_id]),
+        RpcMethod::FriendRequestConfirm.as_str(),
+        (&player, &watcher_id),
     )
     .await;
-    rpc(
+    rpc(&rpc_router, "setPresenceInvisibility", (&player, true)).await;
+    let hidden = rpc_result(
         &rpc_router,
-        "setPresenceInvisibility",
-        json!([player, true]),
+        RpcMethod::SpectateFriend.as_str(),
+        (&watcher, &player_id),
     )
     .await;
-    let hidden = rpc_result(&rpc_router, "spectateFriend", json!([watcher, player_id])).await;
     assert_ne!(hidden["code"], 0);
-    rpc(
-        &rpc_router,
-        "setPresenceInvisibility",
-        json!([player, false]),
-    )
-    .await;
+    rpc(&rpc_router, "setPresenceInvisibility", (&player, false)).await;
     let response = rpc(
         &rpc_router,
-        "spectateFriend",
-        json!([watcher,{"friendUUID":player_id}]),
+        RpcMethod::SpectateFriend.as_str(),
+        (
+            &watcher,
+            FriendSelection {
+                friend_uuid: player_id,
+            },
+        ),
     )
     .await;
     let value = response["returnValue"].clone();
@@ -1269,11 +1310,16 @@ async fn local_friend_spectates_read_only_and_revokes_on_exit() {
     let spectator_addr = format!("{}:{}", value["host"].as_str().unwrap(), value["port"]);
     assert_ne!(spectator_addr, addr);
     let mut viewing = login(&spectator_addr, credential, &cipher).await;
-    until(&mut viewing, &cipher, 0x459).await;
+    until(&mut viewing, &cipher, wire_opcode::Snapshot5V5).await;
     let in_use = rpc_result(
         &rpc_router,
-        "joinLobby",
-        json!([watcher,{"lobby":"5v5_casual"}]),
+        RpcMethod::JoinLobby.as_str(),
+        (
+            &watcher,
+            LobbyJoin {
+                lobby: "5v5_casual",
+            },
+        ),
     )
     .await;
     assert_ne!(in_use["code"], 0);
@@ -1290,10 +1336,14 @@ async fn local_friend_spectates_read_only_and_revokes_on_exit() {
     assert!(notification["text"]["states"].get("spectatorId").is_none());
     let other = halcyon_platform::MatchHost::spectate(&rooms, id, Uuid::new_v4()).unwrap();
     let mut other_stream = login(&other.address, other.spectator_id, &cipher).await;
-    until(&mut other_stream, &cipher, 0x459).await;
+    until(&mut other_stream, &cipher, wire_opcode::Snapshot5V5).await;
     // An invalid payload closes only its socket; its grant retains reconnect grace.
     viewing
-        .write_all(&cipher.encode(&Message::new(0x0474, [1])).unwrap())
+        .write_all(
+            &cipher
+                .encode(&Message::new(wire_opcode::SpectatorExitMatchRequest, [1]))
+                .unwrap(),
+        )
         .await
         .unwrap();
     let mut drained = [0; 4096];
@@ -1302,17 +1352,26 @@ async fn local_friend_spectates_read_only_and_revokes_on_exit() {
     })
     .await
     .unwrap();
-    state(&rpc_router, watcher, "spectating").await;
+    state(&rpc_router, watcher, LobbyState::Spectating).await;
     let mut viewing = login(&spectator_addr, credential, &cipher).await;
-    until(&mut viewing, &cipher, 0x459).await;
+    until(&mut viewing, &cipher, wire_opcode::Snapshot5V5).await;
     viewing
-        .write_all(&cipher.encode(&Message::new(0x0474, [0])).unwrap())
+        .write_all(
+            &cipher
+                .encode(&Message::new(wire_opcode::SpectatorExitMatchRequest, [0]))
+                .unwrap(),
+        )
         .await
         .unwrap();
-    state(&rpc_router, watcher, "menus").await;
-    let exited = rpc(&rpc_router, "spectatorExitMatch", json!([watcher])).await;
+    state(&rpc_router, watcher, LobbyState::Menus).await;
+    let exited = rpc(
+        &rpc_router,
+        RpcMethod::SpectatorExitMatch.as_str(),
+        (&watcher,),
+    )
+    .await;
     assert_eq!(exited["returnValue"]["handle"], "Watcher");
-    state(&rpc_router, watcher, "menus").await;
+    state(&rpc_router, watcher, LobbyState::Menus).await;
     timeout(Duration::from_secs(2), async {
         let mut bytes = [0; 4096];
         while viewing.read(&mut bytes).await.unwrap_or(0) != 0 {}
@@ -1320,7 +1379,12 @@ async fn local_friend_spectates_read_only_and_revokes_on_exit() {
     .await
     .unwrap();
     assert_eq!(spectator_exit_count(&path, watcher_id), 1);
-    let next = rpc(&rpc_router, "spectateFriend", json!([watcher, player_id])).await;
+    let next = rpc(
+        &rpc_router,
+        RpcMethod::SpectateFriend.as_str(),
+        (&watcher, &player_id),
+    )
+    .await;
     // This old credential fails at the other observer's still-live endpoint.
     let mut old = login(&other.address, credential, &cipher).await;
     assert!(
@@ -1329,7 +1393,7 @@ async fn local_friend_spectates_read_only_and_revokes_on_exit() {
             .unwrap()
             .is_err()
     );
-    until(&mut other_stream, &cipher, 0x459).await;
+    until(&mut other_stream, &cipher, wire_opcode::Snapshot5V5).await;
     assert_ne!(next["returnValue"]["spectatorId"], credential.to_string());
     assert_eq!(rooms.detail(id).unwrap()["phase"], "running");
 }
@@ -1390,7 +1454,10 @@ async fn public_and_ce_players_share_a_pool_and_cross_home_match_chat() {
                 "POST",
                 "/api/v1/guests",
                 None,
-                json!({"name":name}),
+                serde_json::to_value(CreateGuest {
+                    name: name.to_string(),
+                })
+                .unwrap(),
                 StatusCode::OK,
             )
             .await,
@@ -1421,7 +1488,11 @@ async fn public_and_ce_players_share_a_pool_and_cross_home_match_chat() {
         "POST",
         "/api/v1/queue",
         Some(token(0)),
-        json!({"mode":"cancel_me"}),
+        serde_json::to_value(Queue {
+            mode: "cancel_me".to_string(),
+            difficulty: None,
+        })
+        .unwrap(),
         StatusCode::NO_CONTENT,
     )
     .await;
@@ -1472,7 +1543,11 @@ async fn public_and_ce_players_share_a_pool_and_cross_home_match_chat() {
         "POST",
         "/api/v1/queue",
         Some(token(0)),
-        json!({"mode":"ranked"}),
+        serde_json::to_value(Queue {
+            mode: "ranked".to_string(),
+            difficulty: None,
+        })
+        .unwrap(),
         StatusCode::NO_CONTENT,
     )
     .await;
@@ -1494,28 +1569,14 @@ async fn public_and_ce_players_share_a_pool_and_cross_home_match_chat() {
     .await;
     let ce_guest = rpc(
         b,
-        "createGuestPlayer",
-        json!([
-            "kindred",
-            "en",
-            "US",
-            "production",
-            "en",
-            "BAKLAVA",
-            "android",
-            "",
-            "147219",
-            1,
-            "device",
-            "model",
-            "0"
-        ]),
+        RpcMethod::CreateGuestPlayer.as_str(),
+        android_guest("device", "0"),
     )
     .await;
     let ce = rpc(
         b,
-        "startSessionForPlayer",
-        json!([ce_guest["returnValue"]["playerUUID"]]),
+        RpcMethod::StartSessionForPlayer.as_str(),
+        (&ce_guest["returnValue"]["playerUUID"],),
     )
     .await;
     let ce_token = &ce["sessionToken"];
@@ -1527,7 +1588,17 @@ async fn public_and_ce_players_share_a_pool_and_cross_home_match_chat() {
         .observe_player(member, "HarborTwo".into(), true)
         .await
         .unwrap();
-    let party = rpc(b, "createParty", json!([ce_token,{"partyQueueMode":mode}])).await;
+    let party = rpc(
+        b,
+        RpcMethod::CreateParty.as_str(),
+        (
+            &ce_token,
+            PartyQueue {
+                party_queue_mode: mode,
+            },
+        ),
+    )
+    .await;
     let group = party["returnValue"]["partyUUID"]
         .as_str()
         .unwrap()
@@ -1535,8 +1606,13 @@ async fn public_and_ce_players_share_a_pool_and_cross_home_match_chat() {
         .unwrap();
     rpc(
         b,
-        "partyInviteSend",
-        json!([ce_token,{"playerUUID":member}]),
+        RpcMethod::PartyInviteSend.as_str(),
+        (
+            &ce_token,
+            PartyMember {
+                player_uuid: member,
+            },
+        ),
     )
     .await;
     community
@@ -1554,12 +1630,21 @@ async fn public_and_ce_players_share_a_pool_and_cross_home_match_chat() {
         "POST",
         "/api/v1/queue",
         Some(token(0)),
-        json!({"mode":mode}),
+        serde_json::to_value(Queue {
+            mode: mode.to_string(),
+            difficulty: None,
+        })
+        .unwrap(),
         StatusCode::NO_CONTENT,
     )
     .await;
-    rpc(b, "joinLobby", json!([ce_token,{"lobby":mode}])).await;
-    state(b, ce_token, "match_pending").await;
+    rpc(
+        b,
+        RpcMethod::JoinLobby.as_str(),
+        (&ce_token, LobbyJoin { lobby: mode }),
+    )
+    .await;
+    state(b, ce_token, LobbyState::MatchPending).await;
     let id = timeout(Duration::from_secs(10), async {
         loop {
             let p = rest(
@@ -1579,7 +1664,7 @@ async fn public_and_ce_players_share_a_pool_and_cross_home_match_chat() {
     })
     .await
     .unwrap();
-    let pending = || rpc(b, "queryPendingMatch", json!([ce_token]));
+    let pending = || rpc(b, RpcMethod::QueryPendingMatch.as_str(), (&ce_token,));
     let initial = pending().await;
     let initial = &initial["returnValue"];
     assert_eq!(initial["matchId"], id);
@@ -1596,7 +1681,7 @@ async fn public_and_ce_players_share_a_pool_and_cross_home_match_chat() {
     let expiry = first
         .expires
         .expect("federation publishes a committed deadline");
-    let projected = state(b, ce_token, "match_pending").await;
+    let projected = state(b, ce_token, LobbyState::MatchPending).await;
     assert_eq!(projected["expiry"], expiry);
     let ttl = projected["ttl"].as_i64().unwrap();
     assert!((1..=halcyon_matchmaking::OFFER_WINDOW_SECS).contains(&ttl));
@@ -1647,8 +1732,8 @@ async fn public_and_ce_players_share_a_pool_and_cross_home_match_chat() {
             .iter()
             .any(|s| s.player == member && !s.accepted)
     );
-    rpc(b, "acceptMatch", json!([ce_token])).await;
-    let playing = state(b, ce_token, "playing").await;
+    rpc(b, RpcMethod::AcceptMatch.as_str(), (&ce_token,)).await;
+    let playing = state(b, ce_token, LobbyState::Playing).await;
     assert_eq!(playing["matchId"], id);
     assert_eq!(playing["numPlayers"], 3);
     assert_eq!(playing["numQueuedEntries"], 2);
@@ -1701,7 +1786,12 @@ async fn public_and_ce_players_share_a_pool_and_cross_home_match_chat() {
                         .header("Origin", "https://admin.example.test")
                         .header("Content-Type", "application/json")
                         .body(Body::from(
-                            json!({"username":"owner","password":"test-only password"}).to_string(),
+                            serde_json::to_value(Credentials {
+                                username: "owner",
+                                password: "test-only password",
+                            })
+                            .unwrap()
+                            .to_string(),
                         ))
                         .unwrap(),
                 )
@@ -1773,7 +1863,10 @@ async fn public_and_ce_players_share_a_pool_and_cross_home_match_chat() {
         "POST",
         &chat,
         Some(token(2)),
-        json!({"text":"outside"}),
+        serde_json::to_value(Chat {
+            text: "outside".to_string(),
+        })
+        .unwrap(),
         StatusCode::CONFLICT,
     )
     .await;
@@ -1782,7 +1875,10 @@ async fn public_and_ce_players_share_a_pool_and_cross_home_match_chat() {
         "POST",
         &chat,
         Some(token(1)),
-        json!({"text":"wrong home"}),
+        serde_json::to_value(Chat {
+            text: "wrong home".to_string(),
+        })
+        .unwrap(),
         StatusCode::UNAUTHORIZED,
     )
     .await;
@@ -1791,7 +1887,10 @@ async fn public_and_ce_players_share_a_pool_and_cross_home_match_chat() {
         "POST",
         &chat,
         Some(token(1)),
-        json!({"text":"across homes"}),
+        serde_json::to_value(Chat {
+            text: "across homes".to_string(),
+        })
+        .unwrap(),
         StatusCode::NO_CONTENT,
     )
     .await;
@@ -1837,4 +1936,53 @@ async fn public_and_ce_players_share_a_pool_and_cross_home_match_chat() {
     for member in cluster.into_iter().flatten() {
         member.stop().await;
     }
+}
+
+#[derive(serde::Serialize)]
+struct Credentials<'a> {
+    username: &'a str,
+    password: &'a str,
+}
+
+#[derive(serde::Serialize)]
+struct LobbyJoin<'a> {
+    lobby: &'a str,
+}
+
+#[derive(serde::Serialize)]
+struct PartyMember {
+    #[serde(rename = "playerUUID")]
+    player_uuid: Uuid,
+}
+
+#[derive(serde::Serialize)]
+struct PartyQueue<'a> {
+    #[serde(rename = "partyQueueMode")]
+    party_queue_mode: &'a str,
+}
+
+#[derive(serde::Serialize)]
+struct FriendSelection {
+    #[serde(rename = "friendUUID")]
+    friend_uuid: Uuid,
+}
+
+#[derive(serde::Serialize)]
+struct LobbyDifficulty<'a> {
+    lobby: &'a str,
+    difficulty: &'a str,
+}
+
+#[derive(serde::Serialize)]
+struct QueueVariant<'a> {
+    name: &'a str,
+    build: u32,
+    seats: u32,
+    rules_digest: &'a str,
+}
+
+#[derive(serde::Serialize)]
+struct PartyInvite {
+    #[serde(rename = "partyUUID")]
+    party_uuid: Uuid,
 }

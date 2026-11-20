@@ -2,11 +2,14 @@
 //! `cargo test -p openhalcyon --test peer_play subprocess_ -- --ignored --nocapture --test-threads=1`.
 //! The long scenario waits up to 45 minutes of real time for the simulated match to finish.
 //! All credentials, pool certificates, binaries and SQLite files are scoped to a temporary directory.
+use super::RpcEnvelope;
 use super::{echo_clock, login, pool, until};
 use argon2::{Argon2, PasswordHasher, password_hash::SaltString};
+use halcyon_ce_platform::{LobbyState, RpcMethod};
+use halcyon_protocol::wire_opcode;
 use halcyon_protocol::{MatchCipher, Message};
 use reqwest::{Certificate, Client};
-use serde_json::{Value, json};
+use serde_json::Value;
 use std::{
     collections::BTreeMap,
     fs,
@@ -55,11 +58,17 @@ impl Drop for Node {
         self.stop()
     }
 }
-async fn rpc(client: &Client, n: &Node, method: &str, args: Value) -> Value {
+async fn rpc(client: &Client, n: &Node, method: &str, args: impl serde::Serialize) -> Value {
     let r = client
         .post(format!("{}/JSONRpc/{method}", n.origin))
         .header("content-type", "application/x-www-form-urlencoded")
-        .body(json!({"method":method,"params":args}).to_string())
+        .body(
+            serde_json::to_string(&RpcEnvelope {
+                method,
+                params: args,
+            })
+            .unwrap(),
+        )
         .send()
         .await
         .unwrap()
@@ -75,18 +84,18 @@ async fn session(client: &Client, n: &Node) -> (Uuid, Value) {
     let guest = rpc(
         client,
         n,
-        "createGuestPlayer",
-        json!([
+        RpcMethod::CreateGuestPlayer.as_str(),
+        (
             "kindred", "en", "US", "local", "en", "device", "android", "", "147219", 1, "model",
-            "brand", "0"
-        ]),
+            "brand", "0",
+        ),
     )
     .await;
     let s = rpc(
         client,
         n,
-        "startSessionForPlayer",
-        json!([guest["returnValue"]["playerUUID"]]),
+        RpcMethod::StartSessionForPlayer.as_str(),
+        (&guest["returnValue"]["playerUUID"],),
     )
     .await;
     (
@@ -98,11 +107,12 @@ async fn session(client: &Client, n: &Node) -> (Uuid, Value) {
         s["sessionToken"].clone(),
     )
 }
-async fn state(client: &Client, n: &Node, token: &Value, want: &str) -> Value {
+async fn state(client: &Client, n: &Node, token: &Value, want: LobbyState) -> Value {
+    let want = want.as_str();
     let mut last_phase = Value::Null;
     timeout(Duration::from_secs(90), async {
         loop {
-            let r = rpc(client, n, "update", json!([token])).await;
+            let r = rpc(client, n, RpcMethod::Update.as_str(), (&token,)).await;
             last_phase = r["returnValue"]["state"].clone();
             if last_phase == want {
                 return r["returnValue"].clone();
@@ -124,7 +134,13 @@ async fn admin(client: &Client, n: &Node) -> String {
             if let Ok(r) = client
                 .post(format!("{}/api/admin/v1/session", n.origin))
                 .header("origin", &n.origin)
-                .json(&json!({"username":"operator","password":"synthetic-test-password"}))
+                .json(
+                    &serde_json::to_value(Credentials {
+                        username: "operator",
+                        password: "synthetic-test-password",
+                    })
+                    .unwrap(),
+                )
                 .send()
                 .await
                 && r.status().is_success()
@@ -185,7 +201,31 @@ fn spawn_nodes(dir: &Path) -> Vec<Node> {
         let [bootstrap, web, notify] = listeners.each_ref().map(|sock| sock.local_addr().unwrap());
         public_listeners.push(listeners);
         let origin = format!("https://{web}");
-        let values = json!({"instance_id":f.node_id,"public_host":"127.0.0.1","bootstrap_listen":bootstrap,"platform_listen":web,"notify_listen":notify,"game_bind":"127.0.0.1","max_rooms":8,"seats_per_match":2,"database":"platform.sqlite","jwt_secret":"secret","certificate":f.cert,"private_key":f.key,"admin":{"origin":origin,"username":"operator","password_hash":hash},"federation":{"cluster_file":"pool.json","journal":"journal.db","latency_ms":BTreeMap::from([(cfg[2].node_id.to_string(),5)]),"max_latency_ms":50}});
+        let values = PoolServerConfig {
+            instance_id: f.node_id,
+            public_host: "127.0.0.1",
+            bootstrap_listen: bootstrap,
+            platform_listen: web,
+            notify_listen: notify,
+            game_bind: "127.0.0.1",
+            max_rooms: 8,
+            seats_per_match: 2,
+            database: "platform.sqlite",
+            jwt_secret: "secret",
+            certificate: &f.cert,
+            private_key: &f.key,
+            admin: PoolAdmin {
+                origin: &origin,
+                username: "operator",
+                password_hash: &hash,
+            },
+            federation: PoolFederation {
+                cluster_file: "pool.json",
+                journal: "journal.db",
+                latency_ms: BTreeMap::from([(cfg[2].node_id, 5)]),
+                max_latency_ms: 50,
+            },
+        };
         fs::write(&path, toml::to_string(&values).unwrap()).unwrap();
         nodes.push(Node {
             binary: binary.clone(),
@@ -256,17 +296,35 @@ async fn running_pool(dir: &Path) -> RunningPool {
         rpc(
             &client,
             &nodes[i],
-            "joinLobby",
-            json!([identities[i].1, {"lobby":"5v5_pvp_casual"}, "147219"]),
+            RpcMethod::JoinLobby.as_str(),
+            (
+                &identities[i].1,
+                LobbyJoin {
+                    lobby: "5v5_pvp_casual",
+                },
+                "147219",
+            ),
         )
         .await;
     }
     for i in 0..2 {
-        state(&client, &nodes[i], &identities[i].1, "match_pending").await;
-        rpc(&client, &nodes[i], "acceptMatch", json!([identities[i].1])).await;
+        state(
+            &client,
+            &nodes[i],
+            &identities[i].1,
+            LobbyState::MatchPending,
+        )
+        .await;
+        rpc(
+            &client,
+            &nodes[i],
+            RpcMethod::AcceptMatch.as_str(),
+            (&identities[i].1,),
+        )
+        .await;
     }
-    let a = state(&client, &nodes[0], &identities[0].1, "playing").await;
-    let b = state(&client, &nodes[1], &identities[1].1, "playing").await;
+    let a = state(&client, &nodes[0], &identities[0].1, LobbyState::Playing).await;
+    let b = state(&client, &nodes[1], &identities[1].1, LobbyState::Playing).await;
     assert_eq!(a["matchId"], b["matchId"]);
     let id = a["matchId"].as_str().unwrap();
     let addr = format!("127.0.0.1:{}", a["port"]);
@@ -275,16 +333,20 @@ async fn running_pool(dir: &Path) -> RunningPool {
     let mut sockets = vec![];
     for (player, _) in &identities {
         let mut s = login(&addr, *player, &cipher).await;
-        until(&mut s, &cipher, 0x459).await;
-        s.write_all(&cipher.encode(&Message::new(0x455, [0; 6])).unwrap())
-            .await
-            .unwrap();
-        until(&mut s, &cipher, 0x455).await;
+        until(&mut s, &cipher, wire_opcode::Snapshot5V5).await;
+        s.write_all(
+            &cipher
+                .encode(&Message::new(wire_opcode::HeroLock, [0; 6]))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+        until(&mut s, &cipher, wire_opcode::HeroLock).await;
         sockets.push(s);
     }
     for (player, _) in &identities {
         let mut s = login(&addr, *player, &cipher).await;
-        until(&mut s, &cipher, 0x3f3).await;
+        until(&mut s, &cipher, wire_opcode::EntitySpawn).await;
         echo_clock(&mut s, &cipher, 13.25).await;
         sockets.push(s);
     }
@@ -348,7 +410,13 @@ async fn subprocess_match_finishes_on_both_homes() {
         .unwrap();
         nodes[leader].start();
         cookies[leader] = admin(&client, &nodes[leader]).await;
-        let resumed = state(&client, &nodes[leader], &identities[leader].1, "playing").await;
+        let resumed = state(
+            &client,
+            &nodes[leader],
+            &identities[leader].1,
+            LobbyState::Playing,
+        )
+        .await;
         assert_eq!(resumed["matchId"], id);
         assert_eq!(
             get(&client, &nodes[2], &cookies[2], &room_path).await["createdAt"],
@@ -362,7 +430,13 @@ async fn subprocess_match_finishes_on_both_homes() {
     eprintln!("natural match running");
     timeout(Duration::from_secs(45 * 60), async {
         loop {
-            let first = rpc(&client, &nodes[0], "update", json!([identities[0].1])).await;
+            let first = rpc(
+                &client,
+                &nodes[0],
+                RpcMethod::Update.as_str(),
+                (&identities[0].1,),
+            )
+            .await;
             if first["returnValue"]["state"] == "post_match" {
                 break;
             }
@@ -373,7 +447,7 @@ async fn subprocess_match_finishes_on_both_homes() {
     .expect("natural match completion timed out");
     let mut first_result = None;
     for i in 0..2 {
-        state(&client, &nodes[i], &identities[i].1, "post_match").await;
+        state(&client, &nodes[i], &identities[i].1, LobbyState::PostMatch).await;
         let db = rusqlite::Connection::open_with_flags(
             &nodes[i].db,
             rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
@@ -409,11 +483,11 @@ async fn subprocess_match_finishes_on_both_homes() {
         rpc(
             &client,
             &nodes[i],
-            "notifyExitPostMatch",
-            json!([identities[i].1]),
+            RpcMethod::NotifyExitPostMatch.as_str(),
+            (&identities[i].1,),
         )
         .await;
-        state(&client, &nodes[i], &identities[i].1, "menus").await;
+        state(&client, &nodes[i], &identities[i].1, LobbyState::Menus).await;
     }
     eprintln!(
         "natural result on both homes after {}s",
@@ -437,7 +511,7 @@ async fn subprocess_lost_host_aborts_without_awarding_result() {
     nodes[2].start();
     let _host_session = admin(&client, &nodes[2]).await;
     for i in 0..2 {
-        state(&client, &nodes[i], &identities[i].1, "menus").await;
+        state(&client, &nodes[i], &identities[i].1, LobbyState::Menus).await;
         let db = rusqlite::Connection::open_with_flags(
             &nodes[i].db,
             rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
@@ -458,4 +532,46 @@ async fn subprocess_lost_host_aborts_without_awarding_result() {
             .unwrap();
         assert_eq!(progress, 0);
     }
+}
+
+#[derive(serde::Serialize)]
+struct LobbyJoin<'a> {
+    lobby: &'a str,
+}
+
+#[derive(serde::Serialize)]
+struct Credentials<'a> {
+    username: &'a str,
+    password: &'a str,
+}
+
+#[derive(serde::Serialize)]
+struct PoolServerConfig<'a> {
+    instance_id: Uuid,
+    public_host: &'a str,
+    bootstrap_listen: std::net::SocketAddr,
+    platform_listen: std::net::SocketAddr,
+    notify_listen: std::net::SocketAddr,
+    game_bind: &'a str,
+    max_rooms: u32,
+    seats_per_match: u32,
+    database: &'a str,
+    jwt_secret: &'a str,
+    certificate: &'a Path,
+    private_key: &'a Path,
+    admin: PoolAdmin<'a>,
+    federation: PoolFederation<'a>,
+}
+#[derive(serde::Serialize)]
+struct PoolAdmin<'a> {
+    origin: &'a str,
+    username: &'a str,
+    password_hash: &'a str,
+}
+#[derive(serde::Serialize)]
+struct PoolFederation<'a> {
+    cluster_file: &'a str,
+    journal: &'a str,
+    latency_ms: BTreeMap<Uuid, u32>,
+    max_latency_ms: u32,
 }

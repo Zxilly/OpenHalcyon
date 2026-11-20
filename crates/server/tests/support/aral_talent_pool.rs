@@ -58,7 +58,15 @@ fn idris_only() -> Arc<GameData> {
         name: name.into(),
         cost_a: Some(300),
         cost_b: None,
-        other: [("bonuses".into(), json!([{"stat_id":stat,"value":10}]))].into(),
+        other: [(
+            "bonuses".into(),
+            serde_json::to_value((ItemBonus {
+                stat_id: stat,
+                value: 10,
+            },))
+            .unwrap(),
+        )]
+        .into(),
     })
     .collect();
     Arc::new(GameData {
@@ -66,19 +74,9 @@ fn idris_only() -> Arc<GameData> {
         items,
         manifest,
         rules: Vec::new(),
-        official_rules: json!({
-            "five_v_five":{"waves":{"first_spawn_s":45,"interval_s":30}},
-            "patch_413_ability_deltas":{"changes":[
-                {"hero":"Idris","B_weapon_ratio":0.8},
-                {"hero":"Adagio","cooldown_s":[1,1,1,1,1],"burst_heal_health_ratio":1,"empowered_attacks":[1,1,1,1,1]},
-                {"hero":"Lyra","A_heal_per_second":[1,1,1,1,1],"A_cooldown_s":[1,1,1,1,1],"A_hot_health_ratio":1},
-                {"hero":"SAW","B_dps":[1,1,1,1,1],"B_cooldown_s":[1,1,1,1,1]},
-                {"hero":"Karas","B_damage":[1,1,1,1,1]},
-                {"hero":"Shin","C_damage_per_hit":1,"C_hits":1}
-            ]}
-        }),
+        official_rules: sample("aral_rules"),
         abilities: Vec::new(),
-        combat_constants: json!({}),
+        combat_constants: serde_json::to_value(EmptyReply {}).unwrap(),
         content_digest: "synthetic-aral-idris".into(),
         hero_names: vec!["Idris".into()],
         skin_names: Vec::new(),
@@ -86,8 +84,8 @@ fn idris_only() -> Arc<GameData> {
 }
 
 fn content(path: &Path) -> (PathBuf, [String; 3]) {
-    let mut rows = serde_json::Map::new();
-    let mut bindings = serde_json::Map::new();
+    let mut rows = BTreeMap::new();
+    let mut bindings = BTreeMap::new();
     let mut items = Vec::new();
     let talent_ids = [
         ("rare", "PathOfTheSeeker"),
@@ -99,22 +97,52 @@ fn content(path: &Path) -> (PathBuf, [String; 3]) {
         let fragments = format!("{id}_fragments");
         rows.insert(
             id.clone(),
-            json!({"id":id,"hero":"*Idris*","def":format!("*Talent_Idris_{definition}*"),"level":0,"maxLevel":false,"levelRequirements":{}}),
+            PlayerTalent {
+                id: id.clone(),
+                hero: "*Idris*",
+                def: format!("*Talent_Idris_{definition}*"),
+                level: 0,
+                max_level: false,
+                level_requirements: EmptyReply {},
+            },
         );
-        bindings.insert(id.clone(), json!({"levelItem":id,"fragmentItem":fragments}));
+        bindings.insert(
+            id.clone(),
+            TalentBinding {
+                level_item: id.clone(),
+                fragment_item: fragments.clone(),
+            },
+        );
         for item in [&id, &fragments] {
-            items.push(json!({"id":item,"name":item,"slot":"test"}));
+            items.push(ContentItem {
+                id: item.clone(),
+                name: item.clone(),
+                slot: "test",
+            });
         }
         id
     });
     let write = |name: &str, value: Value| {
         fs::write(path.join(name), value.to_string()).unwrap();
     };
-    write("official_getTalentsData.json", json!({"returnValue":rows}));
-    write("official_getSkinManifest.json", json!({"returnValue":"{}"}));
+    write(
+        "official_getTalentsData.json",
+        serde_json::to_value(ArchivedReply {
+            return_value: &rows,
+        })
+        .unwrap(),
+    );
+    write(
+        "official_getSkinManifest.json",
+        serde_json::to_value(ArchivedReply { return_value: "{}" }).unwrap(),
+    );
     write(
         "content.json",
-        json!({"items":items,"talentProgress":bindings}),
+        serde_json::to_value(TalentContent {
+            items,
+            talent_progress: bindings,
+        })
+        .unwrap(),
     );
     (path.join("content.json"), talent_ids)
 }
@@ -181,28 +209,14 @@ async fn cross_home_aral_equips_only_committed_numeric_entitlements() {
         let member = node(&cluster, home);
         let guest = rpc(
             &member.rpc,
-            "createGuestPlayer",
-            json!([
-                "kindred",
-                "en",
-                "US",
-                "production",
-                "en",
-                "BAKLAVA",
-                "android",
-                "",
-                "147219",
-                1,
-                "device",
-                "model",
-                "0"
-            ]),
+            RpcMethod::CreateGuestPlayer.as_str(),
+            android_guest("device", "0"),
         )
         .await;
         let session = rpc(
             &member.rpc,
-            "startSessionForPlayer",
-            json!([guest["returnValue"]["playerUUID"]]),
+            RpcMethod::StartSessionForPlayer.as_str(),
+            (&guest["returnValue"]["playerUUID"],),
         )
         .await;
         let player: Uuid =
@@ -217,11 +231,18 @@ async fn cross_home_aral_equips_only_committed_numeric_entitlements() {
             }
         }
         let token = session["sessionToken"].clone();
-        let request = json!([token,{"lobby":"casual_aral"},"147219"]);
-        rpc(&member.rpc, "joinLobby", request.clone()).await;
+        let request = serde_json::to_value((
+            &token,
+            LobbyJoin {
+                lobby: "casual_aral",
+            },
+            "147219",
+        ))
+        .unwrap();
+        rpc(&member.rpc, RpcMethod::JoinLobby.as_str(), request.clone()).await;
         if index == 0 {
             // An identical home retry must retain one entitlement for the same seat.
-            rpc(&member.rpc, "joinLobby", request).await;
+            rpc(&member.rpc, RpcMethod::JoinLobby.as_str(), request).await;
         }
         guests.push((home, player, token, level));
     }
@@ -236,10 +257,10 @@ async fn cross_home_aral_equips_only_committed_numeric_entitlements() {
     assert_eq!(proposal.phase, Phase::Preparing, "{proposal:?}");
     for (home, _, token, _) in &guests {
         let home_rpc = &node(&cluster, *home).rpc;
-        state(home_rpc, token, "matched_partners").await;
-        let pending = rpc(home_rpc, "queryPendingMatch", json!([token])).await;
+        state(home_rpc, token, LobbyState::MatchedPartners).await;
+        let pending = rpc(home_rpc, RpcMethod::QueryPendingMatch.as_str(), (&token,)).await;
         assert_eq!(pending["returnValue"]["matchId"], proposal.id.to_string());
-        rpc(home_rpc, "acceptMatch", json!([token])).await;
+        rpc(home_rpc, RpcMethod::AcceptMatch.as_str(), (&token,)).await;
     }
     let pool = wait_pool(node(&cluster, leader), |p| {
         p.allocations().values().any(|a| a.phase == Phase::Ready)
@@ -254,11 +275,11 @@ async fn cross_home_aral_equips_only_committed_numeric_entitlements() {
     let mut sockets = Vec::new();
     let cipher = MatchCipher::new(&allocation.id.to_string());
     for (home, player, token, expected) in guests {
-        let playing = state(&node(&cluster, home).rpc, &token, "playing").await;
+        let playing = state(&node(&cluster, home).rpc, &token, LobbyState::Playing).await;
         assert_eq!(playing["matchId"], allocation.id.to_string());
         let address = format!("{}:{}", playing["host"].as_str().unwrap(), playing["port"]);
         let mut socket = login(&address, player, &cipher).await;
-        let m = until(&mut socket, &cipher, 0x045a).await;
+        let m = until(&mut socket, &cipher, wire_opcode::SnapshotAral).await;
         let Fields::AralRoster(roster) = m.fields().unwrap() else {
             panic!("missing ARAL roster")
         };
@@ -274,7 +295,7 @@ async fn cross_home_aral_equips_only_committed_numeric_entitlements() {
         let cipher = MatchCipher::new(&allocation.id.to_string());
         loading.spawn(async move {
             // Every client drains its draft refreshes during the native 20-second timer.
-            while next(&mut socket, &cipher).await.opcode != 0x046c {}
+            while next(&mut socket, &cipher).await.opcode != wire_opcode::BeginLoading {}
             (socket, actor, expected)
         });
     }
@@ -293,21 +314,36 @@ async fn cross_home_aral_equips_only_committed_numeric_entitlements() {
     }
 
     for (socket, actor, _) in &mut sockets {
-        write(socket, &cipher, Message::new(0x046e, [0; 6])).await;
+        write(
+            socket,
+            &cipher,
+            Message::new(wire_opcode::RequestScene, [0; 6]),
+        )
+        .await;
         let mut ready = [0; 6];
         ready[..4].copy_from_slice(&actor.to_be_bytes());
         ready[4] = 1;
-        write(socket, &cipher, Message::new(0x0471, ready)).await;
-        until(socket, &cipher, 0x0471).await;
-        write(socket, &cipher, Message::new(0x046d, [0; 6])).await;
-        until(socket, &cipher, 0x046d).await;
+        write(
+            socket,
+            &cipher,
+            Message::new(wire_opcode::SceneOwner, ready),
+        )
+        .await;
+        until(socket, &cipher, wire_opcode::SceneOwner).await;
+        write(
+            socket,
+            &cipher,
+            Message::new(wire_opcode::SceneConfirmed, [0; 6]),
+        )
+        .await;
+        until(socket, &cipher, wire_opcode::SceneConfirmed).await;
     }
     for (socket, _, _) in &mut sockets {
-        until(socket, &cipher, 0x03ef).await;
+        until(socket, &cipher, wire_opcode::TickSyncA).await;
     }
     for (socket, actor, expected) in &mut sockets {
         let selection = TalentSelection::Slot1;
-        let barrier = Message::new(0, [0; 6]);
+        let barrier = Message::known(halcyon_protocol::Opcode::ClockSync, [0; 6]);
         write(socket, &cipher, selection.request()).await;
         write(socket, &cipher, barrier.clone()).await;
         let received = timeout(Duration::from_secs(4), async {
@@ -336,4 +372,64 @@ async fn cross_home_aral_equips_only_committed_numeric_entitlements() {
     for member in cluster.into_iter().flatten() {
         member.stop().await;
     }
+}
+
+#[derive(serde::Serialize)]
+struct LobbyJoin<'a> {
+    lobby: &'a str,
+}
+
+#[derive(serde::Serialize)]
+struct TalentContent {
+    items: Vec<ContentItem>,
+    #[serde(rename = "talentProgress")]
+    talent_progress: BTreeMap<String, TalentBinding>,
+}
+
+#[derive(serde::Serialize)]
+struct ArchivedReply<T> {
+    #[serde(rename = "returnValue")]
+    return_value: T,
+}
+
+#[derive(serde::Serialize)]
+struct ContentItem {
+    id: String,
+    name: String,
+    slot: &'static str,
+}
+
+#[derive(serde::Serialize)]
+struct TalentBinding {
+    #[serde(rename = "levelItem")]
+    level_item: String,
+    #[serde(rename = "fragmentItem")]
+    fragment_item: String,
+}
+
+#[derive(serde::Serialize)]
+struct PlayerTalent {
+    id: String,
+    hero: &'static str,
+    def: String,
+    level: u32,
+    #[serde(rename = "maxLevel")]
+    max_level: bool,
+    #[serde(rename = "levelRequirements")]
+    level_requirements: EmptyReply,
+}
+
+#[derive(serde::Serialize)]
+struct EmptyReply {}
+
+#[derive(serde::Serialize)]
+struct ItemBonus {
+    stat_id: u32,
+    value: u32,
+}
+
+fn sample(name: &str) -> serde_json::Value {
+    let samples: std::collections::BTreeMap<String, serde_json::Value> =
+        serde_json::from_str(include_str!("fixtures/aral_talent_pool-samples.json")).unwrap();
+    samples.get(name).unwrap().clone()
 }

@@ -1,3 +1,5 @@
+mod pool;
+pub use pool::{PoolHealth, PoolRole, PoolStatus};
 mod sessions;
 
 use std::sync::Arc;
@@ -19,14 +21,21 @@ use halcyon_game::{Rooms, TerminateError};
 use halcyon_platform::{AppState, PlatformError, PlayerActivity};
 use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
-use serde_json::{Value, json};
+use serde_json::Value;
+mod views;
+use halcyon_game::RoomSummary;
+use halcyon_platform::LobbyPhase;
 use sha2::Sha256;
 use uuid::Uuid;
+use views::{
+    Admission, CursorResource, Hosting, Items, Overview, Page, PlayerState, PlayerView,
+    ProblemCode, ProblemResponse,
+};
 
 use sessions::{Session, Sessions};
 
 const PREFIX: &str = "/api/admin/v1";
-pub type PoolStats = Arc<dyn Fn() -> Vec<Value> + Send + Sync>;
+pub type PoolStats = Arc<dyn Fn() -> Vec<PoolStatus> + Send + Sync>;
 
 pub struct AdminConfig {
     pub origin: String,
@@ -130,7 +139,12 @@ async fn guard(State(state): State<Admin>, mut req: Request, next: Next) -> Resp
         || req.uri().path() == "/api/admin/v1/session/")
         && matches!(method.as_str(), "POST" | "DELETE");
     let mut response = if is_api && writes && !matching_origin(&req, &state.config.origin) {
-        Problem::new(StatusCode::FORBIDDEN, "origin_rejected", "Origin rejected").into_response()
+        Problem::new(
+            StatusCode::FORBIDDEN,
+            ProblemCode::OriginRejected,
+            "Origin rejected",
+        )
+        .into_response()
     } else if is_api && !unprotected {
         match state.sessions.lookup(req.headers()) {
             Some(session) => {
@@ -175,13 +189,13 @@ fn asset(content_type: &'static str, content: &'static str) -> Response {
 
 struct Problem {
     status: StatusCode,
-    code: &'static str,
+    code: ProblemCode,
     title: &'static str,
     retry: Option<u64>,
 }
 
 impl Problem {
-    fn new(status: StatusCode, code: &'static str, title: &'static str) -> Self {
+    fn new(status: StatusCode, code: ProblemCode, title: &'static str) -> Self {
         Self {
             status,
             code,
@@ -193,7 +207,7 @@ impl Problem {
     fn invalid() -> Self {
         Self::new(
             StatusCode::BAD_REQUEST,
-            "invalid_request",
+            ProblemCode::InvalidRequest,
             "Invalid request",
         )
     }
@@ -201,19 +215,23 @@ impl Problem {
     fn unauthorized() -> Self {
         Self::new(
             StatusCode::UNAUTHORIZED,
-            "unauthorized",
+            ProblemCode::Unauthorized,
             "Invalid credentials or session",
         )
     }
 
     fn not_found() -> Self {
-        Self::new(StatusCode::NOT_FOUND, "not_found", "Resource not found")
+        Self::new(
+            StatusCode::NOT_FOUND,
+            ProblemCode::NotFound,
+            "Resource not found",
+        )
     }
 
     fn internal() -> Self {
         Self::new(
             StatusCode::INTERNAL_SERVER_ERROR,
-            "internal_error",
+            ProblemCode::InternalError,
             "Internal error",
         )
     }
@@ -229,9 +247,16 @@ impl From<PlatformError> for Problem {
 impl IntoResponse for Problem {
     fn into_response(self) -> Response {
         let request_id = Uuid::new_v4();
-        let mut response = (self.status, Json(json!({
-            "title":self.title, "status":self.status.as_u16(), "code":self.code, "requestId":request_id,
-        }))).into_response();
+        let mut response = (
+            self.status,
+            Json(ProblemResponse {
+                title: self.title,
+                status: self.status.as_u16(),
+                code: self.code,
+                request_id,
+            }),
+        )
+            .into_response();
         response.headers_mut().insert(
             header::CONTENT_TYPE,
             HeaderValue::from_static("application/problem+json"),
@@ -247,34 +272,44 @@ impl IntoResponse for Problem {
 
 type Result<T> = std::result::Result<T, Problem>;
 
-async fn overview(State(state): State<Admin>) -> Result<Json<Value>> {
+async fn overview(State(state): State<Admin>) -> Result<Json<Overview>> {
     let counts = state.platform.counts().await?;
     let (active_rooms, human_seats, bot_seats, reserved_seats) = state.rooms.hosting_counts();
     let capacity = state.rooms.capacity();
     let resources = state.rooms.resource_metrics();
     let admission = if capacity == 0 {
-        "disabled"
+        Admission::Disabled
     } else if state.rooms.available_rooms() == 0 {
-        "full"
+        Admission::Full
     } else {
-        "accepting"
+        Admission::Accepting
     };
-    Ok(Json(json!({
-        "sampledAt":Utc::now(), "startedAt":state.config.started_at,
-        "serverVersion":env!("CARGO_PKG_VERSION"), "clientBuild":state.config.client_build,
-        "onlinePlayers":counts.online_players, "queuedPlayers":counts.queued_players,
-        "activeMatches":active_rooms,
-        "hosting": {
-            "instanceId": state.config.instance_id,
-            "admission": admission, "humanSeats": human_seats, "botSeats": bot_seats,
-            "reservedSeats": reserved_seats, "tickP99Ms": resources.tick_p99_ms, "cpuPercent": resources.process_cpu_percent,
-            "rssBytes": resources.rss_bytes, "outboundBytesPerSecond": resources.egress_bytes_per_second,
+    Ok(Json(Overview {
+        sampled_at: Utc::now(),
+        started_at: state.config.started_at,
+        server_version: env!("CARGO_PKG_VERSION"),
+        client_build: state.config.client_build,
+        online_players: counts.online_players,
+        queued_players: counts.queued_players,
+        active_matches: active_rooms,
+        hosting: Hosting {
+            instance_id: state.config.instance_id,
+            admission,
+            human_seats,
+            bot_seats,
+            reserved_seats,
+            tick_p99_ms: resources.tick_p99_ms,
+            cpu_percent: resources.process_cpu_percent,
+            rss_bytes: resources.rss_bytes,
+            outbound_bytes_per_second: resources.egress_bytes_per_second,
         },
-    })))
+    }))
 }
 
-async fn federation(State(state): State<Admin>) -> Json<Value> {
-    Json(json!({ "items": (state.pools)() }))
+async fn federation(State(state): State<Admin>) -> Json<Items<PoolStatus>> {
+    Json(Items {
+        items: (state.pools)(),
+    })
 }
 
 #[derive(Deserialize)]
@@ -299,7 +334,7 @@ fn page_limit(limit: Option<usize>) -> Result<usize> {
 }
 
 impl Admin {
-    fn encode_cursor(&self, resource: &str, value: &impl Serialize) -> Result<String> {
+    fn encode_cursor(&self, resource: CursorResource, value: &impl Serialize) -> Result<String> {
         let bytes = serde_json::to_vec(value).map_err(|_| Problem::internal())?;
         let mut mac = Hmac::<Sha256>::new_from_slice(&self.cursor_key).expect("valid key length");
         mac.update(resource.as_bytes());
@@ -311,7 +346,11 @@ impl Admin {
         ))
     }
 
-    fn decode_cursor<T: DeserializeOwned>(&self, resource: &str, cursor: &str) -> Result<T> {
+    fn decode_cursor<T: DeserializeOwned>(
+        &self,
+        resource: CursorResource,
+        cursor: &str,
+    ) -> Result<T> {
         if cursor.len() > 512 {
             return Err(Problem::invalid());
         }
@@ -330,42 +369,46 @@ impl Admin {
         serde_json::from_slice(&bytes).map_err(|_| Problem::invalid())
     }
 
-    fn player_view(&self, activity: PlayerActivity) -> Value {
+    fn player_view(&self, activity: PlayerActivity) -> PlayerView {
         let profile = activity.profile;
         let lobby = profile.lobby.as_ref();
         let match_id = lobby.and_then(|lobby| lobby.match_id);
         let platform_state = if activity.online {
-            match lobby.map(|lobby| lobby.phase.as_str()) {
-                Some("pending" | "queued") => "pending_auto",
-                Some("offered" | "reserving") => "match_pending",
-                Some("playing") => "playing",
-                Some("finished") => "post_match",
-                _ => "menus",
+            match lobby.and_then(|lobby| lobby.phase_kind()) {
+                Some(LobbyPhase::Pending | LobbyPhase::Queued) => PlayerState::PendingAuto,
+                Some(LobbyPhase::Offered | LobbyPhase::Reserving) => PlayerState::MatchPending,
+                Some(LobbyPhase::Playing) => PlayerState::Playing,
+                Some(LobbyPhase::Finished) => PlayerState::PostMatch,
+                _ => PlayerState::Menus,
             }
         } else {
-            "offline"
+            PlayerState::Offline
         };
         let local_host = match_id
-            .filter(|id| self.rooms.detail(*id).is_some())
+            .filter(|id| self.rooms.detail_typed(*id).is_some())
             .map(|_| self.config.instance_id);
-        json!({
-            "id":profile.player_id, "displayName":profile.name, "online":activity.online,
-            "platformState":platform_state, "currentMatchId":match_id,
-            "currentMatchHostId":local_host, "lastSeenAt":DateTime::from_timestamp(activity.last_seen, 0),
-        })
+        PlayerView {
+            id: profile.player_id,
+            display_name: profile.name,
+            online: activity.online,
+            platform_state,
+            current_match_id: match_id,
+            current_match_host_id: local_host,
+            last_seen_at: DateTime::from_timestamp(activity.last_seen, 0),
+        }
     }
 }
 
 async fn players(
     State(state): State<Admin>,
     query: std::result::Result<Query<PlayerQuery>, QueryRejection>,
-) -> Result<Json<Value>> {
+) -> Result<Json<Page<PlayerView>>> {
     let Query(query) = query.map_err(|_| Problem::invalid())?;
     let limit = page_limit(query.limit)?;
     let after = query
         .cursor
         .as_deref()
-        .map(|cursor| state.decode_cursor::<PlayerCursor>("players", cursor))
+        .map(|cursor| state.decode_cursor::<PlayerCursor>(CursorResource::Players, cursor))
         .transpose()?
         .map(|cursor| {
             (cursor.online == query.online)
@@ -381,7 +424,7 @@ async fn players(
         rows.truncate(limit);
         let after = rows.last().expect("positive page limit").profile.player_id;
         Some(state.encode_cursor(
-            "players",
+            CursorResource::Players,
             &PlayerCursor {
                 online: query.online,
                 after,
@@ -391,13 +434,16 @@ async fn players(
         None
     };
     let items: Vec<_> = rows.into_iter().map(|row| state.player_view(row)).collect();
-    Ok(Json(json!({ "items":items, "nextCursor":next })))
+    Ok(Json(Page {
+        items,
+        next_cursor: next,
+    }))
 }
 
 async fn player(
     State(state): State<Admin>,
     id: std::result::Result<Path<Uuid>, PathRejection>,
-) -> Result<Json<Value>> {
+) -> Result<Json<PlayerView>> {
     let Path(id) = id.map_err(|_| Problem::invalid())?;
     let activity = state
         .platform
@@ -407,29 +453,7 @@ async fn player(
     Ok(Json(state.player_view(activity)))
 }
 
-#[derive(Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-enum MatchPhase {
-    Allocated,
-    HeroSelect,
-    Loading,
-    Running,
-    Ending,
-    Ended,
-}
-
-impl MatchPhase {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Allocated => "allocated",
-            Self::HeroSelect => "hero_select",
-            Self::Loading => "loading",
-            Self::Running => "running",
-            Self::Ending => "ending",
-            Self::Ended => "ended",
-        }
-    }
-}
+use halcyon_game::RoomPhase as MatchPhase;
 
 #[derive(Deserialize)]
 struct MatchQuery {
@@ -450,24 +474,23 @@ struct MatchCursor {
     order: MatchOrder,
 }
 
-fn match_order(room: &Value) -> Result<MatchOrder> {
+fn match_order(room: &RoomSummary) -> Result<MatchOrder> {
     Ok(MatchOrder {
-        created: serde_json::from_value(room["createdAt"].clone())
-            .map_err(|_| Problem::internal())?,
-        id: serde_json::from_value(room["id"].clone()).map_err(|_| Problem::internal())?,
+        created: room.created_at.parse().map_err(|_| Problem::internal())?,
+        id: room.id,
     })
 }
 
 async fn matches(
     State(state): State<Admin>,
     query: std::result::Result<Query<MatchQuery>, QueryRejection>,
-) -> Result<Json<Value>> {
+) -> Result<Json<Page<RoomSummary>>> {
     let Query(query) = query.map_err(|_| Problem::invalid())?;
     let limit = page_limit(query.limit)?;
     let after = query
         .cursor
         .as_deref()
-        .map(|cursor| state.decode_cursor::<MatchCursor>("matches", cursor))
+        .map(|cursor| state.decode_cursor::<MatchCursor>(CursorResource::Matches, cursor))
         .transpose()?
         .map(|cursor| {
             (cursor.phase == query.phase)
@@ -477,13 +500,9 @@ async fn matches(
         .transpose()?;
     let mut keyed = state
         .rooms
-        .list()
+        .list_typed()
         .into_iter()
-        .filter(|room| {
-            query
-                .phase
-                .is_none_or(|phase| room["phase"] == phase.as_str())
-        })
+        .filter(|room| query.phase.is_none_or(|phase| room.phase == phase))
         .map(|room| Ok((match_order(&room)?, room)))
         .collect::<Result<Vec<_>>>()?;
     keyed.retain(|(key, _)| after.as_ref().is_none_or(|cursor| key < cursor));
@@ -493,7 +512,7 @@ async fn matches(
     let next = if has_more {
         let order = match_order(&keyed.last().expect("positive page limit").1)?;
         Some(state.encode_cursor(
-            "matches",
+            CursorResource::Matches,
             &MatchCursor {
                 phase: query.phase,
                 order,
@@ -503,25 +522,29 @@ async fn matches(
         None
     };
     let items: Vec<_> = keyed.into_iter().map(|(_, value)| value).collect();
-    Ok(Json(json!({ "items":items, "nextCursor":next })))
+    Ok(Json(Page {
+        items,
+        next_cursor: next,
+    }))
 }
 
 async fn match_detail(
     State(state): State<Admin>,
     id: std::result::Result<Path<Uuid>, PathRejection>,
-) -> Result<Json<Value>> {
+) -> Result<Json<RoomSummary>> {
     let Path(id) = id.map_err(|_| Problem::invalid())?;
-    let mut room = state.rooms.detail(id).ok_or_else(Problem::not_found)?;
-    if let Some(participants) = room["participants"].as_array_mut() {
-        for participant in participants {
-            if let Ok(id) = serde_json::from_value(participant["playerId"].clone())
-                && let Some(activity) = state.platform.player_activity(id).await?
-            {
-                participant["displayName"] = json!(activity.profile.name);
-                if participant["homeInstanceId"].is_null() {
-                    participant["homeInstanceId"] = json!(state.config.instance_id);
-                }
-            }
+    let mut room = state
+        .rooms
+        .detail_typed(id)
+        .ok_or_else(Problem::not_found)?;
+    for participant in room.participants.iter_mut().flatten() {
+        if let Some(id) = participant.player_id
+            && let Some(activity) = state.platform.player_activity(id).await?
+        {
+            participant.display_name = activity.profile.name;
+            participant
+                .home_instance_id
+                .get_or_insert(state.config.instance_id);
         }
     }
     Ok(Json(room))
@@ -571,7 +594,7 @@ async fn terminate(
             TerminateError::Missing => Problem::not_found(),
             TerminateError::Conflict => Problem::new(
                 StatusCode::CONFLICT,
-                "termination_conflict",
+                ProblemCode::TerminationConflict,
                 "Termination conflicts with room state",
             ),
         })?;

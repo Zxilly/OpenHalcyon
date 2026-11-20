@@ -96,7 +96,11 @@ fn two_homes_one_host_order_independent_readiness() {
         p.apply(a.home, Command::Cancel(key(&a))),
         Err(Error::Conflict)
     );
-    let result = serde_json::json!({"winner":1,"reason":"completed"});
+    let result = serde_json::to_value(MatchOutcome {
+        winner: 1,
+        reason: "completed",
+    })
+    .unwrap();
     let hash = result_digest(&result).unwrap();
     assert_eq!(
         p.apply(
@@ -449,4 +453,10 @@ fn numeric_talent_grants_are_scoped_to_the_committed_home_and_roster() {
     assert!(pool.apply(home, Command::Enqueue(payload.clone())).is_ok());
     payload.talent_levels[0].insert(273, std::num::NonZeroU8::new(4).unwrap());
     assert!(pool.apply(home, Command::Enqueue(payload)).is_err());
+}
+
+#[derive(serde::Serialize)]
+struct MatchOutcome<'a> {
+    winner: u8,
+    reason: &'a str,
 }

@@ -1,4 +1,5 @@
 use halcyon_matchmaking::{Command, Error as ApplyError, Pool};
+pub use openraft::ServerState;
 use openraft::{BasicNode, LogId, StoredMembership};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::{collections::BTreeMap, net::SocketAddr, path::PathBuf};

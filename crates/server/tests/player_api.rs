@@ -1,3 +1,4 @@
+use halcyon_platform::{Chat, CreateGuest, Queue, ResumeGuest};
 use std::{
     fs,
     net::TcpListener,
@@ -6,7 +7,7 @@ use std::{
 };
 
 use reqwest::{Certificate, Client, StatusCode};
-use serde_json::{Value, json};
+use serde_json::Value;
 
 struct Server(Child);
 
@@ -103,7 +104,9 @@ private_key = "tls.key"
     assert_eq!(address.trim_end(), https.to_string());
     let guest_response = client
         .post(format!("{api}/guests"))
-        .json(&json!({"name":"REST guest"}))
+        .json(&CreateGuest {
+            name: "REST guest".to_string(),
+        })
         .send()
         .await
         .unwrap()
@@ -113,7 +116,9 @@ private_key = "tls.key"
     let guest: Value = guest_response.json().await.unwrap();
     let resumed: Value = client
         .post(format!("{api}/sessions"))
-        .json(&json!({"recoveryToken":guest["recoveryToken"]}))
+        .json(&ResumeGuest {
+            recovery_token: guest["recoveryToken"].as_str().unwrap().to_owned(),
+        })
         .send()
         .await
         .unwrap()
@@ -141,7 +146,10 @@ private_key = "tls.key"
             client
                 .post(&queue)
                 .bearer_auth(token)
-                .json(&json!({"mode":mode}))
+                .json(&Queue {
+                    mode: mode.to_string(),
+                    difficulty: None
+                })
                 .send()
                 .await
                 .unwrap()
@@ -177,7 +185,10 @@ private_key = "tls.key"
         client
             .post(&queue)
             .bearer_auth(token)
-            .json(&json!({"mode":"5v5_pvp_casual"}))
+            .json(&Queue {
+                mode: "5v5_pvp_casual".to_string(),
+                difficulty: None
+            })
             .send()
             .await
             .unwrap()
@@ -210,16 +221,19 @@ private_key = "tls.key"
         .json()
         .await
         .unwrap();
-    assert!(
-        events["events"]
-            .as_array()
+    assert!(events["events"].as_array().unwrap().iter().any(|event| {
+        event["body"]
+            == serde_json::to_value(QueueEvent {
+                r#type: "queued",
+                mode: "5v5_pvp_casual",
+            })
             .unwrap()
-            .iter()
-            .any(|event| event["body"] == json!({"type":"queued","mode":"5v5_pvp_casual"}))
-    );
+    }));
     let second: Value = client
         .post(format!("{api}/guests"))
-        .json(&json!({"name":"Second guest"}))
+        .json(&CreateGuest {
+            name: "Second guest".to_string(),
+        })
         .send()
         .await
         .unwrap()
@@ -233,7 +247,10 @@ private_key = "tls.key"
         client
             .post(&queue)
             .bearer_auth(second_token)
-            .json(&json!({"mode":"5v5_pvp_casual"}))
+            .json(&Queue {
+                mode: "5v5_pvp_casual".to_string(),
+                difficulty: None
+            })
             .send()
             .await
             .unwrap()
@@ -269,7 +286,9 @@ private_key = "tls.key"
         client
             .post(format!("{api}/matches/{match_id}/chat"))
             .bearer_auth(token)
-            .json(&json!({"text":"Hello from HTTPS"}))
+            .json(&Chat {
+                text: "Hello from HTTPS".to_string()
+            })
             .send()
             .await
             .unwrap()
@@ -311,4 +330,10 @@ private_key = "tls.key"
         .await
         .unwrap();
     assert_eq!(cleartext.status(), StatusCode::NOT_FOUND);
+}
+
+#[derive(serde::Serialize)]
+struct QueueEvent<'a> {
+    r#type: &'a str,
+    mode: &'a str,
 }

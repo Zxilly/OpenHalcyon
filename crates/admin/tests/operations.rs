@@ -9,10 +9,10 @@ use axum::{
     body::{Body, to_bytes},
     http::{HeaderMap, Request, StatusCode, header},
 };
-use halcyon_admin::{AdminConfig, router};
+use halcyon_admin::{AdminConfig, PoolHealth, PoolRole, PoolStatus, router};
 use halcyon_game::Rooms;
 use halcyon_platform::{AppState, PlatformConfig};
-use serde_json::{Value, json};
+use serde_json::Value;
 use tower::ServiceExt;
 use uuid::Uuid;
 
@@ -50,7 +50,18 @@ fn service() -> (Router, AppState) {
         },
         platform.clone(),
         rooms,
-        Arc::new(Vec::new),
+        Arc::new(|| {
+            vec![PoolStatus {
+                pool_id: Uuid::nil(),
+                state: PoolHealth::NoQuorum,
+                local_role: PoolRole::Follower,
+                leader_id: None,
+                voter_count: 3,
+                last_contact_at: None,
+                eligible_hosts: None,
+                local_tickets: 2,
+            }]
+        }),
     )
     .unwrap();
     (app, platform)
@@ -107,7 +118,11 @@ fn cookie(headers: &HeaderMap) -> &str {
 #[tokio::test]
 async fn admin_auth_origin_rotation_players_and_termination() {
     let (app, platform) = service();
-    let credentials = json!({"username":"owner", "password":PASSWORD});
+    let credentials = serde_json::to_value(Credentials {
+        username: "owner",
+        password: PASSWORD,
+    })
+    .unwrap();
     let denied = request(&app, "POST", "/session", None, None, credentials.clone()).await;
     assert_eq!(denied.0, StatusCode::FORBIDDEN);
     assert_eq!(denied.2["code"], "origin_rejected");
@@ -192,6 +207,24 @@ async fn admin_auth_origin_rotation_players_and_termination() {
         .await
         .2;
     assert_eq!(overview["onlinePlayers"], 1);
+    let (_, _, pools) = request(
+        &app,
+        "GET",
+        "/federation/pools",
+        None,
+        Some(key),
+        Value::Null,
+    )
+    .await;
+    let pool = &pools["items"][0];
+    assert_eq!(pool["poolId"], Uuid::nil().to_string());
+    assert_eq!(pool["state"], "no_quorum");
+    assert_eq!(pool["localRole"], "follower");
+    assert_eq!(pool["voterCount"], 3);
+    assert_eq!(pool["localTickets"], 2);
+    for key in ["leaderId", "lastContactAt", "eligibleHosts"] {
+        assert_eq!(pool.get(key), Some(&Value::Null));
+    }
 
     platform
         .join(&a.session_token, "solo".into())
@@ -214,7 +247,10 @@ async fn admin_auth_origin_rotation_players_and_termination() {
     assert!(detail["participants"][0]["homeInstanceId"].is_string());
     assert!(detail["participants"][1]["homeInstanceId"].is_null());
     let endpoint = format!("{endpoint}/termination");
-    let reason = json!({"reason":"admin integration test"});
+    let reason = serde_json::to_value(OperatorReason {
+        reason: "admin integration test",
+    })
+    .unwrap();
     assert_eq!(
         request(
             &app,
@@ -269,7 +305,7 @@ async fn admin_auth_origin_rotation_players_and_termination() {
             &endpoint,
             Some(ORIGIN),
             Some(key),
-            json!({"reason":"changed"})
+            serde_json::to_value(OperatorReason { reason: "changed" }).unwrap()
         )
         .await
         .0,
@@ -321,9 +357,11 @@ async fn login_rate_limit_unifies_invalid_credentials() {
             "/session",
             Some(ORIGIN),
             None,
-            json!({
-                "username":username, "password":"incorrect"
-            }),
+            serde_json::to_value(Credentials {
+                username,
+                password: "incorrect",
+            })
+            .unwrap(),
         )
         .await;
         assert_eq!(response.0, StatusCode::UNAUTHORIZED);
@@ -335,9 +373,11 @@ async fn login_rate_limit_unifies_invalid_credentials() {
         "/session",
         Some(ORIGIN),
         None,
-        json!({
-            "username":"owner", "password":PASSWORD
-        }),
+        serde_json::to_value(Credentials {
+            username: "owner",
+            password: PASSWORD,
+        })
+        .unwrap(),
     )
     .await;
     assert_eq!(response.0, StatusCode::TOO_MANY_REQUESTS);
@@ -349,4 +389,15 @@ async fn login_rate_limit_unifies_invalid_credentials() {
             .unwrap()
             >= 1
     );
+}
+
+#[derive(serde::Serialize)]
+struct Credentials<'a> {
+    username: &'a str,
+    password: &'a str,
+}
+
+#[derive(serde::Serialize)]
+struct OperatorReason<'a> {
+    reason: &'a str,
 }
