@@ -6,6 +6,7 @@ pub use admission::{AdmissionPolicy, PortRange, ResourceMetrics};
 mod aral;
 mod aral_death;
 mod aral_inventory;
+mod aral_item_actions;
 mod aral_spawn;
 mod commands;
 mod compact;
@@ -1536,6 +1537,7 @@ impl Room {
             aral_death::schedule(self, &events);
             aral_death::publish_approaches(self, &events);
         }
+        self.publish_aral_items(&events);
         self.tick_observers(&events);
         for event in &events {
             match *event {

@@ -283,8 +283,8 @@ pub(super) fn append_inventory(out: &mut Vec<Message>, world: &World, entity: &E
         }
         // HP, max energy, armor, shield and weapon power already include
         // equipment in the full declaration. Restore the remaining modifiers.
-        for (stat, bonus) in world.item_bonuses(held.kind) {
-            if matches!(stat, 3 | 5 | 9 | 11 | 15 | 18 | 25 | 30 | 31) {
+        for (stat, bonus) in world.item_modifiers(held.kind) {
+            if stat.restore_after_spawn() {
                 out.push(modifier(actor, stat, bonus));
             }
         }
@@ -307,7 +307,7 @@ pub(super) fn append_purchase(
         return;
     }
     for used in &receipt.consumed {
-        for (stat, bonus) in world.item_bonuses(used.kind) {
+        for (stat, bonus) in world.item_modifiers(used.kind) {
             out.push(modifier(actor, stat, -bonus));
         }
         let mut body = [actor.to_be_bytes(), used.instance.to_be_bytes()].concat();
@@ -316,18 +316,18 @@ pub(super) fn append_purchase(
     }
     let granted = receipt.granted;
     out.push(item_grant(actor, granted.kind.template(), granted.instance));
-    for (stat, bonus) in world.item_bonuses(granted.kind) {
+    for (stat, bonus) in world.item_modifiers(granted.kind) {
         out.push(modifier(actor, stat, bonus));
     }
 }
 
-pub(super) fn modifier(actor: u32, stat: u8, value: f32) -> Message {
+pub(super) fn modifier(actor: u32, stat: halcyon_sim::NativeItemStat, value: f32) -> Message {
     halcyon_protocol::AttributeChange {
         actor,
         source: u32::MAX,
         value,
-        index: stat,
-        layer: if stat == 18 { 2 } else { 1 },
+        index: stat as u8,
+        layer: stat.layer(),
         set_mode: 0,
     }
     .message()

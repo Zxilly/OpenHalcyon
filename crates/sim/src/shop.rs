@@ -1,5 +1,9 @@
+#[path = "item_modifiers.rs"]
+mod item_modifiers;
 use super::*;
 use halcyon_data::items::{ItemActiveParameter, ItemTuning};
+use item_modifiers::EffectDelta;
+pub use item_modifiers::NativeItemStat;
 /// Base-shop purchases backed by named stats and observed component semantics.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BasicItem {
@@ -84,7 +88,7 @@ struct Definition {
     name: &'static str,
     combine: u32,
     components: &'static [BasicItem],
-    bonuses: &'static [(u8, f32)],
+    bonuses: &'static [(NativeItemStat, f32)],
 }
 
 const fn def(
@@ -93,7 +97,7 @@ const fn def(
     name: &'static str,
     combine: u32,
     components: &'static [BasicItem],
-    bonuses: &'static [(u8, f32)],
+    bonuses: &'static [(NativeItemStat, f32)],
 ) -> Definition {
     Definition {
         kind,
@@ -105,18 +109,40 @@ const fn def(
     }
 }
 
+use NativeItemStat::*;
 const OFFERS: [Definition; 59] = [
-    def(WeaponBlade, 458, "Item_WeaponBlade", 300, &[], &[(4, 10.)]),
-    def(LightArmor, 469, "Item_LightArmor", 300, &[], &[(7, 25.)]),
-    def(LightShield, 501, "Item_LightShield", 300, &[], &[(8, 25.)]),
-    def(Oakheart, 467, "Item_Oakheart", 300, &[], &[(0, 150.)]),
+    def(
+        WeaponBlade,
+        458,
+        "Item_WeaponBlade",
+        300,
+        &[],
+        &[(WeaponPower, 10.)],
+    ),
+    def(
+        LightArmor,
+        469,
+        "Item_LightArmor",
+        300,
+        &[],
+        &[(Armor, 25.)],
+    ),
+    def(
+        LightShield,
+        501,
+        "Item_LightShield",
+        300,
+        &[],
+        &[(Shield, 25.)],
+    ),
+    def(Oakheart, 467, "Item_Oakheart", 300, &[], &[(Health, 150.)]),
     def(
         EnergyBattery,
         472,
         "Item_EnergyBattery",
         300,
         &[],
-        &[(2, 100.), (3, 1.5)],
+        &[(Energy, 100.), (EnergyRegen, 1.5)],
     ),
     def(
         HeavySteel,
@@ -124,7 +150,7 @@ const OFFERS: [Definition; 59] = [
         "Item_HeavySteel",
         850,
         &[WeaponBlade],
-        &[(4, 45.)],
+        &[(WeaponPower, 45.)],
     ),
     def(
         SixSins,
@@ -132,16 +158,23 @@ const OFFERS: [Definition; 59] = [
         "Item_SixSins",
         350,
         &[WeaponBlade],
-        &[(4, 25.)],
+        &[(WeaponPower, 25.)],
     ),
-    def(CrystalBit, 459, "Item_CrystalBit", 300, &[], &[(5, 15.)]),
+    def(
+        CrystalBit,
+        459,
+        "Item_CrystalBit",
+        300,
+        &[],
+        &[(CrystalPower, 15.)],
+    ),
     def(
         SwiftShooter,
         460,
         "Item_SwiftShooter",
         300,
         &[],
-        &[(15, 0.1)],
+        &[(AttackSpeed, 0.1)],
     ),
     def(
         BlazingSalvo,
@@ -149,7 +182,7 @@ const OFFERS: [Definition; 59] = [
         "Item_BlazingSalvo",
         400,
         &[SwiftShooter],
-        &[(15, 0.2)],
+        &[(AttackSpeed, 0.2)],
     ),
     def(
         Hourglass,
@@ -157,7 +190,7 @@ const OFFERS: [Definition; 59] = [
         "Item_Hourglass",
         250,
         &[],
-        &[(25, 0.075), (3, 0.25)],
+        &[(CooldownSpeed, 0.075), (EnergyRegen, 0.25)],
     ),
     def(
         Chronograph,
@@ -165,7 +198,7 @@ const OFFERS: [Definition; 59] = [
         "Item_Chronograph",
         550,
         &[Hourglass],
-        &[(25, 0.15), (3, 0.75)],
+        &[(CooldownSpeed, 0.15), (EnergyRegen, 0.75)],
     ),
     def(SprintBoots, 477, "Item_SprintBoots", 300, &[], &[]),
     def(
@@ -174,7 +207,7 @@ const OFFERS: [Definition; 59] = [
         "Item_TravelBoots",
         350,
         &[SprintBoots],
-        &[(0, 100.)],
+        &[(Health, 100.)],
     ),
     def(
         AlternatingCurrent,
@@ -182,7 +215,7 @@ const OFFERS: [Definition; 59] = [
         "Item_AlternatingCurrent",
         1050,
         &[BlazingSalvo, HeavyPrism],
-        &[(5, 45.), (15, 0.4)],
+        &[(CrystalPower, 45.), (AttackSpeed, 0.4)],
     ),
     def(
         StormguardBanner,
@@ -190,7 +223,7 @@ const OFFERS: [Definition; 59] = [
         "Item_StormguardBanner",
         300,
         &[Oakheart],
-        &[(0, 150.)],
+        &[(Health, 150.)],
     ),
     def(
         EclipsePrism,
@@ -198,7 +231,7 @@ const OFFERS: [Definition; 59] = [
         "Item_EclipsePrism",
         350,
         &[CrystalBit],
-        &[(5, 30.0)],
+        &[(CrystalPower, 30.0)],
     ),
     def(
         Sorrowblade,
@@ -206,7 +239,7 @@ const OFFERS: [Definition; 59] = [
         "Item_Sorrowblade",
         1300,
         &[SixSins, HeavySteel],
-        &[(4, 120.0)],
+        &[(WeaponPower, 120.0)],
     ),
     def(
         Shatterglass,
@@ -214,7 +247,7 @@ const OFFERS: [Definition; 59] = [
         "Item_Shatterglass",
         1300,
         &[EclipsePrism, HeavyPrism],
-        &[(5, 130.0)],
+        &[(CrystalPower, 130.0)],
     ),
     def(
         CoatOfPlates,
@@ -222,7 +255,7 @@ const OFFERS: [Definition; 59] = [
         "Item_CoatOfPlates",
         450,
         &[LightArmor],
-        &[(7, 55.0)],
+        &[(Armor, 55.0)],
     ),
     def(
         MetalJacket,
@@ -230,7 +263,7 @@ const OFFERS: [Definition; 59] = [
         "Item_MetalJacket",
         1150,
         &[CoatOfPlates],
-        &[(7, 95.0)],
+        &[(Armor, 95.0)],
     ),
     def(
         VoidBattery,
@@ -238,7 +271,7 @@ const OFFERS: [Definition; 59] = [
         "Item_VoidBattery",
         400,
         &[EnergyBattery],
-        &[(2, 250.0), (3, 3.0)],
+        &[(Energy, 250.0), (EnergyRegen, 3.0)],
     ),
     def(
         Clockwork,
@@ -246,7 +279,12 @@ const OFFERS: [Definition; 59] = [
         "Item_Clockwork",
         900,
         &[Chronograph, VoidBattery],
-        &[(5, 30.0), (2, 400.0), (3, 5.0), (25, 0.2)],
+        &[
+            (CrystalPower, 30.0),
+            (Energy, 400.0),
+            (EnergyRegen, 5.0),
+            (CooldownSpeed, 0.2),
+        ],
     ),
     def(
         SerpentMask,
@@ -254,7 +292,7 @@ const OFFERS: [Definition; 59] = [
         "Item_SerpentMask",
         850,
         &[HeavySteel, BarbedNeedle],
-        &[(4, 70.0)],
+        &[(WeaponPower, 70.0)],
     ),
     def(
         ReflexBlock,
@@ -262,7 +300,7 @@ const OFFERS: [Definition; 59] = [
         "Item_ReflexBlock",
         400,
         &[Oakheart],
-        &[(0, 150.0)],
+        &[(Health, 150.0)],
     ),
     def(
         Frostburn,
@@ -270,7 +308,7 @@ const OFFERS: [Definition; 59] = [
         "Item_Frostburn",
         1000,
         &[HeavyPrism, EclipsePrism],
-        &[(5, 90.0)],
+        &[(CrystalPower, 90.0)],
     ),
     def(
         FountainOfRenewal,
@@ -278,7 +316,7 @@ const OFFERS: [Definition; 59] = [
         "Item_FountainOfRenewal",
         500,
         &[Warmail, Lifespring],
-        &[(0, 400.0), (7, 40.0), (8, 40.0)],
+        &[(Health, 400.0), (Armor, 40.0), (Shield, 40.0)],
     ),
     def(
         Crucible,
@@ -286,7 +324,7 @@ const OFFERS: [Definition; 59] = [
         "Item_Crucible",
         650,
         &[ReflexBlock, Dragonheart],
-        &[(0, 550.0)],
+        &[(Health, 550.0)],
     ),
     def(
         JourneyBoots,
@@ -294,7 +332,7 @@ const OFFERS: [Definition; 59] = [
         "Item_JourneyBoots",
         750,
         &[TravelBoots],
-        &[(0, 150.0)],
+        &[(Health, 150.0)],
     ),
     def(
         HalcyonChargers,
@@ -302,7 +340,12 @@ const OFFERS: [Definition; 59] = [
         "Item_HalcyonChargers",
         50,
         &[TravelBoots, VoidBattery],
-        &[(0, 150.0), (25, 0.1), (2, 250.0), (3, 3.5)],
+        &[
+            (Health, 150.0),
+            (CooldownSpeed, 0.1),
+            (Energy, 250.0),
+            (EnergyRegen, 3.5),
+        ],
     ),
     def(
         Aftershock,
@@ -310,7 +353,11 @@ const OFFERS: [Definition; 59] = [
         "Item_Aftershock",
         1150,
         &[Chronograph, EclipsePrism],
-        &[(5, 30.0), (3, 1.0), (25, 0.15)],
+        &[
+            (CrystalPower, 30.0),
+            (EnergyRegen, 1.0),
+            (CooldownSpeed, 0.15),
+        ],
     ),
     def(
         WarTreads,
@@ -318,7 +365,7 @@ const OFFERS: [Definition; 59] = [
         "Item_WarTreads",
         300,
         &[Dragonheart, TravelBoots],
-        &[(0, 400.0)],
+        &[(Health, 400.0)],
     ),
     def(
         AtlasPauldron,
@@ -326,7 +373,7 @@ const OFFERS: [Definition; 59] = [
         "Item_AtlasPauldron",
         950,
         &[CoatOfPlates],
-        &[(7, 65.0)],
+        &[(Armor, 65.0)],
     ),
     def(
         BookOfEulogies,
@@ -334,7 +381,7 @@ const OFFERS: [Definition; 59] = [
         "Item_BookOfEulogies",
         300,
         &[],
-        &[(4, 5.0)],
+        &[(WeaponPower, 5.0)],
     ),
     def(
         BarbedNeedle,
@@ -342,7 +389,7 @@ const OFFERS: [Definition; 59] = [
         "Item_BarbedNeedle",
         500,
         &[BookOfEulogies],
-        &[(4, 10.0)],
+        &[(WeaponPower, 10.0)],
     ),
     def(
         KineticShield,
@@ -350,7 +397,7 @@ const OFFERS: [Definition; 59] = [
         "Item_KineticShield",
         450,
         &[LightShield],
-        &[(8, 55.0)],
+        &[(Shield, 55.0)],
     ),
     def(
         Lifespring,
@@ -358,7 +405,7 @@ const OFFERS: [Definition; 59] = [
         "Item_Lifespring",
         500,
         &[Oakheart],
-        &[(0, 200.0)],
+        &[(Health, 200.0)],
     ),
     def(
         BreakingPoint,
@@ -366,7 +413,7 @@ const OFFERS: [Definition; 59] = [
         "Item_BreakingPoint",
         850,
         &[HeavySteel, BlazingSalvo],
-        &[(4, 50.0), (15, 0.2)],
+        &[(WeaponPower, 50.0), (AttackSpeed, 0.2)],
     ),
     def(
         EveOfHarvest,
@@ -374,7 +421,7 @@ const OFFERS: [Definition; 59] = [
         "Item_EveOfHarvest",
         850,
         &[VoidBattery, HeavyPrism],
-        &[(5, 60.0), (2, 300.0), (3, 4.0)],
+        &[(CrystalPower, 60.0), (Energy, 300.0), (EnergyRegen, 4.0)],
     ),
     def(
         HeavyPrism,
@@ -382,7 +429,7 @@ const OFFERS: [Definition; 59] = [
         "Item_HeavyPrism",
         750,
         &[CrystalBit],
-        &[(5, 45.0)],
+        &[(CrystalPower, 45.0)],
     ),
     def(
         Contraption,
@@ -390,7 +437,7 @@ const OFFERS: [Definition; 59] = [
         "Item_Contraption",
         700,
         &[Chronograph, Flaregun],
-        &[(0, 450.0), (3, 2.0), (25, 0.2)],
+        &[(Health, 450.0), (EnergyRegen, 2.0), (CooldownSpeed, 0.2)],
     ),
     def(
         Flaregun,
@@ -398,7 +445,7 @@ const OFFERS: [Definition; 59] = [
         "Item_Flaregun",
         300,
         &[Oakheart],
-        &[(0, 300.0)],
+        &[(Health, 300.0)],
     ),
     def(
         Stormcrown,
@@ -406,7 +453,7 @@ const OFFERS: [Definition; 59] = [
         "Item_Stormcrown",
         1000,
         &[StormguardBanner, Chronograph],
-        &[(0, 300.0), (3, 2.0), (25, 0.2)],
+        &[(Health, 300.0), (EnergyRegen, 2.0), (CooldownSpeed, 0.2)],
     ),
     def(
         PoisonedShiv,
@@ -414,7 +461,7 @@ const OFFERS: [Definition; 59] = [
         "Item_PoisonedShiv",
         1250,
         &[BlazingSalvo, BarbedNeedle],
-        &[(4, 35.0), (15, 0.35)],
+        &[(WeaponPower, 35.0), (AttackSpeed, 0.35)],
     ),
     def(
         Spellfire,
@@ -422,7 +469,7 @@ const OFFERS: [Definition; 59] = [
         "Item_Spellfire",
         1000,
         &[HeavyPrism, EclipsePrism],
-        &[(5, 80.0)],
+        &[(CrystalPower, 80.0)],
     ),
     def(
         DragonsEye,
@@ -430,7 +477,7 @@ const OFFERS: [Definition; 59] = [
         "Item_DragonsEye",
         1300,
         &[EclipsePrism, HeavyPrism],
-        &[(5, 75.0)],
+        &[(CrystalPower, 75.0)],
     ),
     def(
         Spellsword,
@@ -438,7 +485,11 @@ const OFFERS: [Definition; 59] = [
         "Item_Spellsword",
         200,
         &[HeavySteel, SixSins, Chronograph],
-        &[(4, 85.0), (25, 0.2), (3, 2.0)],
+        &[
+            (WeaponPower, 85.0),
+            (CooldownSpeed, 0.2),
+            (EnergyRegen, 2.0),
+        ],
     ),
     def(
         SlumberingHusk,
@@ -446,7 +497,7 @@ const OFFERS: [Definition; 59] = [
         "Item_SlumberingHusk",
         600,
         &[KineticShield, CoatOfPlates],
-        &[(7, 55.0), (8, 55.0)],
+        &[(Armor, 55.0), (Shield, 55.0)],
     ),
     def(
         Warmail,
@@ -454,7 +505,7 @@ const OFFERS: [Definition; 59] = [
         "Item_Warmail",
         200,
         &[LightArmor, LightShield],
-        &[(7, 30.0), (8, 30.0)],
+        &[(Armor, 30.0), (Shield, 30.0)],
     ),
     def(
         SeraphicShell,
@@ -462,7 +513,7 @@ const OFFERS: [Definition; 59] = [
         "Item_SeraphicShell",
         450,
         &[KineticShield, ReflexBlock],
-        &[(8, 95.0), (0, 300.0)],
+        &[(Shield, 95.0), (Health, 300.0)],
     ),
     def(
         Dragonheart,
@@ -470,7 +521,7 @@ const OFFERS: [Definition; 59] = [
         "Item_Dragonheart",
         350,
         &[Oakheart],
-        &[(0, 350.0)],
+        &[(Health, 350.0)],
     ),
     def(
         PiercingSpear,
@@ -478,7 +529,7 @@ const OFFERS: [Definition; 59] = [
         "Item_PiercingSpear",
         600,
         &[WeaponBlade],
-        &[(4, 15.), (9, 0.1)],
+        &[(WeaponPower, 15.), (ArmorPierce, 0.1)],
     ),
     def(
         PiercingShard,
@@ -486,7 +537,7 @@ const OFFERS: [Definition; 59] = [
         "Item_PiercingShard",
         600,
         &[CrystalBit],
-        &[(5, 20.), (11, 0.1)],
+        &[(CrystalPower, 20.), (ShieldPierce, 0.1)],
     ),
     def(
         Bonesaw,
@@ -494,7 +545,12 @@ const OFFERS: [Definition; 59] = [
         "Item_Bonesaw",
         1300,
         &[BlazingSalvo, PiercingSpear],
-        &[(4, 30.), (15, 0.3), (9, 0.1), (9, 0.1)],
+        &[
+            (WeaponPower, 30.),
+            (AttackSpeed, 0.3),
+            (ArmorPierce, 0.1),
+            (ArmorPierce, 0.1),
+        ],
     ),
     def(
         BrokenMyth,
@@ -502,7 +558,11 @@ const OFFERS: [Definition; 59] = [
         "Item_BrokenMyth",
         1350,
         &[PiercingShard, EclipsePrism],
-        &[(5, 50.), (11, 0.1), (11, 0.35)],
+        &[
+            (CrystalPower, 50.),
+            (ShieldPierce, 0.1),
+            (ShieldPierce, 0.35),
+        ],
     ),
     def(
         Pulseweave,
@@ -510,7 +570,7 @@ const OFFERS: [Definition; 59] = [
         "Item_Pulseweave",
         550,
         &[Dragonheart, Lifespring],
-        &[(0, 600.), (18, 0.08)],
+        &[(Health, 600.), (MoveSpeedAmplifier, 0.08)],
     ),
     def(
         MinionsFoot,
@@ -518,7 +578,7 @@ const OFFERS: [Definition; 59] = [
         "Item_MinionsFoot",
         300,
         &[],
-        &[(30, 0.10), (31, 0.05)],
+        &[(CritChance, 0.10), (CritDamage, 0.05)],
     ),
     def(
         LuckyStrike,
@@ -526,7 +586,7 @@ const OFFERS: [Definition; 59] = [
         "Item_LuckyStrike",
         600,
         &[MinionsFoot],
-        &[(30, 0.20), (31, 0.05)],
+        &[(CritChance, 0.20), (CritDamage, 0.05)],
     ),
     def(
         TyrantsMonocle,
@@ -534,7 +594,7 @@ const OFFERS: [Definition; 59] = [
         "Item_TyrantsMonocle",
         1350,
         &[SixSins, LuckyStrike],
-        &[(4, 60.), (30, 0.35), (31, 0.15)],
+        &[(WeaponPower, 60.), (CritChance, 0.35), (CritDamage, 0.15)],
     ),
 ];
 
@@ -558,7 +618,7 @@ struct Offer {
     refund: Option<u32>,
     standard_5v5: bool,
     combine: u32,
-    bonuses: Vec<(u8, f32)>,
+    bonuses: Vec<(NativeItemStat, f32)>,
 }
 #[derive(Serialize)]
 pub(super) struct Shop {
@@ -569,7 +629,7 @@ pub(super) struct Shop {
 impl Default for Shop {
     fn default() -> Self {
         Self {
-            flask: None,
+            flask: Some(FlaskRule::ARAL_STARTER),
             sprint: None,
             offers: OFFERS
                 .iter()
@@ -577,7 +637,12 @@ impl Default for Shop {
                     permitted: true,
                     boot_move: 0.,
                     components: d.components.to_vec(),
-                    refund: None,
+                    refund: match d.kind {
+                        Hourglass => Some(125),
+                        BlazingSalvo => Some(350),
+                        Stormcrown => Some(1200),
+                        _ => None,
+                    },
                     standard_5v5: true,
                     combine: d.combine,
                     bonuses: d.bonuses.to_vec(),
@@ -595,6 +660,13 @@ struct FlaskRule {
     energy_fraction: f32,
 }
 impl FlaskRule {
+    const ARAL_STARTER: Self = Self {
+        duration: 5 * TICK_HZ,
+        cooldown: 120 * TICK_HZ,
+        barrier: 115.,
+        heal: 200.,
+        energy_fraction: 0.3,
+    };
     fn load(item: &halcyon_data::items::FullItem) -> Option<Self> {
         let positive = |key| item.passive_value(key).filter(|&v| v > 0.);
         let energy_fraction = positive(ItemTuning::EnergyPercent.key()).filter(|&v| v <= 1.)?;
@@ -665,7 +737,14 @@ impl Shop {
             flask: data
                 .item_catalog()
                 .and_then(|c| c.item("Item_HealingFlask"))
-                .and_then(FlaskRule::load),
+                .and_then(FlaskRule::load)
+                .or_else(|| {
+                    if data.item_catalog().is_none() {
+                        Some(FlaskRule::ARAL_STARTER)
+                    } else {
+                        None
+                    }
+                }),
             ..Self::default()
         };
         if let Some(names) = data.standard_5v5_items() {
@@ -724,8 +803,30 @@ impl Shop {
                     offer.components = recipe;
                 }
             }
+            let mut split_component = false;
             for (stat, value) in &mut offer.bonuses {
-                if let Some(full) = data.supplemental_item_bonus(d.name, *stat) {
+                let Some(column) = stat.catalog_column() else {
+                    if let Some(catalog) = data.item_catalog()
+                        && let Some(v) = item_modifiers::passive_operand(
+                            catalog,
+                            d.kind,
+                            *stat,
+                            split_component,
+                        )?
+                    {
+                        *value = v;
+                    }
+                    split_component = true;
+                    continue;
+                };
+                if let Some(full) =
+                    data.supplemental_item_bonus(d.name, column as u8)
+                        .or_else(|| {
+                            data.item_catalog()?
+                                .item(d.name)?
+                                .flat_equipment_stat(column)
+                        })
+                {
                     *value = full;
                     continue;
                 }
@@ -735,7 +836,7 @@ impl Shop {
                     .and_then(|v| v.as_array())
                     .and_then(|rows| {
                         rows.iter()
-                            .find(|b| b["stat_id"].as_u64() == Some(u64::from(*stat)))
+                            .find(|b| b["stat_id"].as_u64() == Some(u64::from(column as u8)))
                     })
                 {
                     *value = b["value"]
@@ -804,8 +905,15 @@ impl World {
     pub(super) fn acquisition_value(&self, item: BasicItem) -> u64 {
         self.shop.cost(item)
     }
-    pub fn item_bonuses(&self, item: BasicItem) -> impl Iterator<Item = (u8, f32)> + '_ {
+    pub fn item_modifiers(
+        &self,
+        item: BasicItem,
+    ) -> impl Iterator<Item = (NativeItemStat, f32)> + '_ {
         self.shop.offers[item as usize].bonuses.iter().copied()
+    }
+    pub fn item_bonuses(&self, item: BasicItem) -> impl Iterator<Item = (u8, f32)> + '_ {
+        self.item_modifiers(item)
+            .map(|(stat, value)| (stat as u8, value))
     }
     pub fn purchase(&mut self, actor: u32, item: BasicItem) -> Result<Purchase, &'static str> {
         let i = self.index(actor).ok_or("unknown actor")?;
@@ -870,14 +978,14 @@ impl World {
         }
         // Apply the net modifier once. Upgrading an HP component must preserve
         // missing health when the completed item grants the same HP.
-        let mut delta = [0.; 32];
+        let mut delta = EffectDelta::default();
         for used in &consumed {
             for &(stat, value) in &self.shop.offers[used.kind as usize].bonuses {
-                delta[stat as usize] -= value;
+                delta.add(stat, -value);
             }
         }
         for &(stat, value) in &self.shop.offers[item as usize].bonuses {
-            delta[stat as usize] += value;
+            delta.add(stat, value);
         }
         apply_item_delta(h, delta);
         h.gold -= price as u32;
@@ -892,27 +1000,27 @@ impl World {
     }
 }
 
-fn apply_item_delta(h: &mut Entity, delta: [f32; 32]) {
-    h.bonus_hp += delta[0];
-    h.max_hp += delta[0];
-    h.hp = (h.hp + delta[0]).clamp(0., h.max_hp);
-    h.max_energy += delta[2];
-    h.energy = (h.energy + delta[2]).clamp(0., h.max_energy);
-    h.item_stats.energy_regen += delta[3];
-    h.stats.weapon += delta[4];
-    h.item_stats.crystal += delta[5];
-    h.stats.armor += delta[7];
-    h.stats.shield += delta[8];
-    h.item_stats.armor_pierce += delta[9];
-    h.item_stats.shield_pierce += delta[11];
-    h.item_stats.move_speed_amp += delta[18];
-    h.item_stats.attack_speed += delta[15];
-    h.item_stats.cooldown += delta[25];
-    h.item_stats.crit_chance += delta[30];
-    h.item_stats.crit_damage += delta[31];
+fn apply_item_delta(h: &mut Entity, delta: EffectDelta) {
+    h.bonus_hp += delta.health;
+    h.max_hp += delta.health;
+    h.hp = (h.hp + delta.health).clamp(0., h.max_hp);
+    h.max_energy += delta.energy;
+    h.energy = (h.energy + delta.energy).clamp(0., h.max_energy);
+    h.item_stats.energy_regen += delta.energy_regen;
+    h.stats.weapon += delta.weapon_power;
+    h.item_stats.crystal += delta.crystal_power;
+    h.stats.armor += delta.armor;
+    h.stats.shield += delta.shield;
+    h.item_stats.armor_pierce += delta.armor_pierce;
+    h.item_stats.shield_pierce += delta.shield_pierce;
+    h.item_stats.move_speed_amp += delta.move_speed_amplifier;
+    h.item_stats.attack_speed += delta.attack_speed;
+    h.item_stats.cooldown += delta.cooldown_speed;
+    h.item_stats.crit_chance += delta.crit_chance;
+    h.item_stats.crit_damage += delta.crit_damage;
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ItemSale {
     pub actor: u32,
     pub sold: HeldItem,
@@ -920,26 +1028,36 @@ pub struct ItemSale {
     pub balance: u32,
 }
 impl World {
+    pub(super) fn flask_available(&self, index: usize) -> bool {
+        self.shop.flask.is_some() && self.tick >= self.entities[index].item_stats.flask_ready
+    }
+    pub(super) fn flask_instance(&self, index: usize) -> Option<u32> {
+        const HEALING_FLASK: u32 = 457;
+        self.entities[index]
+            .aral_inventory
+            .as_ref()?
+            .slots()
+            .iter()
+            .flatten()
+            .find(|item| item.template == HEALING_FLASK)
+            .map(|item| item.instance)
+    }
     /// Activate the ARAL starter instance in this actor's own native slots.
     pub fn activate_healing_flask(
         &mut self,
         actor: u32,
         instance: u32,
     ) -> Result<(), &'static str> {
-        const FLASK_TEMPLATE: u32 = 457;
         let rule = self.shop.flask.ok_or("flask definition unavailable")?;
         let index = self.index(actor).ok_or("unknown actor")?;
+        if self.flask_instance(index) != Some(instance) {
+            return Err("flask not held");
+        }
         let h = &mut self.entities[index];
         if self.winner.is_some()
             || h.kind != Kind::Hero
             || h.hp <= 0.
             || self.tick < h.item_stats.flask_ready
-            || !h.aral_inventory.as_ref().is_some_and(|held| {
-                held.slots()
-                    .iter()
-                    .flatten()
-                    .any(|i| i.template == FLASK_TEMPLATE && i.instance == instance)
-            })
         {
             return Err("cannot activate flask");
         }
@@ -948,6 +1066,8 @@ impl World {
         h.status.flask_barrier = rule.barrier;
         h.status.flask_heal_per_tick = rule.heal / rule.duration as f32;
         h.status.flask_energy_per_tick = h.max_energy * rule.energy_fraction / rule.duration as f32;
+        self.pending_item_events
+            .push(Event::FlaskActivated { actor, instance });
         Ok(())
     }
     pub fn activate_sprint_boots(&mut self, actor: u32, instance: u32) -> Result<(), &'static str> {
@@ -993,9 +1113,9 @@ impl World {
         let offer = &self.shop.offers[sold.kind as usize];
         let refund = offer.refund.ok_or("sale price unavailable")?;
         let balance = h.gold.checked_add(refund).ok_or("gold limit")?;
-        let mut delta = [0.; 32];
+        let mut delta = EffectDelta::default();
         for &(stat, value) in &offer.bonuses {
-            delta[stat as usize] -= value;
+            delta.add(stat, -value);
         }
         let h = &mut self.entities[index];
         if let Some(slots) = &mut h.aral_inventory {
@@ -1005,12 +1125,14 @@ impl World {
         h.item_stats.boot_speed = self.shop.boot_speed(&h.inventory);
         h.gold = balance;
         apply_item_delta(h, delta);
-        Ok(ItemSale {
+        let sale = ItemSale {
             actor,
             sold,
             refund,
             balance,
-        })
+        };
+        self.pending_item_events.push(Event::ItemSold(sale));
+        Ok(sale)
     }
 }
 #[derive(Clone, Copy, Default, Debug, Serialize)]
@@ -1057,6 +1179,47 @@ pub(super) fn mitigated(raw: f32, defense: f32, pierce: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn injured_bot_activates_its_own_aral_starter_once() {
+        let mut w = World::new(17, 6);
+        w.use_six_human_roster().unwrap();
+        w.use_aral_lane().unwrap();
+        w.entities.truncate(1);
+        w.entities[0].bot = true;
+        w.entities[0].hp = 0.1 * w.entities[0].max_hp;
+        let events = (0..100).flat_map(|_| w.step()).collect::<Vec<_>>();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|ev| matches!(
+                    ev,
+                    Event::FlaskActivated {
+                        actor: 1,
+                        instance: 2000
+                    }
+                ))
+                .count(),
+            1
+        );
+        let activated = events
+            .iter()
+            .position(|event| matches!(event, Event::FlaskActivated { .. }))
+            .unwrap();
+        let healed = events
+            .iter()
+            .position(|event| {
+                matches!(
+                    event,
+                    Event::Heal {
+                        source: 1,
+                        target: 1,
+                        ..
+                    }
+                )
+            })
+            .unwrap();
+        assert!(activated < healed);
+    }
     #[test]
     fn flask_uses_current_actor_slot_absorbs_actual_damage_and_recovers_for_100_ticks() {
         let mut w = World::new(9, 6);
@@ -1179,7 +1342,22 @@ mod tests {
     fn original_supplement_supplies_verified_nonflat_item_bonuses() {
         let delivery = std::env::var_os("HALCYON_DELIVERY").expect("HALCYON_DELIVERY");
         let extra = std::env::var_os("HALCYON_DATA_EXTRA").expect("HALCYON_DATA_EXTRA");
-        let data = GameData::load_with_extra(delivery, Some(std::path::Path::new(&extra))).unwrap();
+        let mut data =
+            GameData::load_with_extra(delivery, Some(std::path::Path::new(&extra))).unwrap();
+        // A legacy operator extension may supply the CFF0 attack-range column.
+        // Neither the wire selector 18 nor Pulseweave's movement may read it.
+        let pulse_row = data
+            .items
+            .iter_mut()
+            .find(|r| r.id == Pulseweave.definition().name)
+            .unwrap();
+        pulse_row
+            .other
+            .get_mut("bonuses")
+            .unwrap()
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::from_str(r#"{"stat_id":18,"value":123.0}"#).unwrap());
         let shop = Shop::load(&data).unwrap();
         let catalog = data.item_catalog().unwrap();
         assert_eq!((catalog.items().len(), catalog.stores().len()), (93, 5));
@@ -1190,6 +1368,33 @@ mod tests {
                 .fixed_active_seconds(ItemActiveParameter::Cooldown.key()),
             Some(150.)
         );
+        for (item, modifiers) in [
+            (Pulseweave, vec![(Health, 600.), (MoveSpeedAmplifier, 0.08)]),
+            (PiercingSpear, vec![(WeaponPower, 15.), (ArmorPierce, 0.1)]),
+            (
+                PiercingShard,
+                vec![(CrystalPower, 20.), (ShieldPierce, 0.1)],
+            ),
+            (
+                Bonesaw,
+                vec![
+                    (WeaponPower, 30.),
+                    (AttackSpeed, 0.3),
+                    (ArmorPierce, 0.1),
+                    (ArmorPierce, 0.1),
+                ],
+            ),
+            (
+                BrokenMyth,
+                vec![
+                    (CrystalPower, 50.),
+                    (ShieldPierce, 0.1),
+                    (ShieldPierce, 0.35),
+                ],
+            ),
+        ] {
+            assert_eq!(shop.offers[item as usize].bonuses, modifiers);
+        }
         assert_eq!(shop.sprint.unwrap().duration, 40);
         assert_eq!(shop.offers[Hourglass as usize].refund, Some(125));
         for (kind, refund) in [(BlazingSalvo, 350), (Stormcrown, 1200)] {
@@ -1219,7 +1424,12 @@ mod tests {
                 data.supplemental_item_bonus(kind.definition().name, stat),
                 Some(value)
             );
-            assert!(shop.offers[kind as usize].bonuses.contains(&(stat, value)));
+            assert!(
+                shop.offers[kind as usize]
+                    .bonuses
+                    .iter()
+                    .any(|&(id, v)| id as u8 == stat && v == value)
+            );
         }
     }
 
@@ -1228,8 +1438,8 @@ mod tests {
         let mut world = World::new(37, 1);
         let actor = world.entities[0].id;
         world.entities[0].gold = 10_000;
-        world.shop.offers[SwiftShooter as usize].bonuses = vec![(15, 0.125)];
-        world.shop.offers[BlazingSalvo as usize].bonuses = vec![(15, 0.375)];
+        world.shop.offers[SwiftShooter as usize].bonuses = vec![(AttackSpeed, 0.125)];
+        world.shop.offers[BlazingSalvo as usize].bonuses = vec![(AttackSpeed, 0.375)];
         let before = world.entities[0].item_stats.attack_speed;
         let component = world.purchase(actor, SwiftShooter).unwrap();
         assert_eq!(world.entities[0].item_stats.attack_speed, before + 0.125);

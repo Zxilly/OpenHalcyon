@@ -362,7 +362,7 @@ mod tests {
         body[8..12].copy_from_slice(&1500_u32.to_be_bytes());
         let spawn = Message::known(crate::Opcode::EntitySpawn, body);
         let grant = messages::item_grant(1500, 457, 2000);
-        let modifier = messages::modifier(1500, 15, 1.);
+        let modifier = messages::modifier(1500, halcyon_sim::NativeItemStat::AttackSpeed, 1.);
         let other = messages::item_grant(1501, 457, 2000);
         let mut view = None;
         record_delivery(&mut view, 1500, &[spawn.clone(), grant.clone()]);

@@ -1,4 +1,5 @@
 //! Verified item-stat channels omitted by the original flat-only delivery.
+use crate::items::CffItemStat;
 use serde::Deserialize;
 
 use std::{collections::BTreeMap, io};
@@ -7,13 +8,12 @@ use std::{collections::BTreeMap, io};
 // prevents a new or mislabeled stat from entering the accumulator.
 #[derive(Clone, Copy, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
-#[repr(u8)]
 enum StatChannel {
-    EnergyRegen = 3,
-    AttackSpeedDisplay = 15,
-    CooldownSpeed = 25,
-    CritChance = 30,
-    CritDamage = 31,
+    EnergyRegen,
+    AttackSpeedDisplay,
+    CooldownSpeed,
+    CritChance,
+    CritDamage,
     #[serde(other)]
     Unknown,
 }
@@ -25,6 +25,16 @@ enum ScalarField {
 }
 
 impl StatChannel {
+    fn column(self) -> Option<CffItemStat> {
+        Some(match self {
+            Self::EnergyRegen => CffItemStat::EnergyRegen,
+            Self::AttackSpeedDisplay => CffItemStat::AttackSpeedDisplay,
+            Self::CooldownSpeed => CffItemStat::CooldownSpeed,
+            Self::CritChance => CffItemStat::CritChance,
+            Self::CritDamage => CffItemStat::CritDamage,
+            Self::Unknown => return None,
+        })
+    }
     fn scalar(self) -> Option<ScalarField> {
         match self {
             Self::EnergyRegen => Some(ScalarField::Percent),
@@ -49,7 +59,10 @@ fn supported(bonus: &crate::items::ItemBonus) -> bool {
     let Ok(channel) = StatChannel::deserialize(text) else {
         return false;
     };
-    channel as u8 == bonus.stat_id && channel.scalar().is_some_and(|f| f as u8 == bonus.field)
+    channel
+        .column()
+        .is_some_and(|column| column as u8 == bonus.stat_id)
+        && channel.scalar().is_some_and(|f| f as u8 == bonus.field)
 }
 
 #[derive(Default, Debug)]

@@ -30,7 +30,7 @@ pub use native_learn::{known_native_learn_operand, native_learn_operand, native_
 use score::DamageSchool;
 pub use score::{PlayerScore, TeamScore};
 use serde::{Deserialize, Serialize};
-pub use shop::{BasicItem, HeldItem, ItemSale, ItemStats, Purchase};
+pub use shop::{BasicItem, HeldItem, ItemSale, ItemStats, NativeItemStat, Purchase};
 
 /// Different simulation sources or content packs receive distinct federation queue keys.
 pub fn rules_digest(data: Option<&GameData>) -> String {
@@ -121,6 +121,11 @@ pub enum Event {
         slot: AbilitySlot,
     },
     Purchase(Purchase),
+    ItemSold(ItemSale),
+    FlaskActivated {
+        actor: u32,
+        instance: u32,
+    },
     GoldAward {
         id: u32,
         amount: u32,
@@ -388,6 +393,7 @@ pub struct World {
     solo_lane_rewards: Option<halcyon_data::SoloLaneRewards>,
     next_id: u32,
     next_item: u32,
+    pending_item_events: Vec<Event>,
     seed: u64,
     crit_rng: u64,
     bot_difficulty: Option<halcyon_data::BotDifficulty>,
@@ -672,6 +678,7 @@ impl World {
             wave_interval,
             abilities: AbilityBook::default(),
             shop: Default::default(),
+            pending_item_events: Vec::new(),
             effects: Vec::new(),
             chakrams: Vec::new(),
             water: Vec::new(),
@@ -983,7 +990,7 @@ impl World {
         &mut self,
         diagnostics: Option<&mut BotDiagnostics>,
     ) -> Vec<Event> {
-        let mut events = Vec::new();
+        let mut events = std::mem::take(&mut self.pending_item_events);
         if self.winner.is_some() {
             return events;
         }
@@ -1159,6 +1166,20 @@ impl World {
                 e.kind != Kind::Neutral && e.winding.is_none() && (e.bot || e.kind != Kind::Hero);
             let offset = self.tick + u64::from(e.id);
             let decide = automated && offset.is_multiple_of(self.decision_interval(e));
+            if decide
+                && e.bot
+                && e.kind == Kind::Hero
+                && e.hp < 0.3 * e.max_hp
+                && self.flask_available(i)
+            {
+                let id = e.id;
+                if let Some(instance) = self.flask_instance(i)
+                    && self.activate_healing_flask(id, instance).is_ok()
+                {
+                    events.append(&mut self.pending_item_events);
+                }
+            }
+            let e = &self.entities[i];
             if automated && e.bot && offset.is_multiple_of(5) {
                 if e.inventory.len() < 6
                     && self.at_item_shop(e)

@@ -362,6 +362,16 @@ impl Room {
             true
         });
     }
+    pub(super) fn publish_observer_item(&mut self, actor: u32, batch: &Batch) {
+        self.observers.retain(|_, o| {
+            let Some(tx) = &o.live else { return true };
+            if o.scene.is_some() && o.view.knows(actor) && tx.try_send(batch.clone()).is_err() {
+                o.stop.send_replace(true);
+                return false;
+            }
+            true
+        });
+    }
     pub(super) fn publish_observer_approach(&mut self, id: u32, out: &Batch) {
         self.observers.retain(|_, o| {
             if o.scene.is_some()

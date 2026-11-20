@@ -466,8 +466,13 @@ mod tests {
         play_six_seats(Scenario::NpcAttack).await;
     }
 
+    #[tokio::test]
+    async fn encrypted_aral_witnesses_receive_successful_flask_and_sale_once() {
+        play_six_seats(Scenario::ItemActions).await;
+    }
     #[derive(Clone, Copy, PartialEq, Eq)]
     enum Scenario {
+        ItemActions,
         NpcAttack,
         Crystal,
         Surrender,
@@ -661,6 +666,7 @@ mod tests {
                 .iter()
                 .all(|seat| seat.world_actor_written)
         );
+        let original_home = room.lock().unwrap().world.entities[0].position;
         if scenario == Scenario::Shop {
             super::shop_tests::shop_sequence(
                 &mut clients,
@@ -898,6 +904,129 @@ mod tests {
         for socket in clients.iter_mut().chain(std::iter::once(&mut observer)) {
             let cleared = until(socket, &cipher, crate::wire_opcode::EquipTalent).await;
             assert_eq!(cleared.body, [0, 0, 5, 220, 255, 0]);
+        }
+        if scenario == Scenario::ItemActions {
+            use halcyon_protocol::Opcode;
+            {
+                let mut room = room.lock().unwrap();
+                let far = room.world.entities[1].position;
+                for e in room.world.entities.iter_mut().take(SEATS) {
+                    e.position = if e.team == 0 {
+                        original_home
+                    } else {
+                        halcyon_sim::Position {
+                            x: far.x.max(20.),
+                            y: far.y,
+                        }
+                    };
+                }
+                let id = room.world.entities[0].id;
+                room.world.command(id, halcyon_sim::Command::Stop).unwrap();
+                room.tick();
+            }
+            let buy = Message::known(
+                Opcode::ShopRequest,
+                [1500u32.to_be_bytes(), 473u32.to_be_bytes()].concat(),
+            );
+            clients[0]
+                .write_all(&cipher.encode(&buy).unwrap())
+                .await
+                .unwrap();
+            let mut instance = None;
+            for socket in [&mut clients[2], &mut observer] {
+                loop {
+                    let grant = until(socket, &cipher, crate::wire_opcode::ItemGrant).await;
+                    if grant.body[0..4] == 1500u32.to_be_bytes()
+                        && grant.body[4..8] == 473u32.to_be_bytes()
+                    {
+                        let id = u32::from_be_bytes(grant.body[8..12].try_into().unwrap());
+                        assert!(instance.replace(id).is_none_or(|was| was == id));
+                        break;
+                    }
+                }
+            }
+            let instance = instance.unwrap();
+            let balance = {
+                let mut state = room.lock().unwrap();
+                let id = state.world.entities[0].id;
+                let sale = state.world.sell_item(id, instance).unwrap();
+                assert!(state.world.sell_item(id, instance).is_err());
+                state
+                    .world
+                    .command(
+                        id,
+                        halcyon_sim::Command::ActivateHealingFlask { instance: 2000 },
+                    )
+                    .unwrap();
+                assert!(
+                    state
+                        .world
+                        .command(
+                            id,
+                            halcyon_sim::Command::ActivateHealingFlask { instance: 2000 }
+                        )
+                        .is_err()
+                );
+                state.tick();
+                sale.balance
+            };
+            for socket in [&mut clients[2], &mut observer] {
+                let sale = until(socket, &cipher, crate::wire_opcode::SellItem).await;
+                assert_eq!(
+                    &sale.body[..8],
+                    &[1500u32.to_be_bytes(), instance.to_be_bytes()].concat()
+                );
+                for _ in 0..2 {
+                    assert!(next(socket, &cipher).await.is(Opcode::StatModifier));
+                }
+                let remove = next(socket, &cipher).await;
+                assert!(remove.is(Opcode::RemoveItem));
+                assert_eq!(
+                    &remove.body[..10],
+                    &[sale.body[..8].to_vec(), vec![0, 1]].concat()
+                );
+                let money =
+                    halcyon_protocol::ResourceChange::read(&next(socket, &cipher).await).unwrap();
+                assert_eq!(
+                    (money.actor, money.index, money.set_mode, money.value),
+                    (1500, 6, 1, balance as f32)
+                );
+                let request = next(socket, &cipher).await;
+                assert!(request.is(Opcode::RequestActivateItem));
+                assert_eq!(&request.body[..4], &2000u32.to_be_bytes());
+                let active = next(socket, &cipher).await;
+                assert!(active.is(Opcode::ItemActivated));
+                assert_eq!(
+                    &active.body[..12],
+                    &[
+                        1500u32.to_be_bytes(),
+                        2000u32.to_be_bytes(),
+                        u32::MAX.to_be_bytes()
+                    ]
+                    .concat()
+                );
+                assert_eq!(&active.body[12..21], &[0, 0, 0, 0, 0, 0, 0, 0, 2]);
+            }
+            for seat in [0, 1] {
+                clients[seat]
+                    .write_all(&cipher.encode(&barrier).unwrap())
+                    .await
+                    .unwrap();
+                loop {
+                    let m = next(&mut clients[seat], &cipher).await;
+                    if m == barrier {
+                        break;
+                    }
+                    assert!(!matches!(
+                        m.known_opcode(),
+                        Some(
+                            Opcode::SellItem | Opcode::RequestActivateItem | Opcode::ItemActivated
+                        )
+                    ));
+                }
+            }
+            rooms.revoke_observer(room_id, grant).unwrap();
+            return;
         }
         if scenario == Scenario::NpcAttack {
             let wire_tower = {

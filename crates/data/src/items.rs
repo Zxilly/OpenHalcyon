@@ -10,6 +10,47 @@ use std::{
 
 use halcyon_protocol::ce::NativeMode;
 
+/// CFF0 stat IDs used by equipment. Native 041C attribute selectors use
+/// a separate namespace; notably, 18 here means attack range.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u8)]
+pub enum CffItemStat {
+    Health = 0,
+    HealthRegen = 1,
+    Energy = 2,
+    EnergyRegen = 3,
+    WeaponPower = 4,
+    CrystalPower = 5,
+    Armor = 7,
+    Shield = 8,
+    ArmorPierce = 9,
+    ShieldPierce = 11,
+    MoveSpeed = 13,
+    AttackSpeed = 14,
+    AttackSpeedDisplay = 15,
+    AttackRange = 18,
+    WeaponVamp = 23,
+    CrystalVamp = 24,
+    CooldownSpeed = 25,
+    CritChance = 30,
+    CritDamage = 31,
+}
+
+impl CffItemStat {
+    /// Layer-zero flat rows from the equipment table. Non-flat channels have
+    /// separate field and unit contracts in the supplemental bonus index.
+    fn flat_key(self) -> Option<&'static str> {
+        Some(match self {
+            Self::Health => "HEALTH",
+            Self::Energy => "ENERGY",
+            Self::WeaponPower => "WEAPON_POWER",
+            Self::CrystalPower => "CRYSTAL_POWER",
+            Self::Armor => "ARMOR",
+            Self::Shield => "SHIELD",
+            _ => return None,
+        })
+    }
+}
 /// Gameplay settings records with direct store references used by native queues.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
 pub enum StoreSettings {
@@ -49,6 +90,9 @@ impl StoreSettings {
 
 #[derive(Clone, Copy)]
 pub enum ItemTuning {
+    ArmorPen,
+    ShieldPierce,
+    BonusBaseMoveSpeed,
     Move,
     Sprint,
     SprintDuration,
@@ -60,6 +104,9 @@ pub enum ItemTuning {
 impl ItemTuning {
     pub const fn key(self) -> &'static str {
         match self {
+            Self::ArmorPen => "ARMOR_PEN",
+            Self::ShieldPierce => "SHIELD_PIERCE",
+            Self::BonusBaseMoveSpeed => "BONUS_BASE_MSPD",
             Self::Move => "MOVE",
             Self::Sprint => "SPRINT",
             Self::SprintDuration => "SPRINT_DURATION",
@@ -228,6 +275,17 @@ impl super::GameData {
     }
 }
 impl FullItem {
+    pub fn flat_equipment_stat(&self, column: CffItemStat) -> Option<f32> {
+        let key = column.flat_key()?;
+        let mut rows = self.bonuses.iter().filter(|b| {
+            b.stat_id == column as u8
+                && b.stat.as_deref() == Some(key)
+                && b.layer == 0
+                && b.field == 1
+        });
+        let row = rows.next()?;
+        (rows.next().is_none() && row.value.is_finite() && row.value > 0.).then_some(row.value)
+    }
     /// An unambiguous scalar from the passive/tuning list.
     pub fn passive_value(&self, label: &str) -> Option<f32> {
         let mut rows = self.passive_variables.iter().filter(|v| v.label == label);
