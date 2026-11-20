@@ -189,7 +189,11 @@ The Android ability text identifies an area burst centered on Reim, with damage 
 
 All twelve `0419` records in the seven ARAL streams came from a single Kinetic perspective watching Reim (template 266). Each effect referenced Reim and carried the FNV-1a key of `Effect_Reim_B_AOE_Range`. Every effect paired, in order, with a distinct preceding Reim `0415` using target `ffffffff` and selector 1. These were all twelve such releases in that stream. Nine pairs shared a receive timestamp and the remaining three were 93–101 ms apart. The nearest Reim position update lay within 1.12 world units of each effect center. Eight effect timestamps also had one or more damage records credited to Reim with impact code 74. Four had none, so a successful hit cannot be required to display the range effect.
 
-The capture contains no first-person Reim cast, and one remote viewpoint cannot determine recipient eligibility. The delivered 4.13 balance deltas contain no Reim entry. The extracted B labels do not resolve signed rank tables for cooldown, energy, damage, radius, minion reduction or immobilization duration. This leaves the client request, numeric combat rules and visibility boundary open. The host has no Reim B release or effect emitter.
+With the supplement installed, players through the simulation command API and bots can learn and cast Chill Winds on themselves. At ranks 1–5 its self-centered radius is 4.5, cooldown is 12/11.5/11/10.5/10 seconds, cost is 60/65/70/75/80 and root duration is 1/1/1/1/1.5 seconds. The named damage is 60/100/140/180/220 plus 60% crystal power. Rooted actors can still attack in range or use stationary abilities. Waterwall clears the movement impairment. The six rank-two impacts on lane minions deal half the base damage. Nearby Winter Spire damage independently establishes crystal power of 41.25 and 178.75 at those two purchases, yielding exactly 62.375 and 103.625 respectively.
+
+All twelve effects reached a teammate. Their height has identical bits (3d192e1f). In ten cases the final float agrees within 0.00015 radians with a nearby caster displacement angle atan2(ΔZ, ΔX). The two remaining paths do not yield an equally close heading. The host sends the no-target 0415 to registered, visible teammates and full-field observers. When the simulation has a measured movement heading it also sends 0419 before damage. The source archives establish neither enemy delivery nor the caster's input.
+
+All fourteen definition-654 043E applications in seven sessions come from Reim and share a B effect timestamp and 1.0-second duration. Thirteen have same-source, same-target impact code 74; the remaining target has no damage record. None has a matching explicit removal. The host emits fresh one-second instances for surviving rooted targets, after damage and subject to both actors' registration and visibility. Rank five uses the 1.5-second impairment from the extracted table. Its wire buff form remains unverified.
 
 ## Reim Winter Spire and current playable scope
 
@@ -226,7 +230,7 @@ A complete native Reim client interaction still needs that evidence.
 | Templates | Authoritative hosted skills | Native observations |
 | --- | --- | --- |
 | Idris, Lorelai | Idris B; Lorelai A, B, C | All 16 originating casts in the nine TCP archives belong to these four skills. |
-| Reim | A with the supplement | ARAL witness releases and grants. |
+| Reim | A and B with the supplement | ARAL witness releases and grants. |
 | Ringo, Adagio, Lyra, SAW, Karas, Shin | Ringo A/B/C; Adagio A/B; Lyra A; SAW B; Karas B; Shin C | Modeled subsets of their asset effects. Numeric weapon and gear effects also apply to basic attacks. |
 | Other advertised heroes | Shared movement, basic attacks, items and progression | Hero009 and Yates have confirmed native learn grants. A rank grant alone supplies no cast mechanism. |
 

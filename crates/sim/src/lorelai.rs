@@ -149,6 +149,7 @@ impl World {
                 let i = self.index(id).expect("validated Waterwall target");
                 let ally = &mut self.entities[i];
                 ally.status.stun_until = 0;
+                ally.status.root_until = 0;
                 ally.status.slow_until = 0;
                 ally.status.water_slow_until = 0;
                 let strength = rules.map_or_else(

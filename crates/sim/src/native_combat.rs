@@ -315,6 +315,25 @@ impl WinterSpire {
     }
 }
 
+#[derive(Clone, Debug, Serialize)]
+pub(super) struct ChillWinds {
+    pub damage: Damage<5>,
+    pub radius: [f32; 5],
+    pub root_seconds: [f32; 5],
+}
+impl ChillWinds {
+    pub fn load(data: &GameData) -> Result<Option<Self>, String> {
+        let Some(b) = data.ability("Reim", "Ability__Reim__B") else {
+            return Ok(None);
+        };
+        Ok(Some(Self {
+            damage: Damage::named(b, "Damage")?,
+            radius: ranks(b, "Range")?,
+            root_seconds: ranks(b, "B_RootDuration")?,
+        }))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -334,6 +353,69 @@ mod tests {
         w.entities[1].position = Position { x: 10., y: 0. };
         w
     }
+    #[test]
+    #[ignore = "requires original delivery and supplemental combat data"]
+    fn chill_winds_roots_movement_only_and_matches_observed_lane_damage() {
+        let data = original();
+        let mut w = room(&data, "Reim");
+        w.select_hero(1, "Ringo", &data).unwrap();
+        let victim_pos = Position { x: 3., y: 0. };
+        w.entities[1].position = victim_pos;
+        w.entities[1].stats.shield = 0.;
+        w.entities[0].item_stats.crystal = 41.25;
+        w.entities[0].level = 4;
+        w.entities[0].skill_points = 3;
+        w.entities[0].position = Position::default();
+        w.walk(0, Position { x: 1., y: 0. }, &mut Vec::new());
+        let origin = w.entities[0].position;
+        for _ in 0..2 {
+            w.command(1, Command::Learn(AbilitySlot::B)).unwrap();
+        }
+        let minion = w.spawn(1, crate::Kind::Minion, 4, victim_pos, false);
+        let mi = w.index(minion).unwrap();
+        w.entities[mi].stats.shield = 0.;
+        let cast = Command::Cast {
+            slot: AbilitySlot::B,
+            target: CastTarget::SelfCast,
+        };
+        assert_eq!(w.decide(0), cast);
+        let energy = w.entities[0].energy;
+        w.command(1, cast).unwrap();
+        w.tick = 1;
+        let mut events = Vec::new();
+        w.advance_cast(0, &mut events);
+        assert!(events.contains(&Event::ChillWinds {
+            source: 1,
+            position: origin,
+            heading: Some(0.)
+        }));
+        assert_eq!(w.entities[0].energy, energy - 65.);
+        assert_eq!(w.entities[0].cooldown[1], 231);
+        for (id, expected) in [(2, 124.75), (minion, 62.375)] {
+            assert!(events.iter().any(|e|matches!(e,Event::Damage{target,amount,effect:crate::ImpactEffect::ChillWinds,..} if *target==id && *amount==expected)));
+            assert!(
+                events
+                    .iter()
+                    .any(|e| matches!(e,Event::ChillWindsRoot{target,..} if *target==id))
+            );
+        }
+        w.command(2, Command::Learn(AbilitySlot::A)).unwrap();
+        w.command(
+            2,
+            Command::Cast {
+                slot: AbilitySlot::A,
+                target: CastTarget::Entity(1),
+            },
+        )
+        .unwrap();
+        w.tick = 20;
+        w.walk(1, Position { x: 5., y: 0. }, &mut events);
+        assert_eq!(w.entities[1].position, victim_pos);
+        w.tick = 21;
+        w.walk(1, Position { x: 5., y: 0. }, &mut events);
+        assert_ne!(w.entities[1].position, victim_pos);
+    }
+
     #[test]
     #[ignore = "requires the original delivery and supplemental combat data"]
     fn winter_spire_bot_and_player_use_the_same_two_ranked_area_hits() {

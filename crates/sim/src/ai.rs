@@ -103,6 +103,17 @@ impl World {
                     return cmd;
                 }
                 if e.type_id == EntityTemplate::Reim.as_raw()
+                    && self
+                        .chill_winds_radius(i)
+                        .is_some_and(|radius| e.position.dist(t.position) <= radius)
+                    && self.can_cast(i, AbilitySlot::B, CastTarget::SelfCast)
+                {
+                    return Command::Cast {
+                        slot: AbilitySlot::B,
+                        target: CastTarget::SelfCast,
+                    };
+                }
+                if e.type_id == EntityTemplate::Reim.as_raw()
                     && self.can_cast(i, AbilitySlot::A, CastTarget::Point(t.position))
                 {
                     return Command::Cast {

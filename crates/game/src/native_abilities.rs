@@ -7,6 +7,10 @@ use halcyon_sim::{
 use super::{Batch, Message, Room, messages::wire_id, transport::Delivery};
 
 mod chakram_motion;
+mod chill_winds;
+pub(super) fn recordable_chill_winds(m: &Message) -> bool {
+    chill_winds::recordable_pfx(m)
+}
 pub(super) use chakram_motion::recordable_stop;
 
 const IDRIS: u16 = EntityTemplate::Idris.as_raw();
@@ -227,6 +231,22 @@ fn witness(
     room.publish_observers(std::slice::from_ref(message));
 }
 
+pub(super) fn publish_before_impacts(room: &mut Room, events: &[Event]) {
+    if !room.legacy_aral() {
+        return;
+    }
+    for event in events {
+        if let Event::ChillWinds {
+            source,
+            position,
+            heading,
+        } = *event
+        {
+            chill_winds::publish(room, source, position, heading);
+        }
+    }
+}
+
 pub(super) fn publish(room: &mut Room, events: &[Event]) {
     if !(room.solo_scene() || room.legacy_aral()) {
         return;
@@ -240,6 +260,15 @@ pub(super) fn publish(room: &mut Room, events: &[Event]) {
             && room.world.entities[index].type_id == IDRIS
         {
             seat.native_abilities.walked_at = Some(room.world.tick);
+        }
+        if let Event::ChillWindsRoot {
+            source,
+            target,
+            instance,
+        } = *event
+        {
+            chill_winds::root(room, source, target, instance);
+            continue;
         }
         let (source, slot) = match *event {
             Event::Cast { source, slot, .. } | Event::Learned { source, slot } => (source, slot),
@@ -259,6 +288,20 @@ pub(super) fn publish(room: &mut Room, events: &[Event]) {
         let hero = actor.type_id;
         let actor_wire = u32::from(wire_id(source));
         // Reim is evidenced only on another ARAL seat. There is no verified originating input.
+        if aral
+            && hero == EntityTemplate::Reim.as_raw()
+            && slot == AbilitySlot::B
+            && matches!(event, Event::Learned { .. })
+        {
+            witness(
+                room,
+                source,
+                None,
+                &Message::ability_learned(actor_wire, 1),
+                None,
+            );
+            continue;
+        }
         if aral && hero == EntityTemplate::Reim.as_raw() && slot == AbilitySlot::A {
             let msg = match *event {
                 Event::Learned { .. } => Message::ability_learned(actor_wire, 0),
@@ -798,6 +841,94 @@ mod tests {
         assert!(rx.try_recv().is_err());
         assert!(NativeCast::point_input(EntityTemplate::Reim.as_raw(), 0).is_none());
         assert!(native_learn_request(EntityTemplate::Reim.as_raw(), 0).is_none());
+    }
+
+    #[tokio::test]
+    async fn chill_winds_sends_the_witnessed_pair_and_a_registered_one_second_root() {
+        let rooms = Rooms::new("127.0.0.1".parse().unwrap(), "127.0.0.1".into(), 1, None);
+        let id = Uuid::new_v4();
+        rooms
+            .reserve(Reservation {
+                talent_levels: Vec::new(),
+                match_id: id,
+                players: (0..6).map(|_| Uuid::new_v4()).collect(),
+                mode: "casual_aral".into(),
+                teams: vec![0, 0, 1, 0, 1, 1],
+                difficulty: None,
+            })
+            .unwrap();
+        let shared = rooms.room(id).unwrap();
+        let mut room = shared.lock().unwrap();
+        room.world.entities[0].type_id = EntityTemplate::Reim.as_raw();
+        let mut streams = Vec::new();
+        let mut caster = crate::messages::spawn(&room.world.entities[0], &room.picks, None);
+        caster.body[745] = 16;
+        let mut target = crate::messages::spawn(&room.world.entities[2], &room.picks, None);
+        target.body[745] = 18;
+        for i in 0..3 {
+            let (tx, rx) = mpsc::channel(8);
+            room.seats[i].peers[1] = Some(Peer {
+                generation: 1,
+                tx,
+                stalled: watch::channel(false).0,
+            });
+            streams.push(rx);
+            room.scene_views[i].declarations(std::slice::from_ref(&caster));
+        }
+        for v in &mut room.visible {
+            v.extend([1, 3]);
+        }
+        let p = Position { x: 4., y: 2. };
+        let angle = Some(-2.4);
+        let start = Event::ChillWinds {
+            source: 1,
+            position: p,
+            heading: angle,
+        };
+        let root = Event::ChillWindsRoot {
+            source: 1,
+            target: 3,
+            instance: 700,
+        };
+        publish_before_impacts(&mut room, &[start]);
+        publish(&mut room, std::slice::from_ref(&root));
+        let batch = streams[1].try_recv().unwrap().into_records();
+        assert_eq!(batch[0], Message::ability_target_used(1500, u32::MAX, 1));
+        let pfx = batch[1].play_pfx_at_location().unwrap();
+        assert_eq!(pfx.position, [4., f32::from_bits(0x3d192e1f), 2.]);
+        assert_eq!(pfx.unknown_word, (-2.4f32).to_bits());
+        assert!(recordable_chill_winds(&batch[1]));
+        for rx in &mut streams {
+            assert!(rx.try_recv().is_err());
+        }
+        room.scene_views[1].declarations(&[target]);
+        publish(&mut room, &[root]);
+        let buff = streams[1].try_recv().unwrap().into_records();
+        let halcyon_protocol::Fields::BuffApplication(application) = buff[0].fields().unwrap()
+        else {
+            panic!("expected root")
+        };
+        assert_eq!(
+            (
+                application.prefix.target,
+                application.prefix.source,
+                application.prefix.definition,
+                application.prefix.duration()
+            ),
+            (1502, 1500, 654, 1.)
+        );
+        publish_before_impacts(
+            &mut room,
+            &[Event::ChillWinds {
+                source: 1,
+                position: p,
+                heading: None,
+            }],
+        );
+        assert_eq!(
+            streams[1].try_recv().unwrap().into_records(),
+            [Message::ability_target_used(1500, u32::MAX, 1)]
+        );
     }
 
     #[tokio::test]

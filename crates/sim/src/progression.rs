@@ -91,6 +91,17 @@ impl World {
         school: DamageSchool,
         events: &mut Vec<Event>,
     ) {
+        self.hurt_with_effect(src, team, i, n, (school, ImpactEffect::Standard), events);
+    }
+    pub(super) fn hurt_with_effect(
+        &mut self,
+        src: u32,
+        team: u8,
+        i: usize,
+        n: f32,
+        (school, effect): (DamageSchool, ImpactEffect),
+        events: &mut Vec<Event>,
+    ) {
         let t = &self.entities[i];
         if t.hp <= 0. || n <= 0. {
             return;
@@ -152,6 +163,7 @@ impl World {
             score.hit(t.kind, amount, school, t.hp == 0.);
         }
         events.push(Event::Damage {
+            effect,
             source: src,
             target: id,
             amount,

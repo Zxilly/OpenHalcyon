@@ -381,6 +381,17 @@ fn combat_event(event: &halcyon_sim::Event, visible: impl Fn(u32) -> bool) -> Op
     Some(match operand {
         // This presentation tuple occurs with both signs in the local CE
         // recording. The simulator supplies the applied health change.
+        Some(value)
+            if matches!(
+                event,
+                Event::Damage {
+                    effect: halcyon_sim::ImpactEffect::ChillWinds,
+                    ..
+                }
+            ) =>
+        {
+            Message::health_impact(target, source, value, 74, 1, 0)
+        }
         Some(value) => Message::health_impact(target, source, value, 5, 0, 0),
         None => Message::actor_death(target, source),
     })
@@ -598,6 +609,7 @@ mod combat_tests {
     #[test]
     fn signed_health_and_death_require_both_visible_references() {
         let damage = Event::Damage {
+            effect: halcyon_sim::ImpactEffect::Standard,
             source: 2,
             target: 4,
             amount: 7.25,

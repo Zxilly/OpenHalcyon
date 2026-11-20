@@ -31,6 +31,7 @@ enum Skill {
     Wind,
     Strike,
     Chakram,
+    ChillWinds,
     WinterSpire,
     FishFood,
     Splashdown,
@@ -42,6 +43,7 @@ fn skill(hero: u16, slot: AbilitySlot) -> Option<Skill> {
     Some(match (EntityTemplate::from_raw(hero)?, slot) {
         (EntityTemplate::Idris, B) => Chakram,
         (EntityTemplate::Reim, A) => WinterSpire,
+        (EntityTemplate::Reim, B) => ChillWinds,
         (EntityTemplate::Lorelai, A) => FishFood,
         (EntityTemplate::Lorelai, B) => Splashdown,
         (EntityTemplate::Lorelai, C) => Waterwall,
@@ -69,6 +71,8 @@ pub(super) struct Status {
     pub(super) stamina_spent: f32,
     pub(super) stamina_spent_at: u64,
     pub(super) stun_until: u64,
+    pub(super) root_until: u64,
+    pub(super) reim_heading: Option<f32>,
     pub(super) water_speed_until: u64,
     pub(super) water_speed_bonus: Option<f32>,
     pub(super) water_slow_until: u64,
@@ -167,6 +171,7 @@ impl ExtraCast {
 #[derive(Clone, Debug, Serialize)]
 pub(super) struct AbilityBook {
     extra_casts: [ExtraCast; Skill::Waterwall as usize + 1],
+    chill_winds: Option<super::native_combat::ChillWinds>,
     winter_spire: Option<super::native_combat::WinterSpire>,
     other: Option<super::native_combat::OtherSpells>,
     pub(super) lorelai: Option<super::native_combat::LorelaiRanks>,
@@ -195,6 +200,7 @@ impl Default for AbilityBook {
     fn default() -> Self {
         Self {
             extra_casts: Default::default(),
+            chill_winds: None,
             winter_spire: None,
             other: None,
             lorelai: None,
@@ -268,6 +274,7 @@ impl AbilityBook {
         for (skill, hero, slot, ranks) in [
             (Skill::Chakram, "Idris", "B", 5),
             (Skill::WinterSpire, "Reim", "A", 5),
+            (Skill::ChillWinds, "Reim", "B", 5),
             (Skill::FishFood, "Lorelai", "A", 5),
             (Skill::Splashdown, "Lorelai", "B", 5),
             (Skill::Waterwall, "Lorelai", "C", 3),
@@ -288,6 +295,7 @@ impl AbilityBook {
         }
         Ok(Self {
             extra_casts,
+            chill_winds: super::native_combat::ChillWinds::load(data)?,
             winter_spire: super::native_combat::WinterSpire::load(data)?,
             other: super::native_combat::OtherSpells::load(data)?,
             lorelai: super::native_combat::LorelaiRanks::load(data)?,
@@ -328,6 +336,7 @@ impl World {
     fn rules(&self, s: Skill, rank: usize) -> Rules {
         let (range, cost, windup, seconds) = match s {
             Skill::WinterSpire => (0., 0., 2, 0.),
+            Skill::ChillWinds => (0., 0., 1, 0.),
             Skill::Chakram => (8.5, 10., 4, 8.),
             Skill::FishFood => (
                 if rank == 4 { 9.5 } else { 8. },
@@ -362,8 +371,11 @@ impl World {
         }
     }
     fn modeled_skill(&self, hero: u16, slot: AbilitySlot) -> Option<Skill> {
-        skill(hero, slot)
-            .filter(|s| *s != Skill::WinterSpire || self.abilities.winter_spire.is_some())
+        skill(hero, slot).filter(|s| match s {
+            Skill::WinterSpire => self.abilities.winter_spire.is_some(),
+            Skill::ChillWinds => self.abilities.chill_winds.is_some(),
+            _ => true,
+        })
     }
     pub(super) fn can_learn(&self, i: usize, slot: AbilitySlot) -> bool {
         let e = &self.entities[i];
@@ -387,6 +399,16 @@ impl World {
         self.entities[i].ability_ranks[slot.idx()] += 1;
         Ok(())
     }
+    pub(super) fn chill_winds_radius(&self, i: usize) -> Option<f32> {
+        let rank = self.entities[i].ability_ranks[AbilitySlot::B.idx()].checked_sub(1)?;
+        self.abilities
+            .chill_winds
+            .as_ref()?
+            .radius
+            .get(usize::from(rank))
+            .copied()
+    }
+
     pub(super) fn can_cast(&self, i: usize, slot: AbilitySlot, target: CastTarget) -> bool {
         self.castable(i, slot, target).is_ok()
     }
@@ -419,7 +441,10 @@ impl World {
             return Err("ability not ready");
         }
         let point = match (s, target) {
-            (Skill::Twirl | Skill::Gift | Skill::Agent, CastTarget::SelfCast) => e.position,
+            (
+                Skill::ChillWinds | Skill::Twirl | Skill::Gift | Skill::Agent,
+                CastTarget::SelfCast,
+            ) => e.position,
             (
                 Skill::Achilles | Skill::Hellfire | Skill::Gift | Skill::Agent | Skill::Waterwall,
                 CastTarget::Entity(id),
@@ -520,6 +545,60 @@ impl World {
             _ => origin,
         };
         match s {
+            Skill::ChillWinds => {
+                let b = self
+                    .abilities
+                    .chill_winds
+                    .as_ref()
+                    .expect("validated Chill Winds");
+                let radius = b.radius[r];
+                let damage = b.damage.at(r, cp, 0.);
+                let end = self.tick + (b.root_seconds[r] * TICK_HZ as f32).round() as u64;
+                events.push(Event::ChillWinds {
+                    source: src,
+                    position: origin,
+                    heading: self.entities[i].status.reim_heading,
+                });
+                let pierce = self.entities[i].item_stats.shield_pierce;
+                for j in 0..self.entities.len() {
+                    let target = &mut self.entities[j];
+                    if !matches!(target.kind, Kind::Hero | Kind::Minion)
+                        || target.team == team
+                        || target.hp <= 0.
+                        || target.position.dist(origin) > radius
+                        || !self.layout.clear(origin, target.position)
+                    {
+                        continue;
+                    }
+                    target.status.root_until = target.status.root_until.max(end);
+                    let raw = if target.kind == Kind::Minion {
+                        damage * 0.5
+                    } else {
+                        damage
+                    };
+                    let applied = shop::mitigated(raw, target.stats.shield, pierce);
+                    self.hurt_with_effect(
+                        src,
+                        team,
+                        j,
+                        applied,
+                        (DamageSchool::Crystal, ImpactEffect::ChillWinds),
+                        events,
+                    );
+                    if matches!(self.layout, Layout::Aral { .. })
+                        && end - self.tick == TICK_HZ
+                        && self.entities[j].hp > 0.
+                    {
+                        let instance = self.next_id;
+                        self.next_id += 1;
+                        events.push(Event::ChillWindsRoot {
+                            source: src,
+                            target: self.entities[j].id,
+                            instance,
+                        });
+                    }
+                }
+            }
             Skill::WinterSpire => {
                 let a = self
                     .abilities

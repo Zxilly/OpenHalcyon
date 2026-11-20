@@ -157,8 +157,13 @@ fn sanitize(m: &mut Message) -> bool {
         Some(crate::Opcode::GrantAbility)
             if matches!(m.body.as_slice(), [0, 0, 5, 220..=229, 0, 0, 0, operand]
             if halcyon_sim::known_native_learn_operand(*operand)) => {}
-        Some(crate::Opcode::EntityData) if super::aral::tower_opening::recordable(m) => {}
         Some(crate::Opcode::FireProjectile) if super::npc_projectile::recordable(m) => {}
+        Some(crate::Opcode::EntityData) if super::aral::tower_opening::recordable(m) => {}
+        Some(crate::Opcode::EntityProp)
+            if matches!(m.fields(), Ok(halcyon_protocol::Fields::BuffApplication(effect))
+            if effect.prefix.definition==654 && effect.prefix.duration_bits==0x3c00 && (1500..=1505).contains(&effect.prefix.source)
+                && effect.prefix.target!=effect.prefix.source && (1500..=u32::from(u16::MAX)).contains(&effect.prefix.target) && effect.prefix.instance>1505
+                && effect.suffix==[0;6]) => {}
         Some(crate::Opcode::EntityProp)
             if matches!(m.fields(), Ok(halcyon_protocol::Fields::BuffApplication(effect))
                 if (1500..=1505).contains(&effect.prefix.source)
@@ -175,6 +180,13 @@ fn sanitize(m: &mut Message) -> bool {
             | crate::Opcode::OverrideAbility
             | crate::Opcode::ClearAbilityOverride,
         ) if super::ringo::references(m).is_some() => {}
+        Some(crate::Opcode::PlayPfxAtLocation)
+            if super::native_abilities::recordable_chill_winds(m) => {}
+        Some(crate::Opcode::PlayAbility)
+            if matches!(
+                m.body.as_slice(),
+                [0, 0, 5, 220..=225, 255, 255, 255, 255, 1]
+            ) => {}
         Some(crate::Opcode::PlayAbility) if super::npc_attack::actors(m).is_some() => {}
         Some(crate::Opcode::PlayAbility)
             if matches!(

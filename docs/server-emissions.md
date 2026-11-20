@@ -2,9 +2,9 @@
 
 Nine complete TCP streams contain 398,293 encrypted server frames in 103 opcode classes. The plaintext handshake acknowledgment is outside these counts. Each count includes every captured form of the opcode. The scope column describes the subset the host currently emits.
 
-Of the 103 classes, 67 have a documented host path for at least one scenario:
-35 room outputs, 18 setup or draft outputs, and 14 conditional responses.
-Thirty further classes have an identified reader-side action. Six have an
+Of the 103 classes, 72 have a documented host path for at least one scenario:
+39 room outputs, 19 setup or draft outputs, and 14 conditional responses.
+25 further classes have an identified reader-side action. Six have an
 unresolved server trigger and receiver-side field evidence only.
 
 **A** is authoritative room output. **H** is setup, draft or scene output. **E** is a conditional response to the originating request. **R** is a read-only class with a documented action role. **U** has readable fields and an unresolved server role. Action names come from the independently labeled Windows action table. Counts come from the full captured streams. [Capture method](live-captures.md) · [Independent action labels](https://github.com/TurnaboutHero/vainglory-replay-decoder/blob/f4743be743564e3aadef1566499fe25d9d0f9ffc/vg/docs/vg-binary-event-candidates-2026-09-09-details.md)
@@ -40,14 +40,14 @@ The host paths are in [room dispatch](../crates/game/src/lib.rs), [transport](..
 | `0410` | 376 | R | [ActionDetonateProjectile](native-projectiles.md) |
 | `0412` | 842 | E | ActionRequestActivateAbility · Accepted Idris B or Lorelai A/B point request on its originating connection |
 | `0414` | 48 | R | ActionRequestCancelAbility_Client |
-| `0415` | 9,106 | A | ActionPlayAbility · Released Lorelai C and native lane-minion/tower basic attacks with visible actors |
+| `0415` | 9,106 | A | ActionPlayAbility · Released Lorelai C, witnessed Reim B self-cast and native lane-minion/tower basic attacks with visible actors |
 | `0416` | 886 | A | ActionPlayAbility · Released Idris B or Lorelai A/B with visible caster |
-| `0419` | 12 | R | [Reim B range effect after a remote release](native-abilities.md) |
+| `0419` | 12 | A | [ARAL Reim B area effect after an authoritative release](native-abilities.md#reim-b-chill-winds) |
 | `041A` | 534 | A | ActionOverrideAbility · [ARAL Ringo Double Down after a last hit](aral-ability-overrides.md) |
 | `041B` | 414 | A | ActionClearAbilityOverride · [ARAL Ringo Double Down consumed by an attack](aral-ability-overrides.md) |
 | `041C` | 6,668 | A | ActionModifyActorAttribute · Supported inventory modifiers and hero progression fields |
 | `041D` | 109,869 | A | ActionModifyActorResource · Simulated resource deltas including earned gold and purchase debits |
-| `041E` | 16,559 | A | ActionImpactHealth · Applied damage or healing with visible participants |
+| `041E` | 16,559 | A | ActionImpactHealth · Applied damage or healing with visible participants, including Reim B damage family 74 |
 | `041F` | 42 | H | ActionModifyGameModeVar · Six initial keys after the authenticated native ARAL or Solo scene request. [Wire order](game-wire.md#initial-game-mode-variables) |
 | `0421` | 22 | R | [ActionCreateZoneOfControl](aral-orbit.md#actor-anchored-zones) |
 | `0423` | 22 | R | [ActionDestroyZoneOfControl](aral-orbit.md#actor-anchored-zones) |
@@ -69,19 +69,19 @@ The host paths are in [room dispatch](../crates/game/src/lib.rs), [transport](..
 | `043A` | 317 | A | ActionGrantAbility · Granted rank for mapped native hero ability |
 | `043C` | 1,351 | R | ActionCancelAbility |
 | `043D` | 425 | A | ActionGrantItem · Acquired or restored held item instance |
-| `043E` | 44,346 | A | [ARAL Waterwall on an ally (issuer) and Chakram self-application (issuer and registered teammates)](native-abilities.md) |
-| `043F` | 17,018 | R | [ActionApplyBuff opening and equipment instances](aral-item-activation.md#extended-applications-at-match-opening-and-on-purchase) |
+| `043E` | 44,346 | A | [ARAL Waterwall on an ally (issuer), Chakram self-application (issuer and registered teammates), and the one-second Chill Winds root (registered teammates)](native-abilities.md) |
+| `043F` | 17,018 | H | [Three initial self-sourced applications per declared ARAL tower](aral-tower-opening.md). [ActionApplyBuff opening and equipment instances](aral-item-activation.md#extended-applications-at-match-opening-and-on-purchase) |
 | `0440` | 60 | R | ActionShowFlyoutText |
 | `0441` | 385 | R | ActionModifyBuffDuration |
 | `0443` | 1,831 | R | [ActionModifyBuffStack and observed instance counts](aral-item-activation.md#extended-applications-at-match-opening-and-on-purchase) |
 | `0445` | 1,398 | R | ActionCancelBuff |
 | `0446` | 18 | R | ActionTimeoutBuff |
 | `0447` | 41 | R | ActionDecrementBuffStack |
-| `0448` | 150 | R | [ActionRequestActivateItem](aral-item-activation.md) |
+| `0448` | 150 | A | ARAL Healing Flask instance prefix for eligible witnesses.  [ActionRequestActivateItem](aral-item-activation.md) |
 | `044A` | 66 | R | [ActionRequestActivateItem](aral-item-activation.md) |
 | `044B` | 150 | A | ActionConsumeItem · Consumed recipe component instance |
-| `044C` | 218 | R | [ActionItemActivated](aral-item-activation.md) · All 218 broadcasts link to a prior grant for the same actor and instance |
-| `044D` | 4 | R | ActionSellItem |
+| `044C` | 218 | A | ARAL Healing Flask mode 2 only.  [ActionItemActivated](aral-item-activation.md) · All 218 broadcasts link to a prior grant for the same actor and instance |
+| `044D` | 4 | A | ARAL completed sales of Hourglass, Blazing Salvo or Stormcrown, witnessed by other visible players or an authorized observer. |
 | `044E` | 84 | R | [ActionPing](native-pings.md) · Actor, optional target, map position and two numeric selectors |
 | `044F` | 48 | R | [ActionHUDQuickMessage](native-pings.md) · Actor, message selector, optional target, float and operand |
 | `0451` | 248 | H | Opening world clock |

@@ -99,8 +99,24 @@ pub enum Command {
     },
     Stop,
 }
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ImpactEffect {
+    #[default]
+    Standard,
+    ChillWinds,
+}
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Event {
+    ChillWindsRoot {
+        source: u32,
+        target: u32,
+        instance: u32,
+    },
+    ChillWinds {
+        source: u32,
+        position: Position,
+        heading: Option<f32>,
+    },
     /// An ARAL Ringo last hit armed the perk, or its next released basic consumed it.
     DoubleDown {
         source: u32,
@@ -163,6 +179,8 @@ pub enum Event {
         target: u32,
     },
     Damage {
+        #[serde(default)]
+        effect: ImpactEffect,
         source: u32,
         target: u32,
         amount: f32,
@@ -884,7 +902,7 @@ impl World {
 
     fn walk(&mut self, i: usize, p: Position, events: &mut Vec<Event>) {
         let e = &mut self.entities[i];
-        if e.stats.speed <= 0. {
+        if e.stats.speed <= 0. || e.status.root_until > self.tick {
             return;
         }
         let next = if e.kind == Kind::Hero
@@ -954,6 +972,9 @@ impl World {
                 / TICK_HZ as f32,
         );
         if pos != e.position {
+            if e.type_id == EntityTemplate::Reim.as_raw() {
+                e.status.reim_heading = Some((pos.y - e.position.y).atan2(pos.x - e.position.x));
+            }
             if e.kind == Kind::Minion {
                 let followed = match e.order {
                     Command::Attack(id) => Some(id),

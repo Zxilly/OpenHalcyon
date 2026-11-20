@@ -1556,6 +1556,7 @@ impl Room {
                 _ => {}
             }
         }
+        native_abilities::publish_before_impacts(self, &events);
         self.replicate(&events);
         if legacy || self.solo_scene() {
             npc_projectile::publish(self, &events);
