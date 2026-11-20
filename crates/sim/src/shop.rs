@@ -66,6 +66,23 @@ pub enum BasicItem {
     MinionsFoot,
     LuckyStrike,
     TyrantsMonocle,
+    Aegis,
+    CapacitorPlate,
+    CrystalInfusion,
+    DragonbloodContract,
+    Flare,
+    FlareLoader,
+    ProtectorContract,
+    RooksDecree,
+    ScoutPak,
+    ScoutTrap,
+    ScoutTuff,
+    Shiversteel,
+    SuperScout2000,
+    TeleportBoots,
+    TensionBow,
+    TornadoTrigger,
+    WeaponInfusion,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HeldItem {
@@ -110,7 +127,7 @@ const fn def(
 }
 
 use NativeItemStat::*;
-const OFFERS: [Definition; 59] = [
+const OFFERS: [Definition; 76] = [
     def(
         WeaponBlade,
         458,
@@ -596,9 +613,146 @@ const OFFERS: [Definition; 59] = [
         &[SixSins, LuckyStrike],
         &[(WeaponPower, 60.), (CritChance, 0.35), (CritDamage, 0.15)],
     ),
+    def(
+        Aegis,
+        503,
+        "Item_Aegis",
+        900,
+        &[Warmail, ReflexBlock],
+        &[(Health, 200.0), (Armor, 45.0), (Shield, 45.0)],
+    ),
+    def(
+        CapacitorPlate,
+        534,
+        "Item_CapacitorPlate",
+        550,
+        &[Dragonheart, Warmail],
+        &[
+            (Health, 450.0),
+            (Armor, 30.0),
+            (Shield, 30.0),
+            (CooldownSpeed, 0.15),
+        ],
+    ),
+    def(CrystalInfusion, 494, "Item_CrystalInfusion", 500, &[], &[]),
+    def(
+        DragonbloodContract,
+        536,
+        "Item_DragonbloodContract",
+        300,
+        &[Oakheart],
+        &[(Health, 250.0)],
+    ),
+    def(Flare, 481, "Item_Flare", 25, &[], &[]),
+    def(
+        FlareLoader,
+        532,
+        "Item_FlareLoader",
+        300,
+        &[],
+        &[(Health, 150.0)],
+    ),
+    def(
+        ProtectorContract,
+        535,
+        "Item_ProtectorContract",
+        300,
+        &[Oakheart],
+        &[(Health, 300.0)],
+    ),
+    def(
+        RooksDecree,
+        531,
+        "Item_RooksDecree",
+        600,
+        &[ProtectorContract, Warmail],
+        &[
+            (Health, 550.0),
+            (Armor, 30.0),
+            (Shield, 30.0),
+            (CooldownSpeed, 0.05),
+        ],
+    ),
+    def(
+        ScoutPak,
+        529,
+        "Item_ScoutPak",
+        250,
+        &[Hourglass],
+        &[(CooldownSpeed, 0.1), (EnergyRegen, 2.0)],
+    ),
+    def(ScoutTrap, 495, "Item_ScoutTrap", 50, &[], &[]),
+    def(
+        ScoutTuff,
+        528,
+        "Item_ScoutTuff",
+        200,
+        &[FlareLoader],
+        &[(Health, 250.0)],
+    ),
+    def(
+        Shiversteel,
+        484,
+        "Item_Shiversteel",
+        1100,
+        &[DragonbloodContract, BlazingSalvo],
+        &[(Health, 600.0), (AttackSpeed, 0.2)],
+    ),
+    def(
+        SuperScout2000,
+        527,
+        "Item_SuperScout2000",
+        1000,
+        &[ScoutTuff, ScoutPak],
+        &[(Health, 450.0), (EnergyRegen, 4.5), (CooldownSpeed, 0.2)],
+    ),
+    def(
+        TeleportBoots,
+        530,
+        "Item_TeleportBoots",
+        750,
+        &[TravelBoots],
+        &[(Health, 150.0), (Shield, 15.0), (Armor, 15.0)],
+    ),
+    def(
+        TensionBow,
+        480,
+        "Item_TensionBow",
+        1350,
+        &[SixSins, PiercingSpear],
+        &[(WeaponPower, 40.0)],
+    ),
+    def(
+        TornadoTrigger,
+        466,
+        "Item_TornadoTrigger",
+        1200,
+        &[BlazingSalvo, LuckyStrike],
+        &[(AttackSpeed, 0.4), (CritChance, 0.35), (CritDamage, 0.05)],
+    ),
+    def(WeaponInfusion, 493, "Item_WeaponInfusion", 500, &[], &[]),
 ];
 
 impl BasicItem {
+    // The legacy/custom store has positive ARAL transaction evidence for these five additions.
+    fn catalog_store_allows(
+        self,
+        settings: Option<halcyon_data::items::StoreSettings>,
+    ) -> Option<bool> {
+        use halcyon_data::items::StoreSettings::*;
+        let allow = match self {
+            Flare | ScoutTrap => matches!(settings, None | Some(HalcyonFold)),
+            CrystalInfusion | WeaponInfusion => !matches!(settings, Some(BlitzRevamp)),
+            FlareLoader | ScoutPak | ScoutTuff | SuperScout2000 | TeleportBoots => {
+                matches!(settings, Some(Five | Practice))
+            }
+            CapacitorPlate => true,
+            Aegis | DragonbloodContract | ProtectorContract | RooksDecree | Shiversteel
+            | TensionBow | TornadoTrigger => settings.is_some(),
+            _ => return None,
+        };
+        Some(allow)
+    }
     fn definition(self) -> &'static Definition {
         &OFFERS[self as usize]
     }
@@ -634,16 +788,33 @@ impl Default for Shop {
             offers: OFFERS
                 .iter()
                 .map(|d| Offer {
-                    permitted: true,
+                    permitted: d.kind.catalog_store_allows(None).unwrap_or(true),
                     boot_move: 0.,
                     components: d.components.to_vec(),
                     refund: match d.kind {
                         Hourglass => Some(125),
                         BlazingSalvo => Some(350),
                         Stormcrown => Some(1200),
+                        Aegis => Some(1200),
+                        CapacitorPlate => Some(1000),
+                        CrystalInfusion => Some(250),
+                        DragonbloodContract => Some(300),
+                        Flare => Some(15),
+                        FlareLoader => Some(150),
+                        ProtectorContract => Some(300),
+                        RooksDecree => Some(1000),
+                        ScoutPak => Some(250),
+                        ScoutTrap => Some(25),
+                        ScoutTuff => Some(250),
+                        Shiversteel => Some(1200),
+                        SuperScout2000 => Some(1000),
+                        TeleportBoots => Some(700),
+                        TensionBow => Some(1450),
+                        TornadoTrigger => Some(1400),
+                        WeaponInfusion => Some(250),
                         _ => None,
                     },
-                    standard_5v5: true,
+                    standard_5v5: !matches!(d.kind, Flare | ScoutTrap),
                     combine: d.combine,
                     bonuses: d.bonuses.to_vec(),
                 })
@@ -770,7 +941,12 @@ impl Shop {
                 };
                 if matches!(
                     d.kind,
-                    SprintBoots | TravelBoots | JourneyBoots | HalcyonChargers | WarTreads
+                    SprintBoots
+                        | TravelBoots
+                        | JourneyBoots
+                        | HalcyonChargers
+                        | WarTreads
+                        | TeleportBoots
                 ) {
                     offer.boot_move = full
                         .passive_value(ItemTuning::Move.key())
@@ -1091,6 +1267,13 @@ impl World {
         Ok(())
     }
 
+    pub fn use_catalog_store(&mut self, settings: halcyon_data::items::StoreSettings) {
+        for (offer, definition) in self.shop.offers.iter_mut().zip(&OFFERS) {
+            if let Some(allowed) = definition.kind.catalog_store_allows(Some(settings)) {
+                offer.permitted = allowed;
+            }
+        }
+    }
     pub fn use_item_store(&mut self, entries: &[String]) {
         for (offer, definition) in self.shop.offers.iter_mut().zip(&OFFERS) {
             offer.permitted = entries.iter().any(|entry| entry == definition.name);
@@ -1400,6 +1583,28 @@ mod tests {
         for (kind, refund) in [(BlazingSalvo, 350), (Stormcrown, 1200)] {
             assert_eq!(shop.offers[kind as usize].refund, Some(refund));
         }
+        use halcyon_data::items::ItemStore;
+        assert_eq!(OFFERS.len(), 76);
+        for item in &OFFERS {
+            let row = catalog.item(item.name).unwrap();
+            assert!(row.cost_a.is_some_and(|cost| cost > 0));
+            assert!(!row.buyable_in_stores.is_empty());
+            for (settings, store) in [
+                (StoreSettings::Five, ItemStore::Standard5v5),
+                (StoreSettings::HalcyonFold, ItemStore::Standard3v3),
+                (StoreSettings::BlitzRevamp, ItemStore::Blitz3v3),
+            ] {
+                if let Some(allowed) = item.kind.catalog_store_allows(Some(settings)) {
+                    assert_eq!(
+                        allowed,
+                        row.buyable_in_stores.iter().any(|s| s == store.key()),
+                        "{}",
+                        item.name
+                    );
+                    assert_eq!(shop.offers[item.kind as usize].refund, row.cost_b);
+                }
+            }
+        }
         assert_eq!(catalog.item("Item_ScoutTrap").unwrap().cost_b, Some(25));
         use halcyon_data::items::StoreSettings;
         for settings in [
@@ -1485,6 +1690,37 @@ mod tests {
             let actor = other.entities[0].id;
             assert!(other.purchase(actor, WeaponBlade).is_ok());
         }
+    }
+
+    #[test]
+    fn expanded_catalog_trades_owned_components_and_enforces_store_membership() {
+        use halcyon_data::items::StoreSettings;
+        let mut world = World::new(1, 1);
+        world.entities[0].gold = 10_000;
+        world.use_catalog_store(StoreSettings::Five);
+        assert_eq!(world.purchase(1, ScoutTrap), Err("item unavailable"));
+        let scout = world.purchase(1, FlareLoader).unwrap();
+        let tuff = world.purchase(1, ScoutTuff).unwrap();
+        assert_eq!((scout.paid, tuff.paid), (300, 200));
+        assert_eq!(tuff.consumed, vec![scout.granted]);
+        let pak = world.purchase(1, ScoutPak).unwrap();
+        let full = world.purchase(1, SuperScout2000).unwrap();
+        assert_eq!((pak.paid, full.paid), (500, 1000));
+        assert_eq!(full.consumed, vec![tuff.granted, pak.granted]);
+        assert!(world.sell_item(1, tuff.granted.instance).is_err());
+        assert_eq!(
+            world.sell_item(1, full.granted.instance).unwrap().refund,
+            1000
+        );
+        assert!(world.sell_item(1, full.granted.instance).is_err());
+        world.use_catalog_store(StoreSettings::HalcyonFold);
+        assert_eq!(world.purchase(1, FlareLoader), Err("item unavailable"));
+        let trap = world.purchase(1, ScoutTrap).unwrap();
+        assert_eq!(
+            world.sell_item(1, trap.granted.instance).unwrap().refund,
+            25
+        );
+        assert_eq!(BasicItem::from_template(549), None);
     }
 
     #[test]

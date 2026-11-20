@@ -17,6 +17,18 @@ For supported equipment the first price column is the combine charge. The full p
 
 The project simulation can sell an owned, equipped instance at base while the hero is alive. A sale removes its modifiers and inventory slot once and credits the configured refund. Four original sale notifications traveled from server to client. The capture contains no corresponding client sell opcode.
 
+## Coverage of the 93 definitions
+
+| Catalog group | Count | Server behavior |
+| --- | ---: | --- |
+| Ordinary store items with positive combine prices and entity templates | 76 | The host admits eligible purchases by template, consumes matching components by instance, applies supported modifiers and supports owned-instance resale. The optional catalog supplies all 76 refunds. |
+| Definitions absent from every store | 5 | Healing Flask and Vision Totem have separate starter inventory roles. Ironguard Contract, Minion Candy and Nullwave Gauntlet have no regular shop admission. |
+| Internal, development or unpriced special entries | 12 | Boombox, the three Cheater variants, Cooldown Damage Self, Get Rid Of Gold, Gold Candy, Immortal Stun Self, Level Candy, Refund Ability Point, Template and Video Helper have no purchase route. Template has a nominal price of 1 and a refund of 30,000. |
+
+The additional 17 ordinary templates comprise Aegis, Capacitor Plate, Dragonblood Contract, Protector Contract, Rook’s Decree, Shiversteel, Tension Bow and Tornado Trigger in both standard stores and Blitz Revamp. Both infusions appear in the two standard stores. Flare and Scout Trap appear only in Standard 3v3. Flare Loader, Scout Pak, Scout Tuff, SuperScout 2000 and Teleport Boots appear only in Standard 5v5. Shiversteel also appears in Tutorial 2. The original ARAL transactions independently establish Capacitor Plate, both infusions, Flare and Scout Trap.
+
+Purchase and resale cover the economy of consumables. Their deployment, infusion consumption and temporary scaling, Tension Bow's conditional proc, and equipment-specific activated abilities need separate simulation and native input evidence. The full catalog exposes the original tuning for these effects. The four captured ARAL sale broadcasts include Scout Trap's modifier-free removal and 25-gold refund.
+
 ## Boots
 
 The supplement's nonstacking movement bonus uses the largest equipped boot bonus. Sprint Boots supply a further 2 movement speed for 2 seconds and have a 150-second cooldown in the original data. The simulator validates the actor and instance before activation. Resale and purchase of another pair preserve the cooldown. With Sprint Boots available, the local bot strategy can buy a pair and activate it during a long move. Other active and passive variables remain available through the catalog alongside their descriptions and units. Their presence alone does not define a native input or reproduce their combat effects.

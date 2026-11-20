@@ -604,11 +604,18 @@ impl Rooms {
             Some(d) => World::from_data(seed, n, d).map_err(|_| PlatformError::HostUnavailable)?,
             None => World::new(seed, n),
         };
-        if let (Some(data), Some(queue)) = (&self.0.data, known_queue)
-            && let Some(entries) = halcyon_data::items::StoreSettings::for_mode(queue.mode())
-                .and_then(|settings| data.store_for_settings(settings.key()))
+        if let Some(settings) =
+            known_queue.and_then(|q| halcyon_data::items::StoreSettings::for_mode(q.mode()))
         {
-            world.use_item_store(entries);
+            world.use_catalog_store(settings);
+            if let Some(entries) = self
+                .0
+                .data
+                .as_ref()
+                .and_then(|data| data.store_for_settings(settings.key()))
+            {
+                world.use_item_store(entries);
+            }
         }
         if !req.teams.is_empty()
             && (req.teams.len() != req.players.len()
@@ -2094,5 +2101,24 @@ mod tests {
         );
         assert_eq!(&upgraded[3].body[4..8], &ack[2].body[8..12]);
         assert_eq!(room.world.entities[0].inventory.len(), 1);
+        room.world.entities[0].gold = 300;
+        let request = |template: u32| {
+            Message::known(
+                Opcode::ShopRequest,
+                [1500u32.to_be_bytes(), template.to_be_bytes()].concat(),
+            )
+        };
+        assert!(room.receive(0, 1, request(549)).unwrap().is_empty());
+        assert!(room.receive(0, 1, request(495)).unwrap().is_empty());
+        let granted = room.receive(0, 1, request(532)).unwrap();
+        assert!(granted.iter().any(|m| matches!(
+            m.fields(),
+            Ok(Fields::ItemGrant {
+                actor: 1500,
+                item: 532,
+                ..
+            })
+        )));
+        assert_eq!(room.world.entities[0].gold, 0);
     }
 }

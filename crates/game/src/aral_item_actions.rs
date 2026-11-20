@@ -31,7 +31,10 @@ fn action(world: &World, event: &Event) -> Option<(u32, Batch)> {
         Event::ItemSold(sale)
             if matches!(
                 sale.sold.kind,
-                BasicItem::Hourglass | BasicItem::BlazingSalvo | BasicItem::Stormcrown
+                BasicItem::Hourglass
+                    | BasicItem::BlazingSalvo
+                    | BasicItem::Stormcrown
+                    | BasicItem::ScoutTrap
             ) =>
         {
             let actor = u32::from(wire_id(sale.actor));
