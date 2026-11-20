@@ -183,6 +183,11 @@ async fn socket_and_long_poll_share_recipient_cursor_and_social_refresh() {
     assert_eq!(base["httpStatus"], 200);
     assert_eq!(base["text"]["states"]["state"], "menus");
     assert_eq!(http(addr, &lp_path).await.1["tag"], base["tag"]);
+    let (status, alternate) = http(addr, &ws_path).await;
+    assert_eq!(status, 200);
+    assert_eq!(alternate["tag"], base["tag"]);
+    assert_eq!(alternate["text"]["states"]["state"], "menus");
+    assert_eq!(http(addr, &format!("/ws/{}", Uuid::new_v4())).await.0, 401);
 
     rpc(
         &api,

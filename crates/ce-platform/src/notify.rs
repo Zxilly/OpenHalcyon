@@ -3,9 +3,9 @@ use axum::{
     Json, Router,
     extract::{
         Path, Query, State, WebSocketUpgrade,
-        ws::{Message, WebSocket},
+        ws::{Message, WebSocket, rejection::WebSocketUpgradeRejection},
     },
-    http::{StatusCode, header},
+    http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Response},
     routing::get,
 };
@@ -214,8 +214,23 @@ async fn socket(
     State(s): State<Arc<Platform>>,
     Path(id): Path<Uuid>,
     Query(cursor): Query<Cursor>,
-    ws: WebSocketUpgrade,
+    headers: HeaderMap,
+    upgrade: Result<WebSocketUpgrade, WebSocketUpgradeRejection>,
 ) -> Result<Response, StatusCode> {
+    let ws = match upgrade {
+        Ok(ws) => ws,
+        Err(error) => {
+            if headers.contains_key(header::UPGRADE)
+                || headers.contains_key(header::SEC_WEBSOCKET_KEY)
+                || headers.contains_key(header::SEC_WEBSOCKET_VERSION)
+            {
+                return Ok(error.into_response());
+            }
+            return Ok(poll(State(s), Path(id), Query(cursor))
+                .await?
+                .into_response());
+        }
+    };
     let key = s.grants.resolve(id).ok_or(StatusCode::UNAUTHORIZED)?;
     let after = cursor.position()?;
     s.app.profile(&key).await.map_err(platform_status)?;
