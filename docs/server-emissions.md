@@ -72,10 +72,10 @@ The host paths are in [room dispatch](../crates/game/src/lib.rs), [transport](..
 | `0445` | 1,398 | R | ActionCancelBuff |
 | `0446` | 18 | R | ActionTimeoutBuff |
 | `0447` | 41 | R | ActionDecrementBuffStack |
-| `0448` | 150 | R | ActionRequestActivateItem |
-| `044A` | 66 | R | ActionRequestActivateItem |
+| `0448` | 150 | R | [ActionRequestActivateItem](aral-item-activation.md) |
+| `044A` | 66 | R | [ActionRequestActivateItem](aral-item-activation.md) |
 | `044B` | 150 | A | ActionConsumeItem · Consumed recipe component instance |
-| `044C` | 218 | R | ActionItemActivated |
+| `044C` | 218 | R | [ActionItemActivated](aral-item-activation.md) · All 218 broadcasts link to a prior grant for the same actor and instance |
 | `044D` | 4 | R | ActionSellItem |
 | `044E` | 84 | R | [ActionPing](native-pings.md) · Actor, optional target, map position and two numeric selectors |
 | `044F` | 48 | R | [ActionHUDQuickMessage](native-pings.md) · Actor, message selector, optional target, float and operand |
