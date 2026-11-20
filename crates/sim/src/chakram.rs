@@ -41,11 +41,7 @@ impl Chakram {
     }
 }
 
-impl Room<'_> {
-    pub(super) fn advance_chakrams(&mut self, events: &mut Vec<Event>) {
-        self.advance_spell_family::<Chakram>(events);
-    }
-}
+impl Room<'_> {}
 
 impl crate::persistent_spells::TimedSpell for Chakram {
     fn expired_before_step(&self, _: u64) -> bool {

@@ -44,9 +44,6 @@ impl Room<'_> {
             hit: Vec::new(),
         });
     }
-    pub(super) fn advance_twisters(&mut self, events: &mut Vec<Event>) {
-        self.advance_spell_family::<Dash>(events);
-    }
 }
 impl crate::persistent_spells::TimedSpell for Dash {
     fn expired_before_step(&self, _: u64) -> bool {
@@ -151,7 +148,7 @@ mod tests {
         w.advance_cast(0, &mut ev);
         for t in 6..13 {
             w.tick = t;
-            w.advance_twisters(&mut ev);
+            w.advance_spell_family::<Dash>(&mut ev);
         }
         assert_eq!(w.entities[0].position, p);
         assert_eq!(w.entities[0].energy, 140.);

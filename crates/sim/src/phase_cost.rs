@@ -42,7 +42,8 @@ fn effect_phase_cost() {
                 w.create_bulwark(2, 0, &mut events);
             }
             let t = Instant::now();
-            w.advance_persistent_spells(&mut events);
+            w.advance_spell_family::<crate::bulwark::Field>(&mut events);
+            w.advance_spell_family::<crate::arcane_fire::Pulse>(&mut events);
             ns += t.elapsed().as_nanos();
             event_count += black_box(events.len()) as u64;
             events.clear();

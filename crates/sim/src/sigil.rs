@@ -120,9 +120,6 @@ impl Room<'_> {
                 target,
             })
     }
-    pub(super) fn advance_sigils(&mut self, events: &mut Vec<Event>) {
-        self.advance_spell_family::<Field>(events);
-    }
     pub(super) fn detonate_sigil(&mut self, i: usize, events: &mut Vec<Event>) {
         let source = self.entities[i].id;
         let Some(f) = self.entities.remove_spell::<Field>(|f| f.source == source) else {
@@ -272,7 +269,7 @@ mod tests {
         let cooldown = w.entities[0].cooldown[0];
         for t in 5..=24 {
             w.tick = t;
-            w.advance_sigils(&mut events);
+            w.advance_spell_family::<Field>(&mut events);
         }
         assert_eq!(w.entities[1].hp, 925.);
         assert_eq!(w.entities[2].hp, 525.);

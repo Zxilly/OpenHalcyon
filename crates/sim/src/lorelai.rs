@@ -212,10 +212,6 @@ impl Room<'_> {
             pool,
         });
     }
-
-    pub(super) fn advance_water(&mut self, events: &mut Vec<Event>) {
-        self.advance_spell_family::<Water>(events);
-    }
 }
 
 impl crate::persistent_spells::TimedSpell for Water {

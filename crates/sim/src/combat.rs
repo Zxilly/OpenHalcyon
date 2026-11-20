@@ -1210,10 +1210,6 @@ impl Room<'_> {
             _ => None,
         }
     }
-
-    pub(super) fn advance_effects(&mut self, events: &mut Vec<Event>) {
-        self.advance_spell_family::<SpellEffect>(events);
-    }
 }
 
 impl crate::persistent_spells::TimedSpell for SpellEffect {
@@ -1446,7 +1442,7 @@ mod tests {
             .spawn_spell(SpellEffect::npc_windup(6, source, team, target, 42.));
         for tick in 1..=6 {
             w.tick = tick;
-            w.advance_effects(&mut events);
+            w.advance_spell_family::<SpellEffect>(&mut events);
             assert_eq!(events.len(), usize::from(tick == 6));
         }
         assert_eq!(
@@ -1463,7 +1459,7 @@ mod tests {
         let hp = w.entities[victim].hp;
         for tick in 7..=16 {
             w.tick = tick;
-            w.advance_effects(&mut events);
+            w.advance_spell_family::<SpellEffect>(&mut events);
             assert_eq!(
                 w.entities[victim].hp,
                 if tick == 16 { hp - 42. } else { hp }
@@ -1475,7 +1471,7 @@ mod tests {
         w.entities
             .spawn_spell(SpellEffect::npc_windup(17, source, team, target, 42.));
         w.tick = 17;
-        w.advance_effects(&mut events);
+        w.advance_spell_family::<SpellEffect>(&mut events);
         assert!(w.entities.spells::<SpellEffect>().next().is_none());
         assert_eq!(w.next_id, first_id + 1);
 
@@ -1483,11 +1479,11 @@ mod tests {
         w.entities
             .spawn_spell(SpellEffect::npc_windup(18, source, team, target, 42.));
         w.tick = 18;
-        w.advance_effects(&mut events);
+        w.advance_spell_family::<SpellEffect>(&mut events);
         w.entities[victim].hp = 0.;
         let before = events.len();
         w.tick = 28;
-        w.advance_effects(&mut events);
+        w.advance_spell_family::<SpellEffect>(&mut events);
         assert_eq!(events.len(), before);
         assert!(w.entities.spells::<SpellEffect>().next().is_none());
     }

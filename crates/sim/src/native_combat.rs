@@ -642,7 +642,7 @@ mod tests {
         {
             w.tick = tick;
             events.clear();
-            w.advance_effects(&mut events);
+            w.advance_spell_family::<crate::combat::SpellEffect>(&mut events);
             let hits = |id| {
                 events
                     .iter()
@@ -717,7 +717,7 @@ mod tests {
         let mut events = Vec::new();
         for _ in 0..100 {
             w.tick += 1;
-            w.advance_effects(&mut events);
+            w.advance_spell_family::<crate::combat::SpellEffect>(&mut events);
         }
         for target in [2, 4] {
             let hits: Vec<_> = events
@@ -841,7 +841,7 @@ mod tests {
         let mut events = Vec::new();
         for _ in 0..20 {
             w.tick += 1;
-            w.advance_chakrams(&mut events);
+            w.advance_spell_family::<crate::chakram::Chakram>(&mut events);
         }
         let hits: Vec<_> = events
             .iter()

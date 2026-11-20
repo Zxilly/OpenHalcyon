@@ -1,6 +1,6 @@
 //! Each spell family keeps its live entity handles in cast order. Deferred
 //! impacts recheck the handle generation after running combat callbacks.
-use super::{Event, Room, arcane_fire::Pulse, bulwark::Field};
+use super::{Event, Room, arcane_fire::Pulse};
 use bevy_ecs::component::Mutable;
 use bevy_ecs::prelude::{Commands, Component, Entity, In, InMut, Query, Res, Resource};
 use std::marker::PhantomData;
@@ -128,10 +128,6 @@ impl Room<'_> {
                 order.handles.retain(|id| ecs.get::<T>(*id).is_some());
             });
         self.entities.meta.spell_jobs = jobs;
-    }
-    pub(super) fn advance_persistent_spells(&mut self, events: &mut Vec<Event>) {
-        self.advance_spell_family::<Field>(events);
-        self.advance_spell_family::<Pulse>(events);
     }
 }
 

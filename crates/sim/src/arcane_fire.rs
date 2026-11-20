@@ -189,7 +189,7 @@ mod tests {
         for tick in [2, 4] {
             world.tick = tick;
             let mut events = Vec::new();
-            world.advance_persistent_spells(&mut events);
+            world.advance_spell_family::<Pulse>(&mut events);
             let impacts: Vec<_> = events
                 .into_iter()
                 .filter_map(|e| match e {
@@ -213,7 +213,7 @@ mod tests {
         world.entities[1].hp = 0.;
         world.tick = 6;
         let mut events = Vec::new();
-        world.advance_persistent_spells(&mut events);
+        world.advance_spell_family::<Pulse>(&mut events);
         assert!(events.is_empty());
         assert!(world.entities.spells::<Pulse>().next().is_none());
     }
@@ -269,7 +269,7 @@ mod tests {
         assert!(!w.has_arcane_fire(4, 1));
         for t in 5..=64 {
             w.tick = t;
-            w.advance_persistent_spells(&mut events);
+            w.advance_spell_family::<Pulse>(&mut events);
         }
         assert_eq!(w.entities[0].hp, 882.);
         assert_eq!(w.entities[1].hp, 1952.);

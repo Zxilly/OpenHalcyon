@@ -152,16 +152,17 @@ fn begin(ecs: &mut Ecs) {
 }
 fn projectiles(ecs: &mut Ecs) {
     with_room(ecs, |room, events, _| {
-        room.advance_effects(events);
-        room.advance_chakrams(events);
-        room.advance_water(events)
+        room.advance_spell_family::<crate::combat::SpellEffect>(events);
+        room.advance_spell_family::<crate::chakram::Chakram>(events);
+        room.advance_spell_family::<crate::lorelai::Water>(events)
     });
 }
 fn fields(ecs: &mut Ecs) {
     with_room(ecs, |room, events, _| {
-        room.advance_persistent_spells(events);
-        room.advance_twisters(events);
-        room.advance_sigils(events)
+        room.advance_spell_family::<crate::bulwark::Field>(events);
+        room.advance_spell_family::<crate::arcane_fire::Pulse>(events);
+        room.advance_spell_family::<crate::twister::Dash>(events);
+        room.advance_spell_family::<crate::sigil::Field>(events)
     });
     let mut frame = ecs.resource_mut::<Frame>();
     frame.after_effects = frame.state.winner.is_none();

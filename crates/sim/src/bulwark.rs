@@ -243,20 +243,20 @@ mod tests {
         assert!(w.command(2, leap).is_err());
         w.entities[1].position.x = 8.;
         w.tick = 9;
-        w.advance_persistent_spells(&mut out);
+        w.advance_spell_family::<Field>(&mut out);
         assert_eq!(w.entities[1].hp, hp - 92.);
         assert!(w.command(2, leap).is_err());
         w.entities[0].position.x = 3.;
         w.tick = 57;
-        w.advance_persistent_spells(&mut out);
+        w.advance_spell_family::<Field>(&mut out);
         assert_eq!(w.entities[3].hp, outside);
         w.entities[1].position.x = 5.5;
         w.tick = 58;
-        w.advance_persistent_spells(&mut out);
+        w.advance_spell_family::<Field>(&mut out);
         assert_eq!(w.entities[1].hp, hp - 184.);
         assert_eq!(w.entities[3].hp, outside);
         w.tick = 68;
-        w.advance_persistent_spells(&mut out);
+        w.advance_spell_family::<Field>(&mut out);
         assert!(w.entities.spells::<Field>().next().is_none());
         w.command(2, leap).unwrap();
         // The named, home-authorized level ten extends three seconds to eight.
@@ -278,7 +278,7 @@ mod tests {
         assert_eq!(w.entities.spells::<Field>().next().unwrap().end, 236);
         w.entities[0].position.x = 12.;
         w.tick = 77;
-        w.advance_persistent_spells(&mut out);
+        w.advance_spell_family::<Field>(&mut out);
         assert_eq!(w.entities[3].hp, outside - 92.);
         w.set_named_talent(1, None, &d).unwrap();
         assert!(w.entities[0].mobile_bulwark_bonus.is_none());
