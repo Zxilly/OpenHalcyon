@@ -388,7 +388,7 @@ impl Admin {
             PlayerState::Offline
         };
         let local_host = match_id
-            .filter(|id| self.rooms.detail_typed(*id).is_some())
+            .filter(|id| self.rooms.contains(*id))
             .map(|_| self.config.instance_id);
         PlayerView {
             id: profile.player_id,

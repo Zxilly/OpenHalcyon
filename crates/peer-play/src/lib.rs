@@ -783,7 +783,7 @@ impl Worker {
                     self.lost_rooms.remove(&a.id);
                     return Ok(());
                 }
-                if !self.active.contains(&a.id) && s.rooms.detail(a.id).is_some() {
+                if !self.active.contains(&a.id) && s.rooms.contains(a.id) {
                     s.rooms.activate(a.id)?;
                     self.active.insert(a.id);
                 }
