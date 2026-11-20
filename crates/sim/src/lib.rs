@@ -3,6 +3,10 @@
 use halcyon_data::EntityTemplate;
 mod actors;
 mod ai;
+pub use ai::{
+    AbilityRole, ActiveItemCategory, ActiveItemIntent, ClassifiedAbility, HeroIntentCatalog,
+    HeroKitIntent, MacroMode, ObjectiveInfo, ObjectiveKind, TargetPattern, ThreatAssessment,
+};
 mod amael;
 pub use amael::KickKind;
 mod aral;
@@ -586,9 +590,12 @@ pub struct RoomState {
     seed: u64,
     crit_rng: u64,
     bot_difficulty: Option<halcyon_data::BotDifficulty>,
+    modern_ai_override: Option<bool>,
+    bot_brains: ai::BotBrains,
     first_wave: u64,
     wave_interval: u64,
     abilities: std::sync::Arc<AbilityBook>,
+    ability_intents: std::sync::Arc<ai::utility::HeroIntentCatalog>,
     shop: shop::Shop,
     nav_budget: u8,
     native_navigation: Option<Box<native_navigation::NativeNavigation>>,
@@ -679,6 +686,12 @@ impl Room<'_> {
         }
         if let Some(difficulty) = self.bot_difficulty {
             hash.update(difficulty.as_str().as_bytes());
+        }
+        if let Some(modern) = self.modern_ai_override {
+            hash.update([u8::from(modern)]);
+        }
+        if !self.bot_brains.is_empty() {
+            serde_json::to_writer(&mut hash, &self.bot_brains).expect("finite bot brain state");
         }
         for (i, e) in self.entities.iter().enumerate() {
             serde_json::to_writer(
@@ -835,6 +848,8 @@ impl Room<'_> {
         hero.max_hp = unit.hp;
         hero.hp = unit.hp;
         hero.apply_growth(hero.level - 1);
+        let hero_id = hero.id;
+        self.state.bot_brains.remove(hero_id);
         Ok(())
     }
     fn build(seed: u64, human_seats: u8, rules: &WorldRules) -> Self {
@@ -855,9 +870,12 @@ impl Room<'_> {
                 seed,
                 crit_rng: seed,
                 bot_difficulty: None,
+                modern_ai_override: None,
+                bot_brains: ai::BotBrains::default(),
                 first_wave: rules.first_wave,
                 wave_interval: rules.wave_interval,
                 abilities: rules.abilities.clone(),
+                ability_intents: rules.ability_intents.clone(),
                 shop: rules.shop.clone(),
                 pending_item_events: Vec::new(),
                 nav_budget: 0,
@@ -1294,14 +1312,14 @@ impl Room<'_> {
                     e.status = Default::default();
                     e.path = Default::default();
                     e.position = self.state.layout.home(e);
+                    let id = e.id;
+                    let home = e.position;
                     if let Some(map) = &mut self.state.native_navigation {
-                        map.forget_route(e.id);
+                        map.forget_route(id);
                     }
-                    events.push(Event::Spawn { id: e.id });
-                    events.push(Event::Respawn {
-                        id: e.id,
-                        position: e.position,
-                    });
+                    events.push(Event::Spawn { id });
+                    events.push(Event::Respawn { id, position: home });
+                    self.state.bot_brains.reset_hero(id, home);
                 }
                 continue;
             }
@@ -1406,7 +1424,9 @@ impl Room<'_> {
                 e.kind != Kind::Neutral && e.winding.is_none() && (e.bot || e.kind != Kind::Hero);
             let offset = self.tick + u64::from(e.id);
             let decide = automated && offset.is_multiple_of(self.decision_interval(e));
+            let modern_hero_bot = self.uses_modern_ai() && e.kind == Kind::Hero && e.bot;
             if decide
+                && !modern_hero_bot
                 && e.bot
                 && e.kind == Kind::Hero
                 && e.hp < 0.3 * e.max_hp
@@ -1443,6 +1463,7 @@ impl Room<'_> {
                 }
             }
             if decide
+                && !modern_hero_bot
                 && self.entities[i].kind == Kind::Hero
                 && self.entities[i].bot
                 && self.tick >= self.entities[i].item_stats.sprint_ready
@@ -1461,7 +1482,24 @@ impl Room<'_> {
                 } else {
                     None
                 };
-                let order = self.decide(i);
+                let order = if modern_hero_bot {
+                    let threat = self.evaluate_threat(i);
+                    let bb = self.step_bot_macro_bt(i, &threat);
+                    let cmd = self.decide_with_context(i, &bb, &threat);
+                    let move_goal_dist = match cmd {
+                        Command::MoveTo(goal) => self.entities[i].position.dist(goal),
+                        _ => 0.0,
+                    };
+                    if let Some(item_cmd) =
+                        self.best_executable_active_item(i, &threat, bb.mode, move_goal_dist)
+                        && self.order(i, item_cmd).is_ok()
+                    {
+                        events.append(&mut self.pending_item_events);
+                    }
+                    cmd
+                } else {
+                    self.decide(i)
+                };
                 let elapsed = started.map(|start| start.elapsed());
                 let result = self.order(i, order);
                 if result.is_ok()

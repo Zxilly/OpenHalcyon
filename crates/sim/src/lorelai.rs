@@ -36,6 +36,29 @@ pub(super) struct Water {
     pool: Pool,
 }
 
+impl Water {
+    pub(super) fn hazard_circle(&self) -> Option<(u8, Position, f32)> {
+        self.follows
+            .is_none()
+            .then_some((self.team, self.position, self.pool.radius()))
+    }
+
+    #[cfg(test)]
+    pub(super) fn test_hazard_at(team: u8, position: Position) -> Self {
+        Self {
+            owner: 0,
+            team,
+            position,
+            follows: None,
+            start: 0,
+            pool: Pool::Splash {
+                slow_factor: 0.7,
+                speed: None,
+            },
+        }
+    }
+}
+
 impl Room<'_> {
     pub(super) fn lorelai_action(&self, i: usize, enemy: Position) -> Option<Command> {
         let e = &self.entities[i];
