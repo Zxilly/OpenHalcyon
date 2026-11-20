@@ -86,7 +86,8 @@ impl World {
             hero_starts: starts,
         };
         self.entities.retain(|actor| actor.kind == Kind::Hero);
-        for hero in &mut self.entities {
+        for idx in 0..self.entities.len() {
+            let hero = &mut self.entities[idx];
             hero.position = self.layout.home(hero);
             hero.level = 4;
             hero.skill_points = 4;
@@ -200,9 +201,15 @@ mod tests {
         let mut w = lane();
         w.use_aral_lane().unwrap();
         assert_eq!(w.entities.len(), 18);
-        assert!(w.entities.is_sorted_by(|left, right| left.id < right.id));
-        let sim_slots: Vec<_> = w.entities[6..]
+        assert!(
+            w.entities
+                .iter()
+                .is_sorted_by(|left, right| left.id < right.id)
+        );
+        let sim_slots: Vec<_> = w
+            .entities
             .iter()
+            .skip(6)
             .map(|e| e.id - FIRST_STATIC_ACTOR)
             .collect();
         assert_eq!(sim_slots, [1, 3, 4, 5, 6, 7, 9, 11, 12, 13, 14, 15]);
@@ -211,8 +218,10 @@ mod tests {
         }
         assert_eq!(w.next_id, 517);
         for team in [0, 1] {
-            let positions: Vec<_> = w.entities[..6]
+            let positions: Vec<_> = w
+                .entities
                 .iter()
+                .take(6)
                 .filter(|e| e.team == team)
                 .map(|e| (e.position.x, e.position.y))
                 .collect();

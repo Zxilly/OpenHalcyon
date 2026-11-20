@@ -251,7 +251,8 @@ impl World {
                     if tick < due {
                         return true;
                     }
-                    for e in &mut self.entities {
+                    for idx in 0..self.entities.len() {
+                        let e = &mut self.entities[idx];
                         if e.kind == Kind::Hero
                             && e.hp > 0.
                             && e.team != v.team

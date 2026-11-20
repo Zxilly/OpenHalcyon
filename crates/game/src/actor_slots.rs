@@ -19,7 +19,7 @@ fn set_full(message: &mut Message, slot: u8) {
 }
 
 impl ActorSlots {
-    pub fn from_roster(entities: &[Entity]) -> Self {
+    pub fn from_roster(entities: &halcyon_sim::Actors<'_>) -> Self {
         let mut heroes = [None; 10];
         let mut next_slot = [14, 19];
         for hero in entities.iter().filter(|entity| entity.kind == Kind::Hero) {
@@ -127,7 +127,7 @@ impl ActorSlots {
     }
 
     /// A new scene gets a fresh client table. Preserve indices of living actors.
-    pub fn retain_living(&mut self, entities: &[Entity]) {
+    pub fn retain_living(&mut self, entities: &halcyon_sim::Actors<'_>) {
         for slot in &mut self.minions {
             if slot.is_some_and(|id| !entities.iter().any(|e| e.id == id && e.hp > 0.0)) {
                 *slot = None;
@@ -144,7 +144,7 @@ mod tests {
     fn declaration_preserves_hero_and_live_minion_indices_across_scenes() {
         let mut world = halcyon_sim::World::new(7, 1);
         let mut slots = ActorSlots::from_roster(&world.entities);
-        for entity in &world.entities[..10] {
+        for entity in world.entities.iter().take(10) {
             let hero = slots.declaration(&world, entity, &[], None).unwrap();
             assert_eq!(hero.opcode, crate::wire_opcode::EntitySpawn);
             let expected = [14, 19, 15, 20, 16, 21, 17, 22, 18, 23];
@@ -175,13 +175,9 @@ mod tests {
         let [(dead, released), (living, stable), ..] = indices.as_slice() else {
             panic!()
         };
-        world
-            .entities
-            .iter_mut()
-            .find(|e| e.id == *dead)
-            .unwrap()
-            .hp = 0.0;
-        let living = world.entities.iter_mut().find(|e| e.id == *living).unwrap();
+        world.entities.find_mut(|e| e.id == *dead).unwrap().hp = 0.0;
+        let index = world.entities.iter().position(|e| e.id == *living).unwrap();
+        let living = &mut world.entities[index];
         living.hp -= 25.0;
         let living = living.clone();
         slots.retain_living(&world.entities);
@@ -346,7 +342,7 @@ mod tests {
 
     #[test]
     fn stable_indices_and_explicit_exhaustion() {
-        let mut slots = ActorSlots::from_roster(&[]);
+        let mut slots = ActorSlots::from_roster(&halcyon_sim::Actors::default());
         for slot in FIRST_MINION_SLOT..ACTOR_SLOTS {
             assert_eq!(slots.minion(u32::from(slot) + 1000), Some(slot));
         }

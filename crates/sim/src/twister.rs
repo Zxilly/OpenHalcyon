@@ -104,7 +104,8 @@ mod tests {
         w.use_six_human_roster().unwrap();
         w.select_hero(0, "Karas", &data).unwrap();
         w.use_aral_lane().unwrap();
-        for (idx, e) in w.entities.iter_mut().take(6).enumerate() {
+        for idx in 0..w.entities.len().min(6) {
+            let e = &mut w.entities[idx];
             e.position = Position {
                 x: 25. + idx as f32,
                 y: 0.,

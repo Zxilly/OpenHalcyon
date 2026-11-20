@@ -162,11 +162,11 @@ impl World {
             targets: BTreeMap::new(),
         };
         field.sample(self, pos, events);
-        self.spells.spawn(field);
+        self.entities.spawn_spell(field);
     }
     pub(super) fn bulwark_blocks_leap(&self, i: usize, destination: Position) -> bool {
         let e = &self.entities[i];
-        self.spells.iter::<Field>().any(|f| {
+        self.entities.spells::<Field>().any(|f| {
             if f.team == e.team || self.tick >= f.end {
                 return false;
             }
@@ -199,7 +199,8 @@ mod tests {
         w.select_hero(0, "Lyra", &d).unwrap();
         w.select_hero(1, "Yates", &d).unwrap();
         w.use_aral_lane().unwrap();
-        for e in w.entities.iter_mut().take(6) {
+        for idx in 0..w.entities.len().min(6) {
+            let e = &mut w.entities[idx];
             e.position = Position { x: 25., y: 0. };
             e.energy = 500.;
             e.skill_points = 3;
@@ -256,7 +257,7 @@ mod tests {
         assert_eq!(w.entities[3].hp, outside);
         w.tick = 68;
         w.advance_persistent_spells(&mut out);
-        assert!(w.spells.iter::<Field>().next().is_none());
+        assert!(w.entities.spells::<Field>().next().is_none());
         w.command(2, leap).unwrap();
         // The named, home-authorized level ten extends three seconds to eight.
         w.set_named_talent(
@@ -274,7 +275,7 @@ mod tests {
         w.command(1, cmd).unwrap();
         w.tick = 76;
         w.advance_cast(0, &mut out);
-        assert_eq!(w.spells.iter::<Field>().next().unwrap().end, 236);
+        assert_eq!(w.entities.spells::<Field>().next().unwrap().end, 236);
         w.entities[0].position.x = 12.;
         w.tick = 77;
         w.advance_persistent_spells(&mut out);

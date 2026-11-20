@@ -3,7 +3,7 @@
 //! is reused by both systems and contains only the current phase's scheduled work.
 use super::{Event, World, arcane_fire::Pulse, bulwark::Field};
 use bevy_ecs::component::Mutable;
-use bevy_ecs::prelude::{Commands, Component, Entity, In, InMut, Query, World as EffectWorld};
+use bevy_ecs::prelude::{Commands, Component, Entity, In, InMut, Query};
 
 #[derive(Component)]
 struct CastOrder(u64);
@@ -16,61 +16,51 @@ pub(super) trait TimedSpell: Component<Mutability = Mutable> {
 
 type Agenda = Vec<(u64, Entity)>;
 #[derive(Default)]
-struct Arena {
-    ecs: EffectWorld,
+pub(super) struct Spells {
     order: u64,
-    active: bool,
     scratch: Agenda,
+    // Keep insertion order across actor archetype changes and handle reuse.
+    handles: Vec<Entity>,
 }
-#[derive(Default)]
-pub(super) struct Spells(Option<Box<Arena>>);
-
-impl Spells {
-    fn arena_mut(&mut self) -> &mut Arena {
-        self.0.get_or_insert_with(Box::default)
-    }
-
-    pub fn iter<T: TimedSpell>(&self) -> impl Iterator<Item = &T> {
-        self.0
+impl super::Actors<'_> {
+    pub(super) fn spells<T: TimedSpell>(&self) -> impl Iterator<Item = &T> {
+        self.meta
+            .spells
+            .handles
             .iter()
-            .filter(|a| a.active)
-            .flat_map(|a| a.ecs.iter_entities().filter_map(|e| e.get::<T>()))
+            .filter_map(|id| self.ecs.get::<T>(*id))
     }
-    pub fn snapshot<T: TimedSpell>(&self) -> Vec<&T> {
-        let mut rows: Vec<_> = self
-            .0
+    pub(super) fn spell_snapshot<T: TimedSpell>(&self) -> Vec<&T> {
+        self.spells::<T>().collect()
+    }
+    pub(super) fn spawn_spell<T: TimedSpell>(&mut self, spell: T) {
+        let id = self
+            .ecs
+            .spawn((CastOrder(self.meta.spells.order), spell))
+            .id();
+        self.meta.spells.handles.push(id);
+        self.meta.spells.order += 1;
+    }
+    pub(super) fn remove_spell<T: TimedSpell>(
+        &mut self,
+        mut predicate: impl FnMut(&T) -> bool,
+    ) -> Option<T> {
+        let i = self
+            .meta
+            .spells
+            .handles
             .iter()
-            .filter(|a| a.active)
-            .flat_map(|a| {
-                a.ecs
-                    .iter_entities()
-                    .filter_map(|e| Some((e.get::<CastOrder>()?.0, e.get::<T>()?)))
-            })
-            .collect();
-        rows.sort_unstable_by_key(|r| r.0);
-        rows.into_iter().map(|(_, spell)| spell).collect()
+            .position(|id| self.ecs.get::<T>(*id).is_some_and(&mut predicate))?;
+        let id = self.meta.spells.handles.remove(i);
+        let spell = self.ecs.entity_mut(id).take::<T>()?;
+        self.ecs.despawn(id);
+        Some(spell)
     }
-    pub fn spawn<T: TimedSpell>(&mut self, spell: T) {
-        let arena = self.arena_mut();
-        arena.ecs.spawn((CastOrder(arena.order), spell));
-        arena.order += 1;
-        arena.active = true;
-    }
-    pub fn refresh_fire(&mut self, spell: Pulse) {
-        if let Some(arena) = &mut self.0 {
-            let previous = arena
-                .ecs
-                .iter_entities()
-                .find(|e| e.get::<Pulse>().is_some_and(|p| p.same_application(&spell)))
-                .map(|e| e.id());
-            if let Some(id) = previous {
-                arena.ecs.despawn(id);
-            }
-        }
-        self.spawn(spell);
+    pub(super) fn refresh_fire(&mut self, spell: Pulse) {
+        self.remove_spell::<Pulse>(|p| p.same_application(&spell));
+        self.spawn_spell(spell);
     }
 }
-
 fn schedule<T: TimedSpell>(
     (In(tick), InMut(jobs)): (In<u64>, InMut<Agenda>),
     spells: Query<(Entity, &CastOrder, &T)>,
@@ -92,16 +82,14 @@ impl World {
         jobs: &mut Agenda,
         events: &mut Vec<Event>,
     ) -> bool {
-        self.spells
-            .arena_mut()
+        self.entities
             .ecs
             .run_system_cached_with(schedule::<T>, (self.tick, &mut *jobs))
             .expect("registered spell scheduling system");
         let mut active = false;
         for &(_, id) in jobs.iter() {
             let Some(mut spell) = self
-                .spells
-                .arena_mut()
+                .entities
                 .ecs
                 .get_mut::<T>(id)
                 .map(|mut component| component.begin_impact())
@@ -111,7 +99,7 @@ impl World {
             // Combat callbacks can read other spells and refresh or remove the
             // original. Write back only if this exact generational handle survives.
             let keep = spell.advance(self, events);
-            let ecs = &mut self.spells.arena_mut().ecs;
+            let ecs = &mut self.entities.ecs;
             if keep {
                 if let Some(mut original) = ecs.get_mut::<T>(id) {
                     *original = spell;
@@ -124,17 +112,21 @@ impl World {
         }
         active
     }
-    pub(super) fn advance_persistent_spells(&mut self, events: &mut Vec<Event>) {
-        let Some(arena) = self.spells.0.as_mut().filter(|a| a.active) else {
+    pub(super) fn advance_spell_family<T: TimedSpell>(&mut self, events: &mut Vec<Event>) {
+        if self.entities.spells::<T>().next().is_none() {
             return;
-        };
-        let start_order = arena.order;
-        let mut jobs = std::mem::take(&mut arena.scratch);
-        let fields = self.resolve_spells::<Field>(&mut jobs, events);
-        let fire = self.resolve_spells::<Pulse>(&mut jobs, events);
-        let arena = self.spells.arena_mut();
-        arena.active = fields || fire || arena.order != start_order;
+        }
+        let mut jobs = std::mem::take(&mut self.entities.meta.spells.scratch);
+        self.resolve_spells::<T>(&mut jobs, events);
+        let arena = &mut self.entities.meta.spells;
+        arena
+            .handles
+            .retain(|id| self.entities.ecs.get::<CastOrder>(*id).is_some());
         arena.scratch = jobs;
+    }
+    pub(super) fn advance_persistent_spells(&mut self, events: &mut Vec<Event>) {
+        self.advance_spell_family::<Field>(events);
+        self.advance_spell_family::<Pulse>(events);
     }
 }
 
@@ -152,16 +144,16 @@ mod tests {
             *self
         }
         fn advance(&mut self, world: &mut World, _: &mut Vec<Event>) -> bool {
-            assert_eq!(world.spells.iter::<Self>().count(), 1);
+            assert_eq!(world.entities.spells::<Self>().count(), 1);
             if self.0 == 0 {
-                let ecs = &mut world.spells.arena_mut().ecs;
+                let ecs = &mut world.entities.ecs;
                 let id = ecs
                     .iter_entities()
                     .find(|e| e.contains::<Self>())
                     .unwrap()
                     .id();
                 ecs.despawn(id);
-                world.spells.spawn(Self(1));
+                world.entities.spawn_spell(Self(1));
             }
             false
         }
@@ -169,11 +161,11 @@ mod tests {
     #[test]
     fn impact_can_see_and_replace_itself_without_overwriting_the_new_generation() {
         let mut w = World::new(7, 10);
-        w.spells.spawn(ReplacementProbe(0));
+        w.entities.spawn_spell(ReplacementProbe(0));
         let mut jobs = Agenda::new();
         w.resolve_spells::<ReplacementProbe>(&mut jobs, &mut Vec::new());
-        assert_eq!(w.spells.iter::<ReplacementProbe>().next().unwrap().0, 1);
+        assert_eq!(w.entities.spells::<ReplacementProbe>().next().unwrap().0, 1);
         w.resolve_spells::<ReplacementProbe>(&mut jobs, &mut Vec::new());
-        assert!(w.spells.iter::<ReplacementProbe>().next().is_none());
+        assert!(w.entities.spells::<ReplacementProbe>().next().is_none());
     }
 }

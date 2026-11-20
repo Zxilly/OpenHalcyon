@@ -2139,7 +2139,8 @@ mod tests {
     #[test]
     fn bot_receipt_and_exact_component_instances_survive_duplicate_templates() {
         let mut world = World::new(4, 1);
-        for e in &mut world.entities[..10] {
+        for idx in 0..10 {
+            let e = &mut world.entities[idx];
             e.position = base(e.team);
             e.gold = 3000;
         }
@@ -2174,7 +2175,7 @@ mod tests {
         let idx = w.index(target).unwrap();
         w.entities[0].position = pos;
         w.entities[2].position = pos;
-        let before: Vec<_> = w.entities[..10].iter().map(|e| e.gold).collect();
+        let before: Vec<_> = w.entities.iter().take(10).map(|e| e.gold).collect();
         let mut events = vec![];
         w.hurt(1, 0, idx, 1., DamageSchool::Weapon, &mut events);
         assert!(!events.iter().any(|e| matches!(e, Event::GoldAward { .. })));
@@ -2182,7 +2183,7 @@ mod tests {
         let count = events.len();
         w.hurt(1, 0, idx, 100000., DamageSchool::Weapon, &mut events);
         assert_eq!(count, events.len());
-        for (e, old) in w.entities[..10].iter().zip(before) {
+        for (e, old) in w.entities.iter().take(10).zip(before) {
             let delta = e.gold - old;
             let income = w.player_score(e.id).unwrap().gold_income;
             assert_eq!(income.starting_balance, old);
