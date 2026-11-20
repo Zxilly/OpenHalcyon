@@ -65,6 +65,7 @@ pub(super) struct Active {
     kind: BasicItem,
     level: u8,
     until: u64,
+    effect: u32,
 }
 impl Shop {
     fn infusion(&self, kind: BasicItem) -> Option<Rule> {
@@ -75,7 +76,7 @@ impl Shop {
         }]
     }
 }
-pub(crate) fn update(hero: &mut Entity, tick: u64, shop: &Shop) {
+pub(crate) fn update(hero: &mut Entity, tick: u64, shop: &Shop, events: &mut Vec<Event>) {
     let Some(active) = hero.item_stats.infusion else {
         return;
     };
@@ -86,6 +87,11 @@ pub(crate) fn update(hero: &mut Entity, tick: u64, shop: &Shop) {
     rule.change(hero, active.kind, active.level, -1.);
     hero.item_stats.infusion = if active.until > tick {
         rule.change(hero, active.kind, hero.level, 1.);
+        events.push(Event::InfusionLevel {
+            actor: hero.id,
+            effect: active.effect,
+            level: hero.level,
+        });
         Some(Active {
             level: hero.level,
             ..active
@@ -112,9 +118,12 @@ impl Room<'_> {
             .shop
             .infusion(held.kind)
             .ok_or("infusion unavailable")?;
+        let effect = self.state.next_id;
+        let next = effect.checked_add(1).ok_or("effect instance limit")?;
         if let Some(slots) = &mut hero.aral_inventory {
             slots.remove_held(held)?;
         }
+        self.state.next_id = next;
         hero.inventory.remove(pos);
         if let Some(old) = hero.item_stats.infusion {
             self.state
@@ -124,7 +133,28 @@ impl Room<'_> {
                 .change(hero, old.kind, old.level, -1.);
         }
         rule.change(hero, held.kind, hero.level, 1.);
+        self.state.pending_item_events.push(Event::InfusionApplied {
+            actor: hero.id,
+            item: instance,
+            effect,
+            kind: held.kind,
+            level: hero.level,
+            duration_ticks: rule.duration,
+        });
+        if let Some(old) = hero
+            .item_stats
+            .infusion
+            .filter(|old| old.until > self.state.tick)
+        {
+            self.state
+                .pending_item_events
+                .push(Event::InfusionReplaced {
+                    actor: hero.id,
+                    effect: old.effect,
+                });
+        }
         hero.item_stats.infusion = Some(Active {
+            effect,
             kind: held.kind,
             level: hero.level,
             until: self.state.tick.saturating_add(rule.duration),
@@ -160,8 +190,34 @@ mod tests {
         assert_eq!(world.entities[0].stats.weapon, base);
         assert_eq!(world.entities[0].item_stats.crystal, 30.);
         assert_eq!(world.entities[0].stats.armor, armor + 10.);
+        let effect = world.entities[0].item_stats.infusion.unwrap().effect;
         world.entities[0].level = 12;
-        world.step();
+        let events = world.step();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|e| matches!(e, Event::InfusionApplied { .. }))
+                .count(),
+            3
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|e| matches!(e, Event::InfusionReplaced { .. }))
+                .count(),
+            2
+        );
+        assert!(events.contains(&Event::InfusionLevel {
+            actor: 1,
+            effect,
+            level: 12
+        }));
+        assert!(
+            !world
+                .step()
+                .iter()
+                .any(|e| matches!(e, Event::InfusionLevel { .. }))
+        );
         assert_eq!(world.entities[0].item_stats.crystal, 60.);
         assert_eq!(world.entities[0].stats.armor, armor + 20.);
         world.tick = 3099;

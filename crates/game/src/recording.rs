@@ -105,6 +105,19 @@ fn sanitize(m: &mut Message) -> bool {
         return true;
     }
     match m.known_opcode() {
+        Some(crate::Opcode::ModifyBuffStack)
+            if m.buff_stack().is_some_and(|s| {
+                (1500..=1505).contains(&s.target)
+                    && s.instance > 1499
+                    && (1..=12).contains(&s.count)
+                    && s.suffix.is_empty()
+            }) => {}
+        Some(crate::Opcode::EntityProp)
+            if matches!(m.fields(), Ok(halcyon_protocol::Fields::BuffApplication(buff))
+            if [halcyon_protocol::BuffDefinition::WeaponInfusion as u16,halcyon_protocol::BuffDefinition::CrystalInfusion as u16].contains(&buff.prefix.definition)
+            && buff.prefix.duration_bits==0x58b0 && buff.prefix.target==buff.prefix.source
+            && (1500..=1505).contains(&buff.prefix.target) && buff.extras.is_none() && buff.suffix.is_empty()) =>
+            {}
         Some(crate::Opcode::ActorUndead) if matches!(m.body.as_slice(), [0, 0, 5, 220..=225]) => {}
         Some(
             crate::Opcode::EntityProp

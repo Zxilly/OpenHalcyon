@@ -239,6 +239,23 @@ pub enum Event {
     },
     Purchase(Purchase),
     ItemSold(ItemSale),
+    InfusionApplied {
+        actor: u32,
+        item: u32,
+        effect: u32,
+        kind: BasicItem,
+        level: u8,
+        duration_ticks: u64,
+    },
+    InfusionReplaced {
+        actor: u32,
+        effect: u32,
+    },
+    InfusionLevel {
+        actor: u32,
+        effect: u32,
+        level: u8,
+    },
     ReflexActivated {
         actor: u32,
         item: u32,
@@ -1234,7 +1251,7 @@ impl Room<'_> {
             let i = (first + offset) % n;
             let e = &mut self.entities[i];
             if e.kind == Kind::Hero {
-                shop::infusions::update(e, self.state.tick, &self.state.shop);
+                shop::infusions::update(e, self.state.tick, &self.state.shop, events);
                 reflex::advance(e, self.state.tick, events);
                 if reboot::advance(e, self.state.tick, events) {
                     continue;

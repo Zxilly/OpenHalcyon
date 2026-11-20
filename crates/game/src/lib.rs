@@ -1288,10 +1288,21 @@ impl Room {
             Fields::Live(halcyon_protocol::LiveFields::Item(
                 halcyon_protocol::ItemAction::Activate { instance, suffix },
             )) if game && legacy && suffix.iter().all(|&byte| byte == 0) => {
-                let actor = self.world.entities[i].id;
-                let _ = self
-                    .world
-                    .command(actor, Command::ActivateReflexBlock { instance });
+                use halcyon_sim::BasicItem;
+                let hero = &self.world.entities[i];
+                let command = match hero
+                    .inventory
+                    .iter()
+                    .find(|h| h.instance == instance)
+                    .map(|h| h.kind)
+                {
+                    Some(BasicItem::WeaponInfusion | BasicItem::CrystalInfusion) => {
+                        Command::ConsumeInfusion { instance }
+                    }
+                    Some(BasicItem::ReflexBlock) => Command::ActivateReflexBlock { instance },
+                    _ => return Ok(out),
+                };
+                let _ = self.world.command(hero.id, command);
             }
             Fields::Live(halcyon_protocol::LiveFields::TalentSelection(selection)) => {
                 out = aral::talent_response(self, i, ch, selection);

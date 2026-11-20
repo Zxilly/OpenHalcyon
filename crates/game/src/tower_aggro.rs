@@ -12,6 +12,7 @@ pub(super) struct View {
     solo_bot_paths: super::solo_bot_paths::Paths,
     pub(super) guard_links: super::aral_guard::State,
     pub(super) chakrams: [Option<u32>; 6],
+    pub(super) infusion_effects: [super::aral_item_actions::InfusionWitness; 6],
     pub(super) reflex_effects: [Option<u32>; 6],
     pub(super) ringo_effects: [Option<u32>; 6],
     actors: HashMap<u32, u8>,

@@ -1135,6 +1135,59 @@ mod tests {
                 room.world.command(id, halcyon_sim::Command::Stop).unwrap();
                 room.tick();
             }
+            room.lock().unwrap().world.entities[0].gold += 500;
+            let buy_infusion = Message::known(
+                Opcode::ShopRequest,
+                [1500u32.to_be_bytes(), 493u32.to_be_bytes()].concat(),
+            );
+            clients[0]
+                .write_all(&cipher.encode(&buy_infusion).unwrap())
+                .await
+                .unwrap();
+            let held = loop {
+                let grant = until(&mut clients[0], &cipher, crate::wire_opcode::ItemGrant).await;
+                if grant.body[4..8] == 493u32.to_be_bytes() {
+                    break u32::from_be_bytes(grant.body[8..12].try_into().unwrap());
+                }
+            };
+            let press = cipher
+                .encode(&Message::known(
+                    Opcode::RequestActivateItem,
+                    held.to_be_bytes(),
+                ))
+                .unwrap();
+            clients[0]
+                .write_all(&[press.as_slice(), press.as_slice()].concat())
+                .await
+                .unwrap();
+            let [owner, ally] = clients.get_disjoint_mut([0, 2]).unwrap();
+            let mut shared = None;
+            for socket in [owner, ally, &mut observer] {
+                let effect = loop {
+                    let m = until(socket, &cipher, crate::wire_opcode::EntityProp).await;
+                    if let Fields::BuffApplication(b) = m.fields().unwrap()
+                        && b.prefix.definition
+                            == halcyon_protocol::BuffDefinition::WeaponInfusion as u16
+                    {
+                        assert_eq!(
+                            (b.prefix.source, b.prefix.target, b.prefix.duration_bits),
+                            (1500, 1500, 0x58b0)
+                        );
+                        break b.prefix.instance;
+                    }
+                };
+                assert!(shared.replace(effect).is_none_or(|old| old == effect));
+                let m = next(socket, &cipher).await;
+                let stack = m.buff_stack().unwrap();
+                assert_eq!(
+                    (stack.target, stack.instance, stack.count),
+                    (
+                        1500,
+                        effect,
+                        u32::from(room.lock().unwrap().world.entities[0].level)
+                    )
+                );
+            }
             let buy_block = Message::known(
                 Opcode::ShopRequest,
                 [1500u32.to_be_bytes(), 485u32.to_be_bytes()].concat(),

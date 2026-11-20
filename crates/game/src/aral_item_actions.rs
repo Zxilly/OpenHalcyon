@@ -39,6 +39,78 @@ fn action(world: &World, event: &Event) -> Option<(u32, Batch)> {
                 vec![request.to_message().ok()?, activation.to_message().ok()?],
             ))
         }
+        Event::InfusionApplied {
+            actor,
+            item,
+            effect,
+            kind,
+            level,
+            duration_ticks,
+        } if duration_ticks == 150 * halcyon_sim::TICK_HZ => {
+            use halcyon_protocol::{BuffApplication, BuffDefinition, BuffPrefix};
+            let definition = match kind {
+                BasicItem::WeaponInfusion => BuffDefinition::WeaponInfusion,
+                BasicItem::CrystalInfusion => BuffDefinition::CrystalInfusion,
+                _ => return None,
+            };
+            let target = u32::from(wire_id(actor));
+            let instance = effect.checked_add(1499)?;
+            let application = BuffApplication {
+                prefix: BuffPrefix::timed_self(target, instance, definition, 150.),
+                extras: None,
+                suffix: &[],
+            }
+            .to_message()
+            .ok()?;
+            let active = ItemAction::Activation {
+                actor: target,
+                instance: item,
+                target_word: u32::MAX,
+                coordinate_bits: [0, 0],
+                mode: ItemActivationMode::Untargeted,
+                suffix: &[],
+            }
+            .to_message()
+            .ok()?;
+            let mut removed = [0; 10];
+            removed[..4].copy_from_slice(&target.to_be_bytes());
+            removed[4..8].copy_from_slice(&item.to_be_bytes());
+            removed[8..].copy_from_slice(&1u16.to_be_bytes());
+            Some((
+                actor,
+                vec![
+                    active,
+                    application,
+                    infusion_level(target, instance, level)?,
+                    Message::known(Opcode::RemoveItem, removed),
+                ],
+            ))
+        }
+        Event::InfusionLevel {
+            actor,
+            effect,
+            level,
+        } => Some((
+            actor,
+            vec![infusion_level(
+                u32::from(wire_id(actor)),
+                effect.checked_add(1499)?,
+                level,
+            )?],
+        )),
+        Event::InfusionReplaced { actor, effect } => Some((
+            actor,
+            vec![
+                halcyon_protocol::BuffMutation {
+                    target: u32::from(wire_id(actor)),
+                    instance: effect.checked_add(1499)?,
+                    change: halcyon_protocol::BuffChange::Cancel,
+                    padding: &[0; 6],
+                }
+                .to_message()
+                .ok()?,
+            ],
+        )),
         Event::ReflexExpired { actor, effect } => {
             let m = halcyon_protocol::BuffMutation {
                 target: u32::from(wire_id(actor)),
@@ -211,8 +283,43 @@ pub(super) fn recordable(message: &Message) -> bool {
         _ => false,
     }
 }
+fn infusion_level(target: u32, instance: u32, level: u8) -> Option<Message> {
+    halcyon_protocol::BuffStack {
+        target,
+        instance,
+        count: u32::from(level),
+        suffix: &[],
+    }
+    .to_message()
+    .ok()
+}
+#[derive(Default)]
+pub(super) struct InfusionWitness {
+    active: Option<u32>,
+    preceding: Option<u32>,
+}
 fn witnessed(view: &mut tower_aggro::View, event: &Event) -> bool {
     match *event {
+        Event::InfusionApplied { actor, effect, .. } => {
+            let seen = &mut view.infusion_effects[(actor - 1) as usize];
+            seen.preceding = seen.active.replace(effect);
+            true
+        }
+        Event::InfusionLevel { actor, effect, .. } => {
+            view.infusion_effects[(actor - 1) as usize].active == Some(effect)
+        }
+        Event::InfusionReplaced { actor, effect } => {
+            let seen = &mut view.infusion_effects[(actor - 1) as usize];
+            if seen.preceding == Some(effect) {
+                seen.preceding = None;
+                true
+            } else if seen.active == Some(effect) {
+                seen.active = None;
+                true
+            } else {
+                false
+            }
+        }
         Event::ReflexActivated {
             actor,
             first_effect,
@@ -248,7 +355,11 @@ impl Room {
                     || (viewer.id == id
                         && !matches!(
                             event,
-                            Event::ReflexActivated { .. } | Event::ReflexExpired { .. }
+                            Event::ReflexActivated { .. }
+                                | Event::ReflexExpired { .. }
+                                | Event::InfusionApplied { .. }
+                                | Event::InfusionReplaced { .. }
+                                | Event::InfusionLevel { .. }
                         ))
                     || !seat.world_actor_written
                     || !seat.preamble.confirmed()
@@ -276,6 +387,38 @@ impl Room {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn infusion_replacement_and_level_require_the_original_scene_instance() {
+        let mut seen = tower_aggro::View::default();
+        let mut late = tower_aggro::View::default();
+        let apply = |effect| Event::InfusionApplied {
+            actor: 1,
+            item: 40000,
+            effect,
+            kind: BasicItem::WeaponInfusion,
+            level: 8,
+            duration_ticks: 150 * halcyon_sim::TICK_HZ,
+        };
+        let level = |effect| Event::InfusionLevel {
+            actor: 1,
+            effect,
+            level: 9,
+        };
+        assert!(witnessed(&mut seen, &apply(5)));
+        assert!(!witnessed(&mut late, &level(5)));
+        for view in [&mut seen, &mut late] {
+            assert!(witnessed(view, &apply(6)));
+        }
+        let removed = Event::InfusionReplaced {
+            actor: 1,
+            effect: 5,
+        };
+        assert!(witnessed(&mut seen, &removed));
+        assert!(!witnessed(&mut seen, &removed));
+        assert!(!witnessed(&mut late, &removed));
+        assert!(!witnessed(&mut seen, &level(5)));
+        assert!(witnessed(&mut seen, &level(6)));
+    }
     #[test]
     fn reflex_vectors_match_the_item_transaction_fixture() {
         let (_, batch) = action(
