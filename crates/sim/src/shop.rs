@@ -626,7 +626,20 @@ impl World {
         let i = self.index(actor).ok_or("unknown actor")?;
         self.buy(i, item)
     }
+    /// A valid shop order can be declined for insufficient gold or inventory space.
+    /// A decline leaves both the inventory and the next item instance untouched.
+    pub fn try_purchase(
+        &mut self,
+        actor: u32,
+        item: BasicItem,
+    ) -> Result<Option<Purchase>, &'static str> {
+        let i = self.index(actor).ok_or("unknown actor")?;
+        self.try_buy_at(i, item)
+    }
     pub(super) fn buy(&mut self, i: usize, item: BasicItem) -> Result<Purchase, &'static str> {
+        self.try_buy_at(i, item)?.ok_or("cannot purchase")
+    }
+    fn try_buy_at(&mut self, i: usize, item: BasicItem) -> Result<Option<Purchase>, &'static str> {
         let h = &self.entities[i];
         if self.winner.is_some() || h.hp <= 0. {
             return Err("shop closed");
@@ -644,7 +657,7 @@ impl World {
         let price =
             self.shop.cost(item) - consumed.iter().map(|h| self.shop.cost(h.kind)).sum::<u64>();
         if h.inventory.len() - consumed.len() >= 6 || u64::from(h.gold) < price {
-            return Err("cannot purchase");
+            return Ok(None);
         }
         let granted = HeldItem {
             kind: item,
@@ -681,12 +694,12 @@ impl World {
         h.item_stats.cooldown += delta[25];
         h.gold -= price as u32;
         h.inventory.push(granted);
-        Ok(Purchase {
+        Ok(Some(Purchase {
             actor: h.id,
             paid: price as u32,
             granted,
             consumed,
-        })
+        }))
     }
 }
 

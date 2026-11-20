@@ -24,8 +24,9 @@ async fn shop_request(
         if frame == barrier {
             return reply;
         }
-        if matches!(frame.opcode, 0x0439 | 0x041c | 0x041d | 0x043d | 0x044b)
-            && frame.body[..4] == actor.to_be_bytes()
+        if frame.opcode == 0x048f
+            || (matches!(frame.opcode, 0x0439 | 0x041c | 0x041d | 0x043d | 0x044b)
+                && frame.body[..4] == actor.to_be_bytes())
         {
             reply.push(frame);
         }
@@ -66,7 +67,7 @@ pub(super) async fn shop_sequence(
             assert!(frames[i+2..].iter().any(|m|matches!(m.fields().unwrap(),Fields::ItemGrant{item:granted,..} if granted==item)));
         }
     }
-    let socket = &mut clients[0];
+    let (socket, other_seats) = clients.split_first_mut().unwrap();
     assert!(shop_request(socket, cipher, 1501, 459).await.is_empty());
     let mut instances = std::collections::BTreeMap::new();
     for (item, paid, stats) in [
@@ -103,7 +104,26 @@ pub(super) async fn shop_sequence(
         }
         assert_eq!(mods, stats);
     }
-    assert!(shop_request(socket, cipher, 1500, 509).await.is_empty());
+    timeout(Duration::from_secs(2), async {
+        while !shared.lock().unwrap().visible[0].contains(&1) {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let rejected = shop_request(socket, cipher, 1500, 509).await;
+    assert_eq!(rejected.len(), 2);
+    assert_eq!(rejected[0].opcode, 0x0439);
+    assert_eq!(rejected[0].body[4..8], 509u32.to_be_bytes());
+    assert_eq!(rejected[1], Message::new(0x048f, [0; 6]));
+    let ally = &mut other_seats[1];
+    loop {
+        let order = until(ally, cipher, 0x0439).await;
+        if order == rejected[0] {
+            assert_eq!(next(ally, cipher).await, rejected[1]);
+            break;
+        }
+    }
     // Advance real simulation time with the hero still on its starting pad.
     // Passive ARAL awards finance the observed late upgrades.
     {

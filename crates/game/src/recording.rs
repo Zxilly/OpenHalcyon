@@ -207,7 +207,7 @@ fn sanitize(m: &mut Message) -> bool {
                 return false;
             }
         }
-        0x452 if m.body.is_empty() => {}
+        0x452 | 0x48f if m.body.is_empty() => {}
         0x48d if m.body.len() == 1612 => {}
         0x3f1 if matches!(m.body.as_slice(), [0, 0, 0, 1 | 2, 0 | 2, 0]) => {}
         0x3e9 | 0x3f3 | 0x41c | 0x41d | 0x42e | 0x439 | 0x43d | 0x44b | 0x451 | 0x46c | 0x46f

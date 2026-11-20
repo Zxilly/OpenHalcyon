@@ -169,3 +169,17 @@ The remaining 72 paired receipts have the following evidence.
 | 493 Weapon Infusion (18), 494 Crystal Infusion (6) | The definitions contain stat ranges and 150 s duration. Same-instance activation appeared within 100 ms of 7 and 2 grants respectively, and later for another 2 and 4. These observations do not establish unconditional consumption on purchase. |
 | 481 Flare (11), 495 Scout Trap (31) | No immediate activation. Later activation and removal of the same instance appeared for 2 flares and 9 traps. One trap was sold. Complete charge/slot rules and an attributable authenticated use request are unresolved. |
 | 534 Capacitor Plate (1) | Two equal 0.15 modifiers have different wire indices and layers (36/2 and 34/0). The definition names heal and barrier amplification. The sample does not distinguish the stat-to-effect mapping or the outgoing/received scope. |
+
+### Declined order
+
+Of 342 server-side purchase orders, one had no corresponding grant. The
+receiving player saw another hero buy a Weapon Blade for 300 gold and request
+a second one 100 ms after the first debit. Replaying that buyer's stat-6
+ledger gives a balance of 251.25 before the second order. Six item instances
+were outstanding, including a Healing Flask and a Vision Totem. The server
+sent the second `0439` and a header-only `048F` consecutively at the same
+timestamp. The single case cannot distinguish an inventory limit from the
+insufficient balance. OpenHalcyon uses that pair when a supported, otherwise
+valid ARAL purchase exceeds spendable gold or available slots. The buyer,
+eligible witnesses and authorized observers see the pair. No instance,
+modifier or currency change is committed.

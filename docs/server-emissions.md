@@ -110,6 +110,6 @@ The host paths are in [room dispatch](../crates/game/src/lib.rs), [transport](..
 | `048A` | 322 | R | ActionSyncCooldown_Client |
 | `048C` | 738 | A | ActionSendAggroState_Client · Visible registered native tower target or clear, in ARAL and Solo |
 | `048D` | 7 | A | End-of-match statistics from supported room outcomes |
-| `048F` | 1 | R | ActionRejectBuyItem_Client |
+| `048F` | 1 | A | [Declined ARAL shop order](aral-shop.md#declined-order) |
 
-All 15 captured originating point-cast requests have a byte-identical server acknowledgment before the actor-bearing release. The 842 server-side point requests include other traffic. A canceled accepted cast can therefore have an acknowledgment without a release in the host. The sole originating target cast has an actor-bearing release and no corresponding target-request echo. The single captured buy rejection has no matching client purchase on that connection, leaving its rejection condition unresolved.
+All 15 captured originating point-cast requests have a byte-identical server acknowledgment before the actor-bearing release. The 842 server-side point requests include other traffic. A canceled accepted cast can therefore have an acknowledgment without a release in the host. The sole originating target cast has an actor-bearing release and no corresponding target-request echo.
