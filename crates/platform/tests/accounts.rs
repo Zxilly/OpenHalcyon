@@ -11,6 +11,25 @@ use uuid::Uuid;
 const PASSWORD: &str = "local fixture password";
 static HASH_CASES: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
+#[test]
+fn mixed_in_memory_writers_use_sqlites_retryable_database_lock() {
+    let address = halcyon_storage::DatabaseAddress::new(Path::new(":memory:"));
+    let mut first = Connection::open(address.path()).unwrap();
+    let second = Connection::open(address.path()).unwrap();
+    second.busy_timeout(std::time::Duration::ZERO).unwrap();
+    let _orm = halcyon_storage::AccountStore::open(&address).unwrap();
+    let writer = first
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .unwrap();
+    let error = second.execute_batch("BEGIN IMMEDIATE").unwrap_err();
+    assert_eq!(
+        error.sqlite_error_code(),
+        Some(rusqlite::ErrorCode::DatabaseBusy)
+    );
+    writer.commit().unwrap();
+    second.execute_batch("BEGIN IMMEDIATE; COMMIT").unwrap();
+}
+
 struct NoHost;
 impl MatchHost for NoHost {
     fn reserve(&self, _: Reservation) -> halcyon_platform::Result<HostedMatch> {

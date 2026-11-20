@@ -38,7 +38,9 @@ pub struct DatabaseAddress(PathBuf);
 impl DatabaseAddress {
     pub fn new(path: &Path) -> Self {
         if path == Path::new(":memory:") || path.as_os_str().is_empty() {
-            Self(format!("file:halcyon-{}?mode=memory&cache=shared", Uuid::new_v4()).into())
+            // The leading slash names a shared memdb VFS store. Its connections
+            // get ordinary database locks, so SQLite's busy timeout applies.
+            Self(format!("file:/halcyon-{}?vfs=memdb", Uuid::new_v4()).into())
         } else {
             Self(path.to_owned())
         }
