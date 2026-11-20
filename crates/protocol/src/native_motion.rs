@@ -84,7 +84,7 @@ impl Fields<'_> {
             } if remaining.is_empty() => {
                 body.push(*selector);
                 (
-                    crate::wire_opcode::EntityAct2,
+                    crate::wire_opcode::MoveToServerAuthoritative,
                     values,
                     Some(flag),
                     remaining,
@@ -153,7 +153,12 @@ mod tests {
         let bits = [0xbf800000_u32, 0x80000000, 0x7fc00109];
         let xyz = bits.map(u32::to_be_bytes).concat();
         for (op, prefix, flag, padding) in [
-            (crate::wire_opcode::EntityAct2, vec![19], Some(0x7c), vec![]),
+            (
+                crate::wire_opcode::MoveToServerAuthoritative,
+                vec![19],
+                Some(0x7c),
+                vec![],
+            ),
             (
                 crate::wire_opcode::MoveAndFace,
                 vec![0, 0, 5, 220, 0, 0, 5, 221],

@@ -66,7 +66,7 @@ async fn login_game(addr: &str, player_id: Uuid, cipher: &MatchCipher) -> TcpStr
     body[..36].copy_from_slice(player_id.to_string().as_bytes());
     sock.write_all(
         &cipher
-            .encode(&Message::new(wire_opcode::PlayerUuid, body))
+            .encode(&Message::new(wire_opcode::RegisterPlayerUuid, body))
             .unwrap(),
     )
     .await
@@ -120,7 +120,7 @@ fn state_upd_a(x: f32, y: f32) -> Message {
     let mut body = [0u8; 14];
     body[..4].copy_from_slice(&x.to_be_bytes());
     body[4..8].copy_from_slice(&y.to_be_bytes());
-    Message::known(Opcode::StateUpdA, body)
+    Message::known(Opcode::RequestMovePoint, body)
 }
 
 #[tokio::test]
@@ -230,7 +230,7 @@ async fn native_solo_single_socket_full_lifecycle_reconnect_and_post_match() {
 
     // 3. Single-socket Draft -> solo_opening -> Running -> move
     let mut sock = login_game(&address, player_id, &cipher).await;
-    collect_until(&mut sock, &cipher, wire_opcode::Snapshot5V5).await;
+    collect_until(&mut sock, &cipher, wire_opcode::DraftRosterFull).await;
 
     let mut pick = vec![0; 14];
     pick[..4].copy_from_slice(&243u32.to_be_bytes());
@@ -238,38 +238,38 @@ async fn native_solo_single_socket_full_lifecycle_reconnect_and_post_match() {
     send_frame(
         &mut sock,
         &cipher,
-        &Message::known(Opcode::HeroSelection, pick),
+        &Message::known(Opcode::DraftSelectHero, pick),
     )
     .await;
-    collect_until(&mut sock, &cipher, wire_opcode::HeroSelection).await;
+    collect_until(&mut sock, &cipher, wire_opcode::DraftSelectHero).await;
     send_frame(
         &mut sock,
         &cipher,
-        &Message::known(Opcode::LockSelection, [0; 6]),
+        &Message::known(Opcode::DraftLockHero, [0; 6]),
     )
     .await;
-    collect_until(&mut sock, &cipher, wire_opcode::LockSelection).await;
+    collect_until(&mut sock, &cipher, wire_opcode::DraftLockHero).await;
 
     rooms.advance_solo_loading(match_id);
-    collect_until(&mut sock, &cipher, wire_opcode::BeginLoading).await;
+    collect_until(&mut sock, &cipher, wire_opcode::DraftTransitionToLoading).await;
 
     send_frame(
         &mut sock,
         &cipher,
-        &Message::known(Opcode::RequestScene, [0; 6]),
+        &Message::known(Opcode::RequestSceneSnapshot, [0; 6]),
     )
     .await;
     send_frame(
         &mut sock,
         &cipher,
-        &Message::known(Opcode::SceneOwner, [0, 0, 5, 220, 1, 0]),
+        &Message::known(Opcode::ConfirmSceneOwner, [0, 0, 5, 220, 1, 0]),
     )
     .await;
-    let opening = collect_until(&mut sock, &cipher, wire_opcode::SceneReadiness).await;
-    assert_eq!(opening[0].opcode, wire_opcode::ModeName);
+    let opening = collect_until(&mut sock, &cipher, wire_opcode::SceneReadinessRows).await;
+    assert_eq!(opening[0].opcode, wire_opcode::SceneSettings);
     let hero_spawns: Vec<u32> = opening
         .iter()
-        .filter(|m| m.is(Opcode::EntitySpawn))
+        .filter(|m| m.is(Opcode::HeroSpawn))
         .map(|m| u32::from_be_bytes(m.body[8..12].try_into().unwrap()))
         .collect();
     assert_eq!(hero_spawns, (1500..1510).collect::<Vec<_>>());
@@ -279,10 +279,10 @@ async fn native_solo_single_socket_full_lifecycle_reconnect_and_post_match() {
     send_frame(
         &mut sock,
         &cipher,
-        &Message::known(Opcode::SceneConfirmed, [0; 6]),
+        &Message::known(Opcode::SceneReadyConfirm, [0; 6]),
     )
     .await;
-    collect_until(&mut sock, &cipher, wire_opcode::TickSyncA).await;
+    collect_until(&mut sock, &cipher, wire_opcode::StartMatch).await;
     assert_eq!(
         rooms.detail_typed(match_id).unwrap().phase,
         halcyon_game::RoomPhase::Running
@@ -290,12 +290,12 @@ async fn native_solo_single_socket_full_lifecycle_reconnect_and_post_match() {
 
     send_frame(&mut sock, &cipher, &state_upd_a(-80.0, 2.0)).await;
     let ack = collect_until_match(&mut sock, &cipher, "slot 14 EntityFloat", |m| {
-        m.is(Opcode::EntityFloat) && m.body.first() == Some(&14)
+        m.is(Opcode::MoveTo) && m.body.first() == Some(&14)
     })
     .await;
     assert_eq!(ack.last().unwrap().body[0], 14);
     let move_pos = collect_until_match(&mut sock, &cipher, "actor 1500 Position", |m| {
-        m.is(Opcode::Position) && m.body.get(..4) == Some(&1500u32.to_be_bytes())
+        m.is(Opcode::MoveToCorrection) && m.body.get(..4) == Some(&1500u32.to_be_bytes())
     })
     .await;
     assert_eq!(
@@ -324,40 +324,40 @@ async fn native_solo_single_socket_full_lifecycle_reconnect_and_post_match() {
     );
 
     let mut sock = login_game(&address, player_id, &cipher).await;
-    collect_until(&mut sock, &cipher, wire_opcode::BeginLoading).await;
+    collect_until(&mut sock, &cipher, wire_opcode::DraftTransitionToLoading).await;
     send_frame(
         &mut sock,
         &cipher,
-        &Message::known(Opcode::RequestScene, [0; 6]),
+        &Message::known(Opcode::RequestSceneSnapshot, [0; 6]),
     )
     .await;
     send_frame(
         &mut sock,
         &cipher,
-        &Message::known(Opcode::SceneOwner, [0, 0, 5, 220, 1, 0]),
+        &Message::known(Opcode::ConfirmSceneOwner, [0, 0, 5, 220, 1, 0]),
     )
     .await;
-    let alive_rejoin = collect_until(&mut sock, &cipher, wire_opcode::SceneReadiness).await;
+    let alive_rejoin = collect_until(&mut sock, &cipher, wire_opcode::SceneReadinessRows).await;
     assert!(
         alive_rejoin
             .iter()
-            .any(|m| m.is(Opcode::EntitySpawn) && m.body[8..12] == 1500u32.to_be_bytes())
+            .any(|m| m.is(Opcode::HeroSpawn) && m.body[8..12] == 1500u32.to_be_bytes())
     );
     send_frame(
         &mut sock,
         &cipher,
-        &Message::known(Opcode::SceneConfirmed, [0; 6]),
+        &Message::known(Opcode::SceneReadyConfirm, [0; 6]),
     )
     .await;
-    collect_until(&mut sock, &cipher, wire_opcode::TickSyncA).await;
+    collect_until(&mut sock, &cipher, wire_opcode::StartMatch).await;
     send_frame(&mut sock, &cipher, &state_upd_a(-78.0, 1.0)).await;
     let rejoin_ack = collect_until_match(&mut sock, &cipher, "slot 14 rejoin EntityFloat", |m| {
-        m.is(Opcode::EntityFloat) && m.body.first() == Some(&14)
+        m.is(Opcode::MoveTo) && m.body.first() == Some(&14)
     })
     .await;
     assert_eq!(rejoin_ack.last().unwrap().body[0], 14);
     let rejoin_move = collect_until_match(&mut sock, &cipher, "actor 1500 rejoin Position", |m| {
-        m.is(Opcode::Position) && m.body.get(..4) == Some(&1500u32.to_be_bytes())
+        m.is(Opcode::MoveToCorrection) && m.body.get(..4) == Some(&1500u32.to_be_bytes())
     })
     .await;
     assert_eq!(
@@ -378,33 +378,33 @@ async fn native_solo_single_socket_full_lifecycle_reconnect_and_post_match() {
     assert!(!rooms.is_hero_alive(match_id, 0));
 
     let mut sock = login_game(&address, player_id, &cipher).await;
-    collect_until(&mut sock, &cipher, wire_opcode::BeginLoading).await;
+    collect_until(&mut sock, &cipher, wire_opcode::DraftTransitionToLoading).await;
     send_frame(
         &mut sock,
         &cipher,
-        &Message::known(Opcode::RequestScene, [0; 6]),
+        &Message::known(Opcode::RequestSceneSnapshot, [0; 6]),
     )
     .await;
     send_frame(
         &mut sock,
         &cipher,
-        &Message::known(Opcode::SceneOwner, [0, 0, 5, 220, 1, 0]),
+        &Message::known(Opcode::ConfirmSceneOwner, [0, 0, 5, 220, 1, 0]),
     )
     .await;
-    let dead_rejoin = collect_until(&mut sock, &cipher, wire_opcode::SceneReadiness).await;
+    let dead_rejoin = collect_until(&mut sock, &cipher, wire_opcode::SceneReadinessRows).await;
     assert!(
         dead_rejoin
             .iter()
-            .all(|m| !m.is(Opcode::EntitySpawn) || m.body[8..12] != 1500u32.to_be_bytes()),
+            .all(|m| !m.is(Opcode::HeroSpawn) || m.body[8..12] != 1500u32.to_be_bytes()),
         "dead hero reconnect must omit 1500 EntitySpawn in solo_opening"
     );
     send_frame(
         &mut sock,
         &cipher,
-        &Message::known(Opcode::SceneConfirmed, [0; 6]),
+        &Message::known(Opcode::SceneReadyConfirm, [0; 6]),
     )
     .await;
-    collect_until(&mut sock, &cipher, wire_opcode::TickSyncA).await;
+    collect_until(&mut sock, &cipher, wire_opcode::StartMatch).await;
 
     // Step simulation while draining frames cleanly on a split reader until hero respawns.
     let (mut rd, mut wr) = sock.into_split();
@@ -437,7 +437,7 @@ async fn native_solo_single_socket_full_lifecycle_reconnect_and_post_match() {
             }
             tokio::task::yield_now().await;
             while let Ok(msg) = frame_rx.try_recv() {
-                if msg.is(Opcode::EntitySpawn) && msg.body[8..12] == 1500u32.to_be_bytes() {
+                if msg.is(Opcode::HeroSpawn) && msg.body[8..12] == 1500u32.to_be_bytes() {
                     saw_spawn = true;
                 }
                 if msg.is(Opcode::ActorRespawn) && msg.body[..4] == 1500u32.to_be_bytes() {
@@ -491,7 +491,7 @@ async fn native_solo_single_socket_full_lifecycle_reconnect_and_post_match() {
 
     let opcodes: Vec<u16> = final_messages.iter().map(|m| m.opcode).collect();
     assert!(
-        opcodes.ends_with(&[wire_opcode::StatisticsReport, wire_opcode::TickSyncC]),
+        opcodes.ends_with(&[wire_opcode::PostMatchStats, wire_opcode::EndMatch]),
         "expected [0x048D, 0x03F1] before TCP EOF, got {opcodes:?}"
     );
     let report = &final_messages[final_messages.len() - 2];

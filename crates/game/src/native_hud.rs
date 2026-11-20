@@ -188,9 +188,9 @@ mod tests {
             owner.extend([1, 0]);
             let preamble = &mut room.seats[i].preamble;
             for message in [
-                Message::known(crate::Opcode::RequestScene, [0; 6]),
-                Message::known(crate::Opcode::SceneOwner, owner),
-                Message::known(crate::Opcode::SceneConfirmed, [0; 6]),
+                Message::known(crate::Opcode::RequestSceneSnapshot, [0; 6]),
+                Message::known(crate::Opcode::ConfirmSceneOwner, owner),
+                Message::known(crate::Opcode::SceneReadyConfirm, [0; 6]),
             ] {
                 preamble.observe(&message, 1500 + i as u32);
             }

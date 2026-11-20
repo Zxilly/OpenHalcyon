@@ -107,7 +107,10 @@ mod tests {
         let mut ack = [0; 5];
         socket.read_exact(&mut ack).await.unwrap();
         assert_eq!(ack, ACK_FRAME);
-        let identity = Message::known(crate::Opcode::PlayerUuid, grant.to_string().as_bytes());
+        let identity = Message::known(
+            crate::Opcode::RegisterPlayerUuid,
+            grant.to_string().as_bytes(),
+        );
         socket
             .write_all(&cipher.encode(&identity).unwrap())
             .await
@@ -126,7 +129,7 @@ mod tests {
             .filter(|m| {
                 matches!(
                     m.known_opcode(),
-                    Some(crate::Opcode::AutoActorBounce | crate::Opcode::EntityProp)
+                    Some(crate::Opcode::AutoActorBounce | crate::Opcode::ApplyBuffCompact)
                 )
             })
             .map(|mut m| {

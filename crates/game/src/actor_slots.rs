@@ -14,7 +14,7 @@ pub(super) struct ActorSlots {
 }
 
 fn set_full(message: &mut Message, slot: u8) {
-    debug_assert_eq!(message.opcode, crate::wire_opcode::EntitySpawn);
+    debug_assert_eq!(message.opcode, crate::wire_opcode::HeroSpawn);
     message.body[FULL_SLOT_OFFSET] = slot;
 }
 
@@ -146,7 +146,7 @@ mod tests {
         let mut slots = ActorSlots::from_roster(&world.entities);
         for entity in world.entities.iter().take(10) {
             let hero = slots.declaration(&world, entity, &[], None).unwrap();
-            assert_eq!(hero.opcode, crate::wire_opcode::EntitySpawn);
+            assert_eq!(hero.opcode, crate::wire_opcode::HeroSpawn);
             let expected = [14, 19, 15, 20, 16, 21, 17, 22, 18, 23];
             assert_eq!(hero.body[745], expected[(entity.id - 1) as usize]);
         }
@@ -161,7 +161,7 @@ mod tests {
                 let spawn = slots.declaration(&world, entity, &[], None).unwrap();
                 assert_eq!(
                     (spawn.opcode, spawn.body.len()),
-                    (crate::wire_opcode::Snapshot, 122)
+                    (crate::wire_opcode::EntitySpawn, 122)
                 );
                 assert_eq!(spawn.body[117], 0);
                 assert_eq!(spawn.body[120], [1, 4][entity.team as usize]);
@@ -320,9 +320,9 @@ mod tests {
         assert!(
             batch
                 .iter()
-                .all(|m| !m.is(crate::Opcode::Snapshot) || m.body[116] < FIRST_MINION_SLOT)
+                .all(|m| !m.is(crate::Opcode::EntitySpawn) || m.body[116] < FIRST_MINION_SLOT)
         );
-        assert!(batch.iter().all(|m| !m.is(crate::Opcode::Position)));
+        assert!(batch.iter().all(|m| !m.is(crate::Opcode::MoveToCorrection)));
         assert!(!room.visible[0].contains(&id));
         assert!(room.world.entities.iter().any(|e| e.id == id && e.hp > 0.0));
 
@@ -333,7 +333,10 @@ mod tests {
         };
         assert_eq!(
             batch.iter().map(|m| m.opcode).collect::<Vec<_>>(),
-            [crate::wire_opcode::Snapshot, crate::wire_opcode::Position]
+            [
+                crate::wire_opcode::EntitySpawn,
+                crate::wire_opcode::MoveToCorrection
+            ]
         );
         assert_eq!(batch[0].body[116], FIRST_MINION_SLOT);
         assert_eq!(batch[0].body[8..12], u32::from(wire_id(id)).to_be_bytes());
@@ -378,16 +381,18 @@ mod tests {
         room.world.use_solo_mid_lane().unwrap();
         room.seats[0].control_world = true;
         room.seats[0].world_actor_written = true;
-        room.seats[0]
-            .preamble
-            .observe(&Message::known(crate::Opcode::RequestScene, [0; 6]), 1500);
         room.seats[0].preamble.observe(
-            &Message::known(crate::Opcode::SceneOwner, [0, 0, 5, 220, 1, 0]),
+            &Message::known(crate::Opcode::RequestSceneSnapshot, [0; 6]),
             1500,
         );
-        room.seats[0]
-            .preamble
-            .observe(&Message::known(crate::Opcode::SceneConfirmed, [0; 6]), 1500);
+        room.seats[0].preamble.observe(
+            &Message::known(crate::Opcode::ConfirmSceneOwner, [0, 0, 5, 220, 1, 0]),
+            1500,
+        );
+        room.seats[0].preamble.observe(
+            &Message::known(crate::Opcode::SceneReadyConfirm, [0; 6]),
+            1500,
+        );
         let (tx, mut rx) = mpsc::channel(32);
         room.seats[0].peers[0] = Some(Peer {
             generation: 1,

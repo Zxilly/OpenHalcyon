@@ -88,7 +88,7 @@ impl Message {
             return Err(invalid("invalid ARAL winning team"));
         }
         Ok(Self::known(
-            crate::Opcode::TickSyncC,
+            crate::Opcode::EndMatch,
             [0, 0, 0, winning_wire_team, 2, 0],
         ))
     }

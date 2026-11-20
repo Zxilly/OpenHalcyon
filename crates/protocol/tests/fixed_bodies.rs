@@ -25,7 +25,7 @@ fn fixed_prefixes_preserve_signaling_nans_actor_width_and_the_callers_suffix() {
     assert_eq!(p.write_body(&mut buf).unwrap(), 12);
     assert_eq!(&buf[..12], &pos);
     assert!(matches!(
-        Message::known(Opcode::Position, pos).fields(),
+        Message::known(Opcode::MoveToCorrection, pos).fields(),
         Ok(Fields::Position { entity: 0x5678, .. })
     ));
     let hit = [
@@ -89,7 +89,7 @@ fn tracked_fire_reproduces_independent_native_and_padded_bytes() {
 #[test]
 fn hello_suffix_preserves_the_endpoint_port_word() {
     let mut payload = [0; 134];
-    payload[..2].copy_from_slice(&halcyon_protocol::Opcode::Hello.raw().to_be_bytes());
+    payload[..2].copy_from_slice(&halcyon_protocol::Opcode::ClientHello.raw().to_be_bytes());
     payload[2..3].copy_from_slice(b"x");
     payload[130..134].copy_from_slice(&[0, 0, 0x12, 0x34]);
     let ep = halcyon_protocol::parse_hello_endpoint(&payload).unwrap();

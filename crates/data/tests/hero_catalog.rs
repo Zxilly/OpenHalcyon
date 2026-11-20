@@ -17,7 +17,7 @@ fn import(payload: &str) -> std::io::Result<Vec<String>> {
     }
     let row = CatalogRow {
         dir: Direction::ServerToClient,
-        opcode: Opcode::HeroCatalog.raw(),
+        opcode: Opcode::DraftCatalogEntry.raw(),
         payload,
     };
     catalog_from_trace(Cursor::new(serde_json::to_vec(&row)?))

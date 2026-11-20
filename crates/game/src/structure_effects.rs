@@ -161,8 +161,8 @@ impl SoloSnapshot {
         let mut groups = Vec::new();
         for message in batch.iter() {
             let slot = match message.known_opcode() {
-                Some(Opcode::Snapshot) => message.body.get(116),
-                Some(Opcode::EntitySpawn) => message.body.get(745),
+                Some(Opcode::EntitySpawn) => message.body.get(116),
+                Some(Opcode::HeroSpawn) => message.body.get(745),
                 _ => continue,
             };
             let Some(profile) = slot.copied().and_then(SoloStructure::at_slot) else {
@@ -206,12 +206,12 @@ impl SoloSnapshot {
 }
 
 pub(super) fn recordable(message: &Message) -> bool {
-    if message.is(Opcode::EntityProp) {
+    if message.is(Opcode::ApplyBuffCompact) {
         return matches!(message.fields(), Ok(Fields::BuffApplication(effect))
             if effect.extras.is_none() && matches!(effect.suffix, [] | [0,0,0,0,0,0])
             && crystal_start_prefixes().any(|prefix| prefix == effect.prefix));
     }
-    if !message.is(Opcode::EntityData) {
+    if !message.is(Opcode::ApplyBuffExtended) {
         return false;
     }
     let Ok(Fields::BuffApplication(effect)) = message.fields() else {
@@ -316,7 +316,7 @@ mod tests {
                 .collect();
             assert_eq!(batch.len(), expected.len());
             for (mut m, (actor, instance, definition)) in batch.into_iter().zip(expected) {
-                assert!(m.is(Opcode::EntityProp));
+                assert!(m.is(Opcode::ApplyBuffCompact));
                 assert_eq!(
                     m.body,
                     [

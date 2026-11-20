@@ -21,7 +21,10 @@ async fn login(addr: &str, player: Uuid, cipher: &MatchCipher) -> TcpStream {
     id[..36].copy_from_slice(player.to_string().as_bytes());
     s.write_all(
         &cipher
-            .encode(&Message::known(halcyon_protocol::Opcode::PlayerUuid, id))
+            .encode(&Message::known(
+                halcyon_protocol::Opcode::RegisterPlayerUuid,
+                id,
+            ))
             .unwrap(),
     )
     .await
@@ -80,12 +83,22 @@ async fn reservation_and_two_authenticated_sockets() {
         0
     );
     let mut control = login(&addr, player, &c).await;
-    until(&mut control, &c, halcyon_protocol::wire_opcode::HeroCatalog).await;
-    let roster = until(&mut control, &c, halcyon_protocol::wire_opcode::Snapshot5V5).await;
+    until(
+        &mut control,
+        &c,
+        halcyon_protocol::wire_opcode::DraftCatalogEntry,
+    )
+    .await;
+    let roster = until(
+        &mut control,
+        &c,
+        halcyon_protocol::wire_opcode::DraftRosterFull,
+    )
+    .await;
     assert_eq!(&roster.body[105..141], player.to_string().as_bytes());
     for opcode in [
-        halcyon_protocol::wire_opcode::SetupA,
-        halcyon_protocol::wire_opcode::SetupC,
+        halcyon_protocol::wire_opcode::DraftRefreshRequest,
+        halcyon_protocol::wire_opcode::DraftReadyControl,
     ] {
         control
             .write_all(&c.encode(&Message::new(opcode, [0; 6])).unwrap())
@@ -99,14 +112,19 @@ async fn reservation_and_two_authenticated_sockets() {
     control
         .write_all(
             &c.encode(&Message::known(
-                halcyon_protocol::Opcode::HeroSelection,
+                halcyon_protocol::Opcode::DraftSelectHero,
                 pick.clone(),
             ))
             .unwrap(),
         )
         .await
         .unwrap();
-    let updated = until(&mut control, &c, halcyon_protocol::wire_opcode::Snapshot5V5).await;
+    let updated = until(
+        &mut control,
+        &c,
+        halcyon_protocol::wire_opcode::DraftRosterFull,
+    )
+    .await;
     let halcyon_protocol::Fields::DraftRoster(typed) = updated.fields().unwrap() else {
         panic!("expected draft roster")
     };
@@ -121,37 +139,43 @@ async fn reservation_and_two_authenticated_sockets() {
     until(
         &mut control,
         &c,
-        halcyon_protocol::wire_opcode::HeroSelection,
+        halcyon_protocol::wire_opcode::DraftSelectHero,
     )
     .await;
-    let sync = until(&mut control, &c, halcyon_protocol::wire_opcode::TickSyncC).await;
+    let sync = until(&mut control, &c, halcyon_protocol::wire_opcode::EndMatch).await;
     assert_eq!(sync.body, [0, 0, 0, 0, 8, 0]);
     let mut repeat = c
         .encode(&Message::known(
-            halcyon_protocol::Opcode::HeroSelection,
+            halcyon_protocol::Opcode::DraftSelectHero,
             pick,
         ))
         .unwrap();
     repeat.extend(
-        c.encode(&Message::known(halcyon_protocol::Opcode::SetupC, [0; 6]))
-            .unwrap(),
+        c.encode(&Message::known(
+            halcyon_protocol::Opcode::DraftReadyControl,
+            [0; 6],
+        ))
+        .unwrap(),
     );
     control.write_all(&repeat).await.unwrap();
     until(
         &mut control,
         &c,
-        halcyon_protocol::wire_opcode::HeroSelection,
+        halcyon_protocol::wire_opcode::DraftSelectHero,
     )
     .await;
     let next = next_matching(&mut control, &c, |opcode| {
-        opcode != halcyon_protocol::wire_opcode::Snapshot5V5
+        opcode != halcyon_protocol::wire_opcode::DraftRosterFull
     })
     .await;
-    assert_eq!(next.opcode, halcyon_protocol::wire_opcode::SetupC);
+    assert_eq!(
+        next.opcode,
+        halcyon_protocol::wire_opcode::DraftReadyControl
+    );
     control
         .write_all(
             &c.encode(&Message::known(
-                halcyon_protocol::Opcode::LockSelection,
+                halcyon_protocol::Opcode::DraftLockHero,
                 [0; 6],
             ))
             .unwrap(),
@@ -161,20 +185,15 @@ async fn reservation_and_two_authenticated_sockets() {
     until(
         &mut control,
         &c,
-        halcyon_protocol::wire_opcode::LockSelection,
+        halcyon_protocol::wire_opcode::DraftLockHero,
     )
     .await;
     let mut game = login(&addr, player, &c).await;
     let info = until(&mut game, &c, halcyon_protocol::wire_opcode::PlayerInfo).await;
     assert_eq!(&info.body[160..164], &1500u32.to_be_bytes());
-    let clock = until(
-        &mut game,
-        &c,
-        halcyon_protocol::wire_opcode::OpeningWorldClock,
-    )
-    .await;
+    let clock = until(&mut game, &c, halcyon_protocol::wire_opcode::SyncWorldClock).await;
     assert_eq!(&clock.body[..4], &0_f32.to_be_bytes());
-    let spawn = until(&mut game, &c, halcyon_protocol::wire_opcode::EntitySpawn).await;
+    let spawn = until(&mut game, &c, halcyon_protocol::wire_opcode::HeroSpawn).await;
     assert_eq!(&spawn.body[4..8], &0xf240ebfeu32.to_be_bytes());
 
     let info = rooms.detail(id).unwrap();
@@ -184,7 +203,12 @@ async fn reservation_and_two_authenticated_sockets() {
     game.write_all(&c.encode(&Message::movement(5., 2.)).unwrap())
         .await
         .unwrap();
-    until(&mut game, &c, halcyon_protocol::wire_opcode::Position).await;
+    until(
+        &mut game,
+        &c,
+        halcyon_protocol::wire_opcode::MoveToCorrection,
+    )
+    .await;
     drop(game);
     timeout(Duration::from_secs(2), async {
         while rooms.detail_typed(id).unwrap().participants.unwrap()[0].game_connected {
@@ -194,18 +218,13 @@ async fn reservation_and_two_authenticated_sockets() {
     .await
     .unwrap();
     let mut game = login(&addr, player, &c).await;
-    let clock = until(
-        &mut game,
-        &c,
-        halcyon_protocol::wire_opcode::OpeningWorldClock,
-    )
-    .await;
+    let clock = until(&mut game, &c, halcyon_protocol::wire_opcode::SyncWorldClock).await;
     let seconds = f32::from_be_bytes(clock.body[..4].try_into().unwrap());
     assert!(
         seconds >= 1.0 / halcyon_sim::TICK_HZ as f32,
         "fresh data socket received {seconds}s after movement"
     );
-    until(&mut game, &c, halcyon_protocol::wire_opcode::EntitySpawn).await;
+    until(&mut game, &c, halcyon_protocol::wire_opcode::HeroSpawn).await;
     let viewer = Uuid::new_v4();
     let grant = rooms.spectate(id, viewer).unwrap();
     assert_eq!(
@@ -214,7 +233,12 @@ async fn reservation_and_two_authenticated_sockets() {
     );
     assert_ne!(grant.address, addr);
     let mut watch = login(&grant.address, grant.spectator_id, &c).await;
-    let roster = until(&mut watch, &c, halcyon_protocol::wire_opcode::Snapshot5V5).await;
+    let roster = until(
+        &mut watch,
+        &c,
+        halcyon_protocol::wire_opcode::DraftRosterFull,
+    )
+    .await;
     assert!(roster.body[105..141].iter().all(|&v| v == 0));
     watch
         .write_all(&c.encode(&Message::movement(3., 4.)).unwrap())
@@ -227,7 +251,12 @@ async fn reservation_and_two_authenticated_sockets() {
     .await
     .unwrap();
     let mut watch = login(&grant.address, grant.spectator_id, &c).await;
-    until(&mut watch, &c, halcyon_protocol::wire_opcode::Snapshot5V5).await;
+    until(
+        &mut watch,
+        &c,
+        halcyon_protocol::wire_opcode::DraftRosterFull,
+    )
+    .await;
     rooms.stop_spectating(id, grant.spectator_id).unwrap();
     timeout(Duration::from_secs(2), async {
         let mut bytes = [0; 4096];
@@ -275,7 +304,9 @@ async fn reservation_and_two_authenticated_sockets() {
                 loop {
                     match reader.next_record() {
                         Ok(Some(record)) => ops.push(record.message.opcode),
-                        Ok(None) if ops.contains(&halcyon_protocol::wire_opcode::Position) => {
+                        Ok(None)
+                            if ops.contains(&halcyon_protocol::wire_opcode::MoveToCorrection) =>
+                        {
                             return (bytes, ops);
                         }
                         _ => break,
@@ -287,10 +318,10 @@ async fn reservation_and_two_authenticated_sockets() {
     })
     .await
     .unwrap();
-    assert!(ops.contains(&halcyon_protocol::wire_opcode::EntitySpawn));
-    assert!(ops.contains(&halcyon_protocol::wire_opcode::Position));
-    assert!(!ops.contains(&halcyon_protocol::wire_opcode::PlayerUuid));
-    assert!(!ops.contains(&halcyon_protocol::wire_opcode::HeroCatalog));
+    assert!(ops.contains(&halcyon_protocol::wire_opcode::HeroSpawn));
+    assert!(ops.contains(&halcyon_protocol::wire_opcode::MoveToCorrection));
+    assert!(!ops.contains(&halcyon_protocol::wire_opcode::RegisterPlayerUuid));
+    assert!(!ops.contains(&halcyon_protocol::wire_opcode::DraftCatalogEntry));
     assert!(
         !recorded
             .windows(36)
@@ -342,10 +373,13 @@ async fn admission_precedes_authentication() {
     let mut body = vec![0; 70];
     body[..36].copy_from_slice(player.to_string().as_bytes());
     s.write_all(
-        &c.encode(&Message::known(halcyon_protocol::Opcode::PlayerUuid, body))
-            .unwrap(),
+        &c.encode(&Message::known(
+            halcyon_protocol::Opcode::RegisterPlayerUuid,
+            body,
+        ))
+        .unwrap(),
     )
     .await
     .unwrap();
-    until(&mut s, &c, halcyon_protocol::wire_opcode::GameSetup).await;
+    until(&mut s, &c, halcyon_protocol::wire_opcode::MatchSettings).await;
 }

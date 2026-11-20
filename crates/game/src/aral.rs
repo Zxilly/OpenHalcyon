@@ -123,7 +123,7 @@ pub(super) fn roster(room: &Room, remaining: f32, private: bool) -> Message {
             }
         }
     }
-    Message::known(crate::Opcode::SnapshotAral, body)
+    Message::known(crate::Opcode::DraftRosterAral, body)
 }
 
 pub(super) fn setup(room: &Room, seat: usize, remaining: f32) -> Batch {
@@ -136,7 +136,7 @@ pub(super) fn setup(room: &Room, seat: usize, remaining: f32) -> Batch {
     settings[32..32 + MODE.len()].copy_from_slice(MODE.as_bytes());
     settings[96..100].copy_from_slice(&5f32.to_be_bytes());
     settings[100] = room.world.entities[seat].team + 1;
-    let mut batch = vec![Message::known(crate::Opcode::GameSetup, settings)];
+    let mut batch = vec![Message::known(crate::Opcode::MatchSettings, settings)];
     batch.extend(draft_catalog(room, remaining));
     batch
 }
@@ -146,11 +146,11 @@ pub(super) fn draft_catalog(room: &Room, remaining: f32) -> Batch {
     mode[..4].copy_from_slice(&3u32.to_be_bytes());
     mode[4..4 + MODE.len()].copy_from_slice(MODE.as_bytes());
     let mut batch = Vec::with_capacity(room.catalog.len() + 2);
-    batch.push(Message::known(crate::Opcode::GameMode, mode));
+    batch.push(Message::known(crate::Opcode::DraftModeAnnouncement, mode));
     batch.extend(
         room.catalog
             .iter()
-            .map(|entry| Message::known(crate::Opcode::HeroCatalog, *entry)),
+            .map(|entry| Message::known(crate::Opcode::DraftCatalogEntry, *entry)),
     );
     batch.push(roster(room, remaining, false));
     batch
@@ -203,7 +203,7 @@ pub(super) fn reroll(room: &mut Room, seat: usize) -> Batch {
     vec![
         roster,
         echo,
-        Message::known(crate::Opcode::SkinSelection, skin.to_be_bytes()),
+        Message::known(crate::Opcode::DraftSelectSkin, skin.to_be_bytes()),
     ]
 }
 
@@ -349,7 +349,7 @@ mod tests {
         actor: u32,
         initial: bool,
     ) {
-        let probe = Message::known(crate::Opcode::RequestScene, [0; 6]);
+        let probe = Message::known(crate::Opcode::RequestSceneSnapshot, [0; 6]);
         socket
             .write_all(&cipher.encode(&probe).unwrap())
             .await
@@ -357,13 +357,13 @@ mod tests {
         let mut words = [0u8; 6];
         words[..4].copy_from_slice(&actor.to_be_bytes());
         words[4] = 1;
-        let request = Message::known(crate::Opcode::SceneOwner, words);
+        let request = Message::known(crate::Opcode::ConfirmSceneOwner, words);
         socket
             .write_all(&cipher.encode(&request).unwrap())
             .await
             .unwrap();
         let name = next(socket, cipher).await;
-        assert_eq!(name.opcode, crate::wire_opcode::ModeName);
+        assert_eq!(name.opcode, crate::wire_opcode::SceneSettings);
         assert_eq!(name.body[68], 0);
         for _ in 0..SEATS {
             assert_eq!(
@@ -372,7 +372,7 @@ mod tests {
             );
         }
         let clock = next(socket, cipher).await;
-        assert_eq!(clock.opcode, crate::wire_opcode::OpeningWorldClock);
+        assert_eq!(clock.opcode, crate::wire_opcode::SyncWorldClock);
         if initial {
             assert_eq!(clock.body, [0; 6]);
         }
@@ -396,7 +396,7 @@ mod tests {
             }
             if !initial {
                 assert!(
-                    !frame.is(crate::Opcode::CooldownSync),
+                    !frame.is(crate::Opcode::InitCooldown),
                     "rejoin reset an active cooldown"
                 );
             }
@@ -406,7 +406,7 @@ mod tests {
             if frame.is(crate::Opcode::ModifyGameModeVar) {
                 variables.push(frame.clone());
             }
-            if frame.is(crate::Opcode::EntityData) {
+            if frame.is(crate::Opcode::ApplyBuffExtended) {
                 assert!(
                     crate::structure_effects::recordable(&frame)
                         || crate::aral_guard::recordable(&frame)
@@ -422,7 +422,7 @@ mod tests {
                     effect.prefix.instance,
                 ));
             }
-            if frame.is(crate::Opcode::EntitySpawn) {
+            if frame.is(crate::Opcode::HeroSpawn) {
                 let id = u32::from_be_bytes(frame.body[8..12].try_into().unwrap());
                 assert!((1500..1506).contains(&id));
                 assert_eq!(frame.body[745], 16 + (id - 1500) as u8);
@@ -457,7 +457,7 @@ mod tests {
                     assert_eq!(frame.body[22..26], height.to_be_bytes());
                 }
             }
-            if frame.is(crate::Opcode::Snapshot) {
+            if frame.is(crate::Opcode::EntitySpawn) {
                 let slot = frame.body[116];
                 structures.push(slot);
                 assert_eq!(
@@ -530,7 +530,7 @@ mod tests {
     }
 
     async fn ready(socket: &mut TcpStream, cipher: &MatchCipher) {
-        let done = Message::known(crate::Opcode::SceneConfirmed, [0; 6]);
+        let done = Message::known(crate::Opcode::SceneReadyConfirm, [0; 6]);
         socket
             .write_all(&cipher.encode(&done).unwrap())
             .await
@@ -580,9 +580,9 @@ mod tests {
             stalled: tokio::sync::watch::channel(false).0,
         });
         for m in [
-            Message::known(crate::Opcode::RequestScene, [0; 6]),
-            Message::known(crate::Opcode::SceneOwner, [0, 0, 5, 220, 1, 0]),
-            Message::known(crate::Opcode::SceneConfirmed, [0; 6]),
+            Message::known(crate::Opcode::RequestSceneSnapshot, [0; 6]),
+            Message::known(crate::Opcode::ConfirmSceneOwner, [0, 0, 5, 220, 1, 0]),
+            Message::known(crate::Opcode::SceneReadyConfirm, [0; 6]),
         ] {
             r.seats[0].preamble.observe(&m, 1500);
         }
@@ -608,20 +608,29 @@ mod tests {
     #[test]
     fn readiness_requires_order_and_authenticated_actor_id() {
         let mut preamble = crate::scene::Preamble::default();
-        preamble.observe(&Message::known(crate::Opcode::SceneConfirmed, [0; 6]), 1505);
-        preamble.observe(&Message::known(crate::Opcode::RequestScene, [0; 6]), 1505);
         preamble.observe(
-            &Message::known(crate::Opcode::SceneOwner, [0, 0, 5, 224, 1, 0]),
+            &Message::known(crate::Opcode::SceneReadyConfirm, [0; 6]),
+            1505,
+        );
+        preamble.observe(
+            &Message::known(crate::Opcode::RequestSceneSnapshot, [0; 6]),
+            1505,
+        );
+        preamble.observe(
+            &Message::known(crate::Opcode::ConfirmSceneOwner, [0, 0, 5, 224, 1, 0]),
             1505,
         );
         assert!(!preamble.scene_requested());
         preamble.observe(
-            &Message::known(crate::Opcode::SceneOwner, [0, 0, 5, 225, 1, 0]),
+            &Message::known(crate::Opcode::ConfirmSceneOwner, [0, 0, 5, 225, 1, 0]),
             1505,
         );
         assert!(preamble.scene_requested());
         assert!(!preamble.confirmed());
-        preamble.observe(&Message::known(crate::Opcode::SceneConfirmed, [0; 6]), 1505);
+        preamble.observe(
+            &Message::known(crate::Opcode::SceneReadyConfirm, [0; 6]),
+            1505,
+        );
         assert!(preamble.confirmed());
     }
 
@@ -710,19 +719,19 @@ mod tests {
             socket
                 .write_all(
                     &cipher
-                        .encode(&Message::known(crate::Opcode::PlayerUuid, auth))
+                        .encode(&Message::known(crate::Opcode::RegisterPlayerUuid, auth))
                         .unwrap(),
                 )
                 .await
                 .unwrap();
             let setting = next(&mut socket, &cipher).await;
-            assert_eq!(setting.opcode, crate::wire_opcode::GameSetup);
+            assert_eq!(setting.opcode, crate::wire_opcode::MatchSettings);
             assert_eq!(setting.body[16..18], [3, 3]);
             assert_eq!(setting.body[100], (index % 2 + 1) as u8);
             let mode = next(&mut socket, &cipher).await;
-            assert_eq!(mode.opcode, crate::wire_opcode::GameMode);
+            assert_eq!(mode.opcode, crate::wire_opcode::DraftModeAnnouncement);
             assert_eq!(mode.body[..4], 3u32.to_be_bytes());
-            let snapshot = until(&mut socket, &cipher, crate::wire_opcode::SnapshotAral).await;
+            let snapshot = until(&mut socket, &cipher, crate::wire_opcode::DraftRosterAral).await;
             let Fields::AralRoster(view) = snapshot.fields().unwrap() else {
                 panic!("expected ARAL roster")
             };
@@ -733,31 +742,36 @@ mod tests {
         }
 
         for player in &players[1..] {
-            let notice = until(&mut clients[0], &cipher, crate::wire_opcode::PlayerUuid).await;
+            let notice = until(
+                &mut clients[0],
+                &cipher,
+                crate::wire_opcode::RegisterPlayerUuid,
+            )
+            .await;
             assert_eq!(
                 notice.fields().unwrap(),
                 Fields::PlayerUuid(&player.to_string())
             );
         }
         for refresh in 0..3 {
-            let request = Message::known(crate::Opcode::SetupA, [0; 6]);
+            let request = Message::known(crate::Opcode::DraftRefreshRequest, [0; 6]);
             clients[0]
                 .write_all(&cipher.encode(&request).unwrap())
                 .await
                 .unwrap();
             assert_eq!(
                 next(&mut clients[0], &cipher).await.opcode,
-                crate::wire_opcode::GameMode
+                crate::wire_opcode::DraftModeAnnouncement
             );
             let catalog_len = rooms.room(room_id).unwrap().lock().unwrap().catalog.len();
             for _ in 0..catalog_len {
                 assert_eq!(
                     next(&mut clients[0], &cipher).await.opcode,
-                    crate::wire_opcode::HeroCatalog
+                    crate::wire_opcode::DraftCatalogEntry
                 );
             }
             let first = next(&mut clients[0], &cipher).await;
-            assert_eq!(first.opcode, crate::wire_opcode::SnapshotAral);
+            assert_eq!(first.opcode, crate::wire_opcode::DraftRosterAral);
             if refresh == 0 {
                 let sync = next(&mut clients[0], &cipher).await;
                 let mut expected = [0; 86];
@@ -769,7 +783,7 @@ mod tests {
                     Message::known(crate::Opcode::AralDraftMarker, expected)
                 );
                 let second = next(&mut clients[0], &cipher).await;
-                assert_eq!(second.opcode, crate::wire_opcode::SnapshotAral);
+                assert_eq!(second.opcode, crate::wire_opcode::DraftRosterAral);
                 assert_eq!(first.body[8..], second.body[8..]);
             }
             assert_eq!(next(&mut clients[0], &cipher).await, request);
@@ -801,9 +815,9 @@ mod tests {
             loop {
                 let frame = next(socket, &cipher).await;
                 match frame.known_opcode() {
-                    Some(crate::Opcode::PlayerUuid | crate::Opcode::SnapshotAral) => {}
+                    Some(crate::Opcode::RegisterPlayerUuid | crate::Opcode::DraftRosterAral) => {}
                     Some(crate::Opcode::PlayerInfo) => roster_count += 1,
-                    Some(crate::Opcode::BeginLoading) => break,
+                    Some(crate::Opcode::DraftTransitionToLoading) => break,
                     _ => panic!("unexpected frame {:#x} before world request", frame.opcode),
                 }
             }
@@ -815,17 +829,22 @@ mod tests {
         // The first socket had entered before the other five made their requests.
         for seat in 1..SEATS {
             let actor = 1500 + seat as u32;
-            let handle = until(&mut clients[0], &cipher, crate::wire_opcode::PlayerHandle).await;
+            let handle = until(
+                &mut clients[0],
+                &cipher,
+                crate::wire_opcode::PlayerLoadedScene,
+            )
+            .await;
             assert!(
                 matches!(handle.fields().unwrap(), Fields::HandleRecord {text:b"Guest", field64,lookup, ..}
                 if field64 == seat as u32 && lookup == actor)
             );
             assert_eq!(
                 next(&mut clients[0], &cipher).await,
-                Message::known(crate::Opcode::RequestScene, [0; 6])
+                Message::known(crate::Opcode::RequestSceneSnapshot, [0; 6])
             );
             let confirmation = next(&mut clients[0], &cipher).await;
-            assert_eq!(confirmation.opcode, crate::wire_opcode::SceneOwner);
+            assert_eq!(confirmation.opcode, crate::wire_opcode::ConfirmSceneOwner);
             assert_eq!(confirmation.body[..4], actor.to_be_bytes());
             assert_eq!(confirmation.body[4..], [1, 0]);
         }
@@ -837,7 +856,7 @@ mod tests {
         ready(&mut clients[5], &cipher).await;
         for socket in &mut clients {
             assert_eq!(
-                until(socket, &cipher, crate::wire_opcode::TickSyncA)
+                until(socket, &cipher, crate::wire_opcode::StartMatch)
                     .await
                     .body,
                 [0; 6]
@@ -930,14 +949,14 @@ mod tests {
         }
         let point = |x: f32, z: f32| {
             Message::known(
-                crate::Opcode::StateUpdA,
+                crate::Opcode::RequestMovePoint,
                 [x.to_be_bytes(), z.to_be_bytes()].concat(),
             )
         };
         for (seat, opcode, x, z) in [
-            (0, crate::wire_opcode::StateUpdA, -74.0, 0.88),
-            (3, crate::wire_opcode::MoveCmd, 75.0, -5.06),
-            (0, crate::wire_opcode::MoveCmd, -74.0, 0.88),
+            (0, crate::wire_opcode::RequestMovePoint, -74.0, 0.88),
+            (3, crate::wire_opcode::RequestMoveJoystick, 75.0, -5.06),
+            (0, crate::wire_opcode::RequestMoveJoystick, -74.0, 0.88),
         ] {
             let mut request = point(x, z);
             request.opcode = opcode;
@@ -945,7 +964,7 @@ mod tests {
                 .write_all(&cipher.encode(&request).unwrap())
                 .await
                 .unwrap();
-            let reply = until(&mut clients[seat], &cipher, crate::wire_opcode::EntityFloat).await;
+            let reply = until(&mut clients[seat], &cipher, crate::wire_opcode::MoveTo).await;
             assert_eq!(
                 reply.fields().unwrap(),
                 Fields::MoveAction {
@@ -981,7 +1000,7 @@ mod tests {
                 if response == barrier {
                     break;
                 }
-                if response.is(crate::Opcode::EntityFloat) {
+                if response.is(crate::Opcode::MoveTo) {
                     slots.push(response.body[0]);
                 }
             }
@@ -998,13 +1017,13 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(
-            until(&mut clients[0], &cipher, crate::wire_opcode::EntityFloat)
+            until(&mut clients[0], &cipher, crate::wire_opcode::MoveTo)
                 .await
                 .body[0],
             16
         );
         assert_eq!(
-            until(&mut clients[1], &cipher, crate::wire_opcode::EntityFloat)
+            until(&mut clients[1], &cipher, crate::wire_opcode::MoveTo)
                 .await
                 .body[0],
             16
@@ -1093,7 +1112,7 @@ mod tests {
             .write_all(
                 &cipher
                     .encode(&Message::known(
-                        crate::Opcode::PlayerUuid,
+                        crate::Opcode::RegisterPlayerUuid,
                         grant.to_string().as_bytes(),
                     ))
                     .unwrap(),
@@ -1101,7 +1120,7 @@ mod tests {
             .await
             .unwrap();
         let scoreboard = next(&mut observer, &cipher).await;
-        assert!(scoreboard.is(crate::Opcode::SnapshotAral));
+        assert!(scoreboard.is(crate::Opcode::DraftRosterAral));
         for actor in 1500_u32..1506 {
             let frame = next(&mut observer, &cipher).await;
             assert!(frame.is(crate::Opcode::PlayerInfo));
@@ -1151,7 +1170,7 @@ mod tests {
             }
             room.lock().unwrap().world.entities[0].gold += 500;
             let buy_infusion = Message::known(
-                Opcode::ShopRequest,
+                Opcode::BuyItem,
                 [1500u32.to_be_bytes(), 493u32.to_be_bytes()].concat(),
             );
             clients[0]
@@ -1166,7 +1185,7 @@ mod tests {
             };
             let press = cipher
                 .encode(&Message::known(
-                    Opcode::RequestActivateItem,
+                    Opcode::RequestActivateItemSelf,
                     held.to_be_bytes(),
                 ))
                 .unwrap();
@@ -1178,7 +1197,7 @@ mod tests {
             let mut shared = None;
             for socket in [owner, ally, &mut observer] {
                 let effect = loop {
-                    let m = until(socket, &cipher, crate::wire_opcode::EntityProp).await;
+                    let m = until(socket, &cipher, crate::wire_opcode::ApplyBuffCompact).await;
                     if let Fields::BuffApplication(b) = m.fields().unwrap()
                         && b.prefix.definition
                             == halcyon_protocol::BuffDefinition::WeaponInfusion as u16
@@ -1203,7 +1222,7 @@ mod tests {
                 );
             }
             let buy_block = Message::known(
-                Opcode::ShopRequest,
+                Opcode::BuyItem,
                 [1500u32.to_be_bytes(), 485u32.to_be_bytes()].concat(),
             );
             clients[0]
@@ -1216,7 +1235,7 @@ mod tests {
                     break u32::from_be_bytes(m.body[8..12].try_into().unwrap());
                 }
             };
-            let press = Message::known(Opcode::RequestActivateItem, instance.to_be_bytes());
+            let press = Message::known(Opcode::RequestActivateItemSelf, instance.to_be_bytes());
             let packet = cipher.encode(&press).unwrap();
             clients[0]
                 .write_all(&[packet.as_slice(), packet.as_slice()].concat())
@@ -1227,10 +1246,10 @@ mod tests {
                 until(socket, &cipher, crate::wire_opcode::ItemActivated).await;
                 let mut key = 0;
                 for opcode in [
-                    Opcode::EntityProp,
-                    Opcode::EntityProp,
-                    Opcode::EntityStat,
-                    Opcode::EntityProp,
+                    Opcode::ApplyBuffCompact,
+                    Opcode::ApplyBuffCompact,
+                    Opcode::ModifyActorResource,
+                    Opcode::ApplyBuffCompact,
                 ] {
                     let m = next(socket, &cipher).await;
                     assert!(m.is(opcode));
@@ -1245,7 +1264,7 @@ mod tests {
                 assert_eq!(end.buff_mutation().unwrap().instance, key);
             }
             let buy = Message::known(
-                Opcode::ShopRequest,
+                Opcode::BuyItem,
                 [1500u32.to_be_bytes(), 473u32.to_be_bytes()].concat(),
             );
             clients[0]
@@ -1308,10 +1327,10 @@ mod tests {
                     &[1500u32.to_be_bytes(), instance.to_be_bytes()].concat()
                 );
                 for _ in 0..2 {
-                    assert!(next(socket, &cipher).await.is(Opcode::StatModifier));
+                    assert!(next(socket, &cipher).await.is(Opcode::ModifyActorAttribute));
                 }
                 let remove = next(socket, &cipher).await;
-                assert!(remove.is(Opcode::RemoveItem));
+                assert!(remove.is(Opcode::ConsumeItem));
                 assert_eq!(
                     &remove.body[..10],
                     &[sale.body[..8].to_vec(), vec![0, 1]].concat()
@@ -1323,7 +1342,7 @@ mod tests {
                     (1500, 6, 1, balance as f32)
                 );
                 let request = next(socket, &cipher).await;
-                assert!(request.is(Opcode::RequestActivateItem));
+                assert!(request.is(Opcode::RequestActivateItemSelf));
                 assert_eq!(&request.body[..4], &2000u32.to_be_bytes());
                 let active = next(socket, &cipher).await;
                 assert!(active.is(Opcode::ItemActivated));
@@ -1338,7 +1357,7 @@ mod tests {
                 );
                 assert_eq!(&active.body[12..21], &[0, 0, 0, 0, 0, 0, 0, 0, 2]);
                 let point = next(socket, &cipher).await;
-                assert!(point.is(Opcode::RequestActivateItemVariantC));
+                assert!(point.is(Opcode::RequestActivateItemPoint));
                 assert_eq!(&point.body[12..16], &2001_u32.to_be_bytes());
                 let cam = next(socket, &cipher).await;
                 assert!(cam.is(Opcode::ItemActivated));
@@ -1361,8 +1380,8 @@ mod tests {
                         m.known_opcode(),
                         Some(
                             Opcode::SellItem
-                                | Opcode::RequestActivateItem
-                                | Opcode::RequestActivateItemVariantC
+                                | Opcode::RequestActivateItemSelf
+                                | Opcode::RequestActivateItemPoint
                                 | Opcode::ItemActivated
                         )
                     ));
@@ -1398,7 +1417,7 @@ mod tests {
                     let mut fires = 0;
                     loop {
                         let msg = next(socket, &cipher).await;
-                        if msg.is(crate::Opcode::PlayAbility)
+                        if msg.is(crate::Opcode::PlayTargetAbility)
                             && msg.body[..4] == wire_tower.to_be_bytes()
                             && msg.body[4..8] == 1501u32.to_be_bytes()
                         {
@@ -1460,24 +1479,24 @@ mod tests {
                         let m = next(viewer, &cipher).await;
                         if matches!(
                             m.opcode,
-                            crate::wire_opcode::Snapshot | crate::wire_opcode::EntitySpawn
+                            crate::wire_opcode::EntitySpawn | crate::wire_opcode::HeroSpawn
                         ) && m.body[8..12] == wire_actor.to_be_bytes()
                         {
                             registered = Some(
-                                m.body[if m.is(crate::Opcode::Snapshot) {
+                                m.body[if m.is(crate::Opcode::EntitySpawn) {
                                     116
                                 } else {
                                     745
                                 }],
                             );
                         }
-                        if m.is(crate::Opcode::EntityFloat) && Some(m.body[0]) == registered {
+                        if m.is(crate::Opcode::MoveTo) && Some(m.body[0]) == registered {
                             let expected =
                                 crate::point_move::destination(registered.unwrap(), destination);
                             assert_eq!(m.body[..9], expected.body);
                             saw_path = true;
                         }
-                        if m.is(crate::Opcode::EntityState)
+                        if m.is(crate::Opcode::ModifyVisibility)
                             && m.body[..4] == wire_actor.to_be_bytes()
                         {
                             assert!(saw_path && registered.is_some());
@@ -1513,12 +1532,12 @@ mod tests {
                 if m == barrier {
                     break;
                 }
-                if m.is(crate::Opcode::EntityState) {
+                if m.is(crate::Opcode::ModifyVisibility) {
                     assert_ne!(m.body[..4], hidden);
                 }
                 if matches!(
                     m.opcode,
-                    crate::wire_opcode::Snapshot | crate::wire_opcode::EntitySpawn
+                    crate::wire_opcode::EntitySpawn | crate::wire_opcode::HeroSpawn
                 ) {
                     assert_ne!(m.body[8..12], hidden);
                 }
@@ -1564,7 +1583,12 @@ mod tests {
             .write_all(&cipher.encode(&Message::movement(4., 0.)).unwrap())
             .await
             .unwrap();
-        until(&mut clients[0], &cipher, crate::wire_opcode::Position).await;
+        until(
+            &mut clients[0],
+            &cipher,
+            crate::wire_opcode::MoveToCorrection,
+        )
+        .await;
         assert_eq!(rooms.detail(room_id).unwrap()["phase"], "running");
 
         clients[3].shutdown().await.unwrap();
@@ -1587,14 +1611,19 @@ mod tests {
             .write_all(
                 &cipher
                     .encode(&Message::known(
-                        crate::Opcode::PlayerUuid,
+                        crate::Opcode::RegisterPlayerUuid,
                         players[3].to_string().as_bytes(),
                     ))
                     .unwrap(),
             )
             .await
             .unwrap();
-        until(&mut returned, &cipher, crate::wire_opcode::BeginLoading).await;
+        until(
+            &mut returned,
+            &cipher,
+            crate::wire_opcode::DraftTransitionToLoading,
+        )
+        .await;
         request_scene(&mut returned, &cipher, 1503, false).await;
         ready(&mut returned, &cipher).await;
         returned
@@ -1602,7 +1631,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(
-            until(&mut returned, &cipher, crate::wire_opcode::EntityFloat)
+            until(&mut returned, &cipher, crate::wire_opcode::MoveTo)
                 .await
                 .body[0],
             19
@@ -1643,7 +1672,7 @@ mod tests {
                 .unwrap();
             loop {
                 let response = next(&mut clients[1], &cipher).await;
-                assert_ne!(response.opcode, crate::wire_opcode::EntityFloat);
+                assert_ne!(response.opcode, crate::wire_opcode::MoveTo);
                 if response.is(crate::Opcode::ClockSync) {
                     assert_eq!(response.body[..4], 123.5_f32.to_be_bytes());
                     break;
@@ -1693,22 +1722,22 @@ mod tests {
                     let message = next(socket, &cipher).await;
                     assert!(!matches!(
                         message.opcode,
-                        crate::wire_opcode::EnterPostgame
+                        crate::wire_opcode::CrystalShattered
                             | crate::wire_opcode::TeamSurrenderStateChanged
                     ));
-                    if message.is(crate::Opcode::StatisticsReport) {
+                    if message.is(crate::Opcode::PostMatchStats) {
                         break message;
                     }
                 }
             } else {
-                let postgame = until(socket, &cipher, crate::wire_opcode::EnterPostgame).await;
+                let postgame = until(socket, &cipher, crate::wire_opcode::CrystalShattered).await;
                 assert_eq!(postgame.body, [0; 6]);
                 let death = until(socket, &cipher, crate::wire_opcode::ActorDeath).await;
                 assert_eq!(
                     u32::from_be_bytes(death.body[..4].try_into().unwrap()),
                     2009
                 );
-                until(socket, &cipher, crate::wire_opcode::StatisticsReport).await
+                until(socket, &cipher, crate::wire_opcode::PostMatchStats).await
             };
             let Fields::MatchStatistics(report) = message.fields().unwrap() else {
                 panic!("expected a native statistics report");
@@ -1723,7 +1752,7 @@ mod tests {
             assert_eq!(
                 (victory.opcode, victory.body.as_slice()),
                 (
-                    crate::wire_opcode::TickSyncC,
+                    crate::wire_opcode::EndMatch,
                     &[0, 0, 0, 1, if surrender { 2 } else { 0 }, 0][..]
                 )
             );
@@ -1762,25 +1791,30 @@ mod tests {
                 .write_all(
                     &cipher
                         .encode(&Message::known(
-                            crate::Opcode::PlayerUuid,
+                            crate::Opcode::RegisterPlayerUuid,
                             player.to_string().as_bytes(),
                         ))
                         .unwrap(),
                 )
                 .await
                 .unwrap();
-            until(&mut socket, &cipher, crate::wire_opcode::SnapshotAral).await;
+            until(&mut socket, &cipher, crate::wire_opcode::DraftRosterAral).await;
             clients.push(socket);
         }
         room.lock().unwrap().phase_start =
             Instant::now() - Duration::from_secs(DRAFT_SECONDS as u64);
         for (seat, socket) in clients.iter_mut().enumerate() {
-            until(socket, &cipher, crate::wire_opcode::BeginLoading).await;
+            until(
+                socket,
+                &cipher,
+                crate::wire_opcode::DraftTransitionToLoading,
+            )
+            .await;
             request_scene(socket, &cipher, 1500 + seat as u32, true).await;
             ready(socket, &cipher).await;
         }
         for socket in &mut clients {
-            until(socket, &cipher, crate::wire_opcode::TickSyncA).await;
+            until(socket, &cipher, crate::wire_opcode::StartMatch).await;
         }
 
         // Disconnect seat 0 and verify witness seat 1 observes AFK.
@@ -1821,18 +1855,23 @@ mod tests {
             .write_all(
                 &cipher
                     .encode(&Message::known(
-                        crate::Opcode::PlayerUuid,
+                        crate::Opcode::RegisterPlayerUuid,
                         players[0].to_string().as_bytes(),
                     ))
                     .unwrap(),
             )
             .await
             .unwrap();
-        until(&mut returned, &cipher, crate::wire_opcode::BeginLoading).await;
+        until(
+            &mut returned,
+            &cipher,
+            crate::wire_opcode::DraftTransitionToLoading,
+        )
+        .await;
         returned
             .write_all(
                 &cipher
-                    .encode(&Message::known(crate::Opcode::RequestScene, [0; 6]))
+                    .encode(&Message::known(crate::Opcode::RequestSceneSnapshot, [0; 6]))
                     .unwrap(),
             )
             .await
@@ -1841,7 +1880,7 @@ mod tests {
             .write_all(
                 &cipher
                     .encode(&Message::known(
-                        crate::Opcode::SceneOwner,
+                        crate::Opcode::ConfirmSceneOwner,
                         [0, 0, 5, 220, 1, 0],
                     ))
                     .unwrap(),
@@ -1850,11 +1889,11 @@ mod tests {
             .unwrap();
         loop {
             let msg = next(&mut returned, &cipher).await;
-            if msg.is(crate::Opcode::EntitySpawn) {
+            if msg.is(crate::Opcode::HeroSpawn) {
                 let actor = u32::from_be_bytes(msg.body[8..12].try_into().unwrap());
                 assert_ne!(actor, 1500, "dead hero must not spawn in aral::opening");
             }
-            if msg.is(crate::Opcode::SceneOwner) {
+            if msg.is(crate::Opcode::ConfirmSceneOwner) {
                 break;
             }
         }
@@ -1873,7 +1912,7 @@ mod tests {
         .await;
         assert_eq!(reconnected.actor_flags().unwrap().actor, 1500);
         ready(&mut returned, &cipher).await;
-        until(&mut returned, &cipher, crate::wire_opcode::TickSyncA).await;
+        until(&mut returned, &cipher, crate::wire_opcode::StartMatch).await;
 
         // Advance simulation until hero 0 respawns; verify 0x03F3 + 0x0432 arrive on reconnect stream.
         {
@@ -1887,7 +1926,7 @@ mod tests {
         timeout(Duration::from_secs(4), async {
             while !(saw_spawn && saw_respawn) {
                 let msg = next(&mut returned, &cipher).await;
-                if msg.is(crate::Opcode::EntitySpawn) && msg.body[8..12] == 1500u32.to_be_bytes() {
+                if msg.is(crate::Opcode::HeroSpawn) && msg.body[8..12] == 1500u32.to_be_bytes() {
                     saw_spawn = true;
                 }
                 if msg.is(crate::Opcode::ActorRespawn) && msg.body[..4] == 1500u32.to_be_bytes() {
@@ -1967,9 +2006,9 @@ mod reroll_tests {
                 assert_eq!(
                     result.iter().map(Message::known_opcode).collect::<Vec<_>>(),
                     [
-                        Some(Opcode::SnapshotAral),
+                        Some(Opcode::DraftRosterAral),
                         Some(Opcode::DraftRerollHero),
-                        Some(Opcode::SkinSelection)
+                        Some(Opcode::DraftSelectSkin)
                     ]
                 );
                 assert_ne!(room.world.entities[0].type_id, original);

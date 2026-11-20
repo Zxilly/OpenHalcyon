@@ -237,7 +237,7 @@ async fn client(
             // the clock float. Neither a heartbeat nor a clock changes observer state.
             if matches!(
                 Opcode::try_from(opcode),
-                Ok(Opcode::ClockSync | Opcode::Heartbeat)
+                Ok(Opcode::ClockSync | Opcode::ServerHelloAck)
             ) {
                 continue;
             }
@@ -894,15 +894,19 @@ mod tests {
             seat.peers[0] = seat.peers[1].take();
             seat.world_actor_written = true;
             let actor = 1500 + i as u32;
-            seat.preamble
-                .observe(&Message::known(crate::Opcode::RequestScene, [0; 6]), actor);
+            seat.preamble.observe(
+                &Message::known(crate::Opcode::RequestSceneSnapshot, [0; 6]),
+                actor,
+            );
             let mut request = [0; 6];
             request[..4].copy_from_slice(&actor.to_be_bytes());
             request[4] = 1;
-            seat.preamble
-                .observe(&Message::known(crate::Opcode::SceneOwner, request), actor);
             seat.preamble.observe(
-                &Message::known(crate::Opcode::SceneConfirmed, [0; 6]),
+                &Message::known(crate::Opcode::ConfirmSceneOwner, request),
+                actor,
+            );
+            seat.preamble.observe(
+                &Message::known(crate::Opcode::SceneReadyConfirm, [0; 6]),
                 actor,
             );
         }
@@ -911,7 +915,7 @@ mod tests {
             let mut b = vec![0; 750];
             b[8..12].copy_from_slice(&1501u32.to_be_bytes());
             b[745] = 17;
-            Message::known(crate::Opcode::EntitySpawn, b)
+            Message::known(crate::Opcode::HeroSpawn, b)
         };
         for view in &mut room.scene_views[..2] {
             view.declarations(std::slice::from_ref(&declaration));
@@ -993,10 +997,10 @@ mod tests {
             assert_eq!(
                 batch.iter().map(|m| m.opcode).collect::<Vec<_>>(),
                 [
-                    crate::wire_opcode::EntitySpawn,
+                    crate::wire_opcode::HeroSpawn,
                     crate::wire_opcode::ItemGrant,
-                    crate::wire_opcode::EntityStat,
-                    crate::wire_opcode::EntityStat
+                    crate::wire_opcode::ModifyActorResource,
+                    crate::wire_opcode::ModifyActorResource
                 ]
             );
             assert!(

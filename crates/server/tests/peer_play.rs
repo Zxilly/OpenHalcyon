@@ -83,7 +83,7 @@ async fn login(addr: &str, id: Uuid, c: &MatchCipher) -> TcpStream {
     let mut body = [0; 70];
     body[..36].copy_from_slice(id.to_string().as_bytes());
     s.write_all(
-        &c.encode(&Message::new(wire_opcode::PlayerUuid, body))
+        &c.encode(&Message::new(wire_opcode::RegisterPlayerUuid, body))
             .unwrap(),
     )
     .await
@@ -640,32 +640,41 @@ async fn party_game_survives_two_home_elections_and_replays_result_once() {
     let mut controls = Vec::new();
     for player in &players {
         let mut c = login(&addr, *player, &cipher).await;
-        assert_casual_mode(&until(&mut c, &cipher, wire_opcode::GameSetup).await, 32);
-        assert_casual_mode(&until(&mut c, &cipher, wire_opcode::GameMode).await, 4);
-        until(&mut c, &cipher, wire_opcode::Snapshot5V5).await;
+        assert_casual_mode(
+            &until(&mut c, &cipher, wire_opcode::MatchSettings).await,
+            32,
+        );
+        assert_casual_mode(
+            &until(&mut c, &cipher, wire_opcode::DraftModeAnnouncement).await,
+            4,
+        );
+        until(&mut c, &cipher, wire_opcode::DraftRosterFull).await;
         c.write_all(
             &cipher
-                .encode(&Message::new(wire_opcode::HeroLock, [0; 6]))
+                .encode(&Message::new(wire_opcode::DraftClient0455, [0; 6]))
                 .unwrap(),
         )
         .await
         .unwrap();
-        until(&mut c, &cipher, wire_opcode::HeroLock).await;
+        until(&mut c, &cipher, wire_opcode::DraftClient0455).await;
         controls.push(c);
     }
     let mut games = Vec::new();
     for player in &players {
         let mut g = login(&addr, *player, &cipher).await;
-        assert_casual_mode(&until(&mut g, &cipher, wire_opcode::GameSetup).await, 32);
-        assert_casual_mode(&until(&mut g, &cipher, wire_opcode::ModeName).await, 0);
-        until(&mut g, &cipher, wire_opcode::EntitySpawn).await;
+        assert_casual_mode(
+            &until(&mut g, &cipher, wire_opcode::MatchSettings).await,
+            32,
+        );
+        assert_casual_mode(&until(&mut g, &cipher, wire_opcode::SceneSettings).await, 0);
+        until(&mut g, &cipher, wire_opcode::HeroSpawn).await;
         games.push(g);
     }
     games[0]
         .write_all(&cipher.encode(&Message::movement(4., 0.)).unwrap())
         .await
         .unwrap();
-    until(&mut games[0], &cipher, wire_opcode::Position).await;
+    until(&mut games[0], &cipher, wire_opcode::MoveToCorrection).await;
     assert_eq!(
         node(&cluster, 2).rooms.detail(id).unwrap()["phase"],
         "running"
@@ -827,7 +836,7 @@ async fn party_game_survives_two_home_elections_and_replays_result_once() {
             .is_empty()
     );
     let mut viewing = login(&observer_address, grant_id, &cipher).await;
-    until(&mut viewing, &cipher, wire_opcode::Snapshot5V5).await;
+    until(&mut viewing, &cipher, wire_opcode::DraftRosterFull).await;
     let occupied = rpc_result(
         viewer_home,
         RpcMethod::JoinLobby.as_str(),
@@ -1272,18 +1281,18 @@ async fn local_friend_spectates_read_only_and_revokes_on_exit() {
     let addr = format!("{}:{}", playing["host"].as_str().unwrap(), playing["port"]);
     let cipher = MatchCipher::new(&id.to_string());
     let mut control = login(&addr, player_id, &cipher).await;
-    until(&mut control, &cipher, wire_opcode::Snapshot5V5).await;
+    until(&mut control, &cipher, wire_opcode::DraftRosterFull).await;
     control
         .write_all(
             &cipher
-                .encode(&Message::new(wire_opcode::HeroLock, [0; 6]))
+                .encode(&Message::new(wire_opcode::DraftClient0455, [0; 6]))
                 .unwrap(),
         )
         .await
         .unwrap();
-    until(&mut control, &cipher, wire_opcode::HeroLock).await;
+    until(&mut control, &cipher, wire_opcode::DraftClient0455).await;
     let mut game = login(&addr, player_id, &cipher).await;
-    until(&mut game, &cipher, wire_opcode::EntitySpawn).await;
+    until(&mut game, &cipher, wire_opcode::HeroSpawn).await;
 
     let denied = rpc_result(
         &rpc_router,
@@ -1332,7 +1341,7 @@ async fn local_friend_spectates_read_only_and_revokes_on_exit() {
     let spectator_addr = format!("{}:{}", value["host"].as_str().unwrap(), value["port"]);
     assert_ne!(spectator_addr, addr);
     let mut viewing = login(&spectator_addr, credential, &cipher).await;
-    until(&mut viewing, &cipher, wire_opcode::Snapshot5V5).await;
+    until(&mut viewing, &cipher, wire_opcode::DraftRosterFull).await;
     let in_use = rpc_result(
         &rpc_router,
         RpcMethod::JoinLobby.as_str(),
@@ -1358,7 +1367,7 @@ async fn local_friend_spectates_read_only_and_revokes_on_exit() {
     assert!(notification["text"]["states"].get("spectatorId").is_none());
     let other = halcyon_platform::MatchHost::spectate(&rooms, id, Uuid::new_v4()).unwrap();
     let mut other_stream = login(&other.address, other.spectator_id, &cipher).await;
-    until(&mut other_stream, &cipher, wire_opcode::Snapshot5V5).await;
+    until(&mut other_stream, &cipher, wire_opcode::DraftRosterFull).await;
     // An invalid payload closes only its socket; its grant retains reconnect grace.
     viewing
         .write_all(
@@ -1376,7 +1385,7 @@ async fn local_friend_spectates_read_only_and_revokes_on_exit() {
     .unwrap();
     state(&rpc_router, watcher, LobbyState::Spectating).await;
     let mut viewing = login(&spectator_addr, credential, &cipher).await;
-    until(&mut viewing, &cipher, wire_opcode::Snapshot5V5).await;
+    until(&mut viewing, &cipher, wire_opcode::DraftRosterFull).await;
     viewing
         .write_all(
             &cipher
@@ -1415,7 +1424,7 @@ async fn local_friend_spectates_read_only_and_revokes_on_exit() {
             .unwrap()
             .is_err()
     );
-    until(&mut other_stream, &cipher, wire_opcode::Snapshot5V5).await;
+    until(&mut other_stream, &cipher, wire_opcode::DraftRosterFull).await;
     assert_ne!(next["returnValue"]["spectatorId"], credential.to_string());
     assert_eq!(rooms.detail(id).unwrap()["phase"], "running");
     let route = format!("/api/v1/matches/{id}/actions");
@@ -1926,20 +1935,20 @@ async fn public_and_ce_players_share_a_pool_and_cross_home_match_chat() {
     let mut games = Vec::new();
     for player in &players {
         let mut c = login(&address, *player, &cipher).await;
-        until(&mut c, &cipher, wire_opcode::Snapshot5V5).await;
+        until(&mut c, &cipher, wire_opcode::DraftRosterFull).await;
         c.write_all(
             &cipher
-                .encode(&Message::new(wire_opcode::HeroLock, [0; 6]))
+                .encode(&Message::new(wire_opcode::DraftClient0455, [0; 6]))
                 .unwrap(),
         )
         .await
         .unwrap();
-        until(&mut c, &cipher, wire_opcode::HeroLock).await;
+        until(&mut c, &cipher, wire_opcode::DraftClient0455).await;
         controls.push(c);
     }
     for player in &players {
         let mut g = login(&address, *player, &cipher).await;
-        until(&mut g, &cipher, wire_opcode::EntitySpawn).await;
+        until(&mut g, &cipher, wire_opcode::HeroSpawn).await;
         games.push(g);
     }
     use halcyon_protocol::player_actions::{

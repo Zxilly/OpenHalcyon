@@ -198,7 +198,7 @@ mod tests {
             position: origin,
         };
         assert!(fire.message(&mut view, 1).is_none());
-        let mut declaration = Message::new(Opcode::EntitySpawn as u16, vec![0; 746]);
+        let mut declaration = Message::new(Opcode::HeroSpawn as u16, vec![0; 746]);
         declaration.body[8..12].copy_from_slice(&1500u32.to_be_bytes());
         declaration.body[745] = 17;
         view.declarations(&[declaration]);

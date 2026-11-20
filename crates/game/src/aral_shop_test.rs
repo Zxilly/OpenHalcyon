@@ -14,7 +14,7 @@ async fn shop_request(
     item: u32,
 ) -> Vec<Message> {
     let request = Message::known(
-        crate::Opcode::ShopRequest,
+        crate::Opcode::BuyItem,
         [actor.to_be_bytes(), item.to_be_bytes()].concat(),
     );
     let barrier = Message::known(crate::Opcode::ClockSync, [0; 6]);
@@ -30,11 +30,11 @@ async fn shop_request(
         if frame.is(crate::Opcode::RejectBuyItem)
             || (matches!(
                 frame.opcode,
-                crate::wire_opcode::ShopRequest
-                    | crate::wire_opcode::StatModifier
-                    | crate::wire_opcode::EntityStat
+                crate::wire_opcode::BuyItem
+                    | crate::wire_opcode::ModifyActorAttribute
+                    | crate::wire_opcode::ModifyActorResource
                     | crate::wire_opcode::ItemGrant
-                    | crate::wire_opcode::RemoveItem
+                    | crate::wire_opcode::ConsumeItem
             ) && frame.body[..4] == actor.to_be_bytes())
         {
             reply.push(frame);
@@ -68,9 +68,7 @@ pub(super) async fn shop_sequence(
             let frames = shop_request(&mut clients[seat], cipher, actor, item).await;
             let i = frames
                 .iter()
-                .position(|m| {
-                    m.is(crate::Opcode::ShopRequest) && m.body[4..8] == item.to_be_bytes()
-                })
+                .position(|m| m.is(crate::Opcode::BuyItem) && m.body[4..8] == item.to_be_bytes())
                 .unwrap();
             assert!(
                 matches!(frames[i+1].fields().unwrap(),Fields::EntityStat{stat:6,value,..} if value==-(paid as f32))
@@ -90,25 +88,25 @@ pub(super) async fn shop_sequence(
         let frames = shop_request(socket, cipher, 1500, item).await;
         let expected = if item == 463 {
             vec![
-                crate::wire_opcode::ShopRequest,
-                crate::wire_opcode::EntityStat,
-                crate::wire_opcode::StatModifier,
-                crate::wire_opcode::RemoveItem,
+                crate::wire_opcode::BuyItem,
+                crate::wire_opcode::ModifyActorResource,
+                crate::wire_opcode::ModifyActorAttribute,
+                crate::wire_opcode::ConsumeItem,
                 crate::wire_opcode::ItemGrant,
-                crate::wire_opcode::StatModifier,
+                crate::wire_opcode::ModifyActorAttribute,
             ]
         } else if stats.is_empty() {
             vec![
-                crate::wire_opcode::ShopRequest,
-                crate::wire_opcode::EntityStat,
+                crate::wire_opcode::BuyItem,
+                crate::wire_opcode::ModifyActorResource,
                 crate::wire_opcode::ItemGrant,
             ]
         } else {
             vec![
-                crate::wire_opcode::ShopRequest,
-                crate::wire_opcode::EntityStat,
+                crate::wire_opcode::BuyItem,
+                crate::wire_opcode::ModifyActorResource,
                 crate::wire_opcode::ItemGrant,
-                crate::wire_opcode::StatModifier,
+                crate::wire_opcode::ModifyActorAttribute,
             ]
         };
         assert_eq!(
@@ -140,7 +138,7 @@ pub(super) async fn shop_sequence(
     .unwrap();
     let rejected = shop_request(socket, cipher, 1500, 509).await;
     assert_eq!(rejected.len(), 2);
-    assert_eq!(rejected[0].opcode, crate::wire_opcode::ShopRequest);
+    assert_eq!(rejected[0].opcode, crate::wire_opcode::BuyItem);
     assert_eq!(rejected[0].body[4..8], 509u32.to_be_bytes());
     assert_eq!(
         rejected[1],
@@ -148,7 +146,7 @@ pub(super) async fn shop_sequence(
     );
     let ally = &mut other_seats[1];
     loop {
-        let order = until(ally, cipher, crate::wire_opcode::ShopRequest).await;
+        let order = until(ally, cipher, crate::wire_opcode::BuyItem).await;
         if order == rejected[0] {
             assert_eq!(next(ally, cipher).await, rejected[1]);
             break;
@@ -182,21 +180,21 @@ pub(super) async fn shop_sequence(
     let frames = shop_request(socket, cipher, 1500, 509).await;
     let start = frames
         .iter()
-        .position(|m| m.is(crate::Opcode::ShopRequest))
+        .position(|m| m.is(crate::Opcode::BuyItem))
         .unwrap();
     let frames = &frames[start..];
     assert_eq!(
         frames.iter().map(|m| m.opcode).collect::<Vec<_>>(),
         [
-            crate::wire_opcode::ShopRequest,
-            crate::wire_opcode::EntityStat,
-            crate::wire_opcode::StatModifier,
-            crate::wire_opcode::RemoveItem,
-            crate::wire_opcode::StatModifier,
-            crate::wire_opcode::RemoveItem,
+            crate::wire_opcode::BuyItem,
+            crate::wire_opcode::ModifyActorResource,
+            crate::wire_opcode::ModifyActorAttribute,
+            crate::wire_opcode::ConsumeItem,
+            crate::wire_opcode::ModifyActorAttribute,
+            crate::wire_opcode::ConsumeItem,
             crate::wire_opcode::ItemGrant,
-            crate::wire_opcode::StatModifier,
-            crate::wire_opcode::StatModifier
+            crate::wire_opcode::ModifyActorAttribute,
+            crate::wire_opcode::ModifyActorAttribute
         ]
     );
     assert!(matches!(
@@ -234,17 +232,22 @@ pub(super) async fn shop_sequence(
     back.write_all(
         &cipher
             .encode(&Message::known(
-                crate::Opcode::PlayerUuid,
+                crate::Opcode::RegisterPlayerUuid,
                 player.to_string().as_bytes(),
             ))
             .unwrap(),
     )
     .await
     .unwrap();
-    until(&mut back, cipher, crate::wire_opcode::BeginLoading).await;
+    until(
+        &mut back,
+        cipher,
+        crate::wire_opcode::DraftTransitionToLoading,
+    )
+    .await;
     for msg in [
-        Message::known(crate::Opcode::RequestScene, [0; 6]),
-        Message::known(crate::Opcode::SceneOwner, [0, 0, 5, 220, 1, 0]),
+        Message::known(crate::Opcode::RequestSceneSnapshot, [0; 6]),
+        Message::known(crate::Opcode::ConfirmSceneOwner, [0, 0, 5, 220, 1, 0]),
     ] {
         back.write_all(&cipher.encode(&msg).unwrap()).await.unwrap();
     }
@@ -253,10 +256,10 @@ pub(super) async fn shop_sequence(
     let mut balance = None;
     loop {
         let m = next(&mut back, cipher).await;
-        if m.is(crate::Opcode::RequestScene) {
+        if m.is(crate::Opcode::RequestSceneSnapshot) {
             break;
         }
-        if m.is(crate::Opcode::EntitySpawn) && m.body[8..12] == 1500u32.to_be_bytes() {
+        if m.is(crate::Opcode::HeroSpawn) && m.body[8..12] == 1500u32.to_be_bytes() {
             balance = m.spawn_gold();
         }
         match m.fields().unwrap() {
@@ -284,12 +287,12 @@ pub(super) async fn shop_sequence(
 
     back.write_all(
         &cipher
-            .encode(&Message::known(crate::Opcode::SceneConfirmed, [0; 6]))
+            .encode(&Message::known(crate::Opcode::SceneReadyConfirm, [0; 6]))
             .unwrap(),
     )
     .await
     .unwrap();
-    until(&mut back, cipher, crate::wire_opcode::SceneConfirmed).await;
+    until(&mut back, cipher, crate::wire_opcode::SceneReadyConfirm).await;
     let inventory = || {
         shared.lock().unwrap().world.entities[0]
             .aral_inventory

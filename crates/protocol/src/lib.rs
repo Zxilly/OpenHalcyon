@@ -144,7 +144,7 @@ impl Message {
             state,
             masks,
         }
-        .message(Opcode::EntityState, 14)
+        .message(Opcode::ModifyVisibility, 14)
     }
     pub fn camp_visibility(actor: u32, index: u8, state: CampVisibilityState) -> Self {
         CampVisibilityBody {
@@ -175,7 +175,7 @@ impl Message {
         Self::known(crate::Opcode::ClockSync, time.to_be_bytes())
     }
     pub fn movement(x: f32, y: f32) -> Self {
-        MoveCmd { x, y }.message(Opcode::MoveCmd, MoveCmd::BODY_LEN)
+        MoveCmd { x, y }.message(Opcode::RequestMoveJoystick, MoveCmd::BODY_LEN)
     }
     pub fn position(entity: u16, x: f32, y: f32) -> Self {
         PositionBody {
@@ -183,7 +183,7 @@ impl Message {
             x,
             y,
         }
-        .message(Opcode::Position, 12)
+        .message(Opcode::MoveToCorrection, 12)
     }
     pub fn entity_stat(entity: u16, value: f32, stat: u8) -> Self {
         ResourceChange {
@@ -233,7 +233,7 @@ impl Message {
     }
     pub fn fields(&self) -> io::Result<Fields<'_>> {
         let b = &self.body;
-        if self.is(Opcode::CreateZoneOfControlVariantC)
+        if self.is(Opcode::CreateRectZoneOfControl)
             && let Some(zone) = self.zone_action()
         {
             return Ok(Fields::Zone(zone));
@@ -275,17 +275,17 @@ impl Message {
         };
         Ok(match self.known_opcode() {
             Some(Opcode::ClockSync) => Fields::Clock(float(0)?),
-            Some(Opcode::TickSyncA)
+            Some(Opcode::StartMatch)
                 if b.is_empty() || (b.len() == 6 && b.iter().all(|&v| v == 0)) =>
             {
                 Fields::HeaderOnly { remaining: b }
             }
-            Some(Opcode::TickSyncC) if matches!(b.len(), 5 | 6) => Fields::MatchRequest {
+            Some(Opcode::EndMatch) if matches!(b.len(), 5 | 6) => Fields::MatchRequest {
                 team_word: number(0)?,
                 reason: b[4],
                 remaining: &b[5..],
             },
-            Some(Opcode::StatisticsReport) if statistics::complete(b) => {
+            Some(Opcode::PostMatchStats) if statistics::complete(b) => {
                 Fields::MatchStatistics(MatchStatistics(b))
             }
             Some(Opcode::OverrideAbility | Opcode::ClearAbilityOverride)
@@ -341,7 +341,7 @@ impl Message {
                     remaining: &b[8..],
                 }
             }
-            Some(Opcode::AggroState) if matches!(b.len(), 8 | 14) => Fields::AggroState {
+            Some(Opcode::SendAggroState) if matches!(b.len(), 8 | 14) => Fields::AggroState {
                 prefix: [b[0], b[1]],
                 value: float(2)?,
                 remaining: &b[6..],
@@ -358,7 +358,7 @@ impl Message {
                 flag: b[16],
                 remaining: &b[17..],
             },
-            Some(Opcode::EntityAct2) if b.len() == 14 => Fields::ServerMove {
+            Some(Opcode::MoveToServerAuthoritative) if b.len() == 14 => Fields::ServerMove {
                 selector: b[0],
                 values: [float(1)?, float(5)?, float(9)?],
                 flag: b[13],
@@ -401,13 +401,13 @@ impl Message {
                 | Opcode::FireDirectedProjectile
                 | Opcode::DetonateProjectile),
             ) => ProjectileAction::read_body(op, b).map_or(Fields::Opaque(b), Fields::Projectile),
-            Some(Opcode::PlayAbility) if matches!(b.len(), 9 | 14) => Fields::AbilityAction {
+            Some(Opcode::PlayTargetAbility) if matches!(b.len(), 9 | 14) => Fields::AbilityAction {
                 actor: number(0)?,
                 reference: number(4)?,
                 selector: b[8],
                 remaining: &b[9..],
             },
-            Some(Opcode::CooldownValue) if matches!(b.len(), 13 | 14) => Fields::CooldownValue {
+            Some(Opcode::ModifyCooldown) if matches!(b.len(), 13 | 14) => Fields::CooldownValue {
                 owner: number(0)?,
                 key: number(4)?,
                 value: float(8)?,
@@ -423,7 +423,7 @@ impl Message {
                     remaining: &b[13..],
                 }
             }
-            Some(Opcode::CooldownSync) if b.len() == 22 => Fields::CooldownSync {
+            Some(Opcode::InitCooldown) if b.len() == 22 => Fields::CooldownSync {
                 owner: number(0)?,
                 key: number(4)?,
                 value: float(8)?,
@@ -457,7 +457,7 @@ impl Message {
                     remaining: &b[16..],
                 }
             }
-            Some(Opcode::GameSetup) => Fields::GameSetup {
+            Some(Opcode::MatchSettings) => Fields::GameSetup {
                 first_word: number(0)?,
                 state_input: number(4)?,
                 word8: number(8)?,
@@ -471,13 +471,13 @@ impl Message {
                     .unwrap_or_default(),
                 remaining: &b[100..],
             },
-            Some(Opcode::EntityFloat) if matches!(b.len(), 9 | 14) => Fields::MoveAction {
+            Some(Opcode::MoveTo) if matches!(b.len(), 9 | 14) => Fields::MoveAction {
                 selector: b[0],
                 x: float(1)?,
                 y: float(5)?,
                 remaining: &b[9..],
             },
-            Some(Opcode::EntityState) if matches!(b.len(), 8 | 14) => {
+            Some(Opcode::ModifyVisibility) if matches!(b.len(), 8 | 14) => {
                 let VisibilityBody {
                     actor,
                     index,
@@ -492,14 +492,14 @@ impl Message {
                     remaining: &b[VisibilityBody::BODY_LEN..],
                 }
             }
-            Some(Opcode::EntityState | Opcode::EntityProp | Opcode::EntityData) => {
-                Fields::EntityPrefix {
-                    kind: Opcode::try_from(self.opcode).expect("matched known opcode"),
-                    entity: number(0)?,
-                    remaining: &b[4..],
-                }
-            }
-            Some(Opcode::PlayerHandle) => Fields::HandleRecord {
+            Some(
+                Opcode::ModifyVisibility | Opcode::ApplyBuffCompact | Opcode::ApplyBuffExtended,
+            ) => Fields::EntityPrefix {
+                kind: Opcode::try_from(self.opcode).expect("matched known opcode"),
+                entity: number(0)?,
+                remaining: &b[4..],
+            },
+            Some(Opcode::PlayerLoadedScene) => Fields::HandleRecord {
                 text: b
                     .get(..64)
                     .ok_or_else(|| invalid("truncated name field"))?
@@ -510,8 +510,8 @@ impl Message {
                 lookup: number(68)?,
                 remaining: &b[72..],
             },
-            Some(Opcode::ModeName) => Fields::NameField {
-                kind: Opcode::ModeName,
+            Some(Opcode::SceneSettings) => Fields::NameField {
+                kind: Opcode::SceneSettings,
                 text: b
                     .get(..64)
                     .ok_or_else(|| invalid("truncated name field"))?
@@ -520,7 +520,7 @@ impl Message {
                     .unwrap_or_default(),
                 remaining: &b[64..],
             },
-            Some(Opcode::SceneReadiness) => {
+            Some(Opcode::SceneReadinessRows) => {
                 let raw = b
                     .get(..96)
                     .ok_or_else(|| invalid("truncated control entries"))?;
@@ -537,16 +537,16 @@ impl Message {
                     remaining: &b[96..],
                 }
             }
-            Some(Opcode::SceneOwner) => Fields::ReferencedFlag {
+            Some(Opcode::ConfirmSceneOwner) => Fields::ReferencedFlag {
                 reference: number(0)?,
                 flag: *b.get(4).ok_or_else(|| invalid("truncated control flag"))?,
                 remaining: &b[5..],
             },
             Some(
-                Opcode::SetupA
-                | Opcode::SceneConfirmed
-                | Opcode::RequestScene
-                | Opcode::SceneTransition
+                Opcode::DraftRefreshRequest
+                | Opcode::SceneReadyConfirm
+                | Opcode::RequestSceneSnapshot
+                | Opcode::SceneLoadedDismiss
                 | Opcode::Unresolved047C,
             ) => {
                 let (flag, remaining) = b
@@ -557,30 +557,30 @@ impl Message {
                     remaining,
                 }
             }
-            Some(Opcode::Snapshot) if matches!(b.len(), 122 | 126) => Fields::CompactSpawn {
+            Some(Opcode::EntitySpawn) if matches!(b.len(), 122 | 126) => Fields::CompactSpawn {
                 template: number(0)?,
                 skin: number(4)?,
                 entity: number(8)?,
                 lane_minion: LaneMinionSpawn::decode(b),
                 remaining: &b[12..],
             },
-            Some(Opcode::SnapshotAral) if b.len() >= AralRoster::BODY_BYTES => {
+            Some(Opcode::DraftRosterAral) if b.len() >= AralRoster::BODY_BYTES => {
                 Fields::AralRoster(AralRoster::new(b)?)
             }
-            Some(Opcode::SnapshotAral) => Fields::AralRosterHeader {
+            Some(Opcode::DraftRosterAral) => Fields::AralRosterHeader {
                 remaining_seconds: float(0)?,
                 allotted_seconds: float(4)?,
                 remaining: &b[8..],
             },
-            Some(Opcode::Snapshot5V5) => Fields::DraftRoster(DraftRoster::new(b)?),
-            Some(Opcode::StatModifier) => Fields::StatModifier {
+            Some(Opcode::DraftRosterFull) => Fields::DraftRoster(DraftRoster::new(b)?),
+            Some(Opcode::ModifyActorAttribute) => Fields::StatModifier {
                 actor: number(0)?,
                 source: number(4)?,
                 value: float(8)?,
                 stat: *b.get(12).ok_or_else(|| invalid("missing modifier stat"))?,
                 flags: *b.get(13).ok_or_else(|| invalid("missing modifier flags"))?,
             },
-            Some(Opcode::RemoveItem) => Fields::ItemRemoval {
+            Some(Opcode::ConsumeItem) => Fields::ItemRemoval {
                 actor: number(0)?,
                 instance: number(4)?,
                 flags: word(8)?,
@@ -590,12 +590,12 @@ impl Message {
                 item: number(4)?,
                 instance: number(8)?,
             },
-            Some(Opcode::SkinSelection) => Fields::SkinSelection(number(0)?),
-            Some(Opcode::ShopRequest) => Fields::ShopRequest {
+            Some(Opcode::DraftSelectSkin) => Fields::SkinSelection(number(0)?),
+            Some(Opcode::BuyItem) => Fields::ShopRequest {
                 actor: number(0)?,
                 item: number(4)?,
             },
-            Some(Opcode::HeroSelection) => Fields::HeroSelection {
+            Some(Opcode::DraftSelectHero) => Fields::HeroSelection {
                 template: number(0)?,
                 choice: if b.len() == 6 {
                     DraftHeroChoice::Flags(u16::from_be_bytes([b[4], b[5]]))
@@ -603,7 +603,7 @@ impl Message {
                     DraftHeroChoice::Skin(number(4)?)
                 },
             },
-            Some(Opcode::EntitySpawn) => Fields::Spawn {
+            Some(Opcode::HeroSpawn) => Fields::Spawn {
                 template: number(0)?,
                 skin: number(4)?,
                 entity: number(8)?,
@@ -620,13 +620,13 @@ impl Message {
                 skin: number(168)?,
             },
 
-            Some(Opcode::Heartbeat) => Fields::Heartbeat,
-            Some(Opcode::HeroLock | Opcode::LockSelection) => Fields::HeroLock,
-            Some(Opcode::MoveCmd) => {
+            Some(Opcode::ServerHelloAck) => Fields::Heartbeat,
+            Some(Opcode::DraftClient0455 | Opcode::DraftLockHero) => Fields::HeroLock,
+            Some(Opcode::RequestMoveJoystick) => {
                 let MoveCmd { x, y } = MoveCmd::read_body(b)?;
                 Fields::Movement { x, y }
             }
-            Some(Opcode::Position) => {
+            Some(Opcode::MoveToCorrection) => {
                 let fixed_body::PositionBody { actor, x, y } = PositionBody::read_body(b)?;
                 // The public Fields projection has always reported the low halfword.
                 Fields::Position {
@@ -635,13 +635,17 @@ impl Message {
                     y,
                 }
             }
-            Some(Opcode::EntityStat) => Fields::EntityStat {
+            Some(Opcode::ModifyActorResource) => Fields::EntityStat {
                 entity: eid()?,
                 value: float(4)?,
                 stat: *b.get(8).ok_or_else(|| invalid("missing stat type"))?,
             },
-            Some(Opcode::PlayerUuid | Opcode::HeroCatalog | Opcode::GameMode) => {
-                let offset = if self.is(crate::Opcode::GameMode) {
+            Some(
+                Opcode::RegisterPlayerUuid
+                | Opcode::DraftCatalogEntry
+                | Opcode::DraftModeAnnouncement,
+            ) => {
+                let offset = if self.is(crate::Opcode::DraftModeAnnouncement) {
                     4
                 } else {
                     0
@@ -652,8 +656,8 @@ impl Message {
                 let name = std::str::from_utf8(raw.split(|v| *v == 0).next().unwrap())
                     .map_err(|_| invalid("invalid text"))?;
                 match self.known_opcode() {
-                    Some(crate::Opcode::PlayerUuid) => Fields::PlayerUuid(name),
-                    Some(crate::Opcode::HeroCatalog) => Fields::HeroCatalog(name),
+                    Some(crate::Opcode::RegisterPlayerUuid) => Fields::PlayerUuid(name),
+                    Some(crate::Opcode::DraftCatalogEntry) => Fields::HeroCatalog(name),
                     _ => Fields::GameMode(name),
                 }
             }
@@ -1045,7 +1049,7 @@ pub fn hello_with_port(address: &str, port: u16) -> io::Result<Vec<u8>> {
     }
     let mut frame = vec![0; 136];
     frame[..2].copy_from_slice(&134u16.to_be_bytes());
-    frame[2..4].copy_from_slice(&Opcode::Hello.raw().to_be_bytes());
+    frame[2..4].copy_from_slice(&Opcode::ClientHello.raw().to_be_bytes());
     frame[4..4 + address.len()].copy_from_slice(address.as_bytes());
     frame[132..].copy_from_slice(&u32::from(port).to_be_bytes());
     Ok(frame)
@@ -1065,7 +1069,7 @@ pub fn parse_hello(payload: &[u8]) -> io::Result<&str> {
 }
 
 pub fn parse_hello_endpoint(payload: &[u8]) -> io::Result<HelloEndpoint<'_>> {
-    if payload.len() != 134 || payload[..2] != Opcode::Hello.raw().to_be_bytes() {
+    if payload.len() != 134 || payload[..2] != Opcode::ClientHello.raw().to_be_bytes() {
         return Err(invalid("invalid hello frame"));
     }
     let len = payload[2..130].iter().position(|&x| x == 0).unwrap_or(128);
@@ -1303,19 +1307,19 @@ mod tests {
     #[test]
     fn android_match_markers_and_sixteen_statistics_slots() {
         assert!(matches!(
-            Message::known(crate::Opcode::TickSyncA, [0; 6])
+            Message::known(crate::Opcode::StartMatch, [0; 6])
                 .fields()
                 .unwrap(),
             Fields::HeaderOnly { .. }
         ));
         assert!(matches!(
-            Message::known(crate::Opcode::TickSyncA, [1; 6])
+            Message::known(crate::Opcode::StartMatch, [1; 6])
                 .fields()
                 .unwrap(),
             Fields::Opaque(_)
         ));
         assert!(matches!(
-            Message::known(crate::Opcode::TickSyncC, [0x10, 0, 0, 2, 7, 0xaa])
+            Message::known(crate::Opcode::EndMatch, [0x10, 0, 0, 2, 7, 0xaa])
                 .fields()
                 .unwrap(),
             Fields::MatchRequest {
@@ -1339,7 +1343,7 @@ mod tests {
             let offset = 0x63c + index * 4;
             b[offset..offset + 4].copy_from_slice(&word.to_be_bytes());
         }
-        let m = Message::known(crate::Opcode::StatisticsReport, b.as_slice());
+        let m = Message::known(crate::Opcode::PostMatchStats, b.as_slice());
         let Fields::MatchStatistics(stats) = m.fields().unwrap() else {
             panic!()
         };
@@ -1359,7 +1363,7 @@ mod tests {
         );
         assert!(stats.slot(16).is_none());
         assert!(matches!(
-            Message::known(crate::Opcode::StatisticsReport, &b[..1611])
+            Message::known(crate::Opcode::PostMatchStats, &b[..1611])
                 .fields()
                 .unwrap(),
             Fields::Opaque(_)
@@ -1381,7 +1385,7 @@ mod tests {
             b[32..36].copy_from_slice(b"mode");
             b[100..].copy_from_slice(&[7, 8]);
             assert_eq!(
-                Message::known(crate::Opcode::GameSetup, b.clone())
+                Message::known(crate::Opcode::MatchSettings, b.clone())
                     .fields()
                     .unwrap(),
                 Fields::GameSetup {
@@ -1395,7 +1399,7 @@ mod tests {
                 }
             );
             assert!(
-                Message::known(crate::Opcode::GameSetup, &b[..99])
+                Message::known(crate::Opcode::MatchSettings, &b[..99])
                     .fields()
                     .is_err()
             );
@@ -1436,7 +1440,7 @@ mod tests {
         }
         let aggro = [4, 5, 0x40, 0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8];
         assert_eq!(
-            Message::known(crate::Opcode::AggroState, aggro)
+            Message::known(crate::Opcode::SendAggroState, aggro)
                 .fields()
                 .unwrap(),
             Fields::AggroState {
@@ -1484,7 +1488,7 @@ mod tests {
             0, 1, 0, 0, 0, 0, 0, 2, 0x3f, 0, 0, 0, 0x40, 0, 0, 0, 7, 8, 9, 10, 11, 12,
         ];
         assert_eq!(
-            Message::known(crate::Opcode::CooldownSync, b)
+            Message::known(crate::Opcode::InitCooldown, b)
                 .fields()
                 .unwrap(),
             Fields::CooldownSync {
@@ -1496,7 +1500,7 @@ mod tests {
             }
         );
         assert_eq!(
-            Message::known(crate::Opcode::CooldownValue, &b[..14])
+            Message::known(crate::Opcode::ModifyCooldown, &b[..14])
                 .fields()
                 .unwrap(),
             Fields::CooldownValue {
@@ -1514,7 +1518,7 @@ mod tests {
         assert_eq!((f.projectile, f.profile_word, f.values), (65536, 2, [0.5]));
         assert_eq!(f.padding, &b[17..]);
         assert_eq!(
-            Message::known(crate::Opcode::PlayAbility, &b[..14])
+            Message::known(crate::Opcode::PlayTargetAbility, &b[..14])
                 .fields()
                 .unwrap(),
             Fields::AbilityAction {
@@ -1525,7 +1529,7 @@ mod tests {
             }
         );
         assert!(matches!(
-            Message::known(crate::Opcode::CooldownSync, &b[..21])
+            Message::known(crate::Opcode::InitCooldown, &b[..21])
                 .fields()
                 .unwrap(),
             Fields::Opaque(_)
@@ -1592,7 +1596,7 @@ mod tests {
                     body[36..40].copy_from_slice(&321.5f32.to_be_bytes());
                     body[40..44].copy_from_slice(&475f32.to_be_bytes());
                     body[116..122].copy_from_slice(&[56, mask, 0, 1, 1, 1]);
-                    let message = Message::known(crate::Opcode::Snapshot, body.clone());
+                    let message = Message::known(crate::Opcode::EntitySpawn, body.clone());
                     let Fields::CompactSpawn {
                         lane_minion: Some(minion),
                         remaining,
@@ -1618,7 +1622,7 @@ mod tests {
                     assert_eq!(&decoded.body[..size], &body);
                     body[121] = 2;
                     assert!(matches!(
-                        Message::known(crate::Opcode::Snapshot, body)
+                        Message::known(crate::Opcode::EntitySpawn, body)
                             .fields()
                             .unwrap(),
                         Fields::CompactSpawn {
@@ -1656,9 +1660,18 @@ mod tests {
     #[test]
     fn read_only_prefixes_and_compact_spawn_variants() {
         for (code, kind) in [
-            (crate::wire_opcode::EntityState, Opcode::EntityState),
-            (crate::wire_opcode::EntityProp, Opcode::EntityProp),
-            (crate::wire_opcode::EntityData, Opcode::EntityData),
+            (
+                crate::wire_opcode::ModifyVisibility,
+                Opcode::ModifyVisibility,
+            ),
+            (
+                crate::wire_opcode::ApplyBuffCompact,
+                Opcode::ApplyBuffCompact,
+            ),
+            (
+                crate::wire_opcode::ApplyBuffExtended,
+                Opcode::ApplyBuffExtended,
+            ),
         ] {
             assert_eq!(
                 Message::new(code, [0x12, 0x34, 0x56, 0x78, 0xab])
@@ -1676,7 +1689,7 @@ mod tests {
             let mut body = vec![0xfe; size];
             body[..12].copy_from_slice(&[0, 1, 0, 5, 0, 2, 0, 6, 0, 3, 0, 7]);
             assert_eq!(
-                Message::known(crate::Opcode::Snapshot, body.clone())
+                Message::known(crate::Opcode::EntitySpawn, body.clone())
                     .fields()
                     .unwrap(),
                 Fields::CompactSpawn {
@@ -1689,7 +1702,7 @@ mod tests {
             );
         }
         assert!(matches!(
-            Message::known(crate::Opcode::Snapshot, [0; 8])
+            Message::known(crate::Opcode::EntitySpawn, [0; 8])
                 .fields()
                 .unwrap(),
             Fields::Opaque(_)
@@ -1698,7 +1711,7 @@ mod tests {
         body[..5].copy_from_slice(b"Guest");
         body[64] = 10;
         assert_eq!(
-            Message::known(crate::Opcode::PlayerHandle, body.clone())
+            Message::known(crate::Opcode::PlayerLoadedScene, body.clone())
                 .fields()
                 .unwrap(),
             Fields::HandleRecord {
@@ -1709,18 +1722,18 @@ mod tests {
             }
         );
         assert_eq!(
-            Message::known(crate::Opcode::ModeName, body.clone())
+            Message::known(crate::Opcode::SceneSettings, body.clone())
                 .fields()
                 .unwrap(),
             Fields::NameField {
-                kind: Opcode::ModeName,
+                kind: Opcode::SceneSettings,
                 text: b"Guest",
                 remaining: &body[64..]
             }
         );
         let mut table = vec![0; 102];
         table[90..96].copy_from_slice(&[1, 2, 3, 4, 5, 6]);
-        let msg = Message::known(crate::Opcode::SceneReadiness, table);
+        let msg = Message::known(crate::Opcode::SceneReadinessRows, table);
         let Fields::ControlTable { entries, remaining } = msg.fields().unwrap() else {
             panic!()
         };
@@ -1734,12 +1747,12 @@ mod tests {
         );
         assert_eq!(remaining, [0; 6]);
         assert!(
-            Message::known(crate::Opcode::SceneReadiness, [0; 95])
+            Message::known(crate::Opcode::SceneReadinessRows, [0; 95])
                 .fields()
                 .is_err()
         );
         assert_eq!(
-            Message::known(crate::Opcode::SceneOwner, [0, 0, 0, 7, 1, 3])
+            Message::known(crate::Opcode::ConfirmSceneOwner, [0, 0, 0, 7, 1, 3])
                 .fields()
                 .unwrap(),
             Fields::ReferencedFlag {
@@ -1748,10 +1761,7 @@ mod tests {
                 remaining: &[3]
             }
         );
-        let action = Message::known(
-            crate::Opcode::EntityFloat,
-            [5, 0x3f, 0x80, 0, 0, 0xc0, 0, 0, 0],
-        );
+        let action = Message::known(crate::Opcode::MoveTo, [5, 0x3f, 0x80, 0, 0, 0xc0, 0, 0, 0]);
         assert_eq!(
             action.fields().unwrap(),
             Fields::MoveAction {
@@ -1762,7 +1772,7 @@ mod tests {
             }
         );
         let roster = Message::known(
-            crate::Opcode::SnapshotAral,
+            crate::Opcode::DraftRosterAral,
             [0x41, 0xa0, 0, 0, 0x41, 0xf0, 0, 0, 0x7f],
         );
         assert_eq!(
@@ -1774,7 +1784,7 @@ mod tests {
             }
         );
         assert!(
-            Message::known(crate::Opcode::SnapshotAral, [0; 7])
+            Message::known(crate::Opcode::DraftRosterAral, [0; 7])
                 .fields()
                 .is_err()
         );
@@ -1783,7 +1793,7 @@ mod tests {
     fn inventory_event_fields_preserve_source_and_flags() {
         let modifier = [0, 0, 0, 37, 0, 0, 0, 23, 0xc1, 0x48, 0, 0, 7, 2];
         let removal = [0, 0, 0, 37, 0, 0, 0x11, 0x22, 0, 1];
-        let decoded = Message::known(crate::Opcode::StatModifier, modifier);
+        let decoded = Message::known(crate::Opcode::ModifyActorAttribute, modifier);
         assert_eq!(
             decoded.fields().unwrap(),
             Fields::StatModifier {
@@ -1795,7 +1805,7 @@ mod tests {
             }
         );
         assert_eq!(
-            Message::known(crate::Opcode::RemoveItem, removal)
+            Message::known(crate::Opcode::ConsumeItem, removal)
                 .fields()
                 .unwrap(),
             Fields::ItemRemoval {
@@ -1805,12 +1815,12 @@ mod tests {
             }
         );
         assert!(
-            Message::known(crate::Opcode::StatModifier, &modifier[..13])
+            Message::known(crate::Opcode::ModifyActorAttribute, &modifier[..13])
                 .fields()
                 .is_err()
         );
         assert!(
-            Message::known(crate::Opcode::RemoveItem, &removal[..9])
+            Message::known(crate::Opcode::ConsumeItem, &removal[..9])
                 .fields()
                 .is_err()
         );

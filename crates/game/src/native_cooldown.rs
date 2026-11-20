@@ -116,7 +116,7 @@ pub(super) fn opening(batch: &mut Batch, actor: &Entity, mode: NativeMode) {
         let mut body = [0; 22];
         body[..4].copy_from_slice(&id);
         body[4..].copy_from_slice(&row.payload());
-        batch.push(Message::known(crate::Opcode::CooldownSync, body));
+        batch.push(Message::known(crate::Opcode::InitCooldown, body));
     }
 }
 
@@ -175,7 +175,7 @@ mod tests {
                 digest.update(hero.type_id.to_be_bytes());
                 digest.update([u8::try_from(batch.len()).unwrap()]);
                 for mut msg in batch {
-                    assert!(msg.is(crate::Opcode::CooldownSync));
+                    assert!(msg.is(crate::Opcode::InitCooldown));
                     assert_eq!(msg.body[..4], 1500u32.to_be_bytes());
                     assert!(recordable(&msg));
                     digest.update(&msg.body[4..]);

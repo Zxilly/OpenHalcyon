@@ -116,7 +116,11 @@ impl SkinIndex {
                 if hero.entity_type_id.is_some() && defaults.contains(hero.default_skin.as_str()) {
                     let entry = format!("*{}*", hero.hero_id);
                     crate::validate_name(&entry)?;
-                    hash.update(halcyon_protocol::Opcode::HeroCatalog.raw().to_be_bytes());
+                    hash.update(
+                        halcyon_protocol::Opcode::DraftCatalogEntry
+                            .raw()
+                            .to_be_bytes(),
+                    );
                     hash.update([entry.len() as u8]);
                     hash.update(entry.as_bytes());
                     fallback.heroes.push(hero.hero_id.clone());

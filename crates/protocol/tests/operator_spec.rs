@@ -131,7 +131,7 @@ fn decode_operator_protocol_fixtures() {
                     );
                     assert_eq!(action.to_message(), msg);
                 }
-                Opcode::CooldownValue => {
+                Opcode::ModifyCooldown => {
                     let Fields::CooldownValue {
                         owner,
                         key,
@@ -168,7 +168,7 @@ fn decode_operator_protocol_fixtures() {
                 }
                 _ => {}
             }
-            if !matches!(opcode, Opcode::Hello | Opcode::Heartbeat) {
+            if !matches!(opcode, Opcode::ClientHello | Opcode::ServerHelloAck) {
                 let frame = cipher.encode(&msg).unwrap();
                 let decoded = cipher.decode(&frame[2..]).unwrap();
                 assert_eq!(decoded.opcode, msg.opcode);

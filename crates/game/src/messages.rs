@@ -26,7 +26,7 @@ pub(super) fn scene_mode(queue: &str, flag: u8) -> Message {
     let mut body = vec![0; 69];
     put_text(&mut body[..64], mode_name(queue));
     body[68] = flag;
-    Message::known(crate::Opcode::ModeName, body)
+    Message::known(crate::Opcode::SceneSettings, body)
 }
 fn settings(seat: usize, mode: &str, draft: bool) -> Message {
     let mut b = vec![0; 101];
@@ -39,7 +39,7 @@ fn settings(seat: usize, mode: &str, draft: bool) -> Message {
         b[16..18].fill(5);
         b[96..100].copy_from_slice(&1f32.to_be_bytes());
     }
-    Message::known(crate::Opcode::GameSetup, b)
+    Message::known(crate::Opcode::MatchSettings, b)
 }
 pub(super) fn world_settings(seat: usize, queue: &str) -> Message {
     settings(seat, mode_name(queue), false)
@@ -92,11 +92,11 @@ pub(super) fn draft_catalog(
     let mut mode = vec![0; 68];
     put_text(&mut mode[4..], mode_name(queue));
     let mut out = Vec::with_capacity(catalog.len() + 2);
-    out.push(Message::known(crate::Opcode::GameMode, mode));
+    out.push(Message::known(crate::Opcode::DraftModeAnnouncement, mode));
     out.extend(
         catalog
             .iter()
-            .map(|entry| Message::known(crate::Opcode::HeroCatalog, *entry)),
+            .map(|entry| Message::known(crate::Opcode::DraftCatalogEntry, *entry)),
     );
     out.push(snapshot(world, players, picks));
     out
@@ -135,7 +135,7 @@ pub fn snapshot(world: &World, players: &[Uuid], picks: &[Pick]) -> Message {
             }
         }
     }
-    Message::known(crate::Opcode::Snapshot5V5, body)
+    Message::known(crate::Opcode::DraftRosterFull, body)
 }
 pub fn spawn(e: &Entity, picks: &[Pick], data: Option<&halcyon_data::GameData>) -> Message {
     let mut b = vec![0; 750];
@@ -173,7 +173,7 @@ pub fn spawn(e: &Entity, picks: &[Pick], data: Option<&halcyon_data::GameData>) 
             b[offset..offset + 4].copy_from_slice(&value.to_be_bytes());
         }
     }
-    Message::known(crate::Opcode::EntitySpawn, b)
+    Message::known(crate::Opcode::HeroSpawn, b)
 }
 
 /// Android Solo full declarations keep these selectors for the hero's lifetime.
@@ -249,7 +249,7 @@ pub(super) fn redact_player_info(body: &mut [u8]) {
 
 pub(super) fn world_clock(tick: u64) -> Message {
     Message::known(
-        crate::Opcode::OpeningWorldClock,
+        crate::Opcode::SyncWorldClock,
         (tick as f32 / halcyon_sim::TICK_HZ as f32).to_be_bytes(),
     )
 }
@@ -266,9 +266,9 @@ pub(super) fn world_header(
         .map(|i| info(world, players, picks, i, false))
         .collect();
     out.push(world_settings(seat, mode));
-    out.push(Message::known(crate::Opcode::BeginLoading, [0]));
+    out.push(Message::known(crate::Opcode::DraftTransitionToLoading, [0]));
     out.push(scene_mode(mode, 1));
-    out.push(Message::known(crate::Opcode::SceneTransition, [0]));
+    out.push(Message::known(crate::Opcode::SceneLoadedDismiss, [0]));
     out.extend((0..10).map(|i| info(world, players, picks, i, true)));
     out.push(world_clock(world.tick));
     out
@@ -327,7 +327,7 @@ pub(super) fn append_purchase(
         }
         let mut body = [actor.to_be_bytes(), used.instance.to_be_bytes()].concat();
         body.extend(1u16.to_be_bytes());
-        out.push(Message::known(crate::Opcode::RemoveItem, body));
+        out.push(Message::known(crate::Opcode::ConsumeItem, body));
     }
     let granted = receipt.granted;
     out.push(item_grant(actor, granted.kind.template(), granted.instance));
@@ -519,16 +519,16 @@ mod combat_tests {
         assert_eq!(
             frames.iter().map(|m| m.opcode).collect::<Vec<_>>(),
             [
-                crate::wire_opcode::EntityStat,
-                crate::wire_opcode::StatModifier,
-                crate::wire_opcode::RemoveItem,
-                crate::wire_opcode::StatModifier,
-                crate::wire_opcode::StatModifier,
-                crate::wire_opcode::RemoveItem,
+                crate::wire_opcode::ModifyActorResource,
+                crate::wire_opcode::ModifyActorAttribute,
+                crate::wire_opcode::ConsumeItem,
+                crate::wire_opcode::ModifyActorAttribute,
+                crate::wire_opcode::ModifyActorAttribute,
+                crate::wire_opcode::ConsumeItem,
                 crate::wire_opcode::ItemGrant,
-                crate::wire_opcode::StatModifier,
-                crate::wire_opcode::StatModifier,
-                crate::wire_opcode::StatModifier
+                crate::wire_opcode::ModifyActorAttribute,
+                crate::wire_opcode::ModifyActorAttribute,
+                crate::wire_opcode::ModifyActorAttribute
             ]
         );
         let modifiers = |msgs: &[Message]| {
@@ -610,8 +610,8 @@ mod combat_tests {
             out.iter().map(|m| m.opcode).collect::<Vec<_>>(),
             [
                 crate::wire_opcode::ActorDeath,
-                crate::wire_opcode::StatModifier,
-                crate::wire_opcode::StatModifier
+                crate::wire_opcode::ModifyActorAttribute,
+                crate::wire_opcode::ModifyActorAttribute
             ]
         );
         assert_eq!(

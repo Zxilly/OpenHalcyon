@@ -58,8 +58,8 @@ pub struct BuffApplication<'a> {
 impl<'a> BuffApplication<'a> {
     pub(super) fn decode(opcode: u16, body: &'a [u8]) -> Option<Self> {
         let size = match (opcode, body.len()) {
-            (crate::wire_opcode::EntityProp, 16 | 22) => 16,
-            (crate::wire_opcode::EntityData, 34 | 38) => 34,
+            (crate::wire_opcode::ApplyBuffCompact, 16 | 22) => 16,
+            (crate::wire_opcode::ApplyBuffExtended, 34 | 38) => 34,
             _ => return None,
         };
         let word = |i: usize| u32::from_be_bytes(body[i..i + 4].try_into().unwrap());
@@ -82,9 +82,9 @@ impl<'a> BuffApplication<'a> {
 
     pub fn to_message(self) -> io::Result<Message> {
         let (op, size, extended) = if self.extras.is_some() {
-            (crate::wire_opcode::EntityData, 34, 4)
+            (crate::wire_opcode::ApplyBuffExtended, 34, 4)
         } else {
-            (crate::wire_opcode::EntityProp, 16, 6)
+            (crate::wire_opcode::ApplyBuffCompact, 16, 6)
         };
         if !self.suffix.is_empty() && self.suffix.len() != extended {
             return Err(invalid("unsupported buff application suffix length"));

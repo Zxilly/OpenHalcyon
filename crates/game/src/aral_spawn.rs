@@ -53,7 +53,7 @@ pub(super) fn structure(world: &World, entity: &Entity) -> Option<Message> {
     body[97 + usize::from(entity.team)] = 15;
     body[119] = 1;
     body[120] = u8::MAX;
-    Some(Message::known(crate::Opcode::Snapshot, body))
+    Some(Message::known(crate::Opcode::EntitySpawn, body))
 }
 
 /// Fixed map scenery. These actors have no simulation, vision, or economic effect.
@@ -61,7 +61,7 @@ pub(super) fn scenery() -> impl Iterator<Item = Message> {
     [0, 2, 8, 10]
         .into_iter()
         .filter_map(scenery_body)
-        .map(|body| Message::known(crate::Opcode::Snapshot, body))
+        .map(|body| Message::known(crate::Opcode::EntitySpawn, body))
 }
 
 fn scenery_body(slot: u8) -> Option<[u8; 122]> {
@@ -216,7 +216,7 @@ fn pristine_minion(entity: &Entity, slot: u8) -> Message {
     body[117] = 1;
     body[119] = entity.level;
     body[120] = entity.team;
-    Message::known(crate::Opcode::Snapshot, body)
+    Message::known(crate::Opcode::EntitySpawn, body)
 }
 
 /// Established visibility deltas for a newly declared, pristine ARAL wave actor.
@@ -231,7 +231,7 @@ pub(super) struct InitialVisibility {
 impl InitialVisibility {
     pub(super) fn read(declaration: &Message) -> Option<Self> {
         let b = &declaration.body;
-        if !declaration.is(crate::Opcode::Snapshot)
+        if !declaration.is(crate::Opcode::EntitySpawn)
             || b.len() != 122
             || b[117] != 1
             || !recordable(b)
@@ -349,7 +349,7 @@ mod tests {
             (10, 298, [76.12, 0.1, 19.9], 9999.0),
         ]) {
             let mut b = message.body;
-            assert_eq!(message.opcode, crate::wire_opcode::Snapshot);
+            assert_eq!(message.opcode, crate::wire_opcode::EntitySpawn);
             assert!(recordable(&b));
             assert_eq!(b[..4], template.to_be_bytes());
             assert_eq!(b[8..12], (2000 + u32::from(slot)).to_be_bytes());
@@ -387,7 +387,7 @@ mod tests {
             let fresh = slots
                 .declaration(&world, entity, &[], None, 0, true)
                 .unwrap();
-            assert_eq!(fresh.opcode, crate::wire_opcode::Snapshot);
+            assert_eq!(fresh.opcode, crate::wire_opcode::EntitySpawn);
             assert!(recordable(&fresh.body));
             let team = fresh.body[121];
             let mut prefilled = fresh.clone();
@@ -418,7 +418,7 @@ mod tests {
         let restored = slots
             .declaration(&world, &damaged, &[], None, 1, false)
             .unwrap();
-        assert_eq!(restored.opcode, crate::wire_opcode::EntitySpawn);
+        assert_eq!(restored.opcode, crate::wire_opcode::HeroSpawn);
         assert!(InitialVisibility::read(&restored).is_none());
         assert_eq!(restored.body[745], 22);
         assert_eq!(restored.body[42..46], damaged.hp.to_be_bytes());
@@ -429,7 +429,7 @@ mod tests {
         let custom_actor = slots
             .declaration(&world, &custom, &[], None, 0, true)
             .unwrap();
-        assert!(custom_actor.is(crate::Opcode::EntitySpawn));
+        assert!(custom_actor.is(crate::Opcode::HeroSpawn));
         assert_eq!(&custom_actor.body[2..4], &custom.type_id.to_be_bytes());
         slots.destroy_sent(first.id, 0);
         let mut later = first.clone();

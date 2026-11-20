@@ -429,7 +429,7 @@ pub fn catalog_from_trace(trace: impl io::BufRead) -> io::Result<Vec<String>> {
             Direction::deserialize(&row["dir"]),
             Ok(Direction::ServerToClient)
         ) || row["opcode"].as_u64()
-            != Some(u64::from(halcyon_protocol::Opcode::HeroCatalog.raw()))
+            != Some(u64::from(halcyon_protocol::Opcode::DraftCatalogEntry.raw()))
         {
             continue;
         }

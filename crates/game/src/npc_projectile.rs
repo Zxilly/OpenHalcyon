@@ -192,7 +192,7 @@ mod tests {
         let mut b = [0; 122];
         b[8..12].copy_from_slice(&(id + 1499).to_be_bytes());
         b[116] = slot;
-        view.declarations(&[Message::known(crate::Opcode::Snapshot, b)]);
+        view.declarations(&[Message::known(crate::Opcode::EntitySpawn, b)]);
     }
     #[test]
     fn shot_uses_its_own_id_and_each_receivers_live_slots() {

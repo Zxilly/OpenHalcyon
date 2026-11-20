@@ -28,7 +28,7 @@ fn exported_catalog_loads_on_a_peer_without_the_trace() {
         );
         serde_json::to_string(&CatalogPacket {
             dir: Direction::Server,
-            opcode: wire_opcode::HeroCatalog,
+            opcode: wire_opcode::DraftCatalogEntry,
             payload: &field,
         })
         .unwrap()
@@ -39,14 +39,14 @@ fn exported_catalog_loads_on_a_peer_without_the_trace() {
         [
             serde_json::to_string(&CatalogPacket {
                 dir: Direction::Client,
-                opcode: wire_opcode::HeroCatalog,
+                opcode: wire_opcode::DraftCatalogEntry,
                 payload: "private",
             })
             .unwrap(),
             catalog_record("*Hero*"),
             serde_json::to_string(&HandlePacket {
                 dir: Direction::Server,
-                opcode: wire_opcode::PlayerHandle,
+                opcode: wire_opcode::PlayerLoadedScene,
                 handle: "private",
             })
             .unwrap(),

@@ -163,11 +163,11 @@ use Primitive::{Be16 as H, Be32 as W, Byte as B, Float as F};
 /// The intersection of fixed Android layouts and opcodes absent in both local corpora.
 /// Empty primitive lists retain length and any evidenced static action name.
 pub const STATIC_ACTIONS: &[StaticActionLayout] = &[
-    entry(crate::wire_opcode::Hello, None, &[]),
-    entry(crate::wire_opcode::Heartbeat, None, &[]),
+    entry(crate::wire_opcode::ClientHello, None, &[]),
+    entry(crate::wire_opcode::ServerHelloAck, None, &[]),
     entry(crate::wire_opcode::PlayerDeserter, None, &[at(W, 0)]),
     entry(
-        crate::wire_opcode::TickSyncB,
+        crate::wire_opcode::PauseOrReady,
         Some("ActionShowMatchPrepSequence"),
         &[],
     ),
@@ -222,7 +222,7 @@ pub const STATIC_ACTIONS: &[StaticActionLayout] = &[
         &[span(F, 1, 4, 4)],
     ),
     entry(
-        crate::wire_opcode::PlayAbilityVariant,
+        crate::wire_opcode::PlayAbilityUnseen,
         Some("ActionPlayAbility"),
         &[span(W, 0, 2, 4), span(F, 8, 3, 4)],
     ),
@@ -232,12 +232,12 @@ pub const STATIC_ACTIONS: &[StaticActionLayout] = &[
         &[span(W, 0, 2, 4)],
     ),
     entry(
-        crate::wire_opcode::CreateZoneOfControl,
+        crate::wire_opcode::CreateZoneOfControlUnseen,
         Some("ActionCreateZoneOfControl"),
         &[span(W, 0, 2, 4), span(F, 8, 5, 4), at(B, 28)],
     ),
     entry(
-        crate::wire_opcode::CreateZoneOfControlVariantC,
+        crate::wire_opcode::CreateRectZoneOfControl,
         Some("ActionCreateZoneOfControl"),
         &[span(W, 0, 2, 4), span(F, 8, 4, 4)],
     ),

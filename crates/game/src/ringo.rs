@@ -51,7 +51,7 @@ pub(super) fn face_attack_target(
     changed: &[Option<u32>; super::aral::SEATS],
     view: &super::tower_aggro::View,
 ) {
-    if !release.is(crate::Opcode::PlayAbility) {
+    if !release.is(crate::Opcode::PlayTargetAbility) {
         return;
     }
     let Some((source, Some(target))) = references(release) else {
@@ -158,7 +158,7 @@ pub(super) fn append(out: &mut Batch, event: &Event, visible: impl Fn(u32) -> bo
 pub(super) fn references(m: &Message) -> Option<(u32, Option<u32>)> {
     let body = &m.body;
     let target = match m.known_opcode() {
-        Some(crate::Opcode::EntityProp) if matches!(m.fields(), Ok(halcyon_protocol::Fields::BuffApplication(v)) if v.prefix.source==v.prefix.target && v.prefix.definition==379 && v.prefix.duration_bits==0xbc00 && v.prefix.instance>1505 && v.suffix==[0;6]) => {
+        Some(crate::Opcode::ApplyBuffCompact) if matches!(m.fields(), Ok(halcyon_protocol::Fields::BuffApplication(v)) if v.prefix.source==v.prefix.target && v.prefix.definition==379 && v.prefix.duration_bits==0xbc00 && v.prefix.instance>1505 && v.suffix==[0;6]) => {
             None
         }
         Some(crate::Opcode::CancelBuff)
@@ -168,7 +168,7 @@ pub(super) fn references(m: &Message) -> Option<(u32, Option<u32>)> {
         {
             None
         }
-        Some(crate::Opcode::PlayAbility) if body.len() == 9 && body[8] == 3 => {
+        Some(crate::Opcode::PlayTargetAbility) if body.len() == 9 && body[8] == 3 => {
             let target = u32::from_be_bytes(body[4..8].try_into().ok()?);
             if !(1500..65535).contains(&target) {
                 return None;
@@ -201,7 +201,7 @@ pub(super) fn references(m: &Message) -> Option<(u32, Option<u32>)> {
 pub(super) fn track(view: &mut super::tower_aggro::View, message: &Message) -> bool {
     if !matches!(
         message.opcode,
-        crate::wire_opcode::EntityProp | crate::wire_opcode::CancelBuff
+        crate::wire_opcode::ApplyBuffCompact | crate::wire_opcode::CancelBuff
     ) {
         return true;
     }
@@ -209,7 +209,7 @@ pub(super) fn track(view: &mut super::tower_aggro::View, message: &Message) -> b
         return true;
     };
     let active = &mut view.ringo_effects[(actor - 1) as usize];
-    if message.is(crate::Opcode::EntityProp) {
+    if message.is(crate::Opcode::ApplyBuffCompact) {
         *active = Some(u32::from_be_bytes(message.body[10..14].try_into().unwrap()));
         true
     } else {
@@ -272,10 +272,12 @@ mod tests {
             stalled: watch::channel(false).0,
         });
         seat.world_actor_written = true;
-        seat.preamble
-            .observe(&Message::known(crate::Opcode::RequestScene, [0; 6]), 1502);
         seat.preamble.observe(
-            &Message::known(crate::Opcode::SceneOwner, [0, 0, 5, 222, 1, 0]),
+            &Message::known(crate::Opcode::RequestSceneSnapshot, [0; 6]),
+            1502,
+        );
+        seat.preamble.observe(
+            &Message::known(crate::Opcode::ConfirmSceneOwner, [0, 0, 5, 222, 1, 0]),
             1502,
         );
         seat.preamble.confirm_world_input();
@@ -361,7 +363,7 @@ mod tests {
         assert_eq!(
             out.iter().map(|m| m.opcode).collect::<Vec<_>>(),
             [
-                crate::wire_opcode::PlayAbility,
+                crate::wire_opcode::PlayTargetAbility,
                 crate::wire_opcode::CancelBuff,
                 crate::wire_opcode::ClearAbilityOverride,
                 crate::wire_opcode::ClearAbilityOverride,

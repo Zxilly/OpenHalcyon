@@ -99,7 +99,7 @@ pub struct MatchStatisticsMut<'a>(&'a mut [u8]);
 
 impl<'a> MatchStatisticsMut<'a> {
     pub fn new(message: &'a mut Message) -> io::Result<Self> {
-        if !message.is(crate::Opcode::StatisticsReport) || !complete(&message.body) {
+        if !message.is(crate::Opcode::PostMatchStats) || !complete(&message.body) {
             return Err(invalid("expected a complete 0x048d report"));
         }
         Ok(Self(&mut message.body))
@@ -307,7 +307,7 @@ impl StatisticsReport {
             view.0[off..off + 4].copy_from_slice(&val.to_be_bytes());
         }
         view.set_minion_damage_ratio_inputs(self.minion_damage_ratio_inputs);
-        Ok(Message::known(crate::Opcode::StatisticsReport, body))
+        Ok(Message::known(crate::Opcode::PostMatchStats, body))
     }
 }
 
@@ -377,7 +377,7 @@ mod tests {
             for (i, n) in ratios.into_iter().enumerate() {
                 expected[0x63c + 4 * i..0x640 + 4 * i].copy_from_slice(&n.to_be_bytes());
             }
-            let mut message = Message::known(crate::Opcode::StatisticsReport, original);
+            let mut message = Message::known(crate::Opcode::PostMatchStats, original);
             let mut report = MatchStatisticsMut::new(&mut message).unwrap();
             assert!(report.edit_slot(16, |_| panic!()).is_err());
             assert!(report.edit_slot(0, |_| panic!()).is_err());
@@ -415,9 +415,9 @@ mod tests {
             assert_eq!(cipher.encode(&decoded).unwrap(), frame);
         }
         for (op, len) in [
-            (crate::wire_opcode::StatisticsReport, 1611),
-            (crate::wire_opcode::StatisticsReport, 1613),
-            (crate::wire_opcode::TickSyncC, 1612),
+            (crate::wire_opcode::PostMatchStats, 1611),
+            (crate::wire_opcode::PostMatchStats, 1613),
+            (crate::wire_opcode::EndMatch, 1612),
         ] {
             assert!(MatchStatisticsMut::new(&mut Message::new(op, vec![0; len])).is_err());
         }

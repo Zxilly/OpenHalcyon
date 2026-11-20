@@ -64,8 +64,8 @@ impl View {
     pub fn declarations(&mut self, batch: &[Message]) {
         for m in batch {
             let slot = match m.known_opcode() {
-                Some(crate::Opcode::Snapshot) => m.body.get(116),
-                Some(crate::Opcode::EntitySpawn) => m.body.get(745),
+                Some(crate::Opcode::EntitySpawn) => m.body.get(116),
+                Some(crate::Opcode::HeroSpawn) => m.body.get(745),
                 _ => continue,
             };
             let Some(&slot @ 0..=199) = slot else {
@@ -76,10 +76,10 @@ impl View {
             // template-297 armory has a verified real registration there.
             if slot == 0
                 && !(wire == 2000
-                    && (m.is(crate::Opcode::Snapshot)
+                    && (m.is(crate::Opcode::EntitySpawn)
                         && m.body[..4]
                             == u32::from(EntityTemplate::VainNode.as_raw()).to_be_bytes()
-                        || m.is(crate::Opcode::EntitySpawn)
+                        || m.is(crate::Opcode::HeroSpawn)
                             && m.body[2..4] == EntityTemplate::VainNode.as_raw().to_be_bytes()))
             {
                 continue;
@@ -236,7 +236,7 @@ impl ObserverScene {
         fresh_spawns: bool,
     ) {
         batch.retain_mut(|message| {
-            if !message.is(crate::Opcode::EntitySpawn) {
+            if !message.is(crate::Opcode::HeroSpawn) {
                 return true;
             }
             let wire = u32::from_be_bytes(message.body[8..12].try_into().unwrap());
@@ -329,7 +329,7 @@ mod tests {
         let mut body = vec![0; 122];
         body[8..12].copy_from_slice(&(id + 1499).to_be_bytes());
         body[116] = slot;
-        Message::known(crate::Opcode::Snapshot, body)
+        Message::known(crate::Opcode::EntitySpawn, body)
     }
     fn frames(view: &mut View, world: &World, visible: impl Fn(u32) -> bool) -> Vec<TowerAggro> {
         let mut out = Vec::new();

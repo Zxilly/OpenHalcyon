@@ -46,7 +46,7 @@ pub(super) fn destination(slot: u8, point: Position) -> Message {
     body[0] = slot;
     body[1..5].copy_from_slice(&point.x.to_be_bytes());
     body[5..9].copy_from_slice(&point.y.to_be_bytes());
-    Message::known(crate::Opcode::EntityFloat, body)
+    Message::known(crate::Opcode::MoveTo, body)
 }
 
 pub(super) fn aral_slot(actor: &Entity) -> Option<u8> {

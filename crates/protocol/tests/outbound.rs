@@ -51,7 +51,7 @@ fn writer_evidence_covers_receiver_ignore_list_and_keeps_every_byte() {
 fn alternate_move_and_ability_words_preserve_variant_and_bits() {
     let bits = [0x8000_0000u32, 0x7fc0_0123];
     let motion = Message::known(
-        halcyon_protocol::Opcode::StateUpdB,
+        halcyon_protocol::Opcode::Unseen03F6,
         bits.map(u32::to_be_bytes).concat(),
     );
     let Fields::Outbound(view) = motion.fields().unwrap() else {
@@ -69,7 +69,7 @@ fn alternate_move_and_ability_words_preserve_variant_and_bits() {
     let ability_words = [1500u32, 0x3f80_0000, 0, 0xbf80_0000];
     let mut body = ability_words.map(u32::to_be_bytes).concat();
     body.push(3);
-    let ability = Message::known(halcyon_protocol::Opcode::RequestAbilityVariant, body);
+    let ability = Message::known(halcyon_protocol::Opcode::RequestActivateAbilityUnseen, body);
     let Fields::Outbound(view) = ability.fields().unwrap() else {
         panic!("missing specialized outbound ability view");
     };

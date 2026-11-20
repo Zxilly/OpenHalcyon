@@ -429,7 +429,7 @@ mod tests {
         uuid_body[..36].copy_from_slice(guest.player_id.to_string().as_bytes());
         sock.write_all(
             &cipher
-                .encode(&Message::known(Opcode::PlayerUuid, uuid_body))
+                .encode(&Message::known(Opcode::RegisterPlayerUuid, uuid_body))
                 .unwrap(),
         )
         .await

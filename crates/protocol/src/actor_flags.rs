@@ -84,7 +84,7 @@ mod tests {
                 .is_none()
         );
         assert!(
-            Message::known(crate::Opcode::PlayerHandle, [0; 6])
+            Message::known(crate::Opcode::PlayerLoadedScene, [0; 6])
                 .actor_flags()
                 .is_none()
         );

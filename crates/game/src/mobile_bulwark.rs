@@ -30,7 +30,7 @@ fn initial(source: u32, id: u32, p: Position, angle: f32, slot: u8, team: u8) ->
     }
     b[97 + usize::from(team)] = 1;
     b[116..].copy_from_slice(&[slot, 1, 0, 1, 255, team + 1]);
-    let mut out = vec![Message::known(Opcode::Snapshot, b)];
+    let mut out = vec![Message::known(Opcode::EntitySpawn, b)];
     for (i, definition) in [66, 709].into_iter().enumerate() {
         out.push(
             BuffApplication {
@@ -179,7 +179,7 @@ pub(super) fn recordable(m: &Message) -> bool {
     let word = |i| u32::from_be_bytes(b[i..i + 4].try_into().unwrap());
     let finite = |value| f32::from_bits(value).is_finite();
     match m.known_opcode() {
-        Some(Opcode::Snapshot) if b.len() == 122 => {
+        Some(Opcode::EntitySpawn) if b.len() == 122 => {
             word(0) == 272
                 && word(4) == 0x34bd643e
                 && dynamic(word(8))
@@ -194,7 +194,7 @@ pub(super) fn recordable(m: &Message) -> bool {
                 && hero(word(112))
                 && matches!(&b[116..], [22..=199, 1, 0, 1, 255, 1 | 2])
         }
-        Some(Opcode::EntityProp) => {
+        Some(Opcode::ApplyBuffCompact) => {
             matches!(m.fields(),Ok(halcyon_protocol::Fields::BuffApplication(e)) if dynamic(e.prefix.target) && hero(e.prefix.source) && e.prefix.duration_bits==0xbc00 && e.suffix.is_empty() && matches!((e.prefix.definition,e.prefix.instance.checked_sub(e.prefix.target)),(66,Some(1))|(709,Some(2))))
         }
         Some(Opcode::AutoOrbit) => {
@@ -203,7 +203,7 @@ pub(super) fn recordable(m: &Message) -> bool {
         Some(Opcode::CancelAutoOrbit) => {
             matches!(m.orbit_action(),Some(OrbitAction::Cancel{actor,position,padding:None}) if dynamic(actor)&&position.y_bits==END_HEIGHT&&finite(position.x_bits)&&finite(position.z_bits))
         }
-        Some(Opcode::CreateZoneOfControlVariantB) => {
+        Some(Opcode::CreateZoneOfControl) => {
             matches!(m.zone_action(),Some(ZoneAction::Create{id,source,anchor,parameters:[r,c,a],flag:1,suffix:[]}) if dynamic(anchor)&&id==anchor+3&&hero(source)&&r==5.5f32.to_bits()&&c==(-1f32).to_bits()&&finite(a))
         }
         Some(Opcode::DestroyZoneOfControl) => {

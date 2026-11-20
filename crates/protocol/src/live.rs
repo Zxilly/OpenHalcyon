@@ -83,7 +83,7 @@ pub(super) fn fields(op: u16, b: &[u8]) -> Option<Fields<'_>> {
         crate::wire_opcode::RequestUpgradeAbility if expected(1) => {
             return Some(Fields::Live(LiveFields::LearnSelection(b[0])));
         }
-        crate::wire_opcode::StateUpdA if expected(8) => {
+        crate::wire_opcode::RequestMovePoint if expected(8) => {
             return Some(Fields::Live(LiveFields::MovePoint {
                 x: f32::from_bits(word(0)),
                 y: f32::from_bits(word(4)),
@@ -114,7 +114,7 @@ pub(super) fn fields(op: u16, b: &[u8]) -> Option<Fields<'_>> {
         crate::wire_opcode::DraftRerollHero
         | crate::wire_opcode::DraftSelectPosition
         | crate::wire_opcode::DraftSelectBuildPath
-        | crate::wire_opcode::SetupC
+        | crate::wire_opcode::DraftReadyControl
         | crate::wire_opcode::RequestRecommendedBuildPath
             if expected(1) =>
         {
@@ -125,13 +125,13 @@ pub(super) fn fields(op: u16, b: &[u8]) -> Option<Fields<'_>> {
         }
 
         crate::wire_opcode::TransportAck
-        | crate::wire_opcode::EnterPostgame
+        | crate::wire_opcode::CrystalShattered
         | crate::wire_opcode::RejectBuyItem
             if expected(0) && b.iter().all(|&x| x == 0) =>
         {
             return Some(Fields::HeaderOnly { remaining: b });
         }
-        crate::wire_opcode::BeginLoading if expected(1) => {
+        crate::wire_opcode::DraftTransitionToLoading if expected(1) => {
             return Some(Fields::ControlByte {
                 value: b[0],
                 remaining: &b[1..],
@@ -188,7 +188,7 @@ pub(super) fn fields(op: u16, b: &[u8]) -> Option<Fields<'_>> {
         | crate::wire_opcode::PlayerReconnected
         | crate::wire_opcode::DestroyZoneOfControl
         | crate::wire_opcode::ModifyBasicAttackTarget
-        | crate::wire_opcode::OpeningWorldClock => (1, false, 0),
+        | crate::wire_opcode::SyncWorldClock => (1, false, 0),
         crate::wire_opcode::RequestCancelAbility => (0, false, 2),
         crate::wire_opcode::AutoMoveTo => (5, false, 1),
         crate::wire_opcode::AutoOrbit => (8, false, 0),
@@ -197,7 +197,7 @@ pub(super) fn fields(op: u16, b: &[u8]) -> Option<Fields<'_>> {
         crate::wire_opcode::PlayPfxAtLocation | crate::wire_opcode::MakeAnnouncement => {
             (6, false, 0)
         }
-        crate::wire_opcode::CreateZoneOfControlVariantB => (6, false, 1),
+        crate::wire_opcode::CreateZoneOfControl => (6, false, 1),
         crate::wire_opcode::ModifyGameModeVar | crate::wire_opcode::TimeoutBuff => (2, false, 0),
         crate::wire_opcode::ModifyBuffStack | crate::wire_opcode::DecrementBuffStack => {
             (3, false, 0)
@@ -237,7 +237,7 @@ mod tests {
             }))
         ));
         assert!(matches!(
-            fields(crate::wire_opcode::StateUpdA, &b),
+            fields(crate::wire_opcode::RequestMovePoint, &b),
             Some(Fields::Live(LiveFields::MovePoint { x: 1.25, y: -6.5 }))
         ));
         assert!(matches!(

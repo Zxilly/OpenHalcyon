@@ -82,7 +82,7 @@ fn action(world: &World, event: &Event) -> Option<(u32, Batch)> {
                     active,
                     application,
                     infusion_level(target, instance, level)?,
-                    Message::known(Opcode::RemoveItem, removed),
+                    Message::known(Opcode::ConsumeItem, removed),
                 ],
             ))
         }
@@ -213,7 +213,7 @@ fn action(world: &World, event: &Event) -> Option<(u32, Batch)> {
             removal[..4].copy_from_slice(&actor.to_be_bytes());
             removal[4..8].copy_from_slice(&sale.sold.instance.to_be_bytes());
             removal[8..].copy_from_slice(&1u16.to_be_bytes());
-            batch.push(Message::known(Opcode::RemoveItem, removal));
+            batch.push(Message::known(Opcode::ConsumeItem, removal));
             batch.push(
                 ResourceChange {
                     actor,
@@ -466,13 +466,13 @@ mod tests {
                         ..here
                     },
                 },
-                Opcode::RequestActivateItemVariantC,
+                Opcode::RequestActivateItemPoint,
             ),
             (
                 Command::DeployScoutTrap {
                     instance: trap.instance,
                 },
-                Opcode::RequestActivateItem,
+                Opcode::RequestActivateItemSelf,
             ),
         ] {
             world.command(1, command).unwrap();

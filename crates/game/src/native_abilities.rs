@@ -733,12 +733,12 @@ mod tests {
                 stalled: watch::channel(false).0,
             });
             for (opcode, body) in [
-                (crate::wire_opcode::RequestScene, [0; 6]),
+                (crate::wire_opcode::RequestSceneSnapshot, [0; 6]),
                 (
-                    crate::wire_opcode::SceneOwner,
+                    crate::wire_opcode::ConfirmSceneOwner,
                     [0, 0, 5, 220 + i as u8, 1, 0],
                 ),
-                (crate::wire_opcode::SceneConfirmed, [0; 6]),
+                (crate::wire_opcode::SceneReadyConfirm, [0; 6]),
             ] {
                 seat.preamble
                     .observe(&Message::new(opcode, body), 1500 + i as u32);
@@ -1085,7 +1085,10 @@ mod tests {
         let mut ack = [0; 5];
         obs_sock.read_exact(&mut ack).await.unwrap();
         assert_eq!(ack, ACK_FRAME);
-        let identity = Message::known(crate::Opcode::PlayerUuid, grant.to_string().as_bytes());
+        let identity = Message::known(
+            crate::Opcode::RegisterPlayerUuid,
+            grant.to_string().as_bytes(),
+        );
         obs_sock
             .write_all(&cipher.encode(&identity).unwrap())
             .await
@@ -1170,9 +1173,9 @@ mod tests {
             });
             room.seats[0].world_actor_written = true;
             for (op, body) in [
-                (crate::wire_opcode::RequestScene, [0; 6]),
-                (crate::wire_opcode::SceneOwner, [0, 0, 5, 220, 1, 0]),
-                (crate::wire_opcode::SceneConfirmed, [0; 6]),
+                (crate::wire_opcode::RequestSceneSnapshot, [0; 6]),
+                (crate::wire_opcode::ConfirmSceneOwner, [0, 0, 5, 220, 1, 0]),
+                (crate::wire_opcode::SceneReadyConfirm, [0; 6]),
             ] {
                 room.seats[0]
                     .preamble
@@ -1303,7 +1306,7 @@ mod tests {
             obs_msgs.push(cipher.decode_owned(raw.into()).unwrap());
         }
         assert!(obs_msgs.iter().any(|m| {
-            m.is(crate::Opcode::PlayAbility)
+            m.is(crate::Opcode::PlayTargetAbility)
                 && m.body
                     .starts_with(&Message::ability_target_used(1500, 1501, 2).body)
                 && m.body[9..].iter().all(|&b| b == 0)
@@ -1335,9 +1338,9 @@ mod tests {
             stalled: watch::channel(false).0,
         });
         for (op, body) in [
-            (crate::wire_opcode::RequestScene, [0; 6]),
-            (crate::wire_opcode::SceneOwner, [0, 0, 5, 220, 1, 0]),
-            (crate::wire_opcode::SceneConfirmed, [0; 6]),
+            (crate::wire_opcode::RequestSceneSnapshot, [0; 6]),
+            (crate::wire_opcode::ConfirmSceneOwner, [0, 0, 5, 220, 1, 0]),
+            (crate::wire_opcode::SceneReadyConfirm, [0; 6]),
         ] {
             room.seats[0]
                 .preamble
@@ -1728,12 +1731,12 @@ mod tests {
             });
             let actor = 1500 + index as u32;
             for (op, body) in [
-                (crate::wire_opcode::RequestScene, [0; 6]),
+                (crate::wire_opcode::RequestSceneSnapshot, [0; 6]),
                 (
-                    crate::wire_opcode::SceneOwner,
+                    crate::wire_opcode::ConfirmSceneOwner,
                     [0, 0, 5, 220 + index as u8, 1, 0],
                 ),
-                (crate::wire_opcode::SceneConfirmed, [0; 6]),
+                (crate::wire_opcode::SceneReadyConfirm, [0; 6]),
             ] {
                 seat.preamble.observe(&Message::new(op, body), actor);
             }
@@ -1801,8 +1804,8 @@ mod tests {
                     crate::wire_opcode::ModifyBasicAttackTarget
                         | crate::wire_opcode::StopActor
                         | crate::wire_opcode::PlayPointAbility
-                        | crate::wire_opcode::EntityProp
-                ) || (release_batch && m.is(crate::Opcode::Position))
+                        | crate::wire_opcode::ApplyBuffCompact
+                ) || (release_batch && m.is(crate::Opcode::MoveToCorrection))
             }));
         }
         replies

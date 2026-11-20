@@ -74,7 +74,7 @@ impl Delivery {
 
     fn declares_actor(&self, actor: u16, slot: u8) -> bool {
         self.messages().iter().any(|message| {
-            message.is(crate::Opcode::EntitySpawn)
+            message.is(crate::Opcode::HeroSpawn)
                 && message.body.get(10..12) == Some(actor.to_be_bytes().as_slice())
                 && message.body.get(745) == Some(&slot)
         })
@@ -274,7 +274,7 @@ async fn connection(mut sock: TcpStream, room: Shared, manager: Rooms) -> io::Re
                     }
                 }
             }
-            let opening_scene = ch == 0 && batch.contains(crate::wire_opcode::ModeName);
+            let opening_scene = ch == 0 && batch.contains(crate::wire_opcode::SceneSettings);
             let declared_actor =
                 registration.is_some_and(|(actor, slot)| batch.declares_actor(actor, slot));
             if (waiting_for_scene && opening_scene)
@@ -311,7 +311,9 @@ async fn connection(mut sock: TcpStream, room: Shared, manager: Rooms) -> io::Re
             }
             // A shared control connection becomes a world stream at the scene header.
             // Skip the private draft, including controls that later yield to a second socket.
-            if replay_root.is_some() && (ch == 1 || batch.contains(crate::wire_opcode::ModeName)) {
+            if replay_root.is_some()
+                && (ch == 1 || batch.contains(crate::wire_opcode::SceneSettings))
+            {
                 let state = room.lock().unwrap();
                 recording = replay_root.take().map(|root| {
                     recording::Recorder::start(
@@ -474,7 +476,7 @@ mod tests {
         sock.write_all(
             &cipher
                 .encode(&Message::known(
-                    crate::Opcode::PlayerUuid,
+                    crate::Opcode::RegisterPlayerUuid,
                     identity.to_string().as_bytes(),
                 ))
                 .unwrap(),
@@ -624,8 +626,8 @@ mod tests {
         assert!(!revoked.iter().any(|m| matches!(
             m.opcode,
             crate::wire_opcode::ActorDeath
-                | crate::wire_opcode::StatisticsReport
-                | crate::wire_opcode::TickSyncC
+                | crate::wire_opcode::PostMatchStats
+                | crate::wire_opcode::EndMatch
         )));
         for stream in [&player, &observer] {
             let opcodes: Vec<_> = stream.iter().map(|m| m.opcode).collect();
@@ -634,10 +636,10 @@ mod tests {
                 .position(|&op| op == crate::wire_opcode::ActorDeath)
                 .unwrap();
             assert!(opcodes[..death].contains(&crate::wire_opcode::HealthImpact));
-            assert!(opcodes[death + 1..].contains(&crate::wire_opcode::Snapshot5V5));
+            assert!(opcodes[death + 1..].contains(&crate::wire_opcode::DraftRosterFull));
             assert!(opcodes.ends_with(&[
-                crate::wire_opcode::StatisticsReport,
-                crate::wire_opcode::TickSyncC
+                crate::wire_opcode::PostMatchStats,
+                crate::wire_opcode::EndMatch
             ]));
         }
         let player_report = &player[player.len() - 2];
@@ -708,9 +710,9 @@ mod tests {
         assert_eq!(
             batch.iter().map(|m| m.opcode).collect::<Vec<_>>(),
             [
-                crate::wire_opcode::EntityStat,
+                crate::wire_opcode::ModifyActorResource,
                 crate::wire_opcode::ItemGrant,
-                crate::wire_opcode::StatModifier
+                crate::wire_opcode::ModifyActorAttribute
             ]
         );
         assert_eq!(grants(&batch), [first.granted.instance]);
@@ -744,7 +746,7 @@ mod tests {
         assert_eq!(grants(&reconnect), expected);
         let spawn = batch
             .iter()
-            .find(|m| m.is(crate::Opcode::EntitySpawn))
+            .find(|m| m.is(crate::Opcode::HeroSpawn))
             .unwrap();
         assert_eq!(
             f32::from_be_bytes(spawn.body[190..194].try_into().unwrap()),
@@ -851,7 +853,7 @@ mod tests {
             .write_all(
                 &cipher
                     .encode(&Message::known(
-                        crate::Opcode::PlayerUuid,
+                        crate::Opcode::RegisterPlayerUuid,
                         player.to_string().as_bytes(),
                     ))
                     .unwrap(),
@@ -948,8 +950,8 @@ mod tests {
         );
         let opcodes: Vec<_> = messages.iter().map(|m| m.opcode).collect();
         assert!(opcodes.ends_with(&[
-            crate::wire_opcode::StatisticsReport,
-            crate::wire_opcode::TickSyncC
+            crate::wire_opcode::PostMatchStats,
+            crate::wire_opcode::EndMatch
         ]));
     }
 }

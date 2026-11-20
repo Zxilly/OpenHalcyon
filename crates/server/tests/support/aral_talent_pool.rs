@@ -385,7 +385,7 @@ async fn cross_home_aral_equips_only_committed_numeric_entitlements() {
         assert_eq!(playing["matchId"], allocation.id.to_string());
         let address = format!("{}:{}", playing["host"].as_str().unwrap(), playing["port"]);
         let mut socket = login(&address, player, &cipher).await;
-        let m = until(&mut socket, &cipher, wire_opcode::SnapshotAral).await;
+        let m = until(&mut socket, &cipher, wire_opcode::DraftRosterAral).await;
         let Fields::AralRoster(roster) = m.fields().unwrap() else {
             panic!("missing ARAL roster")
         };
@@ -401,7 +401,8 @@ async fn cross_home_aral_equips_only_committed_numeric_entitlements() {
         let cipher = MatchCipher::new(&allocation.id.to_string());
         loading.spawn(async move {
             // Every client drains its draft refreshes during the native 20-second timer.
-            while next(&mut socket, &cipher).await.opcode != wire_opcode::BeginLoading {}
+            while next(&mut socket, &cipher).await.opcode != wire_opcode::DraftTransitionToLoading {
+            }
             (socket, actor, expected)
         });
     }
@@ -423,7 +424,7 @@ async fn cross_home_aral_equips_only_committed_numeric_entitlements() {
         write(
             socket,
             &cipher,
-            Message::new(wire_opcode::RequestScene, [0; 6]),
+            Message::new(wire_opcode::RequestSceneSnapshot, [0; 6]),
         )
         .await;
         let mut ready = [0; 6];
@@ -432,20 +433,20 @@ async fn cross_home_aral_equips_only_committed_numeric_entitlements() {
         write(
             socket,
             &cipher,
-            Message::new(wire_opcode::SceneOwner, ready),
+            Message::new(wire_opcode::ConfirmSceneOwner, ready),
         )
         .await;
-        until(socket, &cipher, wire_opcode::SceneOwner).await;
+        until(socket, &cipher, wire_opcode::ConfirmSceneOwner).await;
         write(
             socket,
             &cipher,
-            Message::new(wire_opcode::SceneConfirmed, [0; 6]),
+            Message::new(wire_opcode::SceneReadyConfirm, [0; 6]),
         )
         .await;
-        until(socket, &cipher, wire_opcode::SceneConfirmed).await;
+        until(socket, &cipher, wire_opcode::SceneReadyConfirm).await;
     }
     for (socket, _, _) in &mut sockets {
-        until(socket, &cipher, wire_opcode::TickSyncA).await;
+        until(socket, &cipher, wire_opcode::StartMatch).await;
     }
     for (socket, actor, expected) in &mut sockets {
         let selection = TalentSelection::Slot1;

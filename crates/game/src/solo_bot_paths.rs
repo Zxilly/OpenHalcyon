@@ -247,7 +247,7 @@ mod tests {
             &[path(one)],
             &mut out,
         );
-        assert_eq!(out[0].known_opcode(), Some(Opcode::EntityFloat));
+        assert_eq!(out[0].known_opcode(), Some(Opcode::MoveTo));
     }
 
     #[test]
@@ -288,7 +288,7 @@ mod tests {
                 &mut out,
             );
             for message in out {
-                assert_eq!(message.known_opcode(), Some(Opcode::EntityFloat));
+                assert_eq!(message.known_opcode(), Some(Opcode::MoveTo));
                 seen_slots.insert(message.body[0]);
             }
             if seen_slots.len() == 9 {

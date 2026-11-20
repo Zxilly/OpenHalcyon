@@ -13,9 +13,9 @@ fn word(body: &[u8], offset: usize) -> Option<u32> {
 
 pub(super) fn affects_owner(message: &Message, owner: u32) -> bool {
     match message.known_opcode() {
-        Some(crate::Opcode::EntitySpawn) => word(&message.body, 8) == Some(owner),
+        Some(crate::Opcode::HeroSpawn) => word(&message.body, 8) == Some(owner),
         Some(
-            crate::Opcode::DestroyEntity | crate::Opcode::ItemGrant | crate::Opcode::RemoveItem,
+            crate::Opcode::DestroyEntity | crate::Opcode::ItemGrant | crate::Opcode::ConsumeItem,
         ) => word(&message.body, 0) == Some(owner),
         _ => false,
     }
@@ -25,7 +25,7 @@ pub(super) fn affects_owner(message: &Message, owner: u32) -> bool {
 pub(super) fn record_delivery(view: &mut Option<ProjectedSlots>, owner: u32, batch: &[Message]) {
     for m in batch.iter().filter(|m| affects_owner(m, owner)) {
         match m.known_opcode() {
-            Some(crate::Opcode::EntitySpawn) => {
+            Some(crate::Opcode::HeroSpawn) => {
                 view.get_or_insert_with(ProjectedSlots::default);
             }
             Some(crate::Opcode::DestroyEntity) => *view = None,
@@ -38,7 +38,7 @@ pub(super) fn record_delivery(view: &mut Option<ProjectedSlots>, owner: u32, bat
                     *slot = Some(instance);
                 }
             }
-            Some(crate::Opcode::RemoveItem) => {
+            Some(crate::Opcode::ConsumeItem) => {
                 if let (Some(view), Some(instance)) = (
                     view.as_mut(),
                     word(&m.body, 4).and_then(std::num::NonZeroU32::new),
@@ -61,13 +61,13 @@ pub(super) fn without_existing_baseline(batch: &[Message], owner: u32) -> Option
         .iter()
         .filter(|m| {
             let old_snapshot = snapshot;
-            if m.is(crate::Opcode::EntitySpawn) {
+            if m.is(crate::Opcode::HeroSpawn) {
                 snapshot = affects_owner(m, owner);
             } else {
                 snapshot = snapshot
                     && matches!(
                         m.opcode,
-                        crate::wire_opcode::ItemGrant | crate::wire_opcode::StatModifier
+                        crate::wire_opcode::ItemGrant | crate::wire_opcode::ModifyActorAttribute
                     )
                     && word(&m.body, 0) == Some(owner);
             }
@@ -75,7 +75,7 @@ pub(super) fn without_existing_baseline(batch: &[Message], owner: u32) -> Option
                 && snapshot
                 && matches!(
                     m.opcode,
-                    crate::wire_opcode::ItemGrant | crate::wire_opcode::StatModifier
+                    crate::wire_opcode::ItemGrant | crate::wire_opcode::ModifyActorAttribute
                 );
             changed |= drop;
             !drop
@@ -188,12 +188,12 @@ mod tests {
             room.attach(*player, tx, watch::channel(false).0).unwrap();
             let actor = 1500 + index as u32;
             for frame in [
-                Message::known(crate::Opcode::RequestScene, [0; 6]),
+                Message::known(crate::Opcode::RequestSceneSnapshot, [0; 6]),
                 Message::known(
-                    crate::Opcode::SceneOwner,
+                    crate::Opcode::ConfirmSceneOwner,
                     [actor.to_be_bytes().as_slice(), &[1, 0]].concat(),
                 ),
-                Message::known(crate::Opcode::SceneConfirmed, [0; 6]),
+                Message::known(crate::Opcode::SceneReadyConfirm, [0; 6]),
             ] {
                 room.seats[index].preamble.observe(&frame, actor);
             }
@@ -276,13 +276,17 @@ mod tests {
         let (tx, _replacement) = mpsc::channel(16);
         room.attach(players[0], tx, watch::channel(false).0)
             .unwrap();
-        room.receive(0, 0, Message::known(crate::Opcode::RequestScene, [0; 6]))
-            .unwrap();
+        room.receive(
+            0,
+            0,
+            Message::known(crate::Opcode::RequestSceneSnapshot, [0; 6]),
+        )
+        .unwrap();
         let scene = room
             .receive(
                 0,
                 0,
-                Message::known(crate::Opcode::SceneOwner, [0, 0, 5, 220, 1, 0]),
+                Message::known(crate::Opcode::ConfirmSceneOwner, [0, 0, 5, 220, 1, 0]),
             )
             .unwrap();
         let grants: Vec<_> = scene
@@ -303,12 +307,16 @@ mod tests {
         assert_eq!(grants, current);
         assert!(scene.iter().all(|m| !matches!(
             m.opcode,
-            crate::wire_opcode::ReorderItem | crate::wire_opcode::RemoveItem
+            crate::wire_opcode::ReorderItem | crate::wire_opcode::ConsumeItem
         )));
         assert!(room.seats[0].aral_reorder_view.is_none());
         record_delivery(&mut room.seats[0].aral_reorder_view, 1500, &scene);
-        room.receive(0, 0, Message::known(crate::Opcode::SceneConfirmed, [0; 6]))
-            .unwrap();
+        room.receive(
+            0,
+            0,
+            Message::known(crate::Opcode::SceneReadyConfirm, [0; 6]),
+        )
+        .unwrap();
         room.seats[0].world_actor_written = true;
         assert_eq!(room.world.state_digest(), before_reconnect);
 
@@ -360,7 +368,7 @@ mod tests {
     fn repeated_own_declaration_leaves_inventory_generation_unchanged() {
         let mut body = [0; 750];
         body[8..12].copy_from_slice(&1500_u32.to_be_bytes());
-        let spawn = Message::known(crate::Opcode::EntitySpawn, body);
+        let spawn = Message::known(crate::Opcode::HeroSpawn, body);
         let grant = messages::item_grant(1500, 457, 2000);
         let modifier = messages::modifier(1500, halcyon_sim::NativeItemStat::AttackSpeed, 1.);
         let other = messages::item_grant(1501, 457, 2000);

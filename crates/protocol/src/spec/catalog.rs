@@ -11,20 +11,20 @@ pub static CATALOG: &[Entry] = &[
     Entry { opcode: Opcode::TransportAck, direction: Direction::ClientToServer, phase: Phase::Transport,
         layout: Some(Layout { body_bytes: 0, fields: &[
         ] }) },
-    Entry { opcode: Opcode::Hello, direction: Direction::ClientToServer, phase: Phase::Handshake,
+    Entry { opcode: Opcode::ClientHello, direction: Direction::ClientToServer, phase: Phase::Handshake,
         layout: Some(Layout { body_bytes: 132, fields: &[
             Field::new("client_ip_str", 0, 64, Text),
             Field::new("handshake_meta", 64, 68, Bytes),
         ] }) },
-    Entry { opcode: Opcode::Heartbeat, direction: Direction::ServerToClient, phase: Phase::Handshake,
+    Entry { opcode: Opcode::ServerHelloAck, direction: Direction::ServerToClient, phase: Phase::Handshake,
         layout: Some(Layout { body_bytes: 2, fields: &[
             Field::new("ack_status", 0, 2, U16),
         ] }) },
-    Entry { opcode: Opcode::PlayerUuid, direction: Direction::Bidirectional, phase: Phase::Handshake,
+    Entry { opcode: Opcode::RegisterPlayerUuid, direction: Direction::Bidirectional, phase: Phase::Handshake,
         layout: Some(Layout { body_bytes: 64, fields: &[
             Field::new("player_uuid", 0, 64, Text),
         ] }) },
-    Entry { opcode: Opcode::GameSetup, direction: Direction::ServerToClient, phase: Phase::Loading,
+    Entry { opcode: Opcode::MatchSettings, direction: Direction::ServerToClient, phase: Phase::Loading,
         layout: Some(Layout { body_bytes: 101, fields: &[
             Field::new("local_actor_id", 0, 4, U32),
             Field::new("mode_word1", 4, 4, U32),
@@ -46,7 +46,7 @@ pub static CATALOG: &[Entry] = &[
         layout: Some(Layout { body_bytes: 4, fields: &[
             Field::new("actor_id", 0, 4, U32),
         ] }) },
-    Entry { opcode: Opcode::PlayerHandle, direction: Direction::ServerToClient, phase: Phase::Loading,
+    Entry { opcode: Opcode::PlayerLoadedScene, direction: Direction::ServerToClient, phase: Phase::Loading,
         layout: Some(Layout { body_bytes: 72, fields: &[
             Field::new("player_uuid", 0, 64, Text),
             Field::new("actor_id", 64, 4, U32),
@@ -60,48 +60,48 @@ pub static CATALOG: &[Entry] = &[
             Field::new("actor_id", 160, 4, U32),
             Field::new("hero_and_loadout", 164, 52, Bytes),
         ] }) },
-    Entry { opcode: Opcode::TickSyncA, direction: Direction::ServerToClient, phase: Phase::Loading,
+    Entry { opcode: Opcode::StartMatch, direction: Direction::ServerToClient, phase: Phase::Loading,
         layout: Some(Layout { body_bytes: 0, fields: &[
         ] }) },
-    Entry { opcode: Opcode::TickSyncB, direction: Direction::Bidirectional, phase: Phase::Loading,
+    Entry { opcode: Opcode::PauseOrReady, direction: Direction::Bidirectional, phase: Phase::Loading,
         layout: Some(Layout { body_bytes: 0, fields: &[
         ] }) },
-    Entry { opcode: Opcode::TickSyncC, direction: Direction::ServerToClient, phase: Phase::Settlement,
+    Entry { opcode: Opcode::EndMatch, direction: Direction::ServerToClient, phase: Phase::Settlement,
         layout: Some(Layout { body_bytes: 5, fields: &[
             Field::new("winning_team", 0, 1, U8),
             Field::new("reason", 1, 4, U32),
         ] }) },
-    Entry { opcode: Opcode::Snapshot, direction: Direction::ServerToClient, phase: Phase::Combat,
+    Entry { opcode: Opcode::EntitySpawn, direction: Direction::ServerToClient, phase: Phase::Combat,
         layout: Some(Layout { body_bytes: 122, fields: &[
             Field::new("actor_id", 0, 4, U32),
             Field::new("spawn_words_and_transform", 4, 118, Bytes),
         ] }) },
-    Entry { opcode: Opcode::EntitySpawn, direction: Direction::ServerToClient, phase: Phase::Combat,
+    Entry { opcode: Opcode::HeroSpawn, direction: Direction::ServerToClient, phase: Phase::Combat,
         layout: Some(Layout { body_bytes: 746, fields: &[
             Field::new("actor_id", 0, 4, U32),
             Field::new("hero_spawn_struct", 4, 742, Bytes),
         ] }) },
-    Entry { opcode: Opcode::MoveCmd, direction: Direction::ClientToServer, phase: Phase::Combat,
+    Entry { opcode: Opcode::RequestMoveJoystick, direction: Direction::ClientToServer, phase: Phase::Combat,
         layout: Some(Layout { body_bytes: 8, fields: &[
             Field::new("dest_x", 0, 4, F32),
             Field::new("dest_z", 4, 4, F32),
         ] }) },
-    Entry { opcode: Opcode::StateUpdA, direction: Direction::ClientToServer, phase: Phase::Combat,
+    Entry { opcode: Opcode::RequestMovePoint, direction: Direction::ClientToServer, phase: Phase::Combat,
         layout: Some(Layout { body_bytes: 8, fields: &[
             Field::new("dest_x", 0, 4, F32),
             Field::new("dest_z", 4, 4, F32),
         ] }) },
-    Entry { opcode: Opcode::StateUpdB, direction: Direction::ClientToServer, phase: Phase::Combat,
+    Entry { opcode: Opcode::Unseen03F6, direction: Direction::ClientToServer, phase: Phase::Combat,
         layout: None },
-    Entry { opcode: Opcode::StateUpdC, direction: Direction::ClientToServer, phase: Phase::Combat,
+    Entry { opcode: Opcode::Unseen03F7, direction: Direction::ClientToServer, phase: Phase::Combat,
         layout: None },
-    Entry { opcode: Opcode::EntityFloat, direction: Direction::ServerToClient, phase: Phase::Combat,
+    Entry { opcode: Opcode::MoveTo, direction: Direction::ServerToClient, phase: Phase::Combat,
         layout: Some(Layout { body_bytes: 9, fields: &[
             Field::new("reg_slot", 0, 1, U8),
             Field::new("dest_x", 1, 4, F32),
             Field::new("dest_z", 5, 4, F32),
         ] }) },
-    Entry { opcode: Opcode::EntityAct2, direction: Direction::ServerToClient, phase: Phase::Combat,
+    Entry { opcode: Opcode::MoveToServerAuthoritative, direction: Direction::ServerToClient, phase: Phase::Combat,
         layout: Some(Layout { body_bytes: 14, fields: &[
             Field::new("reg_slot", 0, 1, U8),
             Field::new("dest_x", 1, 4, F32),
@@ -191,7 +191,7 @@ pub static CATALOG: &[Entry] = &[
         layout: Some(Layout { body_bytes: 4, fields: &[
             Field::new("actor_id", 0, 4, U32),
         ] }) },
-    Entry { opcode: Opcode::Unresolved040C, direction: Direction::Reserved, phase: Phase::Combat,
+    Entry { opcode: Opcode::ReservedNoop040C, direction: Direction::Reserved, phase: Phase::Combat,
         layout: None },
     Entry { opcode: Opcode::FireProjectile, direction: Direction::ServerToClient, phase: Phase::Combat,
         layout: Some(Layout { body_bytes: 17, fields: &[
@@ -251,7 +251,7 @@ pub static CATALOG: &[Entry] = &[
             Field::new("target_z", 8, 4, F32),
             Field::new("ability_selector", 12, 1, U8),
         ] }) },
-    Entry { opcode: Opcode::RequestAbilityVariant, direction: Direction::ClientToServer, phase: Phase::Combat,
+    Entry { opcode: Opcode::RequestActivateAbilityUnseen, direction: Direction::ClientToServer, phase: Phase::Combat,
         layout: Some(Layout { body_bytes: 25, fields: &[
             Field::new("start_x", 0, 4, F32),
             Field::new("start_y", 4, 4, F32),
@@ -266,7 +266,7 @@ pub static CATALOG: &[Entry] = &[
             Field::new("ability_slot", 0, 1, U8),
             Field::new("cancel_flag", 1, 1, U8),
         ] }) },
-    Entry { opcode: Opcode::PlayAbility, direction: Direction::ServerToClient, phase: Phase::Combat,
+    Entry { opcode: Opcode::PlayTargetAbility, direction: Direction::ServerToClient, phase: Phase::Combat,
         layout: Some(Layout { body_bytes: 9, fields: &[
             Field::new("caster_actor_id", 0, 4, U32),
             Field::new("target_actor_id", 4, 4, U32),
@@ -280,7 +280,7 @@ pub static CATALOG: &[Entry] = &[
             Field::new("target_z", 12, 4, F32),
             Field::new("ability_selector", 16, 1, U8),
         ] }) },
-    Entry { opcode: Opcode::PlayAbilityVariant, direction: Direction::Bidirectional, phase: Phase::Combat,
+    Entry { opcode: Opcode::PlayAbilityUnseen, direction: Direction::Bidirectional, phase: Phase::Combat,
         layout: None },
     Entry { opcode: Opcode::PlayVoiceOver, direction: Direction::Bidirectional, phase: Phase::Combat,
         layout: None },
@@ -305,7 +305,7 @@ pub static CATALOG: &[Entry] = &[
             Field::new("actor_id", 0, 4, U32),
             Field::new("selector", 4, 4, U32),
         ] }) },
-    Entry { opcode: Opcode::StatModifier, direction: Direction::ServerToClient, phase: Phase::Combat,
+    Entry { opcode: Opcode::ModifyActorAttribute, direction: Direction::ServerToClient, phase: Phase::Combat,
         layout: Some(Layout { body_bytes: 15, fields: &[
             Field::new("actor_id", 0, 4, U32),
             Field::new("value", 4, 4, F32),
@@ -314,7 +314,7 @@ pub static CATALOG: &[Entry] = &[
             Field::new("mode", 13, 1, U8),
             Field::new("flags", 14, 1, U8),
         ] }) },
-    Entry { opcode: Opcode::EntityStat, direction: Direction::ServerToClient, phase: Phase::Combat,
+    Entry { opcode: Opcode::ModifyActorResource, direction: Direction::ServerToClient, phase: Phase::Combat,
         layout: Some(Layout { body_bytes: 12, fields: &[
             Field::new("actor_id", 0, 4, U32),
             Field::new("amount", 4, 4, F32),
@@ -336,9 +336,9 @@ pub static CATALOG: &[Entry] = &[
             Field::new("var_key_hash", 0, 4, U32),
             Field::new("value", 4, 4, F32),
         ] }) },
-    Entry { opcode: Opcode::CreateZoneOfControl, direction: Direction::Bidirectional, phase: Phase::Combat,
+    Entry { opcode: Opcode::CreateZoneOfControlUnseen, direction: Direction::Bidirectional, phase: Phase::Combat,
         layout: None },
-    Entry { opcode: Opcode::CreateZoneOfControlVariantB, direction: Direction::ServerToClient, phase: Phase::Combat,
+    Entry { opcode: Opcode::CreateZoneOfControl, direction: Direction::ServerToClient, phase: Phase::Combat,
         layout: Some(Layout { body_bytes: 25, fields: &[
             Field::new("zone_id", 0, 4, U32),
             Field::new("owner_actor_id", 4, 4, U32),
@@ -348,7 +348,7 @@ pub static CATALOG: &[Entry] = &[
             Field::new("facing_angle", 20, 4, F32),
             Field::new("zone_flags", 24, 1, U8),
         ] }) },
-    Entry { opcode: Opcode::CreateZoneOfControlVariantC, direction: Direction::ServerToClient, phase: Phase::Combat,
+    Entry { opcode: Opcode::CreateRectZoneOfControl, direction: Direction::ServerToClient, phase: Phase::Combat,
         layout: Some(Layout { body_bytes: 24, fields: &[
             Field::new("zone_id", 0, 4, U32),
             Field::new("owner_actor_id", 4, 4, U32),
@@ -370,11 +370,11 @@ pub static CATALOG: &[Entry] = &[
         layout: Some(Layout { body_bytes: 4, fields: &[
             Field::new("target_actor_id", 0, 4, U32),
         ] }) },
-    Entry { opcode: Opcode::Unresolved0426, direction: Direction::Reserved, phase: Phase::Combat,
+    Entry { opcode: Opcode::ReservedNoop0426, direction: Direction::Reserved, phase: Phase::Combat,
         layout: None },
     Entry { opcode: Opcode::PauseCooldown, direction: Direction::Bidirectional, phase: Phase::Combat,
         layout: None },
-    Entry { opcode: Opcode::CooldownValue, direction: Direction::ServerToClient, phase: Phase::Combat,
+    Entry { opcode: Opcode::ModifyCooldown, direction: Direction::ServerToClient, phase: Phase::Combat,
         layout: Some(Layout { body_bytes: 13, fields: &[
             Field::new("owner_actor_id", 0, 4, U32),
             Field::new("cooldown_key", 4, 4, U32),
@@ -383,9 +383,9 @@ pub static CATALOG: &[Entry] = &[
         ] }) },
     Entry { opcode: Opcode::ModifyAbilityCharges, direction: Direction::Bidirectional, phase: Phase::Combat,
         layout: None },
-    Entry { opcode: Opcode::Unresolved042A, direction: Direction::Reserved, phase: Phase::Combat,
+    Entry { opcode: Opcode::ReservedNoop042A, direction: Direction::Reserved, phase: Phase::Combat,
         layout: None },
-    Entry { opcode: Opcode::EntityState, direction: Direction::ServerToClient, phase: Phase::Combat,
+    Entry { opcode: Opcode::ModifyVisibility, direction: Direction::ServerToClient, phase: Phase::Combat,
         layout: Some(Layout { body_bytes: 8, fields: &[
             Field::new("actor_id", 0, 4, U32),
             Field::new("vis_byte0", 4, 1, U8),
@@ -395,9 +395,9 @@ pub static CATALOG: &[Entry] = &[
         ] }) },
     Entry { opcode: Opcode::CampVisibility, direction: Direction::ServerToClient, phase: Phase::Combat,
         layout: None },
-    Entry { opcode: Opcode::Unresolved042D, direction: Direction::Reserved, phase: Phase::Combat,
+    Entry { opcode: Opcode::ReservedNoop042D, direction: Direction::Reserved, phase: Phase::Combat,
         layout: None },
-    Entry { opcode: Opcode::Position, direction: Direction::ServerToClient, phase: Phase::Combat,
+    Entry { opcode: Opcode::MoveToCorrection, direction: Direction::ServerToClient, phase: Phase::Combat,
         layout: Some(Layout { body_bytes: 12, fields: &[
             Field::new("actor_id", 0, 4, U32),
             Field::new("pos_x", 4, 4, F32),
@@ -454,7 +454,7 @@ pub static CATALOG: &[Entry] = &[
             Field::new("from_slot", 4, 1, U8),
             Field::new("to_slot", 5, 1, U8),
         ] }) },
-    Entry { opcode: Opcode::ShopRequest, direction: Direction::Bidirectional, phase: Phase::Combat,
+    Entry { opcode: Opcode::BuyItem, direction: Direction::Bidirectional, phase: Phase::Combat,
         layout: Some(Layout { body_bytes: 8, fields: &[
             Field::new("actor_id", 0, 4, U32),
             Field::new("item_template_id", 4, 4, U32),
@@ -479,7 +479,7 @@ pub static CATALOG: &[Entry] = &[
             Field::new("item_instance_id", 4, 4, U32),
             Field::new("item_template_id", 8, 4, U32),
         ] }) },
-    Entry { opcode: Opcode::EntityProp, direction: Direction::ServerToClient, phase: Phase::Combat,
+    Entry { opcode: Opcode::ApplyBuffCompact, direction: Direction::ServerToClient, phase: Phase::Combat,
         layout: Some(Layout { body_bytes: 16, fields: &[
             Field::new("target_actor_id", 0, 4, U32),
             Field::new("source_actor_id", 4, 4, U32),
@@ -487,7 +487,7 @@ pub static CATALOG: &[Entry] = &[
             Field::new("buff_instance_id", 10, 4, U32),
             Field::new("buff_def_id", 14, 2, U16),
         ] }) },
-    Entry { opcode: Opcode::EntityData, direction: Direction::ServerToClient, phase: Phase::Combat,
+    Entry { opcode: Opcode::ApplyBuffExtended, direction: Direction::ServerToClient, phase: Phase::Combat,
         layout: Some(Layout { body_bytes: 34, fields: &[
             Field::new("target_actor_id", 0, 4, U32),
             Field::new("source_actor_id", 4, 4, U32),
@@ -538,23 +538,23 @@ pub static CATALOG: &[Entry] = &[
             Field::new("buff_instance_id", 4, 4, U32),
             Field::new("decrement_count", 8, 4, U32),
         ] }) },
-    Entry { opcode: Opcode::RequestActivateItem, direction: Direction::Bidirectional, phase: Phase::Combat,
+    Entry { opcode: Opcode::RequestActivateItemSelf, direction: Direction::Bidirectional, phase: Phase::Combat,
         layout: Some(Layout { body_bytes: 4, fields: &[
             Field::new("item_instance_id", 0, 4, U32),
         ] }) },
-    Entry { opcode: Opcode::RequestActivateItemVariantB, direction: Direction::ClientToServer, phase: Phase::Combat,
+    Entry { opcode: Opcode::RequestActivateItemTarget, direction: Direction::ClientToServer, phase: Phase::Combat,
         layout: Some(Layout { body_bytes: 8, fields: &[
             Field::new("target_actor_id", 0, 4, U32),
             Field::new("item_instance_id", 4, 4, U32),
         ] }) },
-    Entry { opcode: Opcode::RequestActivateItemVariantC, direction: Direction::Bidirectional, phase: Phase::Combat,
+    Entry { opcode: Opcode::RequestActivateItemPoint, direction: Direction::Bidirectional, phase: Phase::Combat,
         layout: Some(Layout { body_bytes: 16, fields: &[
             Field::new("target_x", 0, 4, F32),
             Field::new("target_y", 4, 4, F32),
             Field::new("target_z", 8, 4, F32),
             Field::new("item_instance_id", 12, 4, U32),
         ] }) },
-    Entry { opcode: Opcode::RemoveItem, direction: Direction::ServerToClient, phase: Phase::Combat,
+    Entry { opcode: Opcode::ConsumeItem, direction: Direction::ServerToClient, phase: Phase::Combat,
         layout: Some(Layout { body_bytes: 10, fields: &[
             Field::new("actor_id", 0, 4, U32),
             Field::new("item_instance_id", 4, 4, U32),
@@ -594,23 +594,23 @@ pub static CATALOG: &[Entry] = &[
         ] }) },
     Entry { opcode: Opcode::Unresolved0450, direction: Direction::ClientToServer, phase: Phase::Combat,
         layout: None },
-    Entry { opcode: Opcode::OpeningWorldClock, direction: Direction::ServerToClient, phase: Phase::Loading,
+    Entry { opcode: Opcode::SyncWorldClock, direction: Direction::ServerToClient, phase: Phase::Loading,
         layout: Some(Layout { body_bytes: 4, fields: &[
             Field::new("world_time_sec", 0, 4, F32),
         ] }) },
-    Entry { opcode: Opcode::EnterPostgame, direction: Direction::ServerToClient, phase: Phase::Settlement,
+    Entry { opcode: Opcode::CrystalShattered, direction: Direction::ServerToClient, phase: Phase::Settlement,
         layout: Some(Layout { body_bytes: 0, fields: &[
         ] }) },
-    Entry { opcode: Opcode::HeroCatalog, direction: Direction::ServerToClient, phase: Phase::Draft,
+    Entry { opcode: Opcode::DraftCatalogEntry, direction: Direction::ServerToClient, phase: Phase::Draft,
         layout: Some(Layout { body_bytes: 32, fields: &[
             Field::new("catalog_entry", 0, 32, Bytes),
         ] }) },
-    Entry { opcode: Opcode::GameMode, direction: Direction::ServerToClient, phase: Phase::Draft,
+    Entry { opcode: Opcode::DraftModeAnnouncement, direction: Direction::ServerToClient, phase: Phase::Draft,
         layout: Some(Layout { body_bytes: 68, fields: &[
             Field::new("mode_id", 0, 4, U32),
             Field::new("mode_data", 4, 64, Bytes),
         ] }) },
-    Entry { opcode: Opcode::HeroLock, direction: Direction::ClientToServer, phase: Phase::Draft,
+    Entry { opcode: Opcode::DraftClient0455, direction: Direction::ClientToServer, phase: Phase::Draft,
         layout: Some(Layout { body_bytes: 0, fields: &[
         ] }) },
     Entry { opcode: Opcode::DraftRerollHero, direction: Direction::Bidirectional, phase: Phase::Draft,
@@ -619,17 +619,17 @@ pub static CATALOG: &[Entry] = &[
         ] }) },
     Entry { opcode: Opcode::Unresolved0457, direction: Direction::ClientToServer, phase: Phase::Draft,
         layout: None },
-    Entry { opcode: Opcode::SetupA, direction: Direction::Bidirectional, phase: Phase::Draft,
+    Entry { opcode: Opcode::DraftRefreshRequest, direction: Direction::Bidirectional, phase: Phase::Draft,
         layout: Some(Layout { body_bytes: 6, fields: &[
             Field::new("reserved_zero", 0, 6, Bytes),
         ] }) },
-    Entry { opcode: Opcode::Snapshot5V5, direction: Direction::ServerToClient, phase: Phase::Draft,
+    Entry { opcode: Opcode::DraftRosterFull, direction: Direction::ServerToClient, phase: Phase::Draft,
         layout: Some(Layout { body_bytes: 2584, fields: &[
             Field::new("phase_timer0", 0, 4, U32),
             Field::new("phase_timer1", 4, 4, U32),
             Field::new("seats_16x161", 8, 2576, Bytes),
         ] }) },
-    Entry { opcode: Opcode::SnapshotAral, direction: Direction::ServerToClient, phase: Phase::Draft,
+    Entry { opcode: Opcode::DraftRosterAral, direction: Direction::ServerToClient, phase: Phase::Draft,
         layout: Some(Layout { body_bytes: 2584, fields: &[
             Field::new("phase_timer0", 0, 4, U32),
             Field::new("phase_timer1", 4, 4, U32),
@@ -637,7 +637,7 @@ pub static CATALOG: &[Entry] = &[
         ] }) },
     Entry { opcode: Opcode::Unresolved045B, direction: Direction::ServerToClient, phase: Phase::Draft,
         layout: None },
-    Entry { opcode: Opcode::SceneReadiness, direction: Direction::ServerToClient, phase: Phase::Loading,
+    Entry { opcode: Opcode::SceneReadinessRows, direction: Direction::ServerToClient, phase: Phase::Loading,
         layout: Some(Layout { body_bytes: 96, fields: &[
             Field::new("readiness_rows_16x6", 0, 96, Bytes),
         ] }) },
@@ -645,12 +645,12 @@ pub static CATALOG: &[Entry] = &[
         layout: Some(Layout { body_bytes: 1, fields: &[
             Field::new("slot_index", 0, 1, U8),
         ] }) },
-    Entry { opcode: Opcode::HeroSelection, direction: Direction::Bidirectional, phase: Phase::Draft,
+    Entry { opcode: Opcode::DraftSelectHero, direction: Direction::Bidirectional, phase: Phase::Draft,
         layout: Some(Layout { body_bytes: 6, fields: &[
             Field::new("hero_id", 0, 4, U32),
             Field::new("flags", 4, 2, U16),
         ] }) },
-    Entry { opcode: Opcode::SkinSelection, direction: Direction::Bidirectional, phase: Phase::Draft,
+    Entry { opcode: Opcode::DraftSelectSkin, direction: Direction::Bidirectional, phase: Phase::Draft,
         layout: Some(Layout { body_bytes: 6, fields: &[
             Field::new("skin_id", 0, 4, U32),
             Field::new("flags", 4, 2, U16),
@@ -667,7 +667,7 @@ pub static CATALOG: &[Entry] = &[
         layout: Some(Layout { body_bytes: 1, fields: &[
             Field::new("build_path_id", 0, 1, U8),
         ] }) },
-    Entry { opcode: Opcode::LockSelection, direction: Direction::Bidirectional, phase: Phase::Draft,
+    Entry { opcode: Opcode::DraftLockHero, direction: Direction::Bidirectional, phase: Phase::Draft,
         layout: Some(Layout { body_bytes: 1, fields: &[
             Field::new("lock_flag", 0, 1, U8),
         ] }) },
@@ -685,33 +685,33 @@ pub static CATALOG: &[Entry] = &[
         layout: None },
     Entry { opcode: Opcode::Unresolved046A, direction: Direction::ClientToServer, phase: Phase::Draft,
         layout: None },
-    Entry { opcode: Opcode::SetupC, direction: Direction::Bidirectional, phase: Phase::Draft,
+    Entry { opcode: Opcode::DraftReadyControl, direction: Direction::Bidirectional, phase: Phase::Draft,
         layout: Some(Layout { body_bytes: 1, fields: &[
             Field::new("control_byte", 0, 1, U8),
         ] }) },
-    Entry { opcode: Opcode::BeginLoading, direction: Direction::ServerToClient, phase: Phase::Loading,
+    Entry { opcode: Opcode::DraftTransitionToLoading, direction: Direction::ServerToClient, phase: Phase::Loading,
         layout: Some(Layout { body_bytes: 1, fields: &[
             Field::new("transition_state", 0, 1, U8),
         ] }) },
-    Entry { opcode: Opcode::SceneConfirmed, direction: Direction::Bidirectional, phase: Phase::Loading,
+    Entry { opcode: Opcode::SceneReadyConfirm, direction: Direction::Bidirectional, phase: Phase::Loading,
         layout: Some(Layout { body_bytes: 6, fields: &[
             Field::new("reserved_zero", 0, 6, Bytes),
         ] }) },
-    Entry { opcode: Opcode::RequestScene, direction: Direction::Bidirectional, phase: Phase::Loading,
+    Entry { opcode: Opcode::RequestSceneSnapshot, direction: Direction::Bidirectional, phase: Phase::Loading,
         layout: Some(Layout { body_bytes: 6, fields: &[
             Field::new("scene_req_data", 0, 6, Bytes),
         ] }) },
-    Entry { opcode: Opcode::ModeName, direction: Direction::ServerToClient, phase: Phase::Loading,
+    Entry { opcode: Opcode::SceneSettings, direction: Direction::ServerToClient, phase: Phase::Loading,
         layout: Some(Layout { body_bytes: 69, fields: &[
             Field::new("scene_name_or_config", 0, 64, Bytes),
             Field::new("scene_word", 64, 4, U32),
             Field::new("scene_flag", 68, 1, U8),
         ] }) },
-    Entry { opcode: Opcode::SceneTransition, direction: Direction::ServerToClient, phase: Phase::Loading,
+    Entry { opcode: Opcode::SceneLoadedDismiss, direction: Direction::ServerToClient, phase: Phase::Loading,
         layout: Some(Layout { body_bytes: 1, fields: &[
             Field::new("scene_loaded_flag", 0, 1, U8),
         ] }) },
-    Entry { opcode: Opcode::SceneOwner, direction: Direction::Bidirectional, phase: Phase::Loading,
+    Entry { opcode: Opcode::ConfirmSceneOwner, direction: Direction::Bidirectional, phase: Phase::Loading,
         layout: Some(Layout { body_bytes: 5, fields: &[
             Field::new("actor_id", 0, 4, U32),
             Field::new("ready_flag", 4, 1, U8),
@@ -743,7 +743,7 @@ pub static CATALOG: &[Entry] = &[
             Field::new("player_uuid", 0, 64, Text),
             Field::new("disconnect_code", 64, 2, U16),
         ] }) },
-    Entry { opcode: Opcode::Unresolved047A, direction: Direction::Reserved, phase: Phase::Combat,
+    Entry { opcode: Opcode::ReservedNoop047A, direction: Direction::Reserved, phase: Phase::Combat,
         layout: None },
     Entry { opcode: Opcode::Unresolved047B, direction: Direction::ClientToServer, phase: Phase::Combat,
         layout: None },
@@ -794,7 +794,7 @@ pub static CATALOG: &[Entry] = &[
         ] }) },
     Entry { opcode: Opcode::SyncAbilityBehavior, direction: Direction::Bidirectional, phase: Phase::Combat,
         layout: None },
-    Entry { opcode: Opcode::CooldownSync, direction: Direction::ServerToClient, phase: Phase::Loading,
+    Entry { opcode: Opcode::InitCooldown, direction: Direction::ServerToClient, phase: Phase::Loading,
         layout: Some(Layout { body_bytes: 22, fields: &[
             Field::new("owner_actor_id", 0, 4, U32),
             Field::new("cooldown_key", 4, 4, U32),
@@ -809,12 +809,12 @@ pub static CATALOG: &[Entry] = &[
         ] }) },
     Entry { opcode: Opcode::ModifyBuffVar, direction: Direction::Bidirectional, phase: Phase::Combat,
         layout: None },
-    Entry { opcode: Opcode::AggroState, direction: Direction::ServerToClient, phase: Phase::Combat,
+    Entry { opcode: Opcode::SendAggroState, direction: Direction::ServerToClient, phase: Phase::Combat,
         layout: Some(Layout { body_bytes: 8, fields: &[
             Field::new("source_actor_id", 0, 4, U32),
             Field::new("target_actor_id", 4, 4, U32),
         ] }) },
-    Entry { opcode: Opcode::StatisticsReport, direction: Direction::ServerToClient, phase: Phase::Settlement,
+    Entry { opcode: Opcode::PostMatchStats, direction: Direction::ServerToClient, phase: Phase::Settlement,
         layout: Some(Layout { body_bytes: 1612, fields: &[
             Field::new("player_actor_ids_16", 0, 64, Bytes),
             Field::new("player_teams_16", 64, 16, Bytes),

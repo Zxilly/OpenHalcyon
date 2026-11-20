@@ -72,7 +72,7 @@ mod tests {
 
     fn point(x: f32, y: f32) -> Message {
         Message::known(
-            crate::Opcode::StateUpdA,
+            crate::Opcode::RequestMovePoint,
             [x.to_be_bytes(), y.to_be_bytes()].concat(),
         )
     }
@@ -141,14 +141,18 @@ mod tests {
                 let ch = usize::from(!aral);
                 if aral {
                     let actor = u32::from(wire_id(seat as u32 + 1));
-                    slot.preamble
-                        .observe(&Message::known(crate::Opcode::RequestScene, [0; 6]), actor);
+                    slot.preamble.observe(
+                        &Message::known(crate::Opcode::RequestSceneSnapshot, [0; 6]),
+                        actor,
+                    );
                     let mut ready = actor.to_be_bytes().to_vec();
                     ready.extend([1, 0]);
-                    slot.preamble
-                        .observe(&Message::known(crate::Opcode::SceneOwner, ready), actor);
                     slot.preamble.observe(
-                        &Message::known(crate::Opcode::SceneConfirmed, [0; 6]),
+                        &Message::known(crate::Opcode::ConfirmSceneOwner, ready),
+                        actor,
+                    );
+                    slot.preamble.observe(
+                        &Message::known(crate::Opcode::SceneReadyConfirm, [0; 6]),
                         actor,
                     );
                 }

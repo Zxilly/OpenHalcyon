@@ -98,7 +98,7 @@ pub(super) fn recordable(m: &Message) -> bool {
     let Ok(Fields::BuffApplication(effect)) = m.fields() else {
         return false;
     };
-    m.is(Opcode::EntityData)
+    m.is(Opcode::ApplyBuffExtended)
         && effect.prefix.source == wire_id(slot)
         && effect.prefix.instance == instance
         && effect.prefix.definition == 205
@@ -119,7 +119,7 @@ impl View {
     pub(super) fn accept_guard_links(&mut self, batch: &[Message]) {
         for m in batch
             .iter()
-            .filter(|m| m.is(Opcode::EntityData) && recordable(m))
+            .filter(|m| m.is(Opcode::ApplyBuffExtended) && recordable(m))
         {
             let slot = (u32::from_be_bytes(m.body[..4].try_into().unwrap()) - 2000) as u8;
             if self.registered(sim_id(slot), slot) {
@@ -178,7 +178,7 @@ mod tests {
             let mut b = vec![0; 122];
             b[116] = slot;
             b[8..12].copy_from_slice(&wire_id(slot).to_be_bytes());
-            v.declarations(&[Message::known(Opcode::Snapshot, b)]);
+            v.declarations(&[Message::known(Opcode::EntitySpawn, b)]);
         }
         v.guard_death(7, &mut out);
         assert!(out.is_empty());
@@ -292,14 +292,14 @@ mod tests {
         seat.world_actor_written = true;
         seat.control_world = true;
         seat.preamble
-            .observe(&Message::known(Opcode::RequestScene, [0; 6]), 1500);
+            .observe(&Message::known(Opcode::RequestSceneSnapshot, [0; 6]), 1500);
         let mut owner = [0; 6];
         owner[..4].copy_from_slice(&1500u32.to_be_bytes());
         owner[4] = 1;
         seat.preamble
-            .observe(&Message::known(Opcode::SceneOwner, owner), 1500);
+            .observe(&Message::known(Opcode::ConfirmSceneOwner, owner), 1500);
         seat.preamble
-            .observe(&Message::known(Opcode::SceneConfirmed, [0; 6]), 1500);
+            .observe(&Message::known(Opcode::SceneReadyConfirm, [0; 6]), 1500);
 
         let tower = sim_id(15);
         let idx = room

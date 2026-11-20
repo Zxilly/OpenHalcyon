@@ -1005,7 +1005,7 @@ impl Room {
             }));
         }
         let mut records = self.recommended_paths(None);
-        records.push(Message::known(crate::Opcode::TickSyncA, []));
+        records.push(Message::known(crate::Opcode::StartMatch, []));
         let marker = transport::TeamBatch::new(records);
         for peer in self.seats.iter().filter_map(Seat::gameplay_peer) {
             peer.send(transport::Delivery::Team(marker.clone()));
@@ -1116,7 +1116,7 @@ impl Room {
             // A fresh control stream has never received the seat and world mode.
             let mut records: Batch = scene::players(self).collect();
             records.push(messages::world_settings(idx, &self.queue));
-            records.push(Message::known(crate::Opcode::BeginLoading, [0]));
+            records.push(Message::known(crate::Opcode::DraftTransitionToLoading, [0]));
             self.seats[idx].loading_roster_sent = true;
             records
         } else if legacy_aral {
@@ -1273,7 +1273,7 @@ impl Room {
             return vec![];
         };
         let mut ack = vec![Message::known(
-            crate::Opcode::ShopRequest,
+            crate::Opcode::BuyItem,
             [actor.to_be_bytes(), item.to_be_bytes()].concat(),
         )];
         if let Some(receipt) = receipt {
@@ -1336,10 +1336,10 @@ impl Room {
         let mut first_point_ack = None;
         let sync_after_pick = !legacy
             && ch == 0
-            && m.is(crate::Opcode::HeroSelection)
+            && m.is(crate::Opcode::DraftSelectHero)
             && !self.seats[i].draft_sync_sent;
         let seen = &mut self.seats[i].seen[ch];
-        if !m.is(crate::Opcode::HeroLock) && seen.len() < 32 && seen.insert(m.opcode) {
+        if !m.is(crate::Opcode::DraftClient0455) && seen.len() < 32 && seen.insert(m.opcode) {
             let generation = self.seats[i].peers[ch].as_ref().map(|peer| peer.generation);
             self.event(
                 EventKind::Protocol,
@@ -1376,7 +1376,7 @@ impl Room {
                 if ch == 0
                     && self.seats[i].world_actor_written
                     && (legacy
-                        || m.is(crate::Opcode::StateUpdA)
+                        || m.is(crate::Opcode::RequestMovePoint)
                             && solo_scene
                             && self.seats[i].scene_written)
                     && (game || pending_world_input) =>
@@ -1514,7 +1514,7 @@ impl Room {
                 out.push(m);
             }
             Fields::ControlByte { value: 0, .. }
-                if m.is(crate::Opcode::SetupA)
+                if m.is(crate::Opcode::DraftRefreshRequest)
                     && (legacy
                         || self.solo_scene()
                         || self.known_queue == Some(KnownQueue::Ranked))
@@ -1552,7 +1552,7 @@ impl Room {
                         },
                     );
                     let roster = self.roster_update(Some(i));
-                    if op == crate::wire_opcode::LockSelection {
+                    if op == crate::wire_opcode::DraftLockHero {
                         out.insert(0, roster);
                     } else {
                         out.push(roster);
@@ -1620,25 +1620,25 @@ impl Room {
             _ if (legacy || solo_scene)
                 && matches!(
                     m.opcode,
-                    crate::wire_opcode::RequestScene
-                        | crate::wire_opcode::SceneOwner
-                        | crate::wire_opcode::SceneConfirmed
+                    crate::wire_opcode::RequestSceneSnapshot
+                        | crate::wire_opcode::ConfirmSceneOwner
+                        | crate::wire_opcode::SceneReadyConfirm
                 ) =>
             {
                 let late = solo_scene && self.seats[i].preamble.take_late_confirmation(&m);
                 if scene_confirmed || late {
                     if solo_scene {
-                        out.push(Message::known(crate::Opcode::SceneTransition, [0]));
+                        out.push(Message::known(crate::Opcode::SceneLoadedDismiss, [0]));
                     }
                     out.push(m);
                     if solo_scene {
-                        out.push(Message::known(crate::Opcode::SceneTransition, [0]));
+                        out.push(Message::known(crate::Opcode::SceneLoadedDismiss, [0]));
                     }
                     if solo_scene && scene_confirmed {
                         self.phase(crate::RoomPhase::Running);
-                        out.push(Message::known(crate::Opcode::TickSyncA, []));
+                        out.push(Message::known(crate::Opcode::StartMatch, []));
                     } else if !solo_scene && self.phase == crate::RoomPhase::Running {
-                        out.push(Message::known(crate::Opcode::TickSyncA, []));
+                        out.push(Message::known(crate::Opcode::StartMatch, []));
                     }
                 } else if scene_requested {
                     let team = (self.phase == crate::RoomPhase::Running)
@@ -1649,7 +1649,7 @@ impl Room {
                         scene::announce_aral_entry(self, i, &m);
                         aral::opening(self, team)
                     };
-                    out.push(Message::known(crate::Opcode::RequestScene, [0; 6]));
+                    out.push(Message::known(crate::Opcode::RequestSceneSnapshot, [0; 6]));
                     out.push(m);
                     if solo_scene {
                         out.push(scene::solo_table(self));
@@ -1657,13 +1657,13 @@ impl Room {
                 }
             }
             _ if [
-                crate::wire_opcode::SetupA,
-                crate::wire_opcode::HeroSelection,
-                crate::wire_opcode::SetupC,
-                crate::wire_opcode::SkinSelection,
-                crate::wire_opcode::RequestScene,
-                crate::wire_opcode::SceneOwner,
-                crate::wire_opcode::SceneConfirmed,
+                crate::wire_opcode::DraftRefreshRequest,
+                crate::wire_opcode::DraftSelectHero,
+                crate::wire_opcode::DraftReadyControl,
+                crate::wire_opcode::DraftSelectSkin,
+                crate::wire_opcode::RequestSceneSnapshot,
+                crate::wire_opcode::ConfirmSceneOwner,
+                crate::wire_opcode::SceneReadyConfirm,
             ]
             .contains(&m.opcode) =>
             {
@@ -1674,12 +1674,12 @@ impl Room {
         if accepted_world_input {
             self.seats[i].preamble.confirm_world_input();
             self.phase(crate::RoomPhase::Running);
-            out.push(Message::known(crate::Opcode::TickSyncA, []));
+            out.push(Message::known(crate::Opcode::StartMatch, []));
             out.extend(first_point_ack);
         }
         if sync_after_pick {
             // Android's first 0x045E response precedes this one-time draft message.
-            out.push(Message::known(crate::Opcode::TickSyncC, [0, 0, 0, 0, 8, 0]));
+            out.push(Message::known(crate::Opcode::EndMatch, [0, 0, 0, 0, 8, 0]));
             self.seats[i].draft_sync_sent = true;
         }
         if ch == 0 && scene_requested {
@@ -2232,7 +2232,7 @@ mod tests {
                 room.receive(
                     seat,
                     ch,
-                    Message::known(crate::Opcode::RequestScene, [0; 6]),
+                    Message::known(crate::Opcode::RequestSceneSnapshot, [0; 6]),
                 )
                 .unwrap();
             }
@@ -2273,16 +2273,16 @@ mod tests {
             let (_, _, _, initial) = room
                 .attach(players[0], tx, watch::channel(false).0)
                 .unwrap();
-            assert_eq!(initial[0].opcode, crate::wire_opcode::GameSetup);
-            assert_eq!(initial[1].opcode, crate::wire_opcode::GameMode);
+            assert_eq!(initial[0].opcode, crate::wire_opcode::MatchSettings);
+            assert_eq!(initial[1].opcode, crate::wire_opcode::DraftModeAnnouncement);
             assert_eq!(&initial[1].body[4..4 + mode.len()], mode.as_bytes());
             for _ in 0..3 {
-                let request = Message::known(crate::Opcode::SetupA, [0; 6]);
+                let request = Message::known(crate::Opcode::DraftRefreshRequest, [0; 6]);
                 let result = room.receive(0, 0, request.clone()).unwrap();
                 assert_eq!(result.last(), Some(&request));
                 assert_eq!(result[..result.len() - 1], initial[1..]);
             }
-            let malformed = Message::known(crate::Opcode::SetupA, [0, 1, 0, 0, 0, 0]);
+            let malformed = Message::known(crate::Opcode::DraftRefreshRequest, [0, 1, 0, 0, 0, 0]);
             assert_eq!(room.receive(0, 0, malformed.clone()).unwrap(), [malformed]);
         }
     }
@@ -2361,7 +2361,7 @@ mod tests {
             assert_eq!(&opening[0].body[16..18], &[3, 3]);
             assert_eq!(opening[0].body[100], room.world.entities[seat].team + 1);
             let roster = opening.last().unwrap();
-            assert_eq!(roster.opcode, crate::wire_opcode::Snapshot5V5);
+            assert_eq!(roster.opcode, crate::wire_opcode::DraftRosterFull);
             for (i, row) in roster.body.as_chunks::<161>().0.iter().enumerate() {
                 assert_eq!(row[8], u8::from(i < 6));
                 if let Some(participant) = guests.get(i) {
@@ -2369,7 +2369,7 @@ mod tests {
                     assert_eq!(row[16], room.world.entities[i].team + 1);
                 }
             }
-            let req = Message::known(crate::Opcode::SetupA, [0; 6]);
+            let req = Message::known(crate::Opcode::DraftRefreshRequest, [0; 6]);
             let repeat = room.receive(seat, 0, req).unwrap();
             assert_eq!(&repeat[..repeat.len() - 1], &opening[1..]);
         }
@@ -2426,7 +2426,7 @@ mod tests {
         room.world.entities[0].gold = 300;
         let buy = |actor: u32| {
             Message::known(
-                crate::Opcode::ShopRequest,
+                crate::Opcode::BuyItem,
                 [actor.to_be_bytes(), 458u32.to_be_bytes()].concat(),
             )
         };
@@ -2437,10 +2437,10 @@ mod tests {
         assert_eq!(
             ack.iter().map(|m| m.opcode).collect::<Vec<_>>(),
             [
-                crate::wire_opcode::ShopRequest,
-                crate::wire_opcode::EntityStat,
+                crate::wire_opcode::BuyItem,
+                crate::wire_opcode::ModifyActorResource,
                 crate::wire_opcode::ItemGrant,
-                crate::wire_opcode::StatModifier
+                crate::wire_opcode::ModifyActorAttribute
             ]
         );
         assert_eq!(room.world.entities[0].gold, 0);
@@ -2463,19 +2463,19 @@ mod tests {
         assert!(room.receive(0, 1, buy(1500)).unwrap().is_empty());
         room.world.entities[0].gold = 850;
         let upgrade = Message::known(
-            crate::Opcode::ShopRequest,
+            crate::Opcode::BuyItem,
             [1500u32.to_be_bytes(), 505u32.to_be_bytes()].concat(),
         );
         let upgraded = room.receive(0, 1, upgrade).unwrap();
         assert_eq!(
             upgraded.iter().map(|m| m.opcode).collect::<Vec<_>>(),
             [
-                crate::wire_opcode::ShopRequest,
-                crate::wire_opcode::EntityStat,
-                crate::wire_opcode::StatModifier,
-                crate::wire_opcode::RemoveItem,
+                crate::wire_opcode::BuyItem,
+                crate::wire_opcode::ModifyActorResource,
+                crate::wire_opcode::ModifyActorAttribute,
+                crate::wire_opcode::ConsumeItem,
                 crate::wire_opcode::ItemGrant,
-                crate::wire_opcode::StatModifier
+                crate::wire_opcode::ModifyActorAttribute
             ]
         );
         assert_eq!(&upgraded[3].body[4..8], &ack[2].body[8..12]);
@@ -2483,7 +2483,7 @@ mod tests {
         room.world.entities[0].gold = 300;
         let request = |template: u32| {
             Message::known(
-                Opcode::ShopRequest,
+                Opcode::BuyItem,
                 [1500u32.to_be_bytes(), template.to_be_bytes()].concat(),
             )
         };

@@ -113,12 +113,16 @@ impl Stats {
         self.frames.fetch_add(1, Ordering::Relaxed);
         self.bytes.fetch_add(wire_len as u64, Ordering::Relaxed);
         let counter = match Opcode::try_from(opcode).ok() {
-            Some(Opcode::Position) => &self.positions,
+            Some(Opcode::MoveToCorrection) => &self.positions,
             Some(Opcode::ActorDeath) => &self.death_frames,
-            Some(Opcode::StatModifier) if body.get(12) == Some(&(HeroCounter::Kills as u8)) => {
+            Some(Opcode::ModifyActorAttribute)
+                if body.get(12) == Some(&(HeroCounter::Kills as u8)) =>
+            {
                 &self.hero_kill_increments
             }
-            Some(Opcode::StatModifier) if body.get(12) == Some(&(HeroCounter::Deaths as u8)) => {
+            Some(Opcode::ModifyActorAttribute)
+                if body.get(12) == Some(&(HeroCounter::Deaths as u8)) =>
+            {
                 &self.hero_death_increments
             }
             Some(Opcode::HealthImpact) if body.len() >= 12 => {
@@ -270,7 +274,8 @@ impl Socket {
         };
         let mut id = [0; 70];
         id[..36].copy_from_slice(player.to_string().as_bytes());
-        sock.write(Message::known(Opcode::PlayerUuid, id)).await?;
+        sock.write(Message::known(Opcode::RegisterPlayerUuid, id))
+            .await?;
         Ok(sock)
     }
     async fn write(&mut self, msg: Message) -> Result<()> {
@@ -287,7 +292,11 @@ impl Socket {
     }
     async fn until(&mut self, op: Opcode) -> Result<Message> {
         timeout(
-            Duration::from_secs(if op == Opcode::BeginLoading { 40 } else { 8 }),
+            Duration::from_secs(if op == Opcode::DraftTransitionToLoading {
+                40
+            } else {
+                8
+            }),
             async {
                 loop {
                     let message = self.read().await?;
@@ -336,7 +345,7 @@ impl Socket {
                 if !delay.is_zero() {
                     sleep(delay).await;
                 }
-                if opcode == Opcode::TickSyncC.raw() && matches!(body, [0, 0, 0, 1 | 2, 0 | 2, 0]) {
+                if opcode == Opcode::EndMatch.raw() && matches!(body, [0, 0, 0, 1 | 2, 0 | 2, 0]) {
                     stats.end_frames.fetch_add(1, Ordering::Relaxed);
                     return Ok(true);
                 }
@@ -377,27 +386,27 @@ async fn aral_streams(
         // Every seat must continuously drain the timed draft roster broadcasts.
         entrants.spawn(async move {
             let mut socket = Socket::connect(&addr, &room, id, stats).await?;
-            let draft = socket.until(Opcode::SnapshotAral).await?;
+            let draft = socket.until(Opcode::DraftRosterAral).await?;
             let roster = halcyon_protocol::AralRoster::new(&draft.body)?;
             let identity = id.to_string();
             let seat = (0..6)
                 .find(|&i| roster.identity(i) == Some(identity.as_bytes()))
                 .context("ARAL player absent from assigned roster")?;
-            socket.until(Opcode::BeginLoading).await?;
+            socket.until(Opcode::DraftTransitionToLoading).await?;
             socket
-                .write(Message::known(Opcode::RequestScene, [0; 6]))
+                .write(Message::known(Opcode::RequestSceneSnapshot, [0; 6]))
                 .await?;
             let mut request = [0; 6];
             request[..4].copy_from_slice(&(1500 + seat as u32).to_be_bytes());
             request[4] = 1;
             socket
-                .write(Message::known(Opcode::SceneOwner, request))
+                .write(Message::known(Opcode::ConfirmSceneOwner, request))
                 .await?;
             // Peer entry also triggers 046E/0471 notices. Wait for our own actor.
             timeout(Duration::from_secs(10), async {
                 loop {
                     let echoed = socket.read().await?;
-                    if echoed.is(Opcode::SceneOwner) && echoed.body == request {
+                    if echoed.is(Opcode::ConfirmSceneOwner) && echoed.body == request {
                         return Ok::<_, anyhow::Error>(());
                     }
                 }
@@ -405,9 +414,9 @@ async fn aral_streams(
             .await
             .context("waiting for own ARAL scene confirmation")??;
             socket
-                .write(Message::known(Opcode::SceneConfirmed, [0; 6]))
+                .write(Message::known(Opcode::SceneReadyConfirm, [0; 6]))
                 .await?;
-            socket.until(Opcode::TickSyncA).await?;
+            socket.until(Opcode::StartMatch).await?;
             Ok::<_, anyhow::Error>((index, socket))
         });
     }
@@ -478,11 +487,11 @@ async fn setup(
     let mut controls = Vec::new();
     for p in players {
         let mut s = Socket::connect(&addr, &room, p.id, stats.clone()).await?;
-        s.until(Opcode::Snapshot5V5).await?;
+        s.until(Opcode::DraftRosterFull).await?;
         let lock = if matches!(workload, Workload::NativeSolo) {
-            Opcode::LockSelection
+            Opcode::DraftLockHero
         } else {
-            Opcode::HeroLock
+            Opcode::DraftClient0455
         };
         s.write(Message::known(lock, [0; 6])).await?;
         s.until(lock).await?;
@@ -491,20 +500,23 @@ async fn setup(
     let mut sockets = Vec::new();
     for (p, mut c) in players.iter().zip(controls) {
         if matches!(workload, Workload::NativeSolo) {
-            c.until(Opcode::BeginLoading).await?;
-            c.write(Message::known(Opcode::RequestScene, [0; 6]))
+            c.until(Opcode::DraftTransitionToLoading).await?;
+            c.write(Message::known(Opcode::RequestSceneSnapshot, [0; 6]))
                 .await?;
-            c.write(Message::known(Opcode::SceneOwner, [0, 0, 5, 220, 1, 0]))
+            c.write(Message::known(
+                Opcode::ConfirmSceneOwner,
+                [0, 0, 5, 220, 1, 0],
+            ))
+            .await?;
+            c.until(Opcode::SceneReadinessRows).await?;
+            c.write(Message::known(Opcode::SceneReadyConfirm, [0; 6]))
                 .await?;
-            c.until(Opcode::SceneReadiness).await?;
-            c.write(Message::known(Opcode::SceneConfirmed, [0; 6]))
-                .await?;
-            c.until(Opcode::TickSyncA).await?;
+            c.until(Opcode::StartMatch).await?;
             sockets.push((None, c));
             continue;
         }
         let mut game = Socket::connect(&addr, &room, p.id, stats.clone()).await?;
-        game.until(Opcode::EntitySpawn).await?;
+        game.until(Opcode::HeroSpawn).await?;
         sockets.push((Some(c), game));
     }
     stats.opened.fetch_add(1, Ordering::Relaxed);

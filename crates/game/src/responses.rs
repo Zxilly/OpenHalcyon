@@ -235,7 +235,7 @@ mod opcode_tests {
                 opcode: EventOpcode::from(raw),
             })
         };
-        let event = action(Opcode::CooldownValue.raw());
+        let event = action(Opcode::ModifyCooldown.raw());
         assert_eq!(event["opcode"], "0x0428");
         assert_eq!(event["opcodeName"], "ActionModifyCooldown");
         let extension = action(u16::MAX);

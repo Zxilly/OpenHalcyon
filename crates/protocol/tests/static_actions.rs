@@ -42,12 +42,12 @@ fn every_static_entry_keeps_payload_and_padding_losslessly() {
                     added += usize::from(sample == 0);
                 }
                 Fields::Heartbeat => {
-                    assert_eq!(layout.opcode, halcyon_protocol::wire_opcode::Heartbeat)
+                    assert_eq!(layout.opcode, halcyon_protocol::wire_opcode::ServerHelloAck)
                 }
                 Fields::Zone(zone) => {
                     assert_eq!(
                         layout.opcode,
-                        halcyon_protocol::wire_opcode::CreateZoneOfControlVariantC
+                        halcyon_protocol::wire_opcode::CreateRectZoneOfControl
                     );
                     assert_eq!(zone.to_message().unwrap().body, body[..size]);
                 }

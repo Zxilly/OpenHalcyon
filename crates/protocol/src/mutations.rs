@@ -15,7 +15,7 @@ pub struct AttributeChange {
 impl AttributeChange {
     pub fn read(msg: &Message) -> Option<Self> {
         let b = &msg.body;
-        if msg.opcode != Opcode::StatModifier as u16 || !matches!(b.len(), 15 | 22) {
+        if msg.opcode != Opcode::ModifyActorAttribute as u16 || !matches!(b.len(), 15 | 22) {
             return None;
         }
         Some(Self {
@@ -34,7 +34,7 @@ impl AttributeChange {
         b[4..8].copy_from_slice(&self.source.to_be_bytes());
         b[8..12].copy_from_slice(&self.value.to_be_bytes());
         b[12..15].copy_from_slice(&[self.index, self.layer, self.set_mode]);
-        Message::new(Opcode::StatModifier as u16, b)
+        Message::new(Opcode::ModifyActorAttribute as u16, b)
     }
 }
 
@@ -51,7 +51,7 @@ pub struct ResourceChange {
 impl ResourceChange {
     pub fn read(msg: &Message) -> Option<Self> {
         let b = &msg.body;
-        if msg.opcode != Opcode::EntityStat as u16 || !matches!(b.len(), 12 | 14) {
+        if msg.opcode != Opcode::ModifyActorResource as u16 || !matches!(b.len(), 12 | 14) {
             return None;
         }
         Some(Self {
@@ -68,7 +68,7 @@ impl ResourceChange {
         b[..4].copy_from_slice(&self.actor.to_be_bytes());
         b[4..8].copy_from_slice(&self.value.to_be_bytes());
         b[8..12].copy_from_slice(&[self.index, self.set_mode, self.flags[0], self.flags[1]]);
-        Message::new(Opcode::EntityStat as u16, b)
+        Message::new(Opcode::ModifyActorResource as u16, b)
     }
 }
 

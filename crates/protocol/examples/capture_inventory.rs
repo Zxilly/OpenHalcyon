@@ -176,7 +176,7 @@ impl Stream {
                     Ok(Fields::ActionWords(_))
                         if matches!(
                             m.opcode,
-                            halcyon_protocol::wire_opcode::CreateZoneOfControlVariantB
+                            halcyon_protocol::wire_opcode::CreateZoneOfControl
                                 | halcyon_protocol::wire_opcode::DestroyZoneOfControl
                         ) =>
                     {
@@ -302,8 +302,8 @@ fn inspect(path: &Path, ops: &mut [BTreeMap<u16, Counts>; 2], sizes: bool) -> io
             println!("hello_port_check\tok");
         }
         for (direction, opcode, stream) in [
-            ("C2S", halcyon_protocol::Opcode::Hello, &streams[0]),
-            ("S2C", halcyon_protocol::Opcode::Heartbeat, &streams[1]),
+            ("C2S", halcyon_protocol::Opcode::ClientHello, &streams[0]),
+            ("S2C", halcyon_protocol::Opcode::ServerHelloAck, &streams[1]),
         ] {
             println!(
                 "handshake\t{direction}\t{}\t{}\t1",

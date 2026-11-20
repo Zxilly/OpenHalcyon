@@ -38,14 +38,16 @@ impl OutboundLayout {
             u32::from_be_bytes(bytes.try_into().unwrap())
         };
         let operands = match crate::Opcode::try_from(self.opcode).ok() {
-            Some(crate::Opcode::StateUpdB) => OutboundOperands::MoveAlternate {
+            Some(crate::Opcode::Unseen03F6) => OutboundOperands::MoveAlternate {
                 coordinate_bits: [word(0), word(4)],
             },
-            Some(crate::Opcode::RequestAbilityVariant) => OutboundOperands::AbilityAlternate {
-                words: [word(0), word(4), word(8), word(12)],
-                byte: payload[16],
-            },
-            Some(crate::Opcode::RequestActivateItemVariantB) => {
+            Some(crate::Opcode::RequestActivateAbilityUnseen) => {
+                OutboundOperands::AbilityAlternate {
+                    words: [word(0), word(4), word(8), word(12)],
+                    byte: payload[16],
+                }
+            }
+            Some(crate::Opcode::RequestActivateItemTarget) => {
                 OutboundOperands::Words([word(0), word(4)])
             }
             Some(
@@ -54,7 +56,7 @@ impl OutboundLayout {
                 | crate::Opcode::RequestLevelLogicEvent,
             ) => OutboundOperands::Word(word(0)),
             Some(
-                crate::Opcode::HeroLock
+                crate::Opcode::DraftClient0455
                 | crate::Opcode::Unresolved0465
                 | crate::Opcode::SpectatorExitMatchRequest
                 | crate::Opcode::Unresolved047B,
@@ -133,25 +135,25 @@ const fn entry(
 /// Receiver-ignore entries and independently checked writer metadata.
 pub const OUTBOUND_LAYOUTS: &[OutboundLayout] = &[
     entry(
-        crate::wire_opcode::MoveCmd,
+        crate::wire_opcode::RequestMoveJoystick,
         Some(8),
         true,
         Some("ActionRequestMoveTo_Client"),
     ),
     entry(
-        crate::wire_opcode::StateUpdA,
+        crate::wire_opcode::RequestMovePoint,
         Some(8),
         true,
         Some("ActionRequestMoveTo_Client"),
     ),
     entry(
-        crate::wire_opcode::StateUpdB,
+        crate::wire_opcode::Unseen03F6,
         Some(8),
         true,
         Some("ActionRequestMoveTo_Client"),
     ),
-    entry(crate::wire_opcode::StateUpdC, Some(1), false, None),
-    entry(crate::wire_opcode::Unresolved040C, None, false, None),
+    entry(crate::wire_opcode::Unseen03F7, Some(1), false, None),
+    entry(crate::wire_opcode::ReservedNoop040C, None, false, None),
     entry(
         crate::wire_opcode::RequestTargetAbility,
         Some(5),
@@ -165,7 +167,7 @@ pub const OUTBOUND_LAYOUTS: &[OutboundLayout] = &[
         Some("ActionRequestActivateAbility"),
     ),
     entry(
-        crate::wire_opcode::RequestAbilityVariant,
+        crate::wire_opcode::RequestActivateAbilityUnseen,
         Some(17),
         true,
         Some("ActionRequestActivateAbility"),
@@ -182,9 +184,9 @@ pub const OUTBOUND_LAYOUTS: &[OutboundLayout] = &[
         true,
         Some("ActionRequestModifyBasicAttackTarget"),
     ),
-    entry(crate::wire_opcode::Unresolved0426, None, false, None),
-    entry(crate::wire_opcode::Unresolved042A, None, false, None),
-    entry(crate::wire_opcode::Unresolved042D, None, false, None),
+    entry(crate::wire_opcode::ReservedNoop0426, None, false, None),
+    entry(crate::wire_opcode::ReservedNoop042A, None, false, None),
+    entry(crate::wire_opcode::ReservedNoop042D, None, false, None),
     entry(
         crate::wire_opcode::RequestUpgradeAbility,
         Some(1),
@@ -198,31 +200,31 @@ pub const OUTBOUND_LAYOUTS: &[OutboundLayout] = &[
         Some("ActionReorderItem"),
     ),
     entry(
-        crate::wire_opcode::RequestActivateItem,
+        crate::wire_opcode::RequestActivateItemSelf,
         Some(4),
         true,
         Some("ActionRequestActivateItem"),
     ),
     entry(
-        crate::wire_opcode::RequestActivateItemVariantB,
+        crate::wire_opcode::RequestActivateItemTarget,
         Some(8),
         true,
         Some("ActionRequestActivateItem"),
     ),
     entry(
-        crate::wire_opcode::RequestActivateItemVariantC,
+        crate::wire_opcode::RequestActivateItemPoint,
         Some(16),
         true,
         Some("ActionRequestActivateItem"),
     ),
     entry(crate::wire_opcode::Unresolved0450, Some(1), false, None),
-    entry(crate::wire_opcode::HeroLock, Some(1), true, None),
+    entry(crate::wire_opcode::DraftClient0455, Some(1), true, None),
     entry(crate::wire_opcode::DraftRerollHero, Some(1), true, None),
     entry(crate::wire_opcode::Unresolved0457, Some(1), false, None),
-    entry(crate::wire_opcode::SetupA, Some(1), true, None),
+    entry(crate::wire_opcode::DraftRefreshRequest, Some(1), true, None),
     entry(crate::wire_opcode::Unresolved045D, Some(4), true, None),
-    entry(crate::wire_opcode::HeroSelection, Some(8), true, None),
-    entry(crate::wire_opcode::SkinSelection, Some(4), true, None),
+    entry(crate::wire_opcode::DraftSelectHero, Some(8), true, None),
+    entry(crate::wire_opcode::DraftSelectSkin, Some(4), true, None),
     entry(crate::wire_opcode::Unresolved0460, Some(1), false, None),
     entry(crate::wire_opcode::DraftSelectPosition, Some(1), true, None),
     entry(
@@ -231,7 +233,7 @@ pub const OUTBOUND_LAYOUTS: &[OutboundLayout] = &[
         true,
         None,
     ),
-    entry(crate::wire_opcode::LockSelection, Some(1), true, None),
+    entry(crate::wire_opcode::DraftLockHero, Some(1), true, None),
     entry(crate::wire_opcode::Unresolved0464, Some(4), true, None),
     entry(crate::wire_opcode::Unresolved0465, Some(1), true, None),
     entry(crate::wire_opcode::Unresolved0466, Some(4), true, None),
@@ -239,9 +241,14 @@ pub const OUTBOUND_LAYOUTS: &[OutboundLayout] = &[
     entry(crate::wire_opcode::Unresolved0468, Some(2), true, None),
     entry(crate::wire_opcode::Unresolved0469, Some(2), false, None),
     entry(crate::wire_opcode::Unresolved046A, Some(2), false, None),
-    entry(crate::wire_opcode::SetupC, Some(1), true, None),
-    entry(crate::wire_opcode::SceneConfirmed, Some(1), true, None),
-    entry(crate::wire_opcode::RequestScene, Some(1), true, None),
+    entry(crate::wire_opcode::DraftReadyControl, Some(1), true, None),
+    entry(crate::wire_opcode::SceneReadyConfirm, Some(1), true, None),
+    entry(
+        crate::wire_opcode::RequestSceneSnapshot,
+        Some(1),
+        true,
+        None,
+    ),
     entry(
         crate::wire_opcode::SetSurrenderStateRequest,
         Some(1),
@@ -254,7 +261,7 @@ pub const OUTBOUND_LAYOUTS: &[OutboundLayout] = &[
         true,
         Some("ActionSpectatorExitMatchRequest"),
     ),
-    entry(crate::wire_opcode::Unresolved047A, None, false, None),
+    entry(crate::wire_opcode::ReservedNoop047A, None, false, None),
     entry(crate::wire_opcode::Unresolved047B, Some(1), true, None),
     entry(
         crate::wire_opcode::RequestEquipTalent,

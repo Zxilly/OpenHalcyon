@@ -40,9 +40,9 @@ fn all_names_and_values_round_trip_in_text_and_binary_formats() {
     }
     assert_eq!(
         Opcode::from_name("ActionModifyCooldown"),
-        Some(Opcode::CooldownValue)
+        Some(Opcode::ModifyCooldown)
     );
-    assert_eq!(Opcode::CooldownValue.raw(), 0x0428);
+    assert_eq!(Opcode::ModifyCooldown.raw(), 0x0428);
     for input in ["65536", "-1", "65535", "\"ActionNotRegistered\""] {
         assert!(serde_json::from_str::<Opcode>(input).is_err());
     }

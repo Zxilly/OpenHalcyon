@@ -14,7 +14,7 @@ impl Message {
         body[4..8].copy_from_slice(&key.to_be_bytes());
         body[8..12].copy_from_slice(&value.to_be_bytes());
         body[12] = mode as u8;
-        Self::known(crate::Opcode::CooldownValue, body)
+        Self::known(crate::Opcode::ModifyCooldown, body)
     }
 
     /// Observed 0x043A actor and learned ability operand.
@@ -31,7 +31,7 @@ impl Message {
         body[..4].copy_from_slice(&actor.to_be_bytes());
         body[4..8].copy_from_slice(&target.to_be_bytes());
         body[8] = selector;
-        Self::known(crate::Opcode::PlayAbility, body)
+        Self::known(crate::Opcode::PlayTargetAbility, body)
     }
 
     /// Observed 0x0416 actor, three world coordinates and ability selector.

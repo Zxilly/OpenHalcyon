@@ -124,9 +124,9 @@ mod tests {
             let mut enter = actor.to_be_bytes().to_vec();
             enter.extend([1, 0]);
             for msg in [
-                Message::known(crate::Opcode::RequestScene, [0; 6]),
-                Message::known(crate::Opcode::SceneOwner, enter),
-                Message::known(crate::Opcode::SceneConfirmed, [0; 6]),
+                Message::known(crate::Opcode::RequestSceneSnapshot, [0; 6]),
+                Message::known(crate::Opcode::ConfirmSceneOwner, enter),
+                Message::known(crate::Opcode::SceneReadyConfirm, [0; 6]),
             ] {
                 seat.preamble.observe(&msg, actor);
             }

@@ -12,7 +12,7 @@ fn borrowed_plaintext_stays_in_its_frame_and_keeps_padding() {
     let movement_body_ptr = movement[2..].as_ptr();
     let extension_body_ptr = extension[2..].as_ptr();
     let (first_op, first) = cipher.decrypt_in_place(movement).unwrap();
-    assert_eq!(first_op, Opcode::MoveCmd.raw());
+    assert_eq!(first_op, Opcode::RequestMoveJoystick.raw());
     assert_eq!(extension, &[0x0e, 0x5a, 0xcf, 0x33, 0xb4, 0x72, 0x51, 0x69]);
     let owned = cipher.decode_owned(extension.to_vec()).unwrap();
     let (second_op, second) = cipher.decrypt_in_place(extension).unwrap();

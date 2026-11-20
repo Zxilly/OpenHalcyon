@@ -301,23 +301,23 @@ async fn connect_5v5_sockets(
     let mut sockets = Vec::with_capacity(identities.len() * 2);
     for (index, (player, _)) in identities.iter().enumerate() {
         let mut s = login(addr, *player, cipher).await;
-        until(&mut s, cipher, wire_opcode::Snapshot5V5).await;
+        until(&mut s, cipher, wire_opcode::DraftRosterFull).await;
         if let Some(heroes) = selection {
             let mut body = [0; 8];
             body[..4].copy_from_slice(&u32::from(heroes[index]).to_be_bytes());
-            let choice = Message::new(wire_opcode::HeroSelection, body);
+            let choice = Message::new(wire_opcode::DraftSelectHero, body);
             s.write_all(&cipher.encode(&choice).unwrap()).await.unwrap();
-            let echo = until(&mut s, cipher, wire_opcode::HeroSelection).await;
+            let echo = until(&mut s, cipher, wire_opcode::DraftSelectHero).await;
             assert_eq!(echo.body[..8], choice.body);
         }
         s.write_all(
             &cipher
-                .encode(&Message::new(wire_opcode::HeroLock, [0; 6]))
+                .encode(&Message::new(wire_opcode::DraftClient0455, [0; 6]))
                 .unwrap(),
         )
         .await
         .unwrap();
-        until(&mut s, cipher, wire_opcode::HeroLock).await;
+        until(&mut s, cipher, wire_opcode::DraftClient0455).await;
         sockets.push(s);
     }
     for (index, (player, _)) in identities.iter().enumerate() {
@@ -325,7 +325,7 @@ async fn connect_5v5_sockets(
         if let Some(heroes) = selection {
             timeout(Duration::from_secs(10), async {
                 loop {
-                    let spawn = until(&mut s, cipher, wire_opcode::EntitySpawn).await;
+                    let spawn = until(&mut s, cipher, wire_opcode::HeroSpawn).await;
                     if matches!(
                         spawn.fields(),
                         Ok(Fields::Spawn {
@@ -341,7 +341,7 @@ async fn connect_5v5_sockets(
             .await
             .expect("selected human hero was not spawned by the third host");
         } else {
-            until(&mut s, cipher, wire_opcode::EntitySpawn).await;
+            until(&mut s, cipher, wire_opcode::HeroSpawn).await;
         }
         echo_clock(&mut s, cipher, 13.25).await;
         sockets.push(s);
@@ -1473,7 +1473,7 @@ async fn start_aral_match(dir: &Path) -> RunningAral {
         }
         let cipher = MatchCipher::new(room_id.as_deref().unwrap());
         let mut socket = login(addr.as_deref().unwrap(), player_id, &cipher).await;
-        let roster_msg = until(&mut socket, &cipher, wire_opcode::SnapshotAral).await;
+        let roster_msg = until(&mut socket, &cipher, wire_opcode::DraftRosterAral).await;
         let Fields::AralRoster(roster) = roster_msg.fields().unwrap() else {
             panic!("expected SnapshotAral roster");
         };
@@ -1503,7 +1503,7 @@ async fn start_aral_match(dir: &Path) -> RunningAral {
                 while next_frame(&mut seat_sock.socket, &task_cipher, Duration::from_secs(4))
                     .await
                     .opcode
-                    != wire_opcode::BeginLoading
+                    != wire_opcode::DraftTransitionToLoading
                 {}
             })
             .await
@@ -1521,7 +1521,7 @@ async fn start_aral_match(dir: &Path) -> RunningAral {
         s.socket
             .write_all(
                 &cipher
-                    .encode(&Message::new(wire_opcode::RequestScene, [0; 6]))
+                    .encode(&Message::new(wire_opcode::RequestSceneSnapshot, [0; 6]))
                     .unwrap(),
             )
             .await
@@ -1532,24 +1532,24 @@ async fn start_aral_match(dir: &Path) -> RunningAral {
         s.socket
             .write_all(
                 &cipher
-                    .encode(&Message::new(wire_opcode::SceneOwner, ready))
+                    .encode(&Message::new(wire_opcode::ConfirmSceneOwner, ready))
                     .unwrap(),
             )
             .await
             .unwrap();
-        until(&mut s.socket, &cipher, wire_opcode::SceneOwner).await;
+        until(&mut s.socket, &cipher, wire_opcode::ConfirmSceneOwner).await;
         s.socket
             .write_all(
                 &cipher
-                    .encode(&Message::new(wire_opcode::SceneConfirmed, [0; 6]))
+                    .encode(&Message::new(wire_opcode::SceneReadyConfirm, [0; 6]))
                     .unwrap(),
             )
             .await
             .unwrap();
-        until(&mut s.socket, &cipher, wire_opcode::SceneConfirmed).await;
+        until(&mut s.socket, &cipher, wire_opcode::SceneReadyConfirm).await;
     }
     for s in &mut seats {
-        until(&mut s.socket, &cipher, wire_opcode::TickSyncA).await;
+        until(&mut s.socket, &cipher, wire_opcode::StartMatch).await;
     }
     assert_eq!(
         admin_match_detail(&client, &nodes[2], &cookies[2], &room_id)
@@ -1614,7 +1614,7 @@ async fn drain_aral_completion(
             let report = until_within(
                 &mut s.socket,
                 &task_cipher,
-                wire_opcode::StatisticsReport,
+                wire_opcode::PostMatchStats,
                 Duration::from_secs(25),
             )
             .await;
@@ -1622,7 +1622,7 @@ async fn drain_aral_completion(
             let victory = until_within(
                 &mut s.socket,
                 &task_cipher,
-                wire_opcode::TickSyncC,
+                wire_opcode::EndMatch,
                 Duration::from_secs(5),
             )
             .await;

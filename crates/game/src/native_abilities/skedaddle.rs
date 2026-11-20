@@ -123,11 +123,11 @@ mod tests {
                 .map(|m| m.known_opcode().unwrap())
                 .collect::<Vec<_>>(),
             [
-                crate::Opcode::PlayAbility,
-                crate::Opcode::EntityProp,
+                crate::Opcode::PlayTargetAbility,
+                crate::Opcode::ApplyBuffCompact,
                 crate::Opcode::ShowFlyoutText,
-                crate::Opcode::EntityProp,
-                crate::Opcode::CooldownValue
+                crate::Opcode::ApplyBuffCompact,
+                crate::Opcode::ModifyCooldown
             ]
         );
         assert_eq!(messages[0], Message::ability_target_used(1500, u32::MAX, 2));

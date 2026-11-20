@@ -10,22 +10,22 @@ pub(super) fn verify(message: &Message) -> io::Result<()> {
     let body = &message.body;
     let mut buf = [0; 46]; // Largest supported projectile body after cipher padding.
     let used = match message.known_opcode() {
-        Some(Opcode::EntityState) if matches!(body.len(), 8 | 14) => {
+        Some(Opcode::ModifyVisibility) if matches!(body.len(), 8 | 14) => {
             VisibilityBody::read_body(body)?.write_body(&mut buf)?
         }
         Some(Opcode::CampVisibility) => {
             CampVisibilityBody::read_body(body)?.write_body(&mut buf)?
         }
-        Some(Opcode::MoveCmd) => MoveCmd::read_body(body)?.write_body(&mut buf)?,
-        Some(Opcode::Position) => PositionBody::read_body(body)?.write_body(&mut buf)?,
+        Some(Opcode::RequestMoveJoystick) => MoveCmd::read_body(body)?.write_body(&mut buf)?,
+        Some(Opcode::MoveToCorrection) => PositionBody::read_body(body)?.write_body(&mut buf)?,
         Some(Opcode::ActorDeath) => DeathBody::read_body(body)?.write_body(&mut buf)?,
         Some(Opcode::HealthImpact) => ImpactBody::read_body(body)?.write_body(&mut buf)?,
         Some(
             Opcode::SellItem
             | Opcode::ReorderItem
-            | Opcode::RequestActivateItem
-            | Opcode::RequestActivateItemVariantB
-            | Opcode::RequestActivateItemVariantC
+            | Opcode::RequestActivateItemSelf
+            | Opcode::RequestActivateItemTarget
+            | Opcode::RequestActivateItemPoint
             | Opcode::ItemActivated,
         ) => {
             let Fields::Live(halcyon_protocol::LiveFields::Item(action)) = message.fields()? else {

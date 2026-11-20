@@ -51,8 +51,8 @@ mod tests {
     #[tokio::test]
     async fn draft_preferences_are_seat_scoped_and_reappear_on_reconnect() {
         for (mode, roster) in [
-            ("ranked", Opcode::Snapshot5V5),
-            ("casual_aral", Opcode::SnapshotAral),
+            ("ranked", Opcode::DraftRosterFull),
+            ("casual_aral", Opcode::DraftRosterAral),
         ] {
             let rooms = Rooms::new("127.0.0.1".parse().unwrap(), "127.0.0.1".into(), 1, None);
             let id = Uuid::new_v4();

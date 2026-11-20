@@ -72,9 +72,9 @@ pub enum ItemAction<'a> {
 fn prefix_len(op: Opcode) -> Option<usize> {
     Some(match op {
         Opcode::ReorderItem => 6,
-        Opcode::RequestActivateItem => 4,
-        Opcode::RequestActivateItemVariantB | Opcode::SellItem => 8,
-        Opcode::RequestActivateItemVariantC => 16,
+        Opcode::RequestActivateItemSelf => 4,
+        Opcode::RequestActivateItemTarget | Opcode::SellItem => 8,
+        Opcode::RequestActivateItemPoint => 16,
         Opcode::ItemActivated => 21,
         _ => return None,
     })
@@ -89,9 +89,9 @@ impl<'a> ItemAction<'a> {
         match self {
             Self::Sell { .. } => Opcode::SellItem,
             Self::Reorder { .. } => Opcode::ReorderItem,
-            Self::Activate { .. } => Opcode::RequestActivateItem,
-            Self::TargetRequest { .. } => Opcode::RequestActivateItemVariantB,
-            Self::VectorRequest { .. } => Opcode::RequestActivateItemVariantC,
+            Self::Activate { .. } => Opcode::RequestActivateItemSelf,
+            Self::TargetRequest { .. } => Opcode::RequestActivateItemTarget,
+            Self::VectorRequest { .. } => Opcode::RequestActivateItemPoint,
             Self::Activation { .. } => Opcode::ItemActivated,
         }
     }
@@ -194,15 +194,15 @@ impl<'a> ItemAction<'a> {
                 actor: word(0),
                 slots: [body[4], body[5]],
             },
-            crate::wire_opcode::RequestActivateItem => Self::Activate {
+            crate::wire_opcode::RequestActivateItemSelf => Self::Activate {
                 instance: word(0),
                 suffix,
             },
-            crate::wire_opcode::RequestActivateItemVariantB => Self::TargetRequest {
+            crate::wire_opcode::RequestActivateItemTarget => Self::TargetRequest {
                 arguments: [word(0), word(4)],
                 suffix,
             },
-            crate::wire_opcode::RequestActivateItemVariantC => Self::VectorRequest {
+            crate::wire_opcode::RequestActivateItemPoint => Self::VectorRequest {
                 vector_bits: [word(0), word(4), word(8)],
                 argument: word(12),
                 suffix,
@@ -281,9 +281,9 @@ mod tests {
         let bytes: Vec<u8> = (0x80..=0xa0).collect();
         for (op, prefix, padded) in [
             (crate::wire_opcode::ReorderItem, 6, 6),
-            (crate::wire_opcode::RequestActivateItem, 4, 6),
-            (crate::wire_opcode::RequestActivateItemVariantB, 8, 14),
-            (crate::wire_opcode::RequestActivateItemVariantC, 16, 22),
+            (crate::wire_opcode::RequestActivateItemSelf, 4, 6),
+            (crate::wire_opcode::RequestActivateItemTarget, 8, 14),
+            (crate::wire_opcode::RequestActivateItemPoint, 16, 22),
             (crate::wire_opcode::ItemActivated, 21, 22),
             (crate::wire_opcode::SellItem, 8, 14),
         ] {
@@ -298,15 +298,15 @@ mod tests {
                         actor: 0x80818283,
                         slots: [0x84, 0x85],
                     },
-                    crate::wire_opcode::RequestActivateItem => ItemAction::Activate {
+                    crate::wire_opcode::RequestActivateItemSelf => ItemAction::Activate {
                         instance: 0x80818283,
                         suffix,
                     },
-                    crate::wire_opcode::RequestActivateItemVariantB => ItemAction::TargetRequest {
+                    crate::wire_opcode::RequestActivateItemTarget => ItemAction::TargetRequest {
                         arguments: [0x80818283, 0x84858687],
                         suffix,
                     },
-                    crate::wire_opcode::RequestActivateItemVariantC => ItemAction::VectorRequest {
+                    crate::wire_opcode::RequestActivateItemPoint => ItemAction::VectorRequest {
                         vector_bits: [0x80818283, 0x84858687, 0x88898a8b],
                         argument: 0x8c8d8e8f,
                         suffix,

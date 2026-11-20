@@ -87,7 +87,7 @@ fn pristine_minion(template: u32, actor: u32, slot: u8, team: u8, side: i8) -> M
     b[97 + usize::from(team)] = 1;
     put_word(&mut b, 112, u32::MAX);
     b[116..122].copy_from_slice(&[slot, 1, 0, 1, (3 * team as i8 + 1 + side) as u8, team + 1]);
-    Message::known(crate::Opcode::Snapshot, b)
+    Message::known(crate::Opcode::EntitySpawn, b)
 }
 
 pub(super) fn camp_unit(entity: &Entity, slot: u8) -> Option<Message> {
@@ -116,7 +116,7 @@ pub(super) fn camp_unit(entity: &Entity, slot: u8) -> Option<Message> {
     body[96] = 15;
     put_word(&mut body, 112, u32::MAX);
     body[116..122].copy_from_slice(&[slot, 0, 0, 1, 255, 0]);
-    recordable_camp_unit(&body).then(|| Message::known(crate::Opcode::Snapshot, body))
+    recordable_camp_unit(&body).then(|| Message::known(crate::Opcode::EntitySpawn, body))
 }
 
 pub(super) fn recordable_camp_unit(body: &[u8]) -> bool {
@@ -223,7 +223,7 @@ pub(super) fn minion(entity: &Entity, slot: u8, fresh: bool) -> Option<Message> 
     body[119] = 1;
     body[120] = (3 * entity.team as i8 + 1 + entity.solo_side) as u8;
     body[121] = entity.team + 1;
-    Some(Message::known(crate::Opcode::Snapshot, body))
+    Some(Message::known(crate::Opcode::EntitySpawn, body))
 }
 
 fn put_word(body: &mut [u8], offset: usize, value: u32) {
@@ -289,7 +289,7 @@ mod tests {
             let b = &message.body;
             assert_eq!(
                 (message.opcode, b.len()),
-                (crate::wire_opcode::Snapshot, 122)
+                (crate::wire_opcode::EntitySpawn, 122)
             );
             assert_eq!(word(b, 0), u32::from(entity.type_id));
             assert_eq!(

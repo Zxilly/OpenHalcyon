@@ -33,25 +33,21 @@ impl Message {
         let body = &self.body;
         let word = |i: usize| u32::from_be_bytes(body[i..i + 4].try_into().unwrap());
         match (self.opcode, body.len()) {
-            (crate::wire_opcode::CreateZoneOfControlVariantB, 25 | 30) => {
-                Some(ZoneAction::Create {
-                    id: word(0),
-                    source: word(4),
-                    anchor: word(8),
-                    parameters: [word(12), word(16), word(20)],
-                    flag: body[24],
-                    suffix: &body[25..],
-                })
-            }
-            (crate::wire_opcode::CreateZoneOfControlVariantC, 24 | 30) => {
-                Some(ZoneAction::Rectangle {
-                    id: word(0),
-                    owner: word(4),
-                    p0_xz_bits: [word(8), word(12)],
-                    p1_xz_bits: [word(16), word(20)],
-                    suffix: &body[24..],
-                })
-            }
+            (crate::wire_opcode::CreateZoneOfControl, 25 | 30) => Some(ZoneAction::Create {
+                id: word(0),
+                source: word(4),
+                anchor: word(8),
+                parameters: [word(12), word(16), word(20)],
+                flag: body[24],
+                suffix: &body[25..],
+            }),
+            (crate::wire_opcode::CreateRectZoneOfControl, 24 | 30) => Some(ZoneAction::Rectangle {
+                id: word(0),
+                owner: word(4),
+                p0_xz_bits: [word(8), word(12)],
+                p1_xz_bits: [word(16), word(20)],
+                suffix: &body[24..],
+            }),
             (crate::wire_opcode::DestroyZoneOfControl, 4 | 6) => Some(ZoneAction::Destroy {
                 id: word(0),
                 suffix: &body[4..],
@@ -78,10 +74,7 @@ impl ZoneAction<'_> {
                 }
                 body.push(*flag);
                 body.extend_from_slice(suffix);
-                Ok(Message::known(
-                    crate::Opcode::CreateZoneOfControlVariantB,
-                    body,
-                ))
+                Ok(Message::known(crate::Opcode::CreateZoneOfControl, body))
             }
             Self::Rectangle {
                 id,
@@ -95,10 +88,7 @@ impl ZoneAction<'_> {
                     body.extend(word.to_be_bytes());
                 }
                 body.extend_from_slice(suffix);
-                Ok(Message::known(
-                    crate::Opcode::CreateZoneOfControlVariantC,
-                    body,
-                ))
+                Ok(Message::known(crate::Opcode::CreateRectZoneOfControl, body))
             }
             Self::Destroy { id, suffix } if matches!(suffix.len(), 0 | 2) => {
                 let mut body = Vec::with_capacity(4 + suffix.len());
@@ -121,7 +111,7 @@ mod tests {
             0, 0, 8, 1, 0, 0, 5, 220, 0x80, 0, 0, 0, 0x7f, 0x80, 0, 1, 0xbf, 0x80, 0, 0, 0x40, 0,
             0, 0, 1, 2, 3, 4, 5, 6,
         ];
-        let m = Message::known(crate::Opcode::CreateZoneOfControlVariantC, body);
+        let m = Message::known(crate::Opcode::CreateRectZoneOfControl, body);
         let expected = ZoneAction::Rectangle {
             id: 2049,
             owner: 1500,
@@ -144,8 +134,8 @@ mod tests {
     #[test]
     fn native_and_aligned_zone_actions_retain_all_bits() {
         for (opcode, lengths) in [
-            (crate::wire_opcode::CreateZoneOfControlVariantB, [25, 30]),
-            (crate::wire_opcode::CreateZoneOfControlVariantC, [24, 30]),
+            (crate::wire_opcode::CreateZoneOfControl, [25, 30]),
+            (crate::wire_opcode::CreateRectZoneOfControl, [24, 30]),
             (crate::wire_opcode::DestroyZoneOfControl, [4, 6]),
         ] {
             for len in lengths {
