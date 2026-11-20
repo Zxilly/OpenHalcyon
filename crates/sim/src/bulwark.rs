@@ -165,6 +165,9 @@ impl Room<'_> {
         self.entities.spawn_spell(field);
     }
     pub(super) fn bulwark_blocks_leap(&self, i: usize, destination: Position) -> bool {
+        if self.entities[i].status.blocks_debuffs(self.tick) {
+            return false;
+        }
         let e = &self.entities[i];
         self.entities.spells::<Field>().any(|f| {
             if f.team == e.team || self.tick >= f.end {

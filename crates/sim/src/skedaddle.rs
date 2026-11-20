@@ -50,7 +50,7 @@ pub(super) fn speed(status: &Status, tick: u64) -> f32 {
 
 impl Status {
     pub(super) fn blocks_movement_impairment(&self, tick: u64) -> bool {
-        self.skedaddle.is_some_and(|s| tick < s.immunity_until)
+        self.blocks_debuffs(tick) || self.skedaddle.is_some_and(|s| tick < s.immunity_until)
     }
 
     fn clear_skedaddle_impairments(&mut self) {
@@ -105,6 +105,44 @@ impl Room<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn overlapping_block_sources_keep_independent_deadlines_and_cleansing() {
+        for gwen_tick in [1, 25] {
+            let mut w = World::new(7, 6);
+            w.use_six_human_roster().unwrap();
+            w.use_aral_lane().unwrap();
+            std::sync::Arc::make_mut(&mut w.state.abilities).skedaddle = Some(Rules {
+                speed: [2.5; 5],
+                duration: [2.2; 5],
+                immunity: [0.5; 5],
+                cost: [60.; 5],
+                cooldown: [19.; 5],
+            });
+            w.entities[0].type_id = halcyon_data::EntityTemplate::Gwen.as_raw();
+            let instance = w
+                .purchase(1, BasicItem::ReflexBlock)
+                .unwrap()
+                .granted
+                .instance;
+            w.entities[0].status.root_until = 80;
+            w.command(1, Command::ActivateReflexBlock { instance })
+                .unwrap();
+            assert_eq!(w.entities[0].status.root_until, 80);
+            w.tick = gwen_tick;
+            w.release_skedaddle(0, 0, &mut Vec::new());
+            assert_eq!(w.entities[0].status.root_until, 0);
+            for tick in gwen_tick..=40 {
+                reflex::advance(&mut w.entities[0], tick, &mut Vec::new());
+                let status = &w.entities[0].status;
+                assert_eq!(status.blocks_debuffs(tick), tick < 30);
+                assert_eq!(
+                    status.blocks_movement_impairment(tick),
+                    tick < 30 || tick < gwen_tick + 10
+                );
+            }
+        }
+    }
 
     #[test]
     fn authorized_cast_cleanses_and_only_speed_loader_resets_buckshot() {

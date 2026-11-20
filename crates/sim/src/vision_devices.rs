@@ -303,7 +303,7 @@ fn step_devices(
                 if let Some(due) = device.detonate {
                     if tick >= due {
                         for mut actor in &mut actors {
-                            if in_range(&actor, rules.blast) {
+                            if in_range(&actor, rules.blast) && !actor.status.blocks_debuffs(tick) {
                                 actor.status.reveal_until =
                                     actor.status.reveal_until.max(tick + rules.reveal);
                             }

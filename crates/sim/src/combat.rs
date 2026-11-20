@@ -147,6 +147,8 @@ pub(super) struct Status {
     pub(super) water_speed_bonus: Option<f32>,
     pub(super) water_slow_until: u64,
     pub(super) water_slow_factor: f32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) reflex: Option<crate::reflex::Active>,
     pub(super) flask_until: u64,
     pub(super) flask_barrier: f32,
     pub(super) flask_heal_per_tick: f32,

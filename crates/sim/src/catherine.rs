@@ -221,10 +221,12 @@ impl Room<'_> {
                 continue;
             }
             let t = &mut self.entities[j];
-            t.status.silence_until = t.status.silence_until.max(silence);
-            t.cast = None;
-            t.status.channel = 0;
-            t.status.channel_until = 0;
+            if !t.status.blocks_debuffs(self.state.tick) {
+                t.status.silence_until = t.status.silence_until.max(silence);
+                t.cast = None;
+                t.status.channel = 0;
+                t.status.channel_until = 0;
+            }
             let applied = shop::mitigated(damage, t.stats.shield, pierce);
             self.hurt(src, team, j, applied, DamageSchool::Crystal, events);
         }

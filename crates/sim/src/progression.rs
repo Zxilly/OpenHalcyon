@@ -137,6 +137,15 @@ impl Room<'_> {
         };
         t.status.flask_barrier -= flask_absorbed;
         let remaining = remaining - flask_absorbed;
+        let remaining = if let Some(ref mut active) = t.status.reflex
+            && active.until > self.state.tick
+        {
+            let absorbed = remaining.min(active.barrier);
+            active.barrier -= absorbed;
+            remaining - absorbed
+        } else {
+            remaining
+        };
         let mut amount = remaining.min(t.hp);
         if let Some(channel) = t.cast.as_mut().and_then(|c| c.verse.as_mut()) {
             let saved = channel.fortified.min(remaining * 0.5);

@@ -115,6 +115,7 @@ impl Room<'_> {
         for idx in 0..self.entities.len() {
             let t = &mut self.entities[idx];
             if t.hp <= 0.
+                || t.status.blocks_debuffs(self.state.tick)
                 || t.team == team
                 || !matches!(t.kind, Kind::Hero | Kind::Minion | Kind::Neutral)
                 || t.position.dist(pos) > radius

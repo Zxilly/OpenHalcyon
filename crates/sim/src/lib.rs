@@ -36,6 +36,7 @@ use layout::Layout;
 mod overwhelm;
 mod progression;
 mod pursuit;
+mod reflex;
 mod score;
 mod shop;
 mod solo_route;
@@ -127,6 +128,9 @@ pub enum Command {
     ConsumeInfusion {
         instance: u32,
     },
+    ActivateReflexBlock {
+        instance: u32,
+    },
     ActivateHealingFlask {
         instance: u32,
     },
@@ -202,6 +206,16 @@ pub enum Event {
     },
     Purchase(Purchase),
     ItemSold(ItemSale),
+    ReflexActivated {
+        actor: u32,
+        item: u32,
+        first_effect: u32,
+        barrier: f32,
+    },
+    ReflexExpired {
+        actor: u32,
+        effect: u32,
+    },
     FlaskActivated {
         actor: u32,
         instance: u32,
@@ -936,6 +950,7 @@ impl Room<'_> {
             Command::DeployScoutTrap { instance } => return self.deploy_device(i, instance, None),
             Command::HitScoutCam { device } => return self.hit_device(i, device),
             Command::ConsumeInfusion { instance } => return self.consume_infusion(i, instance),
+            Command::ActivateReflexBlock { instance } => return self.activate_reflex(i, instance),
             Command::ActivateHealingFlask { instance } => {
                 return self.activate_healing_flask(self.entities[i].id, instance);
             }
@@ -1159,6 +1174,7 @@ impl Room<'_> {
             let e = &mut self.entities[i];
             if e.kind == Kind::Hero {
                 shop::infusions::update(e, self.state.tick, &self.state.shop);
+                reflex::advance(e, self.state.tick, events);
             }
             e.lane_step = None;
             if e.kind == Kind::Armory {
@@ -1379,6 +1395,7 @@ impl Room<'_> {
                 | Command::DeployScoutTrap { .. }
                 | Command::HitScoutCam { .. }
                 | Command::ConsumeInfusion { .. }
+                | Command::ActivateReflexBlock { .. }
                 | Command::ActivateHealingFlask { .. }
                 | Command::ActivateSprintBoots { .. }
                 | Command::Learn(_)

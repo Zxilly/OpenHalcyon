@@ -179,7 +179,7 @@ impl Room<'_> {
             s.hooked = Some(self.entities[j].id);
             let actual = shop::mitigated(s.damage, self.entities[j].stats.shield, pierce);
             self.hurt(src, team, j, actual, DamageSchool::Crystal, events);
-            if self.entities[j].hp > 0. {
+            if self.entities[j].hp > 0. && !self.entities[j].status.blocks_debuffs(self.tick) {
                 self.entities[j].order = Command::Stop;
                 self.entities[j].winding = None;
                 self.entities[i].status.captain_effects.arm().flail = Some(s);

@@ -784,6 +784,8 @@ pub(super) struct Shop {
     infusions: [Option<infusions::Rule>; 2],
     flask: Option<FlaskRule>,
     sprint: Option<SprintRule>,
+    #[serde(skip_serializing_if = "reflex::Rule::is_native")]
+    pub(super) reflex: Option<reflex::Rule>,
     offers: std::sync::Arc<[Offer]>,
     permitted: Vec<bool>,
 }
@@ -795,6 +797,7 @@ impl Default for Shop {
             infusions: infusions::Rule::DEFAULTS,
             flask: Some(FlaskRule::ARAL_STARTER),
             sprint: None,
+            reflex: Some(reflex::Rule::NATIVE),
             permitted: OFFERS
                 .iter()
                 .map(|d| d.kind.catalog_store_allows(None).unwrap_or(true))
@@ -979,6 +982,9 @@ impl Shop {
                         .passive_value(ItemTuning::Move.key())
                         .filter(|&v| v > 0.)
                         .unwrap_or_default();
+                }
+                if d.kind == ReflexBlock {
+                    shop.reflex = reflex::Rule::load(full);
                 }
                 if d.kind == SprintBoots {
                     shop.sprint = SprintRule::load(full);
@@ -1355,6 +1361,8 @@ pub struct ItemStats {
     pub(super) bonus_weapon: f32,
     infusion: Option<infusions::Active>,
     flask_ready: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) reflex_ready: Option<u64>,
     pub(super) boot_speed: f32,
     pub(super) sprint_speed: f32,
     pub(super) sprint_until: u64,

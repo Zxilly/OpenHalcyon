@@ -90,6 +90,8 @@ impl StoreSettings {
 
 #[derive(Clone, Copy)]
 pub enum ItemTuning {
+    BarrierMin,
+    BarrierMax,
     Lifespan,
     InvisibleDelay,
     TrapArmTime,
@@ -144,6 +146,8 @@ impl ItemTuning {
             Self::RevealDuration => "REVEAL_DURATION",
             Self::VisionRadius => "VISION_RADIUS",
             Self::Ratio => "RATIO",
+            Self::BarrierMin => "BARRIER_MIN",
+            Self::BarrierMax => "BARRIER_MAX",
             Self::ProcTime => "TIME",
             Self::Damage => "DAMAGE",
             Self::BonusWeaponRatio => "BONUS_WEAPON_RATIO",
