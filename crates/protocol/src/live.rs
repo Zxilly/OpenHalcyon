@@ -144,11 +144,12 @@ pub(super) fn fields(op: u16, b: &[u8]) -> Option<Fields<'_>> {
                 enabled: b[12..16].iter().any(|&v| v != 0),
             }));
         }
-        crate::wire_opcode::ShowFlyoutText if expected(10) => {
+        crate::wire_opcode::ShowFlyoutText => {
+            let flyout = super::Flyout::decode(b)?;
             return Some(Fields::Live(LiveFields::WordHalfWord {
-                first: word(0),
-                half: half(4),
-                last: word(6),
+                first: flyout.actor,
+                half: flyout.selector,
+                last: flyout.parameter,
             }));
         }
         crate::wire_opcode::Ping => {
