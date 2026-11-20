@@ -29,7 +29,7 @@ scope, visibility, rate and game rules are implemented separately.
 | --- | ---: | --- |
 | 0000 | 1,182 | Clock. The room echoes the frame. On an authenticated Solo scene, a finite nonnegative clock can confirm readiness. There were 1,175 server clocks, so the archive does not establish a one-to-one pairing. |
 | 03E8 | 9 | Seat registration following plaintext hello/ACK. The room binds a reserved UUID and emits settings. All nine archives have the handshake and settings. |
-| 03F4 | 485 | Directional movement carries two floats. The simulator applies its movement and geometry checks to the authenticated actor. Original Android Solo sent this after joystick input. |
+| 03F4 | 485 | Movement destination, two big-endian floats. For 482 requests the originating ARAL seat received a distinct 03F8 carrying its registered slot and the identical coordinate bytes within 18–109 ms (median 40 ms). Three early requests had no such reply within a second. The room acknowledges legal destinations for registered ARAL seats. Android Solo also sent 03F4 after joystick input. |
 | 03F5 | 22 | Point movement. Every archived request had a matching 03F8 destination and registered selector. The host checks the world registration, padding and legal destination. |
 | 0411 | 1 | Lorelai C targets an allied hero. The one observed request resulted in a 0415 after 55 ms; the room emits the confirmation on authoritative release. |
 | 0412 | 15 | Point casts. All 15 coordinate/selector pairs reappeared in 0416. Supported mappings are Lorelai A/B and Idris B. |

@@ -602,9 +602,15 @@ mod tests {
         }
         let point =
             |x: f32, z: f32| Message::new(0x03f5, [x.to_be_bytes(), z.to_be_bytes()].concat());
-        for (seat, x, z) in [(0, -74.0, 0.88), (3, 75.0, -5.06), (0, -74.0, 0.88)] {
+        for (seat, opcode, x, z) in [
+            (0, 0x03f5, -74.0, 0.88),
+            (3, 0x03f4, 75.0, -5.06),
+            (0, 0x03f4, -74.0, 0.88),
+        ] {
+            let mut request = point(x, z);
+            request.opcode = opcode;
             clients[seat]
-                .write_all(&cipher.encode(&point(x, z)).unwrap())
+                .write_all(&cipher.encode(&request).unwrap())
                 .await
                 .unwrap();
             let reply = until(&mut clients[seat], &cipher, 0x03f8).await;
@@ -631,19 +637,23 @@ mod tests {
         .await
         .unwrap();
         let barrier = Message::new(0, [0; 6]);
-        clients[1]
-            .write_all(&cipher.encode(&barrier).unwrap())
-            .await
-            .unwrap();
-        loop {
-            let response = next(&mut clients[1], &cipher).await;
-            if response == barrier {
-                break;
+        // At the two starting pads, each side sees only its own routes.
+        for (viewer, expected) in [(1, vec![19]), (2, vec![16, 16])] {
+            clients[viewer]
+                .write_all(&cipher.encode(&barrier).unwrap())
+                .await
+                .unwrap();
+            let mut slots = Vec::new();
+            loop {
+                let response = next(&mut clients[viewer], &cipher).await;
+                if response == barrier {
+                    break;
+                }
+                if response.opcode == 0x03f8 {
+                    slots.push(response.body[0]);
+                }
             }
-            assert_ne!(
-                response.opcode, 0x03f8,
-                "point reply leaked to a second seat"
-            );
+            assert_eq!(slots, expected);
         }
         // The server acknowledges the requested target only after validating the attack.
         {
@@ -651,6 +661,12 @@ mod tests {
             state.world.entities[0].position = halcyon_sim::Position { x: 1., y: 0. };
             state.world.entities[1].position = halcyon_sim::Position { x: 4., y: 0. };
         }
+        clients[0]
+            .write_all(&cipher.encode(&point(2., 0.)).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(until(&mut clients[0], &cipher, 0x03f8).await.body[0], 16);
+        assert_eq!(until(&mut clients[1], &cipher, 0x03f8).await.body[0], 16);
         for target in [1500_u32, 19999, 1501] {
             let mut body = target.to_be_bytes().to_vec();
             body.push(0);

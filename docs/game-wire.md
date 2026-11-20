@@ -231,11 +231,16 @@ their existing behavior. The restart trace establishes that the client calls
 exitLobby after reauthentication. An on-device check is still needed to
 determine whether this response alone is sufficient to return to the scene.
 
-The native Solo and ARAL control streams send 0x03F8 privately after an
-accepted 0x03F5 point request. The reply carries that connection's own
-registered actor slot and the requested X/Z destination. Registration is
-checked against the full 0x03F3 declaration actually written to the
-connection. The subsequent authoritative motion remains 0x042E.
+The native Solo control stream acknowledges an accepted 0x03F5 point request
+with 0x03F8. ARAL uses the same action for accepted 0x03F4 and 0x03F5
+destinations. Of 37,568 ARAL paths, 504 referred to the receiving player,
+4,976 to an ally, 9,620 to an enemy hero and 22,468 to other registered
+actors. The 504 paths for the receiving player match 482 incoming 0x03F4
+and all 22 incoming 0x03F5 requests by coordinate bits and slot. Other
+receivers see the path when the moving hero is currently visible and
+registered on their native stream. Authorized observers see both teams.
+The path carries the commanded destination. Subsequent 0x042E frames
+carry positions reached by the simulation.
 
 In all seven played ARAL captures, actors 1500–1505 used slots 16–21 in
 actor order, independent of team. This was true in all 42 opening hero

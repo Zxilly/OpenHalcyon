@@ -19,7 +19,7 @@ The host paths are in [room dispatch](../crates/game/src/lib.rs), [transport](..
 | `03F1` | 9 | A | ActionEndMatch · Natural crystal or ARAL surrender result; also historical non-ARAL draft synchronization form |
 | `03F2` | 1,376 | A | ActionEntitySpawn · Known compact spawn profiles for the selected mode |
 | `03F3` | 42 | A | ActionHeroSpawn · Full actor declaration for simulated heroes and fallback profiles |
-| `03F8` | 37,568 | A | ActionMoveTo · Accepted native point move for a registered actor |
+| `03F8` | 37,568 | A | ActionMoveTo · Accepted Solo 03F5 destination or visible registered ARAL hero route from 03F4/03F5 |
 | `03F9` | 2,548 | R | [ActionMoveToServerAuthoritative](native-motion.md) |
 | `03FA` | 1,978 | R | [ActionMoveToAndFace](native-motion.md) |
 | `03FB` | 1,829 | R | [ActionStopActor](native-motion.md) |

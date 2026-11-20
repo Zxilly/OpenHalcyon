@@ -140,7 +140,7 @@ struct Combat {
     healing: f64,
 }
 struct Room {
-    tower_views: Vec<tower_aggro::View>,
+    scene_views: Vec<tower_aggro::View>,
     solo_slots: actor_slots::ActorSlots,
     aral_slots: aral_spawn::WaveSlots,
     dead_actors: Vec<aral_death::Pending>,
@@ -572,7 +572,7 @@ impl Rooms {
         let (stop, stopped) = watch::channel(false);
         let t = Utc::now();
         let mut room = Room {
-            tower_views: (0..req.players.len()).map(|_| Default::default()).collect(),
+            scene_views: (0..req.players.len()).map(|_| Default::default()).collect(),
             solo_slots: actor_slots::ActorSlots::from_roster(&world.entities),
             aral_slots: Default::default(),
             dead_actors: Vec::new(),
@@ -766,7 +766,7 @@ impl Room {
             self.seats[idx].loading_roster_sent = false;
             self.seats[idx].scene_written = false;
             self.seats[idx].world_actor_written = false;
-            self.tower_views[idx] = Default::default();
+            self.scene_views[idx] = Default::default();
             self.seats[idx].draft_sync_sent = false;
             self.seats[idx].preamble = Default::default();
         }
@@ -991,9 +991,11 @@ impl Room {
                 accepted_world_input = pending_world_input;
             }
             Fields::Live(halcyon_protocol::LiveFields::MovePoint { x, y })
+            | Fields::Movement { x, y }
                 if ch == 0
                     && self.seats[i].world_actor_written
-                    && (legacy || solo_scene && self.seats[i].scene_written)
+                    && (legacy
+                        || m.opcode == 0x03f5 && solo_scene && self.seats[i].scene_written)
                     && (game || pending_world_input) =>
             {
                 let actor = &self.world.entities[i];
@@ -1015,6 +1017,9 @@ impl Room {
                         accepted_world_input = true;
                         first_point_ack = Some(ack);
                     } else {
+                        if legacy {
+                            point_move::publish_aral(self, i, &ack);
+                        }
                         out.push(ack);
                     }
                 }
@@ -1032,7 +1037,7 @@ impl Room {
                 accepted_world_input = m.body.len() == 6 && seconds.is_finite() && seconds >= 0.;
                 out.push(m);
             }
-            Fields::Movement { x, y } if game => {
+            Fields::Movement { x, y } if game && !(legacy && ch == 0) => {
                 let _ = self
                     .world
                     .command(i as u32 + 1, Command::MoveTo(Position { x, y }));
@@ -1213,7 +1218,7 @@ impl Room {
             self.seats[i].draft_sync_sent = true;
         }
         if ch == 0 && scene_requested {
-            self.tower_views[i].declarations(&out);
+            self.scene_views[i].declarations(&out);
         }
         Ok(out)
     }
@@ -1316,7 +1321,7 @@ impl Room {
                 if let Some(peer) = &seat.peers[0] {
                     let mut output = Vec::new();
                     let visible = &self.visible[usize::from(actor.team)];
-                    self.tower_views[i].append(
+                    self.scene_views[i].append(
                         &self.world,
                         |id| visible.contains(&id),
                         &mut output,
@@ -1438,7 +1443,7 @@ impl Room {
                         && seat.peers[1].is_none()
                         && seat.preamble.confirmed()
                     {
-                        self.tower_views[i].declarations(&out);
+                        self.scene_views[i].declarations(&out);
                     }
                 }
             }

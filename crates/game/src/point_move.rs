@@ -1,7 +1,28 @@
 use halcyon_protocol::Message;
 use halcyon_sim::{Command, Entity, Kind, Position, World};
 
-use super::{Pick, messages};
+use super::{Pick, Room, messages, transport};
+
+pub(super) fn publish_aral(room: &mut Room, origin: usize, path: &Message) {
+    let actor = &room.world.entities[origin];
+    let visible: [bool; 2] = std::array::from_fn(|team| room.world.visible(team as u8, actor));
+    let slot = path.body[0];
+    let mut shared = None;
+    for (i, seat) in room.seats.iter().enumerate() {
+        if i != origin
+            && visible[usize::from(room.world.entities[i].team)]
+            && seat.world_actor_written
+            && seat.preamble.confirmed()
+            && seat.peers[1].is_none()
+            && room.scene_views[i].registered(actor.id, slot)
+            && let Some(peer) = &seat.peers[0]
+        {
+            let batch = shared.get_or_insert_with(|| transport::TeamBatch::new(vec![path.clone()]));
+            peer.send(transport::Delivery::Team(batch.clone()));
+        }
+    }
+    room.publish_observers(std::slice::from_ref(path));
+}
 
 /// Submit the observed padded point request for the authenticated seat and
 /// acknowledge its ordered destination. Actual motion still comes from the sim.

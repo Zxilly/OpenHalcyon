@@ -15,6 +15,10 @@ pub(super) struct View {
 }
 
 impl View {
+    pub fn registered(&self, actor: u32, slot: u8) -> bool {
+        self.actors.get(&actor) == Some(&slot)
+    }
+
     pub fn declarations(&mut self, batch: &[Message]) {
         for m in batch {
             let slot = match m.opcode {
