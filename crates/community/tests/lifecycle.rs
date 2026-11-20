@@ -626,6 +626,23 @@ async fn opens_existing_community_rows_and_retains_privacy_and_receipt_idempoten
             .unwrap()["name"],
         "Old party"
     );
+    // Another connection's uncommitted grant cannot shadow the last committed balance.
+    let mut writer = rusqlite::Connection::open(&database).unwrap();
+    let pending = writer
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .unwrap();
+    pending
+        .execute(
+            "UPDATE community_inventory SET count = 9 WHERE player = ? AND item = 'badge'",
+            [owner.to_string()],
+        )
+        .unwrap();
+    assert_eq!(
+        store.inventory_balances(owner).await.unwrap(),
+        [("badge".to_owned(), 2)].into()
+    );
+    assert!(store.inventory_balances(guest).await.unwrap().is_empty());
+    pending.rollback().unwrap();
     let second = Community::open(&database).unwrap();
     let (a, b) = tokio::join!(
         store.award_item(grant, owner, "badge".into(), 2),

@@ -238,6 +238,19 @@ fn parse_state(state: &str) -> Result<QuestStatus> {
     .map_err(|_| CommunityError::WorkerUnavailable)
 }
 
+pub(super) fn inventory_balances(
+    db: &mut SqliteConnection,
+    player: &str,
+) -> Result<std::collections::BTreeMap<String, u32>> {
+    inventory::table
+        .filter(inventory::player.eq(player))
+        .select((inventory::item, inventory::count))
+        .load::<(String, i64)>(db)?
+        .into_iter()
+        .map(|(item, count)| Ok((item, unsigned(count)?)))
+        .collect()
+}
+
 fn inventory_view(db: &mut SqliteConnection, player: &str) -> Result<Value> {
     let rows = inventory::table
         .inner_join(items::table.on(items::id.eq(inventory::item)))

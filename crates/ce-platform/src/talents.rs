@@ -241,16 +241,7 @@ impl Platform {
         if self.talents.bindings.is_empty() {
             return Ok(BTreeMap::new());
         }
-        self.meta
-            .transaction(move |tx| {
-                let mut q =
-                    tx.prepare("SELECT item,count FROM community_inventory WHERE player=?")?;
-                Ok(
-                    q.query_map([player.to_string()], |r| Ok((r.get(0)?, r.get(1)?)))?
-                        .collect::<rusqlite::Result<_>>()?,
-                )
-            })
-            .await
+        Ok(self.community.inventory_balances(player).await?)
     }
 
     /// Look up a known talent for a trusted caller holding the authoritative player's ID.

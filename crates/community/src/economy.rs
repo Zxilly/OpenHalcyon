@@ -37,6 +37,15 @@ pub(crate) fn key(value: String) -> Result<String> {
 }
 
 impl Community {
+    /// Read the player's canonical inventory balances for a trusted content projection.
+    pub async fn inventory_balances(
+        &self,
+        player: Uuid,
+    ) -> Result<std::collections::BTreeMap<String, u32>> {
+        self.with_orm(move |db| store::inventory_balances(db, &player.to_string()))
+            .await
+    }
+
     /// Define equipable content from trusted configuration.
     pub async fn define_item(&self, definition: ItemDefinition) -> Result<()> {
         let id = key(definition.id)?;

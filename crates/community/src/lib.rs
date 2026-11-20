@@ -212,10 +212,19 @@ impl Community {
         F: FnOnce(&mut SqliteConnection) -> Result<T> + Send + 'static,
         T: Send + 'static,
     {
+        self.with_orm(move |db| db.immediate_transaction(work))
+            .await
+    }
+
+    async fn with_orm<T, F>(&self, work: F) -> Result<T>
+    where
+        F: FnOnce(&mut SqliteConnection) -> Result<T> + Send + 'static,
+        T: Send + 'static,
+    {
         let db = self.0.clone();
         tokio::task::spawn_blocking(move || {
             let mut db = db.lock().map_err(|_| CommunityError::WorkerUnavailable)?;
-            db.orm.immediate_transaction(work)
+            work(&mut db.orm)
         })
         .await
         .map_err(|_| CommunityError::WorkerUnavailable)?
