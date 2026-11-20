@@ -1,0 +1,110 @@
+//! Startup indexes for the separately distributed CE data supplement.
+use super::read;
+use serde::Deserialize;
+use sha2::Sha256;
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    io,
+    path::Path,
+};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AbilityParameter {
+    Cooldown,
+    EnergyCost,
+    Range,
+}
+
+impl AbilityParameter {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Cooldown => "Cooldown",
+            Self::EnergyCost => "Energy Cost",
+            Self::Range => "Range",
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct RankedVariable {
+    name: String,
+    ranks: Box<[f32]>,
+}
+
+#[derive(Deserialize)]
+struct Ability {
+    ability_id: String,
+    variables: Vec<RankedVariable>,
+}
+
+#[derive(Deserialize)]
+struct Hero {
+    hero_id: String,
+    abilities: Vec<Ability>,
+}
+
+#[derive(Default, Debug)]
+pub struct ExtraData {
+    heroes: BTreeMap<String, BTreeMap<String, Vec<RankedVariable>>>,
+    standard_five: Option<BTreeSet<String>>,
+}
+
+impl ExtraData {
+    pub(super) fn load(dir: &Path, hash: &mut Sha256) -> io::Result<Self> {
+        let mut heroes = BTreeMap::new();
+        for hero in read::<Vec<Hero>>(dir, "abilities.json", hash)? {
+            let mut abilities = BTreeMap::new();
+            for ability in hero.abilities {
+                if ability.variables.iter().any(|v| {
+                    v.name.is_empty()
+                        || v.ranks.is_empty()
+                        || v.ranks.iter().any(|r| !r.is_finite())
+                }) {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("invalid ranks for {} in abilities.json", ability.ability_id),
+                    ));
+                }
+                if abilities
+                    .insert(ability.ability_id, ability.variables)
+                    .is_some()
+                {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "duplicate ability ID for one hero in abilities.json",
+                    ));
+                }
+            }
+            if heroes.insert(hero.hero_id, abilities).is_some() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "duplicate hero ID in abilities.json",
+                ));
+            }
+        }
+        #[derive(Deserialize)]
+        struct Stores {
+            #[serde(rename = "ItemStore_Standard_5v5")]
+            standard_five: BTreeSet<String>,
+        }
+        let stores: Stores = read(dir, "item_stores.json", hash)?;
+        Ok(Self {
+            heroes,
+            standard_five: Some(stores.standard_five),
+        })
+    }
+
+    pub(super) fn ranks(&self, hero: &str, ability: &str, name: &str) -> Option<&[f32]> {
+        let variables = self.heroes.get(hero)?.get(ability)?;
+        let mut matches = variables
+            .iter()
+            .filter(|v| v.name.eq_ignore_ascii_case(name));
+        let first = matches.next()?;
+        // Some extracted abilities attach two different variables with the same label.
+        matches.next().is_none().then_some(first.ranks.as_ref())
+    }
+
+    pub(super) fn standard_five(&self) -> Option<&BTreeSet<String>> {
+        self.standard_five.as_ref()
+    }
+}

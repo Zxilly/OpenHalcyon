@@ -124,7 +124,7 @@ async fn serve(c: Config) -> Result<()> {
     let data = c
         .data_dir
         .as_ref()
-        .map(GameData::load)
+        .map(|dir| GameData::load_with_extra(dir, c.data_extra_dir.as_deref()))
         .transpose()?
         .map(Arc::new);
     let digest = halcyon_sim::rules_digest(data.as_deref());

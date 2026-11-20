@@ -1,8 +1,10 @@
 //! Read the separately supplied 4.13.4 delivery. Unknown fields retain their original names and values.
 mod difficulty;
 mod entity_template;
+mod extra;
 pub use difficulty::BotDifficulty;
 pub use entity_template::EntityTemplate;
+pub use extra::{AbilityParameter, ExtraData};
 pub use halcyon_protocol::ce::{KnownQueue, NativeMode};
 
 /// Matchmaking ID observed in the iOS-era ARAL requests.
@@ -265,6 +267,7 @@ pub struct ManifestEntry {
 
 #[derive(Debug)]
 pub struct GameData {
+    pub extra: ExtraData,
     pub units: Vec<Unit>,
     pub items: Vec<Item>,
     pub manifest: Vec<ManifestEntry>,
@@ -278,22 +281,12 @@ pub struct GameData {
 }
 impl GameData {
     pub fn load(dir: impl AsRef<Path>) -> io::Result<Self> {
+        Self::load_with_extra(dir, None)
+    }
+
+    pub fn load_with_extra(dir: impl AsRef<Path>, extra: Option<&Path>) -> io::Result<Self> {
         let dir = dir.as_ref();
         let mut hash = Sha256::new();
-        fn read<T: DeserializeOwned>(dir: &Path, name: &str, hash: &mut Sha256) -> io::Result<T> {
-            let path = dir.join(name);
-            let bytes = fs::read(&path)
-                .map_err(|e| io::Error::new(e.kind(), format!("{}: {e}", path.display())))?;
-            hash.update(name.as_bytes());
-            hash.update((bytes.len() as u64).to_be_bytes());
-            hash.update(&bytes);
-            serde_json::from_slice(&bytes).map_err(|e| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!("{}: {e}", path.display()),
-                )
-            })
-        }
         let (hero_names, skin_names) = read_catalog(dir, &mut hash)?;
         Ok(Self {
             hero_names,
@@ -305,8 +298,19 @@ impl GameData {
             official_rules: read(dir, "official_rules.json", &mut hash)?,
             abilities: read(dir, "ability_raw.json", &mut hash)?,
             combat_constants: read(dir, "combat_constants.json", &mut hash)?,
+            extra: match extra {
+                Some(dir) => ExtraData::load(dir, &mut hash)?,
+                None => ExtraData::default(),
+            },
             content_digest: format!("{:x}", hash.finalize()),
         })
+    }
+    /// Borrows an unambiguous rank table. Lookups preserve the hero and ability IDs.
+    pub fn ability_ranks(&self, hero: &str, ability: &str, variable: &str) -> Option<&[f32]> {
+        self.extra.ranks(hero, ability, variable)
+    }
+    pub fn standard_5v5_items(&self) -> Option<&std::collections::BTreeSet<String>> {
+        self.extra.standard_five()
     }
     pub fn unit(&self, name: &str) -> Option<&Unit> {
         self.units.iter().find(|v| v.name == name)
@@ -317,6 +321,21 @@ impl GameData {
             .find(|v| v.name.trim_matches('*') == name)
             .map(|v| v.entity_type_id)
     }
+}
+
+fn read<T: DeserializeOwned>(dir: &Path, name: &str, hash: &mut Sha256) -> io::Result<T> {
+    let path = dir.join(name);
+    let bytes = fs::read(&path)
+        .map_err(|e| io::Error::new(e.kind(), format!("{}: {e}", path.display())))?;
+    hash.update(name.as_bytes());
+    hash.update((bytes.len() as u64).to_be_bytes());
+    hash.update(&bytes);
+    serde_json::from_slice(&bytes).map_err(|e| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("{}: {e}", path.display()),
+        )
+    })
 }
 
 fn read_catalog(dir: &Path, hash: &mut Sha256) -> io::Result<(Vec<String>, Vec<String>)> {

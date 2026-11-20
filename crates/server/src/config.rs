@@ -33,6 +33,7 @@ pub struct Config {
     pub certificate: PathBuf,
     pub private_key: PathBuf,
     pub data_dir: Option<PathBuf>,
+    pub data_extra_dir: Option<PathBuf>,
     pub replay_dir: Option<PathBuf>,
     pub manifests_dir: Option<PathBuf>,
     pub content_file: Option<PathBuf>,
@@ -114,6 +115,7 @@ impl Config {
             certificate: "tls.pem".into(),
             private_key: "tls.key".into(),
             data_dir: None,
+            data_extra_dir: None,
             replay_dir: None,
             manifests_dir: None,
             content_file: None,
@@ -152,6 +154,7 @@ impl Config {
         ]
         .into_iter()
         .chain(c.data_dir.iter_mut())
+        .chain(c.data_extra_dir.iter_mut())
         .chain(c.replay_dir.iter_mut())
         .chain(c.manifests_dir.iter_mut())
         .chain(c.content_file.iter_mut())
@@ -160,6 +163,10 @@ impl Config {
                 *dest = base.join(&*dest);
             }
         }
+        ensure!(
+            c.data_extra_dir.is_none() || c.data_dir.is_some(),
+            "data_extra_dir requires the base delivery in data_dir"
+        );
         ensure!(
             c.max_rooms > 0 && (1..=10).contains(&c.seats_per_match),
             "invalid game capacity"

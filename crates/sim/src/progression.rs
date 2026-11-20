@@ -405,6 +405,7 @@ mod tests {
             other: Default::default(),
         };
         let data = GameData {
+            extra: Default::default(),
             units: vec![unit],
             items: vec![],
             manifest: vec![ManifestEntry {

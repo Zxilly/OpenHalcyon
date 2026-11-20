@@ -70,6 +70,7 @@ fn idris_only() -> Arc<GameData> {
     })
     .collect();
     Arc::new(GameData {
+        extra: Default::default(),
         units,
         items,
         manifest,
