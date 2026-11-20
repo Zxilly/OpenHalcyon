@@ -102,6 +102,18 @@ impl Stream {
                         }
                         e.typed += 1;
                     }
+                    Ok(
+                        f @ (Fields::ServerMove { .. }
+                        | Fields::MoveAndFace { .. }
+                        | Fields::StopActor { .. }),
+                    ) => {
+                        if f.movement_message().as_ref() != Some(&m) {
+                            return Err(invalid(
+                                "native movement fields did not reproduce the frame",
+                            ));
+                        }
+                        e.typed += 1;
+                    }
                     Ok(Fields::Opaque(_)) => e.opaque += 1,
                     Ok(_) => e.typed += 1,
                     Err(_) => e.errors += 1,

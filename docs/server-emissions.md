@@ -20,9 +20,9 @@ The host paths are in [room dispatch](../crates/game/src/lib.rs), [transport](..
 | `03F2` | 1,376 | A | ActionEntitySpawn · Known compact spawn profiles for the selected mode |
 | `03F3` | 42 | A | ActionHeroSpawn · Full actor declaration for simulated heroes and fallback profiles |
 | `03F8` | 37,568 | A | ActionMoveTo · Accepted native point move for a registered actor |
-| `03F9` | 2,548 | R | ActionMoveToServerAuthoritative |
-| `03FA` | 1,978 | R | ActionMoveToAndFace |
-| `03FB` | 1,829 | R | ActionStopActor |
+| `03F9` | 2,548 | R | [ActionMoveToServerAuthoritative](native-motion.md) |
+| `03FA` | 1,978 | R | [ActionMoveToAndFace](native-motion.md) |
+| `03FB` | 1,829 | R | [ActionStopActor](native-motion.md) |
 | `0402` | 25 | R | ActionAutoActorBounce |
 | `0403` | 525 | R | ActionAutoMoveTo |
 | `0406` | 25 | R | ActionAutoOrbit |

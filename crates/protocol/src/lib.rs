@@ -29,6 +29,7 @@ mod item_actions;
 pub use item_actions::ItemAction;
 mod live;
 pub use live::LiveFields;
+mod native_motion;
 mod mutations;
 pub use mutations::{AttributeChange, ResourceChange};
 mod metadata;
@@ -255,21 +256,23 @@ impl Message {
                 value: float(2)?,
                 remaining: &b[6..],
             },
-            0x3fa if b.len() == 22 => Fields::MoveAndFace {
+            0x3fa if matches!(b.len(), 20 | 22) => Fields::MoveAndFace {
                 actor: number(0)?,
                 reference: number(4)?,
                 values: [float(8)?, float(12)?, float(16)?],
                 remaining: &b[20..],
             },
-            0x3fb if b.len() == 22 => Fields::StopActor {
+            0x3fb if matches!(b.len(), 17 | 22) => Fields::StopActor {
                 actor: number(0)?,
                 values: [float(4)?, float(8)?, float(12)?],
-                remaining: &b[16..],
+                flag: b[16],
+                remaining: &b[17..],
             },
             0x3f9 if b.len() == 14 => Fields::ServerMove {
                 selector: b[0],
                 values: [float(1)?, float(5)?, float(9)?],
-                remaining: &b[13..],
+                flag: b[13],
+                remaining: &b[14..],
             },
             0x432 if b.len() == 22 => Fields::Respawn {
                 actor: number(0)?,
@@ -612,11 +615,13 @@ pub enum Fields<'a> {
     StopActor {
         actor: u32,
         values: [f32; 3],
+        flag: u8,
         remaining: &'a [u8],
     },
     ServerMove {
         selector: u8,
         values: [f32; 3],
+        flag: u8,
         remaining: &'a [u8],
     },
     Respawn {
