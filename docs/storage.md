@@ -12,10 +12,13 @@ The storage connection enables foreign keys and a five-second busy timeout. The 
 
 The peer-play crate owns a separate Diesel journal for hosted matches, pending results and cross-instance chat delivery. The migration adopts the existing tables and delivery indexes. Allocating the next sender sequence and inserting the intended recipients run under one immediate transaction. Acknowledgements and recovery use the same journal after restart.
 
+Each federation node uses Diesel for its OpenRaft log, vote, commit position, applied state and snapshots. It retains the SQLite tables and CBOR encoding so a node can reopen its existing state. Snapshot installation validates the membership and updates the persisted state atomically. A failed transaction leaves the in-memory machine at its previous applied position.
+
 Build and test with the repository's normal bundled SQLite toolchain.
 
 ```powershell
 cargo test --locked -p halcyon-platform --test accounts
 cargo test --locked -p halcyon-peer-play --lib journal
+cargo test --locked -p halcyon-federation
 cargo tree -i libsqlite3-sys
 ```

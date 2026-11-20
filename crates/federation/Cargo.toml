@@ -19,7 +19,9 @@ http-body-util = "0.1"
 hyper = { version = "1", features = ["client", "server", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio", "service"] }
 openraft = { version = "0.9.24", features = ["serde"] }
-rusqlite = { version = "0.37", features = ["bundled"] }
+diesel.workspace = true
+diesel_migrations.workspace = true
+halcyon-storage = { path = "../storage" }
 rustls = { version = "0.23", default-features = false, features = ["std", "ring", "tls12"] }
 rustls-pemfile = "2"
 serde.workspace = true
@@ -31,6 +33,7 @@ tracing.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+rusqlite = { version = "0.37", features = ["bundled"] }
 rcgen = "0.13"
 tempfile = "3"
 

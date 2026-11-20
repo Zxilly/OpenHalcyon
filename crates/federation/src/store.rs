@@ -1,9 +1,13 @@
 use super::*;
+use diesel::{connection::SimpleConnection, prelude::*};
+use diesel_migrations::{MigrationHarness, embed_migrations};
 use openraft::{
     Entry, EntryPayload, ErrorSubject, ErrorVerb, LogState, RaftLogReader, RaftSnapshotBuilder,
     RaftStorage, Snapshot, SnapshotMeta, StorageError, Vote,
 };
-use rusqlite::{Connection, OptionalExtension, params};
+use schema::{log, metadata};
+mod schema;
+const MIGRATIONS: diesel_migrations::EmbeddedMigrations = embed_migrations!("migrations");
 use std::{
     fmt::Debug,
     io::Cursor,
@@ -15,7 +19,7 @@ use std::{
 #[derive(Clone)]
 pub(crate) struct Store(Arc<Mutex<Database>>);
 struct Database {
-    db: Connection,
+    db: SqliteConnection,
     machine: Machine,
 }
 mod state;
@@ -29,17 +33,18 @@ fn maperr(e: anyhow::Error, verb: ErrorVerb) -> E {
         std::io::Error::other(e.to_string()),
     )
 }
-fn get<T: DeserializeOwned>(c: &Connection, k: &str) -> anyhow::Result<Option<T>> {
-    let b: Option<Vec<u8>> = c
-        .query_row("select data from metadata where key=?", [k], |r| r.get(0))
+fn get<T: DeserializeOwned>(c: &mut SqliteConnection, k: &str) -> anyhow::Result<Option<T>> {
+    let b = metadata::table
+        .find(k)
+        .select(metadata::data)
+        .first::<Vec<u8>>(c)
         .optional()?;
     b.map(|b| decode(&b)).transpose()
 }
-fn put(c: &Connection, k: &str, v: &impl Serialize) -> anyhow::Result<()> {
-    c.execute(
-        "insert or replace into metadata values(?,?)",
-        params![k, encode(v)?],
-    )?;
+fn put(c: &mut SqliteConnection, k: &str, v: &impl Serialize) -> anyhow::Result<()> {
+    diesel::replace_into(metadata::table)
+        .values((metadata::key.eq(k), metadata::data.eq(encode(v)?)))
+        .execute(c)?;
     Ok(())
 }
 #[allow(
@@ -48,33 +53,29 @@ fn put(c: &Connection, k: &str, v: &impl Serialize) -> anyhow::Result<()> {
 )]
 impl Store {
     pub fn open(path: &Path, pool: Uuid, node: Uuid) -> anyhow::Result<Self> {
-        let mut c = Connection::open(path)?;
-        c.execute_batch("pragma journal_mode=WAL; pragma synchronous=FULL; create table if not exists metadata(key text primary key,data blob not null); create table if not exists log(idx integer primary key,data blob not null);")?;
-        let tx = c.transaction()?;
-        match get::<(Uuid, Uuid)>(&tx, "identity")? {
-            Some(id) => anyhow::ensure!(
-                id == (pool, node),
-                "database belongs to another pool or node"
-            ),
-            None => put(&tx, "identity", &(pool, node))?,
-        }
-        state::initialize(&tx)?;
-        let machine = state::restore(&tx)?;
-        tx.commit()?;
+        let mut c = halcyon_storage::DatabaseAddress::new(path).connect()?;
+        c.batch_execute("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;")?;
+        let machine = c.immediate_transaction::<_, anyhow::Error, _>(|tx| {
+            tx.run_pending_migrations(MIGRATIONS)
+                .map_err(anyhow::Error::from_boxed)?;
+            match get::<(Uuid, Uuid)>(tx, "identity")? {
+                Some(id) => anyhow::ensure!(
+                    id == (pool, node),
+                    "database belongs to another pool or node"
+                ),
+                None => put(tx, "identity", &(pool, node))?,
+            }
+            state::initialize(tx)?;
+            state::restore(tx)
+        })?;
         Ok(Self(Arc::new(Mutex::new(Database { db: c, machine }))))
     }
-    fn read<T>(&self, f: impl FnOnce(&Connection) -> anyhow::Result<T>) -> Result<T, E> {
-        f(&self.0.lock().unwrap().db).map_err(|e| maperr(e, ErrorVerb::Read))
+    fn read<T>(&self, f: impl FnOnce(&mut SqliteConnection) -> anyhow::Result<T>) -> Result<T, E> {
+        f(&mut self.0.lock().unwrap().db).map_err(|e| maperr(e, ErrorVerb::Read))
     }
-    fn write<T>(&self, f: impl FnOnce(&Connection) -> anyhow::Result<T>) -> Result<T, E> {
+    fn write<T>(&self, f: impl FnOnce(&mut SqliteConnection) -> anyhow::Result<T>) -> Result<T, E> {
         let mut c = self.0.lock().unwrap();
-        let job = || -> anyhow::Result<T> {
-            let tx = c.db.transaction()?;
-            let v = f(&tx)?;
-            tx.commit()?;
-            Ok(v)
-        };
-        job().map_err(|e| maperr(e, ErrorVerb::Write))
+        c.db.transaction(f).map_err(|e| maperr(e, ErrorVerb::Write))
     }
     #[cfg(test)]
     pub fn machine(&self) -> Result<Machine, E> {
@@ -112,14 +113,13 @@ impl RaftLogReader<Types> for Store {
             Bound::Unbounded => i64::MAX as u64,
         };
         self.read(|c| {
-            let mut stmt =
-                c.prepare("select data from log where idx between ? and ? order by idx")?;
-            let mut r = stmt.query(params![start, end])?;
-            let mut out = Vec::new();
-            while let Some(row) = r.next()? {
-                out.push(decode(&row.get::<_, Vec<u8>>(0)?)?)
-            }
-            Ok(out)
+            log::table
+                .filter(log::idx.between(i64::try_from(start)?, i64::try_from(end)?))
+                .order(log::idx)
+                .select(log::data)
+                .load_iter::<Vec<u8>, diesel::connection::DefaultLoadingMode>(c)?
+                .map(|row| decode(&row?))
+                .collect()
         })
     }
 }
@@ -150,10 +150,10 @@ impl RaftStorage<Types> for Store {
     async fn get_log_state(&mut self) -> Result<LogState<Types>, E> {
         self.read(|c| {
             let purged = get(c, "purged")?;
-            let last: Option<Vec<u8>> = c
-                .query_row("select data from log order by idx desc limit 1", [], |r| {
-                    r.get(0)
-                })
+            let last = log::table
+                .order(log::idx.desc())
+                .select(log::data)
+                .first::<Vec<u8>>(c)
                 .optional()?;
             let last = last
                 .map(|b| decode::<Entry<Types>>(&b))
@@ -174,22 +174,26 @@ impl RaftStorage<Types> for Store {
         entries: I,
     ) -> Result<(), E> {
         self.write(|c| {
-            let mut stmt = c.prepare_cached("insert or replace into log values(?,?)")?;
             for e in entries {
-                stmt.execute(params![e.log_id.index, encode(&e)?])?;
+                diesel::replace_into(log::table)
+                    .values((
+                        log::idx.eq(i64::try_from(e.log_id.index)?),
+                        log::data.eq(encode(&e)?),
+                    ))
+                    .execute(c)?;
             }
             Ok(())
         })
     }
     async fn delete_conflict_logs_since(&mut self, id: LogId<Uuid>) -> Result<(), E> {
         self.write(|c| {
-            c.execute("delete from log where idx>=?", [id.index])?;
+            diesel::delete(log::table.filter(log::idx.ge(i64::try_from(id.index)?))).execute(c)?;
             Ok(())
         })
     }
     async fn purge_logs_upto(&mut self, id: LogId<Uuid>) -> Result<(), E> {
         self.write(|c| {
-            c.execute("delete from log where idx<=?", [id.index])?;
+            diesel::delete(log::table.filter(log::idx.le(i64::try_from(id.index)?))).execute(c)?;
             put(c, "purged", &id)
         })
     }
@@ -230,9 +234,9 @@ impl RaftStorage<Types> for Store {
                 machine.applied.map(|id| id.index) >= state.machine.applied.map(|id| id.index),
                 "obsolete incoming snapshot"
             );
-            let tx = state.db.transaction()?;
-            state::checkpoint(&tx, &meta, &bytes)?;
-            tx.commit()?;
+            state
+                .db
+                .transaction(|tx| state::checkpoint(tx, &meta, &bytes))?;
             state.machine = machine;
             Ok(())
         })

@@ -1,14 +1,9 @@
 //! Durable state is a full checkpoint plus only the entries applied after it.
 //! The Raft log may be purged independently of this journal.
 use super::*;
-use rusqlite::Transaction;
+use schema::{sm_applied, sm_checkpoint};
 
-pub(super) fn initialize(tx: &Transaction<'_>) -> anyhow::Result<()> {
-    tx.execute_batch(
-        "CREATE TABLE IF NOT EXISTS sm_checkpoint(
-        id INTEGER PRIMARY KEY CHECK(id=1), meta BLOB, image BLOB NOT NULL);
-        CREATE TABLE IF NOT EXISTS sm_applied(idx INTEGER PRIMARY KEY, entry BLOB NOT NULL);",
-    )?;
+pub(super) fn initialize(tx: &mut SqliteConnection) -> anyhow::Result<()> {
     match get::<u32>(tx, "sm_version")? {
         Some(2) => return Ok(()),
         Some(_) => anyhow::bail!("unknown federation state machine storage version"),
@@ -17,28 +12,37 @@ pub(super) fn initialize(tx: &Transaction<'_>) -> anyhow::Result<()> {
     // Previous versions stored the most recently applied state independently of
     // the last published snapshot. Keep the older snapshot available until a
     // new snapshot at least as recent as the migration checkpoint is published.
-    tx.execute(
-        "INSERT INTO sm_checkpoint(id,image) SELECT 1,data FROM metadata WHERE key='machine'",
-        [],
-    )?;
+    let image = metadata::table
+        .find("machine")
+        .select(metadata::data)
+        .first::<Vec<u8>>(tx)
+        .optional()?;
+    if let Some(image) = image {
+        diesel::insert_into(sm_checkpoint::table)
+            .values((sm_checkpoint::id.eq(1), sm_checkpoint::image.eq(image)))
+            .execute(tx)?;
+    }
     put(tx, "sm_version", &2u32)?;
     // An older binary would otherwise silently start from an obsolete state.
     put(tx, "machine", &2u32)?;
     Ok(())
 }
 
-pub(super) fn restore(db: &Connection) -> anyhow::Result<Machine> {
-    let base: Option<Vec<u8>> = db
-        .query_row("SELECT image FROM sm_checkpoint WHERE id=1", [], |r| {
-            r.get(0)
-        })
+pub(super) fn restore(db: &mut SqliteConnection) -> anyhow::Result<Machine> {
+    let base = sm_checkpoint::table
+        .find(1)
+        .select(sm_checkpoint::image)
+        .first::<Vec<u8>>(db)
         .optional()?;
     let mut machine: Machine = base.map(|b| decode(&b)).transpose()?.unwrap_or_default();
-    let mut stmt = db.prepare("SELECT idx,entry FROM sm_applied ORDER BY idx")?;
-    let mut rows = stmt.query([])?;
-    while let Some(row) = rows.next()? {
-        let idx: u64 = row.get(0)?;
-        let e: Entry<Types> = decode(&row.get::<_, Vec<u8>>(1)?)?;
+    let rows = sm_applied::table
+        .order(sm_applied::idx)
+        .select((sm_applied::idx, sm_applied::entry))
+        .load_iter::<(i64, Vec<u8>), diesel::connection::DefaultLoadingMode>(db)?;
+    for row in rows {
+        let (index, bytes) = row?;
+        let idx = u64::try_from(index)?;
+        let e: Entry<Types> = decode(&bytes)?;
         anyhow::ensure!(
             e.log_id.index == idx
                 && machine
@@ -107,20 +111,23 @@ pub(super) fn apply(
         };
         outcomes.push(outcome);
     }
-    let tx = state.db.transaction()?;
-    {
-        let mut append = tx.prepare_cached("INSERT INTO sm_applied(idx,entry) VALUES(?,?)")?;
+    state.db.transaction::<_, anyhow::Error, _>(|tx| {
         for e in pending {
             anyhow::ensure!(
                 latest.is_none_or(|id| id.index.checked_add(1) == Some(e.log_id.index)),
                 "non-contiguous applied index {}",
                 e.log_id.index
             );
-            append.execute(params![e.log_id.index, encode(e)?])?;
+            diesel::insert_into(sm_applied::table)
+                .values((
+                    sm_applied::idx.eq(i64::try_from(e.log_id.index)?),
+                    sm_applied::entry.eq(encode(e)?),
+                ))
+                .execute(tx)?;
             latest = Some(e.log_id);
         }
-    }
-    tx.commit()?;
+        Ok(())
+    })?;
     // Publish only after the entire batch is durable, under the same mutex
     // used by readers. Restart after COMMIT replays these same pure transitions.
     outcomes.extend(pending.iter().map(|e| advance(&mut state.machine, e)));
@@ -128,22 +135,30 @@ pub(super) fn apply(
 }
 
 pub(super) fn checkpoint(
-    tx: &Transaction<'_>,
+    tx: &mut SqliteConnection,
     meta: &SnapshotMeta<Uuid, BasicNode>,
     image: &[u8],
 ) -> anyhow::Result<()> {
-    tx.execute(
-        "INSERT INTO sm_checkpoint(id,meta,image) VALUES(1,?,?) ON CONFLICT(id)
-        DO UPDATE SET meta=excluded.meta,image=excluded.image",
-        params![encode(meta)?, image],
-    )?;
+    let metadata_bytes = encode(meta)?;
+    diesel::insert_into(sm_checkpoint::table)
+        .values((
+            sm_checkpoint::id.eq(1),
+            sm_checkpoint::meta.eq(&metadata_bytes),
+            sm_checkpoint::image.eq(image),
+        ))
+        .on_conflict(sm_checkpoint::id)
+        .do_update()
+        .set((
+            sm_checkpoint::meta.eq(diesel::upsert::excluded(sm_checkpoint::meta)),
+            sm_checkpoint::image.eq(diesel::upsert::excluded(sm_checkpoint::image)),
+        ))
+        .execute(tx)?;
     if let Some(last) = meta.last_log_id {
-        tx.execute("DELETE FROM sm_applied WHERE idx<=?", [last.index])?;
+        diesel::delete(sm_applied::table.filter(sm_applied::idx.le(i64::try_from(last.index)?)))
+            .execute(tx)?;
     }
-    tx.execute(
-        "DELETE FROM metadata WHERE key IN ('snapshot','pool_revision')",
-        [],
-    )?;
+    diesel::delete(metadata::table.filter(metadata::key.eq_any(["snapshot", "pool_revision"])))
+        .execute(tx)?;
     Ok(())
 }
 pub(super) fn build(store: &Store) -> anyhow::Result<Snapshot<Types>> {
@@ -158,36 +173,32 @@ pub(super) fn build(store: &Store) -> anyhow::Result<Snapshot<Types>> {
     let bytes = encode(&machine)?;
     drop(machine);
     let mut state = store.0.lock().unwrap();
-    let saved: Option<Vec<u8>> = state
-        .db
-        .query_row(
-            "SELECT meta FROM sm_checkpoint WHERE id=1 AND meta IS NOT NULL",
-            [],
-            |r| r.get(0),
-        )
-        .optional()?;
+    let saved = sm_checkpoint::table
+        .find(1)
+        .select(sm_checkpoint::meta)
+        .first::<Option<Vec<u8>>>(&mut state.db)
+        .optional()?
+        .flatten();
     if let Some(saved) = saved {
         let current: SnapshotMeta<Uuid, BasicNode> = decode(&saved)?;
         if current.last_log_id.map(|id| id.index) >= meta.last_log_id.map(|id| id.index) {
-            return snapshot(&state.db)?.ok_or_else(|| anyhow::anyhow!("missing checkpoint image"));
+            return snapshot(&mut state.db)?
+                .ok_or_else(|| anyhow::anyhow!("missing checkpoint image"));
         }
     }
-    let tx = state.db.transaction()?;
-    checkpoint(&tx, &meta, &bytes)?;
-    tx.commit()?;
+    state.db.transaction(|tx| checkpoint(tx, &meta, &bytes))?;
     Ok(Snapshot {
         meta,
         snapshot: Box::new(Cursor::new(bytes)),
     })
 }
-pub(super) fn snapshot(db: &Connection) -> anyhow::Result<Option<Snapshot<Types>>> {
+pub(super) fn snapshot(db: &mut SqliteConnection) -> anyhow::Result<Option<Snapshot<Types>>> {
     type Meta = SnapshotMeta<Uuid, BasicNode>;
-    let saved: Option<(Vec<u8>, Vec<u8>)> = db
-        .query_row(
-            "SELECT meta,image FROM sm_checkpoint WHERE id=1 AND meta IS NOT NULL",
-            [],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )
+    let saved = sm_checkpoint::table
+        .find(1)
+        .filter(sm_checkpoint::meta.is_not_null())
+        .select((sm_checkpoint::meta.assume_not_null(), sm_checkpoint::image))
+        .first::<(Vec<u8>, Vec<u8>)>(db)
         .optional()?;
     let pair = match saved {
         Some((m, b)) => Some((decode::<Meta>(&m)?, b)),

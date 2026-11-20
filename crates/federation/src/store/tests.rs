@@ -88,28 +88,39 @@ fn fixture(rooms: u64) -> Machine {
     }
     m
 }
+fn legacy_put(db: &rusqlite::Connection, key: &str, value: &impl Serialize) -> anyhow::Result<()> {
+    db.execute(
+        "INSERT OR REPLACE INTO metadata(key,data) VALUES(?,?)",
+        rusqlite::params![key, encode(value)?],
+    )?;
+    Ok(())
+}
 fn legacy_file(path: &Path, m: &Machine) {
-    let db = Connection::open(path).unwrap();
+    let db = rusqlite::Connection::open(path).unwrap();
     db.execute_batch(
         "PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;
         CREATE TABLE metadata(key TEXT PRIMARY KEY,data BLOB NOT NULL);
         CREATE TABLE log(idx INTEGER PRIMARY KEY,data BLOB NOT NULL);",
     )
     .unwrap();
-    put(&db, "identity", &(POOL, HOME)).unwrap();
-    put(&db, "machine", m).unwrap();
-    put(&db, "pool_revision", &m.applied.unwrap().index).unwrap();
+    legacy_put(&db, "identity", &(POOL, HOME)).unwrap();
+    legacy_put(&db, "machine", m).unwrap();
+    legacy_put(&db, "pool_revision", &m.applied.unwrap().index).unwrap();
     let old = Machine::default();
     let snap = SnapshotMeta {
         last_log_id: None,
         last_membership: old.membership.clone(),
         snapshot_id: "legacy-snapshot".into(),
     };
-    put(&db, "snapshot", &(snap, encode(&old).unwrap())).unwrap();
+    legacy_put(&db, "snapshot", &(snap, encode(&old).unwrap())).unwrap();
 }
 fn count_journal(store: &Store) -> usize {
     store
-        .read(|db| Ok(db.query_row("SELECT COUNT(*) FROM sm_applied", [], |r| r.get(0))?))
+        .read(|db| {
+            Ok(usize::try_from(
+                schema::sm_applied::table.count().get_result::<i64>(db)?,
+            )?)
+        })
         .unwrap()
 }
 
@@ -140,7 +151,7 @@ async fn legacy_upgrade_journal_recovery_retries_and_snapshot_transfer() {
         .unwrap();
     // Inject a SQLite failure half way through one batch. The live machine,
     // cursor and durable journal must all continue to describe the old state.
-    s.write(|db|Ok(db.execute_batch("CREATE TRIGGER fail_apply BEFORE INSERT ON sm_applied WHEN NEW.idx=17 BEGIN SELECT RAISE(ABORT,'injected'); END;")?)).unwrap();
+    s.write(|db|Ok(db.batch_execute("CREATE TRIGGER fail_apply BEFORE INSERT ON sm_applied WHEN NEW.idx=17 BEGIN SELECT RAISE(ABORT,'injected'); END;")?)).unwrap();
     assert!(
         s.apply_to_state_machine(&[same.clone(), conflict.clone()])
             .await
@@ -148,7 +159,7 @@ async fn legacy_upgrade_journal_recovery_retries_and_snapshot_transfer() {
     );
     assert_eq!(s.last_applied_state().await.unwrap().0, old.applied);
     assert_eq!(count_journal(&s), 0);
-    s.write(|db| Ok(db.execute_batch("DROP TRIGGER fail_apply")?))
+    s.write(|db| Ok(db.batch_execute("DROP TRIGGER fail_apply")?))
         .unwrap();
     let outcomes = vec![Ok(()), Err(ApplyError::Conflict), Err(ApplyError::Missing)];
     assert_eq!(
@@ -230,9 +241,10 @@ async fn checkpoint_at_an_earlier_fence_retains_concurrently_applied_tail() {
     store.apply_to_state_machine(&[two]).await.unwrap();
     {
         let mut state = store.0.lock().unwrap();
-        let tx = state.db.transaction().unwrap();
-        super::state::checkpoint(&tx, &meta, &raw).unwrap();
-        tx.commit().unwrap();
+        state
+            .db
+            .transaction(|tx| super::state::checkpoint(tx, &meta, &raw))
+            .unwrap();
     }
     assert_eq!(count_journal(&store), 1);
     drop(store);
@@ -268,15 +280,21 @@ async fn store_write_amplification() {
             legacy_file(&path, &original);
             let (millis, wal_bytes, checkpoint_ms);
             if legacy {
-                let mut c = Connection::open(&path).unwrap();
+                let mut c = rusqlite::Connection::open(&path).unwrap();
                 c.execute_batch("PRAGMA synchronous=FULL;PRAGMA wal_autocheckpoint=0;PRAGMA wal_checkpoint(TRUNCATE)").unwrap();
                 let start = Instant::now();
                 for e in &sequence {
                     let tx = c.transaction().unwrap();
-                    let mut m: Machine = get(&tx, "machine").unwrap().unwrap();
+                    let mut m: Machine = decode(
+                        &tx.query_row("SELECT data FROM metadata WHERE key='machine'", [], |r| {
+                            r.get::<_, Vec<u8>>(0)
+                        })
+                        .unwrap(),
+                    )
+                    .unwrap();
                     assert_eq!(state::advance(&mut m, e), Err(ApplyError::Missing));
-                    put(&tx, "machine", &m).unwrap();
-                    put(&tx, "pool_revision", &e.log_id.index).unwrap();
+                    legacy_put(&tx, "machine", &m).unwrap();
+                    legacy_put(&tx, "pool_revision", &e.log_id.index).unwrap();
                     tx.commit().unwrap();
                 }
                 millis = start.elapsed().as_secs_f64() * 1000.;
@@ -288,7 +306,7 @@ async fn store_write_amplification() {
                 let mut store = Store::open(&path, POOL, HOME).unwrap();
                 store
                     .read(|db| {
-                        Ok(db.execute_batch(
+                        Ok(db.batch_execute(
                             "PRAGMA wal_autocheckpoint=0;PRAGMA wal_checkpoint(TRUNCATE)",
                         )?)
                     })
@@ -412,5 +430,57 @@ async fn a_preparing_deadline_and_replayed_acceptance_survive_storage_restart() 
     assert_eq!(
         expired.pool.tickets()[&reference.id].phase,
         TicketPhase::Queued
+    );
+}
+
+#[tokio::test]
+async fn joint_voters_vote_commit_and_purge_survive_reopen_and_invalid_snapshot() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("raft.db");
+    let remote = Uuid::from_u128(3);
+    let nodes = BTreeMap::from([
+        (HOME, BasicNode::new("local")),
+        (remote, BasicNode::new("remote")),
+    ]);
+    let member = Entry::<Types> {
+        log_id: LogId::new(openraft::CommittedLeaderId::new(4, HOME), 1),
+        payload: EntryPayload::Membership(openraft::Membership::new(
+            vec![[HOME].into(), [HOME, remote].into()],
+            nodes,
+        )),
+    };
+    let vote = Vote::new_committed(4, HOME);
+    let mut store = Store::open(&path, POOL, HOME).unwrap();
+    store.save_vote(&vote).await.unwrap();
+    store.append_to_log([member.clone()]).await.unwrap();
+    store
+        .apply_to_state_machine(std::slice::from_ref(&member))
+        .await
+        .unwrap();
+    store.save_committed(Some(member.log_id)).await.unwrap();
+    let snap = store.build_snapshot().await.unwrap();
+    store.purge_logs_upto(member.log_id).await.unwrap();
+    let mut invalid = snap.meta.clone();
+    invalid.last_membership = StoredMembership::default();
+    assert!(
+        store
+            .install_snapshot(&invalid, snap.snapshot)
+            .await
+            .is_err()
+    );
+    drop(store);
+    assert!(Store::open(&path, POOL, remote).is_err());
+    let mut store = Store::open(&path, POOL, HOME).unwrap();
+    assert_eq!(store.read_vote().await.unwrap(), Some(vote));
+    assert_eq!(store.read_committed().await.unwrap(), Some(member.log_id));
+    assert_eq!(store.membership(), snap.meta.last_membership);
+    assert_eq!(
+        store.get_log_state().await.unwrap().last_purged_log_id,
+        Some(member.log_id)
+    );
+    assert!(store.try_get_log_entries(..).await.unwrap().is_empty());
+    assert_eq!(
+        store.get_current_snapshot().await.unwrap().unwrap().meta,
+        snap.meta
     );
 }
