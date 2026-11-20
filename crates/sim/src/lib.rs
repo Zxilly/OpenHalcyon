@@ -87,6 +87,11 @@ pub enum Command {
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Event {
+    /// An ARAL Ringo last hit armed the perk, or its next released basic consumed it.
+    DoubleDown {
+        source: u32,
+        attack_target: Option<u32>,
+    },
     ChakramApplied {
         source: u32,
         id: u32,
@@ -1094,6 +1099,7 @@ impl World {
                     } else {
                         DamageSchool::Weapon
                     };
+                    let double_down = e.type_id == 243 && e.status.double_down;
                     let damage = if e.type_id == lorelai::HERO {
                         shop::mitigated(
                             10. + e.stats.weapon + bonus,
@@ -1106,7 +1112,11 @@ impl World {
                         let multiplier = if e.kind == Kind::Hero
                             && matches!(t.kind, Kind::Hero | Kind::Minion)
                         {
-                            shop::weapon_multiplier(&mut self.crit_rng, e.item_stats)
+                            if double_down {
+                                1.5 + e.item_stats.crit_damage
+                            } else {
+                                shop::weapon_multiplier(&mut self.crit_rng, e.item_stats)
+                            }
                         } else {
                             1.
                         };
@@ -1138,6 +1148,13 @@ impl World {
                     self.entities[i].status.empowered =
                         self.entities[i].status.empowered.saturating_sub(1);
                     events.push(Event::Attack { source, target: id });
+                    if double_down {
+                        self.entities[i].status.double_down = false;
+                        events.push(Event::DoubleDown {
+                            source,
+                            attack_target: Some(id),
+                        });
+                    }
                     if crystal {
                         self.entities[j].status.slow_until = self.tick + 20;
                         self.entities[j].status.slow_factor = 0.4;

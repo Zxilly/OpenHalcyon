@@ -19,6 +19,7 @@ mod observer;
 mod point_move;
 mod recording;
 mod result_frames;
+mod ringo;
 mod scene;
 mod surrender;
 mod transport;
@@ -1518,6 +1519,14 @@ impl Room {
             }
             let mut has_attack_release = false;
             for ev in events {
+                if legacy_aral
+                    && ringo::append(&mut out, ev, |id| {
+                        current.contains(&id) || fallen.contains(&id) && previous.contains(&id)
+                    })
+                {
+                    has_attack_release = true;
+                    continue;
+                }
                 if control_stream
                     && let Some(m) = npc_attack::release(&self.world, ev, |id| {
                         current.contains(&id) || fallen.contains(&id) && previous.contains(&id)

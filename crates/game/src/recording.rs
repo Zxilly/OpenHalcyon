@@ -157,6 +157,7 @@ fn sanitize(m: &mut Message) -> bool {
                                  effect.prefix.source == effect.prefix.target),
                                  (954, 0x4400, false) | (820, 0x4066, true))
                     && effect.suffix == [0; 6]) => {}
+        0x415 | 0x41a | 0x41b if super::ringo::references(m).is_some() => {}
         0x415 if super::npc_attack::actors(m).is_some() => {}
         0x415
             if matches!(

@@ -52,17 +52,17 @@ pub(super) fn deliver(mut out: Batch, seats: &[Seat], world: &World, views: &[Vi
         .zip(&world.entities)
         .zip(views)
         .filter(|((_, actor), _)| usize::from(actor.team) == team)
-        .filter_map(|((seat, _), view)| {
+        .filter_map(|((seat, actor), view)| {
             let ready =
                 seat.world_actor_written && seat.preamble.confirmed() && seat.peers[1].is_none();
-            Some((seat.gameplay_peer()?, ready, view))
+            Some((seat.gameplay_peer()?, ready, view, actor.id))
         });
     let Some(first) = recipients.next() else {
         return;
     };
     let Some(second) = recipients.next() else {
-        let (peer, ready, view) = first;
-        out.retain(|m| can_receive(m, ready, view));
+        let (peer, ready, view, viewer) = first;
+        out.retain(|m| can_receive(m, ready, view, viewer));
         if !out.is_empty() {
             peer.send(transport::Delivery::Private(out));
         }
@@ -70,14 +70,14 @@ pub(super) fn deliver(mut out: Batch, seats: &[Seat], world: &World, views: &[Vi
     };
 
     let common = transport::TeamBatch::new(out);
-    for (peer, ready, view) in [first, second].into_iter().chain(recipients) {
+    for (peer, ready, view, viewer) in [first, second].into_iter().chain(recipients) {
         let messages = common.messages();
-        if messages.iter().all(|m| can_receive(m, ready, view)) {
+        if messages.iter().all(|m| can_receive(m, ready, view, viewer)) {
             peer.send(transport::Delivery::Team(common.clone()));
         } else {
             let batch: Batch = messages
                 .iter()
-                .filter(|m| can_receive(m, ready, view))
+                .filter(|m| can_receive(m, ready, view, viewer))
                 .cloned()
                 .collect();
             if !batch.is_empty() {
@@ -87,7 +87,13 @@ pub(super) fn deliver(mut out: Batch, seats: &[Seat], world: &World, views: &[Vi
     }
 }
 
-fn can_receive(message: &Message, ready: bool, view: &View) -> bool {
+fn can_receive(message: &Message, ready: bool, view: &View, viewer: u32) -> bool {
+    if let Some((actor, target)) = super::ringo::references(message) {
+        return ready
+            && viewer != actor
+            && view.knows(actor)
+            && target.is_none_or(|id| view.knows(id));
+    }
     actors(message).is_none_or(|(source, target)| ready && view.knows(source) && view.knows(target))
 }
 

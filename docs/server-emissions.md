@@ -38,8 +38,8 @@ The host paths are in [room dispatch](../crates/game/src/lib.rs), [transport](..
 | `0415` | 9,106 | A | ActionPlayAbility 路 Released Lorelai C and native lane-minion/tower basic attacks with visible actors |
 | `0416` | 886 | A | ActionPlayAbility 路 Released Idris B or Lorelai A/B with visible caster |
 | `0419` | 12 | R | ActionPlayPfxAtLocation |
-| `041A` | 534 | R | ActionOverrideAbility |
-| `041B` | 414 | R | ActionClearAbilityOverride |
+| `041A` | 534 | A | ActionOverrideAbility · [ARAL Ringo Double Down after a last hit](aral-ability-overrides.md) |
+| `041B` | 414 | A | ActionClearAbilityOverride · [ARAL Ringo Double Down consumed by an attack](aral-ability-overrides.md) |
 | `041C` | 6,668 | A | ActionModifyActorAttribute 路 Supported inventory modifiers and hero progression fields |
 | `041D` | 109,869 | A | ActionModifyActorResource 路 Simulated resource deltas including earned gold and purchase debits |
 | `041E` | 16,559 | A | ActionImpactHealth 路 Applied damage or healing with visible participants |

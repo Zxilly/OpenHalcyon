@@ -155,7 +155,8 @@ impl World {
         }
         let pos = t.position;
         let kind = t.kind;
-        if t.team != team {
+        let enemy = t.team != team;
+        if enemy {
             let scoring = &mut self.team_scores[usize::from(team)];
             match kind {
                 Kind::Tower => {
@@ -197,6 +198,24 @@ impl World {
             return;
         }
         t.respawn = self.tick + RESPAWN + (self.tick / 60).min(900);
+        if enemy
+            && matches!(self.layout, Layout::Aral { .. })
+            && let Some(killer) = src
+                .checked_sub(1)
+                .and_then(|s| self.entities.get_mut(s as usize))
+            && killer.id == src
+            && killer.kind == Kind::Hero
+            && killer.type_id == 243
+            && killer.hp > 0.
+            && !killer.status.double_down
+            && killer.team == team
+        {
+            killer.status.double_down = true;
+            events.push(Event::DoubleDown {
+                source: src,
+                attack_target: None,
+            });
+        }
         if kind == Kind::Crystal {
             self.winner = Some(team);
             events.push(Event::End { winner: team });
@@ -440,5 +459,75 @@ mod tests {
         }
         w.step();
         assert!(w.assign_teams(&[]).is_err());
+    }
+}
+
+#[cfg(test)]
+mod double_down_tests {
+    use super::*;
+
+    #[test]
+    fn aral_ringo_arms_only_once_then_consumes_on_release() {
+        let mut world = World::new(7, 6);
+        world.use_six_human_roster().unwrap();
+        world.use_aral_lane().unwrap();
+        world.entities[0].type_id = 243;
+        let team = world.entities[0].team;
+        let pos = Position { x: 0., y: 2. };
+        let mut events = Vec::new();
+        for target_team in [team, 1 - team, 1 - team] {
+            let id = world.spawn(target_team, Kind::Minion, 0, pos, false);
+            let index = world.index(id).unwrap();
+            world.hurt(1, team, index, 100000., DamageSchool::True, &mut events);
+            if target_team == team {
+                assert!(!world.entities[0].status.double_down);
+            }
+        }
+        assert_eq!(
+            events
+                .iter()
+                .filter(|e| matches!(
+                    e,
+                    Event::DoubleDown {
+                        attack_target: None,
+                        ..
+                    }
+                ))
+                .count(),
+            1
+        );
+        let target = world
+            .entities
+            .iter()
+            .find(|e| e.kind == Kind::Hero && e.team != team)
+            .unwrap()
+            .id;
+        let index = world.index(target).unwrap();
+        world.entities[0].position = pos;
+        world.entities[0].stats.range = 6.;
+        world.entities[0].item_stats.crit_damage = 0.25;
+        world.entities[index].position = Position { x: 4., y: 2. };
+        world.entities[index].stats.armor = 0.;
+        let weapon = world.entities[0].stats.weapon;
+        let original_hp = world.entities[index].hp;
+        world.command(1, Command::Attack(target)).unwrap();
+        world.step();
+        world.command(1, Command::Stop).unwrap();
+        world.step();
+        assert!(world.entities[0].status.double_down);
+        world.command(1, Command::Attack(target)).unwrap();
+        let mut releases = 0;
+        for _ in 0..20 {
+            let events = world.step();
+            if events.iter().any(
+                |e| matches!(e,Event::DoubleDown{source:1,attack_target:Some(t)} if *t==target),
+            ) {
+                releases += 1;
+                world.command(1, Command::Stop).unwrap();
+            }
+        }
+        assert_eq!(releases, 1);
+        assert!(!world.entities[0].status.double_down);
+        assert!((original_hp - world.entities[index].hp - weapon * 1.75).abs() < 0.01);
     }
 }
