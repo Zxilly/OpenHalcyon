@@ -72,6 +72,66 @@ pub struct VisibilityBody {
     pub masks: [u8; 2],
 }
 
+/// Observed `0x042C` camp minimap state byte (`(populated << 1) | visible`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CampVisibilityState {
+    /// Camp has no living monsters (countdown or cleared) and is hidden from this index (`0`).
+    EmptyHidden,
+    /// Camp has no living monsters (countdown or cleared) and is visible to this index (`1`).
+    EmptyVisible,
+    /// Camp has living monsters and is hidden in fog from this index (`2`).
+    PopulatedHidden,
+    /// Camp has living monsters and is visible to this index (`3`).
+    PopulatedVisible,
+    /// Unobserved state byte preserved losslessly.
+    Unknown(u8),
+}
+
+impl CampVisibilityState {
+    pub const fn from_wire(raw: u8) -> Self {
+        match raw {
+            0 => Self::EmptyHidden,
+            1 => Self::EmptyVisible,
+            2 => Self::PopulatedHidden,
+            3 => Self::PopulatedVisible,
+            other => Self::Unknown(other),
+        }
+    }
+
+    pub const fn raw(self) -> u8 {
+        match self {
+            Self::EmptyHidden => 0,
+            Self::EmptyVisible => 1,
+            Self::PopulatedHidden => 2,
+            Self::PopulatedVisible => 3,
+            Self::Unknown(other) => other,
+        }
+    }
+}
+
+impl From<u8> for CampVisibilityState {
+    fn from(raw: u8) -> Self {
+        Self::from_wire(raw)
+    }
+}
+
+impl From<CampVisibilityState> for u8 {
+    fn from(state: CampVisibilityState) -> Self {
+        state.raw()
+    }
+}
+
+/// Six-byte body of `0x042C` (`Opcode::CampVisibility`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, BinRead, BinWrite)]
+#[brw(big)]
+pub struct CampVisibilityBody {
+    pub actor: u32,
+    pub index: u8,
+    #[br(map = CampVisibilityState::from_wire)]
+    #[bw(map = |state: &CampVisibilityState| state.raw())]
+    pub state: CampVisibilityState,
+}
+
 macro_rules! fixed_prefix {
     ($ty:ty, $len:literal) => {
         impl $ty {
@@ -99,3 +159,4 @@ fixed_prefix!(DeathBody, 8);
 fixed_prefix!(ImpactBody, 16);
 
 fixed_prefix!(VisibilityBody, 8);
+fixed_prefix!(CampVisibilityBody, 6);

@@ -10,7 +10,10 @@ use std::io::{self, Read, Write};
 mod actor_flags;
 pub mod async_frame;
 mod fixed_body;
-pub use fixed_body::{DeathBody, ImpactBody, MoveCmd, PositionBody, VisibilityBody};
+pub use fixed_body::{
+    CampVisibilityBody, CampVisibilityState, DeathBody, ImpactBody, MoveCmd, PositionBody,
+    VisibilityBody,
+};
 pub mod ce;
 pub mod player_actions;
 pub mod spec;
@@ -142,6 +145,14 @@ impl Message {
             masks,
         }
         .message(Opcode::EntityState, 14)
+    }
+    pub fn camp_visibility(actor: u32, index: u8, state: CampVisibilityState) -> Self {
+        CampVisibilityBody {
+            actor,
+            index,
+            state,
+        }
+        .message(Opcode::CampVisibility, CampVisibilityBody::BODY_LEN)
     }
     /// The charge operand is an unsigned wire word; its interpretation depends on the mode.
     pub fn modify_ability_charges(owner: u32, ability_slot: u32, operand: u32, mode: u8) -> Self {
@@ -311,10 +322,18 @@ impl Message {
                     },
                     remaining: action.padding,
                 }),
-            Some(Opcode::CampVisibility) if b.len() == 6 => Fields::CampVisibility {
-                actor: number(0)?,
-                bytes: [b[4], b[5]],
-            },
+            Some(Opcode::CampVisibility) if b.len() == CampVisibilityBody::BODY_LEN => {
+                let CampVisibilityBody {
+                    actor,
+                    index,
+                    state,
+                } = CampVisibilityBody::read_body(b)?;
+                Fields::CampVisibility {
+                    actor,
+                    index,
+                    state,
+                }
+            }
             Some(Opcode::CancelAbility) if matches!(b.len(), 10 | 14) => {
                 Fields::AbilityCancellation {
                     actor: number(0)?,
@@ -738,7 +757,8 @@ pub enum Fields<'a> {
     },
     CampVisibility {
         actor: u32,
-        bytes: [u8; 2],
+        index: u8,
+        state: CampVisibilityState,
     },
     AbilityCancellation {
         actor: u32,

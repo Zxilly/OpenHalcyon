@@ -78,6 +78,7 @@ guildChangeTag	android-callsite,ios-candidate,local-spec	guildData	community
 guildCollectJoinBonus	android-callsite,ios-candidate,local-spec	guildData	configured-exchange
 guildGetData	archive-traffic,android-callsite,ios-candidate,local-spec	guildData	community
 guildInviteConfirm	android-callsite,ios-candidate,local-spec	guildData	community
+guildInviteOnly	ios-candidate	guildData	community
 guildInviteReject	android-callsite,ios-candidate,local-spec	guildData	community
 guildInviteSend	android-callsite,ios-candidate,local-spec	guildData	community
 guildMemberKick	android-callsite,ios-candidate,local-spec	guildData	community

@@ -33,6 +33,8 @@ macro_rules! rpc_methods {
         const METHODS: &[(&str, RpcMethod)] = &[$( ($name, RpcMethod::$method), )+];
 
         impl RpcMethod {
+            pub const ALL: &'static [Self] = &[$( Self::$method, )+];
+
             pub const fn as_str(self) -> &'static str {
                 match self { $( Self::$method => $name, )+ Self::Unknown => "" }
             }
@@ -216,16 +218,39 @@ impl RpcMethod {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeSet;
 
     #[test]
     fn catalog_and_native_method_names_agree() {
         let catalog = include_str!("../../../docs/ce-rpc.tsv");
+        let mut catalog_names = BTreeSet::new();
         for row in catalog.lines().skip(1) {
             let (name, _) = row.split_once('\t').unwrap();
+            assert!(
+                catalog_names.insert(name),
+                "duplicate RPC method in docs/ce-rpc.tsv: {name}"
+            );
             let method = RpcMethod::from_wire(name);
             assert_ne!(method, RpcMethod::Unknown, "{name}");
             assert_eq!(name, method.as_str());
         }
+
+        let mut enum_names = BTreeSet::new();
+        for &method in RpcMethod::ALL {
+            assert_ne!(method, RpcMethod::Unknown);
+            let wire = method.as_str();
+            assert_eq!(RpcMethod::from_wire(wire), method);
+            assert!(
+                enum_names.insert(wire),
+                "duplicate RpcMethod wire name: {wire}"
+            );
+            assert!(
+                catalog_names.contains(wire),
+                "RpcMethod::{method:?} ({wire}) missing from docs/ce-rpc.tsv"
+            );
+        }
+
+        assert_eq!(catalog_names, enum_names);
         assert_eq!(
             RpcMethod::from_wire("unsupportedMethod"),
             RpcMethod::Unknown

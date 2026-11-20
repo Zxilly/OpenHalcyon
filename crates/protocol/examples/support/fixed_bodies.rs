@@ -1,7 +1,8 @@
 //! Compare the bidirectional fixed layouts against the original prefix and
 //! any opaque capture suffix, independently of the transport round trip.
 use halcyon_protocol::{
-    DeathBody, Fields, ImpactBody, Message, MoveCmd, Opcode, PositionBody, VisibilityBody,
+    CampVisibilityBody, DeathBody, Fields, ImpactBody, Message, MoveCmd, Opcode, PositionBody,
+    VisibilityBody,
 };
 use std::io;
 
@@ -11,6 +12,9 @@ pub(super) fn verify(message: &Message) -> io::Result<()> {
     let used = match message.known_opcode() {
         Some(Opcode::EntityState) if matches!(body.len(), 8 | 14) => {
             VisibilityBody::read_body(body)?.write_body(&mut buf)?
+        }
+        Some(Opcode::CampVisibility) => {
+            CampVisibilityBody::read_body(body)?.write_body(&mut buf)?
         }
         Some(Opcode::MoveCmd) => MoveCmd::read_body(body)?.write_body(&mut buf)?,
         Some(Opcode::Position) => PositionBody::read_body(body)?.write_body(&mut buf)?,
