@@ -6,6 +6,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+bevy_ecs.workspace = true
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
 cpu-time = "1"
 halcyon-data = { path = "../data" }

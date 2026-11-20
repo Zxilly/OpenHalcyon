@@ -1599,6 +1599,7 @@ dependencies = [
 name = "halcyon-game"
 version = "1.0.0-draft.1"
 dependencies = [
+ "bevy_ecs",
  "chrono",
  "cpu-time",
  "halcyon-data",

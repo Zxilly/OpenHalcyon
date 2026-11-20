@@ -20,6 +20,7 @@ mod observer;
 mod player_actions;
 mod point_move;
 mod recording;
+mod registry;
 mod result_frames;
 mod ringo;
 mod scene;
@@ -69,7 +70,7 @@ struct Manager {
     data: Option<Arc<GameData>>,
     catalog: Arc<[[u8; 32]]>,
     rules: Option<halcyon_sim::WorldRules>,
-    rooms: Mutex<HashMap<Uuid, Shared>>,
+    rooms: Mutex<registry::RoomRegistry>,
     finish: Mutex<Option<Finish>>,
     bytes: AtomicU64,
 }
@@ -240,7 +241,7 @@ impl Rooms {
     }
     /// Active rooms, admitted human and bot seats, and all staged seats.
     pub fn hosting_counts(&self) -> (usize, usize, usize, usize) {
-        let rooms = self.0.rooms.lock().unwrap();
+        let mut rooms = self.0.rooms.lock().unwrap();
         rooms
             .values()
             .fold((0, 0, 0, 0), |(active, human, bots, prepared), room| {
@@ -286,11 +287,9 @@ impl Rooms {
         self.list_typed().iter().map(responses::value).collect()
     }
     pub fn list_typed(&self) -> Vec<RoomSummary> {
-        self.0
-            .rooms
-            .lock()
-            .unwrap()
-            .values()
+        let rooms = self.0.rooms.lock().unwrap().handles();
+        rooms
+            .into_iter()
             .map(|r| r.lock().unwrap().view(false))
             .collect()
     }
@@ -518,11 +517,12 @@ impl Rooms {
         };
         self.monitor_resources();
         let mut rooms = self.0.rooms.lock().unwrap();
-        rooms.retain(|_, room| {
+        let now = Utc::now();
+        rooms.retain(|room| {
             room.lock()
                 .unwrap()
                 .ended
-                .is_none_or(|end| Utc::now() - end < chrono::Duration::minutes(30))
+                .is_none_or(|end| now - end < chrono::Duration::minutes(30))
         });
         if let Some(r) = rooms.get(&req.match_id) {
             let r = r.lock().unwrap();

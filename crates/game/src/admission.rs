@@ -233,7 +233,7 @@ impl Rooms {
                 tokio::time::sleep(POLL).await;
                 let Some(m) = weak.upgrade() else { break };
                 let _ = tokio::task::spawn_blocking(move || {
-                    let rooms: Vec<_> = m.rooms.lock().unwrap().values().cloned().collect();
+                    let rooms = m.rooms.lock().unwrap().handles();
                     let peak = rooms
                         .into_iter()
                         .filter_map(|r| {
