@@ -46,28 +46,49 @@ pub(super) fn registered(view: &View, message: &Message) -> bool {
 }
 
 /// Each admitted connection may be at a different point in scene registration.
-pub(super) fn deliver(out: Batch, seats: &[Seat], world: &World, views: &[View], team: usize) {
-    let mut shared = None;
-    for ((seat, actor), view) in seats.iter().zip(&world.entities).zip(views) {
-        if usize::from(actor.team) != team {
-            continue;
+pub(super) fn deliver(mut out: Batch, seats: &[Seat], world: &World, views: &[View], team: usize) {
+    let mut recipients = seats
+        .iter()
+        .zip(&world.entities)
+        .zip(views)
+        .filter(|((_, actor), _)| usize::from(actor.team) == team)
+        .filter_map(|((seat, _), view)| {
+            let ready =
+                seat.world_actor_written && seat.preamble.confirmed() && seat.peers[1].is_none();
+            Some((seat.gameplay_peer()?, ready, view))
+        });
+    let Some(first) = recipients.next() else {
+        return;
+    };
+    let Some(second) = recipients.next() else {
+        let (peer, ready, view) = first;
+        out.retain(|m| can_receive(m, ready, view));
+        if !out.is_empty() {
+            peer.send(transport::Delivery::Private(out));
         }
-        let Some(peer) = seat.gameplay_peer() else {
-            continue;
-        };
-        let ready =
-            seat.world_actor_written && seat.preamble.confirmed() && seat.peers[1].is_none();
-        let keep = |m: &Message| actors(m).is_none() || (ready && registered(view, m));
-        if out.iter().all(keep) {
-            let batch = shared.get_or_insert_with(|| transport::TeamBatch::new(out.clone()));
-            peer.send(transport::Delivery::Team(batch.clone()));
+        return;
+    };
+
+    let common = transport::TeamBatch::new(out);
+    for (peer, ready, view) in [first, second].into_iter().chain(recipients) {
+        let messages = common.messages();
+        if messages.iter().all(|m| can_receive(m, ready, view)) {
+            peer.send(transport::Delivery::Team(common.clone()));
         } else {
-            let batch: Batch = out.iter().filter(|m| keep(m)).cloned().collect();
+            let batch: Batch = messages
+                .iter()
+                .filter(|m| can_receive(m, ready, view))
+                .cloned()
+                .collect();
             if !batch.is_empty() {
                 peer.send(transport::Delivery::Private(batch));
             }
         }
     }
+}
+
+fn can_receive(message: &Message, ready: bool, view: &View) -> bool {
+    actors(message).is_none_or(|(source, target)| ready && view.knows(source) && view.knows(target))
 }
 
 #[cfg(test)]

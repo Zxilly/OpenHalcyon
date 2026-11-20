@@ -31,6 +31,10 @@ impl TeamBatch {
             bytes: OnceLock::new(),
         })
     }
+
+    pub(super) fn messages(&self) -> &[Message] {
+        &self.messages
+    }
 }
 
 impl Delivery {
