@@ -30,6 +30,10 @@ skill-learning and casting requests. Their combat rules describe which parameter
 come from published data and which are local tuning.
 [ARAL](docs/aral.md) Â· [Idris](crates/sim/idris.md) Â· [Lorelai](crates/sim/lorelai.md)
 
+## Server architecture
+
+The headless Bevy App starts the local services and manages room settlement. Each hosted match owns one Bevy ECS world for actors, projectiles, persistent abilities and vision devices. The room runs an ordered fixed-tick schedule, so an earlier actor's damage or movement is visible to the next actor. Independent rooms can advance concurrently. Tokio handles sockets and HTTP, Diesel persists instance state, and OpenRaft coordinates matchmaking among peers. [Runtime and federation](docs/runtime-and-federation.md) ¡¤ [Simulation](crates/sim/README.md)
+
 ## Run an instance
 
 ```sh

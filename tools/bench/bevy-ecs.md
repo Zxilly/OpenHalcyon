@@ -1,4 +1,4 @@
-# Bevy ECS in a server room
+# Historical Bevy ECS trials
 
 The two experiments exercise different ownership models. The replication experiment copies visible actor properties into Bevy. The combat experiment makes Bevy the owner of two persistent spell types, Lyra's Bright Bulwark and Adagio's Arcane Fire, and runs their systems inside the existing room tick. Both use standalone `bevy_ecs` 0.20.1 with its `std` feature.
 
@@ -11,7 +11,7 @@ Each implementation produced the same ordered actor IDs and two-team visibility 
 | Direct scan of authoritative actors | 32.17 µs | 93.35 µs |
 | Bevy component queries after synchronizing actors | 38.77 µs | 122.30 µs |
 
-The direct scan reads the existing room state and has no second actor lifecycle to maintain. The production replication path continues to use it. Raw samples, verification and reproduction commands are available on the [visibility benchmark branch](https://github.com/Zxilly/OpenHalcyon/tree/b3150179d647ea35e39cf0871830d289b35ca102/tools/bench/ecs-visibility).
+The direct scan reads the existing room state and has no second actor lifecycle to maintain. That direct scan was the production implementation at the time of the experiment. Raw samples, verification and reproduction commands are available on the [visibility benchmark branch](https://github.com/Zxilly/OpenHalcyon/tree/b3150179d647ea35e39cf0871830d289b35ca102/tools/bench/ecs-visibility).
 
 ## Authoritative spell effects
 
@@ -25,7 +25,7 @@ A release microbenchmark on one logical CPU of a Ryzen 9 9950X3D exercised 30,00
 
 In the [full-match comparison](bevy-room-effects.csv), both builds used logical CPU 14 on the same Windows host. During eleven alternating pairs, other build and test processes were also running. The baseline wall-time median was 2.165 s and Bevy's was 2.270 s. Within individual pairs the change ranged from −35% to +39%, so these wall-time results do not establish a whole-match speed difference.
 
-The pilot separates expiry and impact resolution and gives both effects a common lifecycle. It also introduces a second entity world alongside the authoritative actors, an ordered work list and rules for writing results back across those worlds. With two spell families, the main server keeps its typed vectors. The branch and the shared replay fixture allow a future experiment that moves actors and effects together to compare against the same behavior.
+The pilot separates expiry and impact resolution and gives both effects a common lifecycle. It also introduces a second entity world alongside the authoritative actors, an ordered work list and rules for writing results back across those worlds. The initial comparison retained the typed vectors on main. The production migration subsequently put actors, projectiles, persistent effects and vision devices in one room world. The recorded digests and fixtures provide a baseline for that migration.
 
 Build `native_nav_bench` in release mode in each checkout with separate target directories. The comparison runner warms both binaries, alternates which runs first and writes a row per measured match. The seconds column measures the loop inside the server simulation. It excludes static data loading. For single-core measurement, restrict the parent process to one logical CPU before launching the runner.
 
