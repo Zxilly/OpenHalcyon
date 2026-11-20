@@ -54,7 +54,7 @@ impl Platform {
                 rv.notify = true;
             }
             if l.phase_kind() == Some(LobbyPhase::Offered) {
-                if l.mode == "casual_aral"
+                if KnownQueue::parse(&l.mode) == Some(KnownQueue::CasualAral)
                     && o.seats
                         .iter()
                         .any(|s| s.player == p.player_id && !s.accepted)

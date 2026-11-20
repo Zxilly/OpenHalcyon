@@ -1,7 +1,7 @@
 //! Optional game content and local item exchanges. Only a configured recipe
 //! can change inventory. The client supplies an identifier, never a price.
 use crate::RpcMethod;
-use crate::{Error, Platform, player_info};
+use crate::{Error, Platform};
 use halcyon_community::{
     Action, ItemDefinition, QuestDefinition, Recipe,
     views::{Inventory, InventoryItem},
@@ -127,6 +127,11 @@ struct ReceiptInventory {
     success: bool,
 }
 
+#[derive(Serialize)]
+struct TargetingCurrency<'a> {
+    currency: &'a crate::profile::Currency,
+}
+
 fn is_exchange(m: RpcMethod) -> bool {
     matches!(
         m,
@@ -217,7 +222,6 @@ impl Platform {
         m: RpcMethod,
         params: &[Value],
     ) -> Result<Value, Error> {
-        let mut info = player_info(profile);
         if let Some(default) = empty_manifest(m) {
             let canonical = if m == RpcMethod::RefreshCardBoxManifest {
                 RpcMethod::GetCardBoxManifest
@@ -228,9 +232,27 @@ impl Platform {
                 Some(view) => view.clone(),
                 None => serde_json::to_value(default)?,
             };
+            let fields = self.meta.player_fields(profile.player_id).await?;
+            let mut info = crate::profile::player_info(profile, Default::default());
+            let target_currency = serde_json::to_value(TargetingCurrency {
+                currency: &fields.currency,
+            })?;
             info.as_object_mut()
-                .expect("player profile")
+                .expect("profile")
                 .extend(view.as_object().expect("manifest fields").clone());
+            let authority = serde_json::to_value(fields)?;
+            info.as_object_mut()
+                .expect("profile")
+                .extend(authority.as_object().expect("profile activity").clone());
+            // Configured targeting fields are opaque. Currency remains authoritative.
+            if let Some(targeting) = info.get_mut("targeting").and_then(Value::as_object_mut) {
+                targeting.extend(
+                    target_currency
+                        .as_object()
+                        .expect("targeting currency")
+                        .clone(),
+                );
+            }
             return Ok(info);
         }
         if let Some(class) = InventoryClass::from_method(m) {
@@ -254,6 +276,7 @@ impl Platform {
                 InventoryClass::Trophy => (InventoryField::TrophyCase(items), None),
                 InventoryClass::Badge => (InventoryField::EsportsBadges(items), None),
             };
+            let mut info = self.project_player_info(profile).await?;
             let patch = serde_json::to_value(InventoryProjection {
                 inventory,
                 hero_stats,
@@ -328,6 +351,7 @@ impl Platform {
                 .execute(profile.player_id, Action::Inventory)
                 .await?,
         )?;
+        let mut info = self.project_player_info(profile).await?;
         let patch = serde_json::to_value(ReceiptInventory {
             owned: owned.items,
             success: true,

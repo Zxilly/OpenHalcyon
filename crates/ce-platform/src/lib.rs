@@ -1,5 +1,6 @@
 //! Compatibility layer for the Android Community Edition platform protocol.
 mod wire;
+use halcyon_protocol::ce::KnownQueue;
 pub use halcyon_protocol::ce::{LobbyState, RpcMethod};
 use wire::{Empty, PlayerHandle, Seconds, StateSnapshot, Success};
 mod activity;
@@ -15,7 +16,7 @@ mod party_notify;
 mod ping;
 pub use ping::PingSite;
 mod profile;
-use profile::player_info;
+use activity::PendingCounts;
 mod provider;
 pub use provider::{ProviderConfig, ProviderProduct};
 mod public_api;
@@ -330,9 +331,15 @@ async fn dispatch(s: &Platform, m: RpcMethod, params: &[Value]) -> Result<(Strin
         let token = s
             .tokens
             .sign(profile.player_id, &guest.session_token, Scope::Session)?;
-        let mut snapshot = s.start_session(&guest.session_token, &profile).await?;
-        s.stamp_state_version(profile.player_id, &mut snapshot)?;
-        return Ok((token, snapshot));
+        let bootstrap = s
+            .session_bootstrap(
+                &guest.session_token,
+                &profile,
+                SessionProjection::AccountLogin,
+                None,
+            )
+            .await?;
+        return Ok((token, bootstrap));
     }
     let token = arg(params, 0)?;
     if m == RpcMethod::GetPlayerForGuestAccount {
@@ -350,7 +357,7 @@ async fn dispatch(s: &Platform, m: RpcMethod, params: &[Value]) -> Result<(Strin
     };
     let profile = s.app.profile(&session).await?;
     let id = profile.player_id;
-    let mut rv = match m {
+    let rv = match m {
         RpcMethod::LinkAccount | RpcMethod::CreateAccountForPlayer => {
             let (name, password) = local_credentials(&params[1..])?;
             s.app.link_account(&session, name, password).await?;
@@ -373,9 +380,8 @@ async fn dispatch(s: &Platform, m: RpcMethod, params: &[Value]) -> Result<(Strin
             s.meta
                 .set(id, Preference::LastLogin, Value::from(now() as f64))
                 .await?;
-            let mut rv = s.start_session(&session, &profile).await?;
-            rv["playerConfig"] = s.meta.prefs(id, Preference::PlatformConfig).await?;
-            rv
+            s.session_bootstrap(&session, &profile, SessionProjection::Resume, None)
+                .await?
         }
         RpcMethod::GetPlayerInfo => {
             if let Some(target) = params.get(1) {
@@ -396,14 +402,15 @@ async fn dispatch(s: &Platform, m: RpcMethod, params: &[Value]) -> Result<(Strin
                     ));
                 }
             }
-            player_info(&profile)
+            s.project_player_info(&profile).await?
         }
         RpcMethod::GetSkinManifest => s.skins.clone(),
         RpcMethod::GetTalentsData => s.talents_for(id).await?,
         RpcMethod::QueryPendingMatch => s.pending_match(&session, &profile).await?,
         RpcMethod::Update => {
             if let Some(lobby) = &profile.lobby {
-                if lobby.mode == "5v5_bots_solo" && lobby.phase_kind() == Some(LobbyPhase::Offered)
+                if KnownQueue::parse(&lobby.mode) == Some(KnownQueue::SoloBots)
+                    && lobby.phase_kind() == Some(LobbyPhase::Offered)
                 {
                     let mut snapshot = s.projected_state(&session, &profile).await?;
                     s.accept(&session, lobby.match_id.ok_or(Error::Internal)?)
@@ -411,29 +418,27 @@ async fn dispatch(s: &Platform, m: RpcMethod, params: &[Value]) -> Result<(Strin
                     // The local bot host is already allocated; CE polls again at expiry.
                     snapshot.ttl = Seconds::Whole(1);
                     snapshot.expiry = Seconds::Fraction(expiry_in(1));
-                    serde_json::to_value(snapshot)?
+                    s.state_response(id, snapshot)?
                 } else {
-                    serde_json::to_value(s.projected_state(&session, &profile).await?)?
+                    s.state_response(id, s.projected_state(&session, &profile).await?)?
                 }
             } else {
-                serde_json::to_value(StateSnapshot::from_profile(&profile))?
+                s.state_response(id, StateSnapshot::from_profile(&profile))?
             }
         }
         RpcMethod::JoinLobby => {
             let lobby = params.get(1).ok_or(Error::Invalid)?;
             let parsed;
-            let obj = if let Some(raw) = lobby.as_str() {
+            let payload = if let Some(raw) = lobby.as_str() {
                 parsed = serde_json::from_str::<Value>(raw).map_err(|_| Error::Invalid)?;
                 &parsed
             } else {
                 lobby
             };
-            let mode = obj
-                .get("lobby")
-                .and_then(Value::as_str)
-                .ok_or(Error::Invalid)?;
-            let difficulty = match obj.get("difficulty") {
-                Some(value) if !value.is_null() && BotDifficulty::supports_queue(mode) => Some(
+            let request = JoinLobbyRequest::deserialize(payload).map_err(|_| Error::Invalid)?;
+            let mode = request.lobby.as_str();
+            let difficulty = match request.difficulty {
+                Some(value) if BotDifficulty::supports_queue(mode) => Some(
                     value
                         .as_str()
                         .and_then(BotDifficulty::from_wire)
@@ -445,7 +450,8 @@ async fn dispatch(s: &Platform, m: RpcMethod, params: &[Value]) -> Result<(Strin
                 &session,
                 mode.to_owned(),
                 difficulty,
-                s.sites.report(&obj["sites"]),
+                s.sites
+                    .report(request.sites.as_ref().unwrap_or(&Value::Null)),
             )
             .await?;
             let mut joined = Joined {
@@ -454,7 +460,10 @@ async fn dispatch(s: &Platform, m: RpcMethod, params: &[Value]) -> Result<(Strin
                 state: None,
                 num_players: None,
             };
-            if matches!(mode, "casual_aral" | "ranked") {
+            if matches!(
+                KnownQueue::parse(mode),
+                Some(KnownQueue::CasualAral | KnownQueue::Ranked)
+            ) {
                 let current = StateSnapshot::from_profile(&s.app.profile(&session).await?);
                 if current.state == LobbyState::PendingAuto {
                     joined.state = Some(current.state);
@@ -494,7 +503,7 @@ async fn dispatch(s: &Platform, m: RpcMethod, params: &[Value]) -> Result<(Strin
                 .as_ref()
                 .is_some_and(|l| l.phase_kind() == Some(LobbyPhase::Playing)) =>
         {
-            serde_json::to_value(s.projected_state(&session, &profile).await?)?
+            s.state_response(id, s.projected_state(&session, &profile).await?)?
         }
         RpcMethod::RejectMatch if params.len() > 1 => {
             let room = params[1].as_str().ok_or(Error::Invalid)?;
@@ -518,7 +527,10 @@ async fn dispatch(s: &Platform, m: RpcMethod, params: &[Value]) -> Result<(Strin
             if m == RpcMethod::NotifyExitPostMatch {
                 serde_json::to_value(Success { success: true })?
             } else {
-                serde_json::to_value(StateSnapshot::from_profile(&s.app.profile(&session).await?))?
+                s.state_response(
+                    id,
+                    StateSnapshot::from_profile(&s.app.profile(&session).await?),
+                )?
             }
         }
         RpcMethod::RenamePlayerHandle | RpcMethod::SetPlayerHandle => {
@@ -538,7 +550,7 @@ async fn dispatch(s: &Platform, m: RpcMethod, params: &[Value]) -> Result<(Strin
                     success: true,
                 })?
             } else {
-                player_info(&updated)
+                s.project_player_info(&updated).await?
             }
         }
         RpcMethod::UpdatePlatformPlayerConfig => {
@@ -563,7 +575,7 @@ async fn dispatch(s: &Platform, m: RpcMethod, params: &[Value]) -> Result<(Strin
             s.meta
                 .set(id, Preference::Tutorial, serde_json::to_value(state)?)
                 .await?;
-            player_info(&profile)
+            s.project_player_info(&profile).await?
         }
         RpcMethod::RecordMatchExperienceMetrics => {
             let room = Uuid::parse_str(arg(params, 1)?).map_err(|_| Error::Invalid)?;
@@ -581,7 +593,7 @@ async fn dispatch(s: &Platform, m: RpcMethod, params: &[Value]) -> Result<(Strin
             if params.len() == 3 && params[1..].iter().all(Value::is_string) {
                 serde_json::to_value(Empty {})?
             } else {
-                player_info(&profile)
+                s.project_player_info(&profile).await?
             }
         }
         m if activity::handles(m) => s.activity_rpc(&profile, m, params).await?,
@@ -597,13 +609,15 @@ async fn dispatch(s: &Platform, m: RpcMethod, params: &[Value]) -> Result<(Strin
             if snapshot.state == LobbyState::Menus {
                 snapshot.ttl = Seconds::Fraction(5.0);
             }
-            let mut snapshot = serde_json::to_value(snapshot)?;
-            s.stamp_state_version(id, &mut snapshot)?;
-            return Ok((String::new(), snapshot));
+            return Ok((String::new(), s.state_response(id, snapshot)?));
         }
         _ => {
-            let patch =
+            let reply =
                 community::dispatch(&s.community, &profile, m, params, Some(&s.app)).await?;
+            let (patch, is_profile) = match reply {
+                community::Reply::Standalone(data) => (data, false),
+                community::Reply::PlayerInfo(data) => (data, true),
+            };
             if matches!(
                 m,
                 RpcMethod::PartyLobbyEnter
@@ -613,64 +627,36 @@ async fn dispatch(s: &Platform, m: RpcMethod, params: &[Value]) -> Result<(Strin
                     | RpcMethod::GetEquipmentSlotInfo
                     | RpcMethod::SetPresenceInvisibility
             ) {
-                let mut rv = s.start_session(&session, &profile).await?;
-                if let Some(fields) = patch.as_object() {
-                    rv.as_object_mut()
-                        .expect("session envelope")
-                        .extend(fields.clone())
-                }
-                rv
+                s.session_bootstrap(
+                    &session,
+                    &profile,
+                    SessionProjection::Current,
+                    patch.as_object().map(|_| &patch),
+                )
+                .await?
             } else if m == RpcMethod::FriendRequestIssueByHandle
                 && params.len() == 2
                 && params[1].is_string()
             {
                 serde_json::to_value(Empty {})?
+            } else if is_profile {
+                let mut info = s.project_player_info(&profile).await?;
+                info.as_object_mut()
+                    .ok_or(Error::Internal)?
+                    .extend(patch.as_object().ok_or(Error::Internal)?.clone());
+                info
             } else {
                 patch
             }
         }
     };
-    if rv.get("playerInfo").is_some() || rv.get("completed").is_some() {
-        let fields = s.meta.player_fields(id).await?;
-        if rv.get("playerInfo").is_some() {
-            for name in [
-                "pendingMessages",
-                "pendingPartyInvites",
-                "pendingGuildInvites",
-                "pendingTeamInvites",
-            ] {
-                if let Some(flag) = fields.get(name) {
-                    rv[name] = flag.clone();
-                }
-            }
-            rv["playerInfo"]
-                .as_object_mut()
-                .ok_or(Error::Internal)?
-                .extend(fields.as_object().unwrap().clone());
-        } else {
-            rv.as_object_mut()
-                .ok_or(Error::Internal)?
-                .extend(fields.as_object().unwrap().clone());
-        }
-        let info = if rv.get("playerInfo").is_some() {
-            &mut rv["playerInfo"]
-        } else {
-            &mut rv
-        };
-        if info.get("targeting").is_some() {
-            info["targeting"]["currency"] = fields["currency"].clone();
-        }
-    }
-    if rv.get("version").is_some() {
-        s.stamp_state_version(id, &mut rv)?;
-    }
     Ok((s.tokens.sign(id, &session, Scope::Session)?, rv))
 }
 
 impl Platform {
     /// Link consecutive RPC snapshots for this local player. The first
     /// predecessor is a fresh local version when no prior response is known.
-    fn stamp_state_version(&self, id: Uuid, state: &mut Value) -> Result<(), Error> {
+    fn stamp_state_version(&self, id: Uuid, state: &mut StateSnapshot) -> Result<(), Error> {
         let mut versions = self.versions.lock().map_err(|_| Error::Internal)?;
         let current = now();
         if versions.len() >= 8192 {
@@ -681,13 +667,53 @@ impl Platform {
             .insert(id, (version, current + 3600))
             .map(|p| p.0)
             .unwrap_or_else(Uuid::new_v4);
-        state["version"] = serde_json::to_value(version)?;
-        state["lastVersion"] = serde_json::to_value(previous)?;
+        state.version = version;
+        state.last_version = previous;
         Ok(())
     }
 
+    fn state_response(&self, id: Uuid, mut state: StateSnapshot) -> Result<Value, Error> {
+        self.stamp_state_version(id, &mut state)?;
+        Ok(serde_json::to_value(state)?)
+    }
+
+    pub(crate) async fn project_player_info(
+        &self,
+        profile: &PlayerProfile,
+    ) -> Result<Value, Error> {
+        let fields = self.meta.player_fields(profile.player_id).await?;
+        Ok(profile::player_info(profile, fields))
+    }
+
     async fn start_session(&self, session: &str, p: &PlayerProfile) -> Result<Value, Error> {
-        let state = self.projected_state(session, p).await?;
+        self.session_bootstrap(session, p, SessionProjection::Current, None)
+            .await
+    }
+
+    async fn session_bootstrap(
+        &self,
+        session: &str,
+        p: &PlayerProfile,
+        projection: SessionProjection,
+        extras: Option<&Value>,
+    ) -> Result<Value, Error> {
+        let mut state = self.projected_state(session, p).await?;
+        self.stamp_state_version(p.player_id, &mut state)?;
+        let fields = if projection == SessionProjection::AccountLogin {
+            activity::PlayerActivityFields::default()
+        } else {
+            self.meta.player_fields(p.player_id).await?
+        };
+        let pending = fields.pending.with_defaults();
+        let player_config = if projection == SessionProjection::Resume {
+            Some(
+                self.meta
+                    .prefs(p.player_id, Preference::PlatformConfig)
+                    .await?,
+            )
+        } else {
+            None
+        };
         let grant = self.grants.issue(session)?;
         let origin = &self.config.notify_authority;
         let json_chat = format!("ws://{origin}/chat/{grant}");
@@ -701,7 +727,7 @@ impl Platform {
         Ok(serde_json::to_value(SessionBootstrap {
             state,
             player_uuid: p.player_id,
-            player_info: player_info(p),
+            player_info: profile::player_info(p, fields),
             handle: &p.name,
             platform_url: format!("https://{}", self.config.authority),
             region: "na",
@@ -727,13 +753,18 @@ impl Platform {
             constants: SessionConstants {
                 features_enabled: in_game_chat.then_some(FeatureFlags { in_game_chat: true }),
             },
-            player_config: None,
-            pending_team_invites: 0,
-            pending_guild_invites: 0,
-            pending_party_invites: 0,
-            pending_messages: 0,
+            player_config,
+            extras,
+            pending,
         })?)
     }
+}
+
+#[derive(Deserialize)]
+struct JoinLobbyRequest {
+    lobby: String,
+    difficulty: Option<Value>,
+    sites: Option<Value>,
 }
 
 #[derive(serde::Serialize)]
@@ -812,10 +843,10 @@ struct SessionBootstrap<'a> {
     support_urls: SupportUrls,
     constants: SessionConstants,
     player_config: Option<Value>,
-    pending_team_invites: u32,
-    pending_guild_invites: u32,
-    pending_party_invites: u32,
-    pending_messages: u32,
+    #[serde(flatten)]
+    extras: Option<&'a Value>,
+    #[serde(flatten)]
+    pending: PendingCounts,
 }
 
 #[derive(Serialize)]
@@ -835,4 +866,11 @@ struct SessionConstants {
 #[serde(rename_all = "camelCase")]
 struct FeatureFlags {
     in_game_chat: bool,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SessionProjection {
+    AccountLogin,
+    Resume,
+    Current,
 }

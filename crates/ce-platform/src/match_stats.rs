@@ -1,5 +1,4 @@
 use rusqlite::{Transaction, params};
-use serde_json::Value;
 
 use super::Error;
 
@@ -149,7 +148,10 @@ BEGIN
         WHERE state='active';
 END;";
 
-pub(crate) fn player_fields(tx: &Transaction<'_>, player: &str) -> Result<Value, Error> {
+pub(crate) fn read_player_matches(
+    tx: &Transaction<'_>,
+    player: &str,
+) -> Result<PlayerMatches, Error> {
     let fields = tx.query_row(
         "SELECT coalesce(p.completed,0),coalesce(p.wins,0),coalesce(p.non_tutorial,0),coalesce(d.wins,0),
                 coalesce(p.aral,0),coalesce(p.blitz,0),coalesce(p.blitz_rounds_casual,0),
@@ -176,11 +178,11 @@ pub(crate) fn player_fields(tx: &Transaction<'_>, player: &str) -> Result<Value,
             })
         },
     )?;
-    Ok(serde_json::to_value(fields)?)
+    Ok(fields)
 }
 
-#[derive(serde::Serialize)]
-struct PlayerMatches {
+#[derive(Default, serde::Serialize)]
+pub(crate) struct PlayerMatches {
     completed: u64,
     wins: u64,
     completed_non_tutorial: u64,
@@ -195,6 +197,14 @@ struct PlayerMatches {
     win_streak: Option<u64>,
     #[serde(rename = "lossStreak", skip_serializing_if = "Option::is_none")]
     loss_streak: Option<u64>,
+}
+
+impl PlayerMatches {
+    pub(crate) fn with_streak_defaults(mut self) -> Self {
+        self.win_streak.get_or_insert(0);
+        self.loss_streak.get_or_insert(0);
+        self
+    }
 }
 
 #[cfg(test)]

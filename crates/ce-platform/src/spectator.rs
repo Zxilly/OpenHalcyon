@@ -2,7 +2,7 @@ use halcyon_platform::{LobbyPhase, PlayerProfile};
 use serde_json::Value;
 use uuid::Uuid;
 
-use crate::{Error, Platform, player_info};
+use crate::{Error, Platform};
 
 pub(crate) async fn begin(
     platform: &Platform,
@@ -59,7 +59,9 @@ pub(crate) async fn leave(platform: &Platform, session: &str) -> Result<(), Erro
 
 pub(crate) async fn exit(platform: &Platform, session: &str) -> Result<Value, Error> {
     leave(platform, session).await?;
-    Ok(player_info(&platform.app.profile(session).await?))
+    platform
+        .project_player_info(&platform.app.profile(session).await?)
+        .await
 }
 
 pub(crate) fn is_spectating(profile: &PlayerProfile) -> bool {

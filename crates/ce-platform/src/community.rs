@@ -125,6 +125,13 @@ enum GuildBrowseType {
     Any,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum GuildMembershipChange {
+    Join,
+    Leave,
+}
+
 const PLAYER_ID: &[&str] = &["playerUUID", "playerId", "uuid", "targetUUID"];
 const GROUP_ID: &[&str] = &["partyUUID", "partyUuid", "guildUUID", "teamUUID", "groupId"];
 const MODE: &[&str] = &["partyQueueMode", "queueMode", "mode", "lobby"];
@@ -418,7 +425,13 @@ struct QuestMetadata<'a> {
     reward_count: Option<u32>,
 }
 
-fn quests(profile: &PlayerProfile, result: Value) -> Result<Value, Error> {
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct QuestsView<'a> {
+    quest_display_data: Vec<QuestDisplay<'a>>,
+}
+
+fn quests(result: Value) -> Result<Value, Error> {
     let quests = Items::<Quest>::deserialize(result)?;
     let data: Vec<_> = quests
         .items
@@ -437,9 +450,9 @@ fn quests(profile: &PlayerProfile, result: Value) -> Result<Value, Error> {
             },
         })
         .collect();
-    let mut output = crate::player_info(profile);
-    output["questDisplayData"] = serde_json::to_value(data)?;
-    Ok(output)
+    Ok(serde_json::to_value(QuestsView {
+        quest_display_data: data,
+    })?)
 }
 
 fn group_settings(args: &Args<'_>) -> Result<GroupSettings, Error> {
@@ -482,13 +495,18 @@ fn group_settings(args: &Args<'_>) -> Result<GroupSettings, Error> {
     })
 }
 
+pub(crate) enum Reply {
+    Standalone(Value),
+    PlayerInfo(Value),
+}
+
 pub(crate) async fn dispatch(
     community: &Community,
     profile: &PlayerProfile,
     method: RpcMethod,
     params: &[Value],
     notify: Option<&AppState>,
-) -> Result<Value, Error> {
+) -> Result<Reply, Error> {
     let args = Args::new(params)?;
     let actor = profile.player_id;
     let native_search = if method == RpcMethod::GuildSearch {
@@ -509,13 +527,13 @@ pub(crate) async fn dispatch(
             ));
     match (method, args.entries) {
         (RpcMethod::JoinGuild, [Value::String(group)]) if group.is_empty() => {
-            return Ok(serde_json::to_value(Empty {})?);
+            return Ok(Reply::Standalone(serde_json::to_value(Empty {})?));
         }
         (RpcMethod::CreateTeam, [Value::String(prefix), Value::String(a), Value::String(b)])
             if prefix.is_empty() && !a.trim().is_empty() && !b.trim().is_empty() =>
         {
             // The two strings' roles and the original mutation outcome are unknown.
-            return Ok(serde_json::to_value(Empty {})?);
+            return Ok(Reply::Standalone(serde_json::to_value(Empty {})?));
         }
         _ => {}
     }
@@ -625,7 +643,8 @@ pub(crate) async fn dispatch(
                 method == RpcMethod::PartyInviteConfirm,
                 notify,
             )
-            .await;
+            .await
+            .map(Reply::Standalone);
         }
         RpcMethod::PartyMemberKick => (
             Action::Kick {
@@ -735,7 +754,8 @@ pub(crate) async fn dispatch(
                 method == RpcMethod::TeamInviteConfirm,
                 None,
             )
-            .await;
+            .await
+            .map(Reply::Standalone);
         }
         RpcMethod::TeamMemberKick => (
             Action::Kick {
@@ -770,8 +790,12 @@ pub(crate) async fn dispatch(
         ),
         RpcMethod::ChangeGuildMembership => {
             let join = match args.field(1, &["join", "action"]) {
-                Some(Value::String(action)) if action == "join" => true,
-                Some(Value::String(action)) if action == "leave" => false,
+                Some(value @ Value::String(_)) => {
+                    match GuildMembershipChange::deserialize(value).map_err(|_| Error::Invalid)? {
+                        GuildMembershipChange::Join => true,
+                        GuildMembershipChange::Leave => false,
+                    }
+                }
                 _ => args.flag(1, &["join", "action"])?,
             };
             (
@@ -821,7 +845,8 @@ pub(crate) async fn dispatch(
                 method == RpcMethod::GuildInviteConfirm,
                 None,
             )
-            .await;
+            .await
+            .map(Reply::Standalone);
         }
         RpcMethod::GuildMemberKick => (
             Action::Kick {
@@ -976,7 +1001,7 @@ pub(crate) async fn dispatch(
                 halcyon_community::CommunityError::Missing(_)
                 | halcyon_community::CommunityError::Forbidden,
             ) if native_info => {
-                return Ok(serde_json::to_value(Empty {})?);
+                return Ok(Reply::Standalone(serde_json::to_value(Empty {})?));
             }
             Err(error) => return Err(error.into()),
         }
@@ -989,7 +1014,7 @@ pub(crate) async fn dispatch(
             ) && array(&data, "items").is_empty())
             || (native_info && group_kind(&data) != Some(GroupKind::Guild)))
     {
-        return Ok(serde_json::to_value(Empty {})?);
+        return Ok(Reply::Standalone(serde_json::to_value(Empty {})?));
     }
     if let Some(notify) = notify {
         if publish_presence {
@@ -1009,7 +1034,8 @@ pub(crate) async fn dispatch(
     {
         return Err(Error::Invalid);
     }
-    match view {
+    let projects_profile = matches!(view, View::Quests);
+    let value = match view {
         View::Ack => basic(),
         View::Friends => friends(data),
         View::Party | View::Team | View::Guild => group(view, data, actor),
@@ -1032,8 +1058,13 @@ pub(crate) async fn dispatch(
                 .items,
         })?),
         View::Inventory => inventory(data),
-        View::Quests => quests(profile, data),
-    }
+        View::Quests => quests(data),
+    }?;
+    Ok(if projects_profile {
+        Reply::PlayerInfo(value)
+    } else {
+        Reply::Standalone(value)
+    })
 }
 
 #[derive(Serialize)]
@@ -1141,7 +1172,11 @@ mod tests {
     ) -> Result<Value, Error> {
         let mut params = vec![Value::Null];
         params.extend(payload);
-        dispatch(community, player, name, &params, None).await
+        Ok(
+            match dispatch(community, player, name, &params, None).await? {
+                Reply::Standalone(value) | Reply::PlayerInfo(value) => value,
+            },
+        )
     }
 
     #[tokio::test]

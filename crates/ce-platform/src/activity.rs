@@ -1,12 +1,15 @@
-use super::{Error, Platform, meta::Meta, player_info};
+use super::{Error, Platform, meta::Meta};
 use crate::RpcMethod;
+use crate::match_stats::PlayerMatches;
 use crate::meta::Preference;
+use crate::profile::Currency;
 use crate::wire::{Empty, PlayerHandle, Success};
 use halcyon_community::GroupKind;
 use halcyon_platform::PlayerProfile;
 use rusqlite::{OptionalExtension, Transaction, params};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::BTreeMap;
 use uuid::Uuid;
 
 pub(crate) fn initialize(db: &Transaction<'_>) -> Result<(), Error> {
@@ -80,26 +83,26 @@ pub(crate) fn handles(m: RpcMethod) -> bool {
 }
 
 impl Meta {
-    pub(crate) async fn player_fields(&self, player: Uuid) -> Result<Value, Error> {
+    pub(crate) async fn player_fields(&self, player: Uuid) -> Result<PlayerActivityFields, Error> {
         self.transaction(move|tx| {
             let player=player.to_string();
-            let matches = super::match_stats::player_fields(tx, &player)?;
+            let matches = super::match_stats::read_player_matches(tx, &player)?;
             let mut inv=tx.prepare("SELECT item,count FROM community_inventory i JOIN community_items d ON d.id=i.item WHERE player=? AND d.slot='currency'")?;
             let balances = inv.query_map([&player], |r| {
-                Ok((r.get::<_, String>(0)?, Value::from(r.get::<_, u32>(1)?)))
-            })?.collect::<rusqlite::Result<serde_json::Map<String, Value>>>()?;
-            let mut currency = super::profile::empty_currency();
-            currency.as_object_mut().expect("currency defaults").extend(balances);
+                Ok((r.get::<_, String>(0)?, r.get::<_, u32>(1)?))
+            })?.collect::<rusqlite::Result<BTreeMap<String, u32>>>()?;
+            let mut currency = Currency::default();
+            currency.extend(balances);
             let pending_messages = tx.query_row("SELECT count(*) FROM ce_messages WHERE recipient=? AND dismissed=0",
                 [&player], |r| r.get::<_, u32>(0))?;
-            let mut info = PlayerActivityFields { matches, currency, pending_messages, ..Default::default() };
+            let mut info = PlayerActivityFields { matches, currency, pending: PendingCounts { messages: pending_messages, ..Default::default() }, ..Default::default() };
             let mut invites=tx.prepare("SELECT g.kind,count(*) FROM community_invites i JOIN community_groups g ON g.id=i.group_id WHERE i.player=? GROUP BY g.kind")?;
             for row in invites.query_map([&player], |r| Ok((r.get::<_, String>(0)?, r.get::<_, u32>(1)?)))? {
                 let (kind, count) = row?;
                 match GroupKind::deserialize(Value::String(kind)) {
-                    Ok(GroupKind::Party) => info.pending_party_invites = Some(count),
-                    Ok(GroupKind::Team) => info.pending_team_invites = Some(count),
-                    Ok(GroupKind::Guild) => info.pending_guild_invites = Some(count),
+                    Ok(GroupKind::Party) => info.pending.party = Some(count),
+                    Ok(GroupKind::Team) => info.pending.team = Some(count),
+                    Ok(GroupKind::Guild) => info.pending.guild = Some(count),
                     Err(_) => {}
                 }
             }
@@ -107,9 +110,9 @@ impl Meta {
             for row in groups.query_map([&player], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))? {
                 let (kind, id) = row?;
                 match GroupKind::deserialize(Value::String(kind)) {
-                    Ok(GroupKind::Party) => info.party_uuid = Some(id),
-                    Ok(GroupKind::Team) => info.team_uuid = Some(id),
-                    Ok(GroupKind::Guild) => info.guild_uuid = Some(id),
+                    Ok(GroupKind::Party) => info.party_uuid = Some(Some(id)),
+                    Ok(GroupKind::Team) => info.team_uuid = Some(Some(id)),
+                    Ok(GroupKind::Guild) => info.guild_uuid = Some(Some(id)),
                     Err(_) => {}
                 }
             }
@@ -123,7 +126,7 @@ impl Meta {
                     info.tutorial_state = super::profile::tutorial_state(&data);
                 }
             }
-            Ok(serde_json::to_value(info)?)
+            Ok(info)
         }).await
     }
 }
@@ -242,7 +245,7 @@ impl Platform {
                 if profile.lobby.as_ref().and_then(|l|l.match_id)!=Some(room){return Err(Error::Invalid);}
                 // Client telemetry is separate from the authoritative host outcome.
                 self.meta.set(profile.player_id,if m==RpcMethod::NotifyGameResults {Preference::ReportedResult} else {Preference::ReportedMatch},Value::Array(params[1..].to_vec())).await?;
-                Ok(player_info(profile))
+                self.project_player_info(profile).await
             }
             _ => Err(Error::Unsupported)
         }
@@ -251,27 +254,64 @@ impl Platform {
 
 #[derive(Default, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct PlayerActivityFields {
+pub(crate) struct PlayerActivityFields {
     #[serde(flatten)]
-    matches: Value,
-    currency: Value,
-    pending_messages: u32,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pending_party_invites: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pending_team_invites: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pending_guild_invites: Option<u32>,
+    pub matches: PlayerMatches,
+    pub currency: Currency,
+    #[serde(flatten)]
+    pub pending: PendingCounts,
     #[serde(rename = "partyUUID", skip_serializing_if = "Option::is_none")]
-    party_uuid: Option<String>,
+    party_uuid: Option<Option<String>>,
     #[serde(rename = "teamUUID", skip_serializing_if = "Option::is_none")]
-    team_uuid: Option<String>,
+    team_uuid: Option<Option<String>>,
     #[serde(rename = "guildUUID", skip_serializing_if = "Option::is_none")]
-    guild_uuid: Option<String>,
+    guild_uuid: Option<Option<String>>,
     #[serde(rename = "last_login", skip_serializing_if = "Option::is_none")]
     last_login: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tutorial_state: Option<super::profile::TutorialState>,
+}
+
+impl PlayerActivityFields {
+    // A complete profile materializes defaults. A configured manifest only
+    // receives the fields for which the home has an authoritative value.
+    pub(crate) fn with_defaults(mut self) -> Self {
+        self.matches = self.matches.with_streak_defaults();
+        self.party_uuid.get_or_insert(None);
+        self.team_uuid.get_or_insert(None);
+        self.guild_uuid.get_or_insert(None);
+        self.last_login.get_or_insert_with(|| Value::from(0.0));
+        self.tutorial_state.get_or_insert_with(Default::default);
+        self.pending = self.pending.with_defaults();
+        self
+    }
+}
+
+#[derive(Clone, Copy, Default, Serialize)]
+pub(crate) struct PendingCounts {
+    #[serde(rename = "pendingMessages")]
+    messages: u32,
+    #[serde(
+        rename = "pendingPartyInvites",
+        skip_serializing_if = "Option::is_none"
+    )]
+    party: Option<u32>,
+    #[serde(rename = "pendingTeamInvites", skip_serializing_if = "Option::is_none")]
+    team: Option<u32>,
+    #[serde(
+        rename = "pendingGuildInvites",
+        skip_serializing_if = "Option::is_none"
+    )]
+    guild: Option<u32>,
+}
+
+impl PendingCounts {
+    pub(crate) fn with_defaults(mut self) -> Self {
+        self.party.get_or_insert(0);
+        self.team.get_or_insert(0);
+        self.guild.get_or_insert(0);
+        self
+    }
 }
 
 #[derive(Serialize)]

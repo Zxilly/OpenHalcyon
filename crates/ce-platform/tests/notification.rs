@@ -562,12 +562,25 @@ async fn talent_catalog_preserves_public_fields_and_projects_only_the_callers_in
         );
         assert!(open().is_err());
     }
+    #[derive(serde::Serialize)]
+    struct CatalogWithVersion<'a> {
+        example_rare: &'a Value,
+        version: &'a Value,
+    }
+    // Talent IDs come from the operator catalog, including names matching
+    // bootstrap metadata. A manifest entry must survive repeated RPC reads.
+    let mut version = public.clone();
+    version["id"] = Value::from("version");
+    version["level"] = Value::from(0);
+    version["fragments"] = Value::from(0);
+    version["levelRequirements"] = serde_json::to_value(EmptyReply {}).unwrap();
     write(
         &talent,
         serde_json::to_value(ArchivedAccountReply {
             session_token: "discard",
-            return_value: TalentExample {
+            return_value: CatalogWithVersion {
                 example_rare: &archived,
+                version: &version,
             },
         })
         .unwrap(),
@@ -583,7 +596,11 @@ async fn talent_catalog_preserves_public_fields_and_projects_only_the_callers_in
         v["levelRequirements"] = serde_json::to_value(EmptyReply {}).unwrap();
         v["level"] = serde_json::to_value(level).unwrap();
         v["fragments"] = serde_json::to_value(fragments).unwrap();
-        serde_json::to_value(TalentExample { example_rare: &v }).unwrap()
+        serde_json::to_value(CatalogWithVersion {
+            example_rare: &v,
+            version: &version,
+        })
+        .unwrap()
     };
     let read = |token: Value| rpc(&api, RpcMethod::GetTalentsData.as_str(), (token,));
     let ta = &a["sessionToken"];

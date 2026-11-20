@@ -1,27 +1,41 @@
+use crate::activity::PlayerActivityFields;
 use crate::wire::Empty;
 use halcyon_platform::PlayerProfile;
 use serde::Serialize;
 use serde_json::Value;
-use uuid::Uuid;
+use std::collections::BTreeMap;
 
-#[derive(Default, Serialize)]
-struct Currency {
-    gold: u32,
-    silver: u32,
-    essence: u32,
-    opal: u32,
-    epic_key: u32,
-    seasonal_key: u32,
+/// Currency IDs are operator-defined. These six are the native initial balances.
+#[derive(Clone, Serialize)]
+#[serde(transparent)]
+pub(crate) struct Currency(BTreeMap<String, u32>);
+
+impl Default for Currency {
+    fn default() -> Self {
+        Self(
+            [
+                "gold",
+                "silver",
+                "essence",
+                "opal",
+                "epic_key",
+                "seasonal_key",
+            ]
+            .into_iter()
+            .map(|id| (id.to_owned(), 0))
+            .collect(),
+        )
+    }
 }
 
-pub(crate) fn empty_currency() -> Value {
-    serde_json::to_value(Currency::default()).expect("native currency defaults")
+impl Currency {
+    pub(crate) fn extend(&mut self, balances: impl IntoIterator<Item = (String, u32)>) {
+        self.0.extend(balances);
+    }
 }
 
-/// CE reads these fields both from getPlayerInfo and from the nested session
-/// profile. Persistent player data is projected over the new-guest defaults.
-pub(crate) fn player_info(p: &PlayerProfile) -> Value {
-    serde_json::to_value(PlayerInfo::new(&p.name)).expect("native player profile")
+pub(crate) fn player_info(p: &PlayerProfile, fields: PlayerActivityFields) -> Value {
+    serde_json::to_value(PlayerInfo::new(&p.name, fields)).expect("native player profile")
 }
 
 #[derive(Default, Serialize)]
@@ -127,23 +141,6 @@ struct PlayerInfo<'a> {
     level_max_xp: u64,
     karma_level: u8,
     karma_silver_bonus: f64,
-    wins: u64,
-    completed: u64,
-    #[serde(rename = "completed_non_tutorial")]
-    completed_non_tutorial: u64,
-    win_streak: u64,
-    loss_streak: u64,
-    wins_today: u64,
-    #[serde(rename = "wins_aral")]
-    wins_aral: u64,
-    #[serde(rename = "wins_blitz")]
-    wins_blitz: u64,
-    #[serde(rename = "wins_blitz_rounds_casual")]
-    wins_blitz_rounds_casual: u64,
-    #[serde(rename = "wins_casual")]
-    wins_casual: u64,
-    #[serde(rename = "wins_ranked")]
-    wins_ranked: u64,
     skill_tier: u8,
     skill_tier5v5: u8,
     season_max_skill_tier: u8,
@@ -163,25 +160,14 @@ struct PlayerInfo<'a> {
     #[serde(rename = "elo_earned_decay_start")]
     elo_earned_decay_start: u64,
     skill_progression_info: RankedModes,
-    #[serde(rename = "guildUUID")]
-    guild_uuid: Option<Uuid>,
-    #[serde(rename = "partyUUID")]
-    party_uuid: Option<Uuid>,
-    #[serde(rename = "teamUUID")]
-    team_uuid: Option<Uuid>,
-    pending_party_invites: u32,
-    pending_messages: u32,
-    pending_guild_invites: u32,
-    pending_team_invites: u32,
+    #[serde(flatten)]
+    activity: PlayerActivityFields,
     account_penalty_box_data: Penalties,
-    tutorial_state: TutorialState,
     can_use_all_heroes: bool,
     #[serde(flatten)]
     entitlements: Entitlements,
     is_dev: bool,
     is_organizer: bool,
-    #[serde(rename = "last_login")]
-    last_login: f64,
     freeunlocks: [(); 0],
     unlocks: [(); 0],
     player_buffs: [(); 0],
@@ -189,7 +175,6 @@ struct PlayerInfo<'a> {
     trophy_case: [(); 0],
     vg_supporter_end_time: u64,
     sinister_seven_progress: f64,
-    currency: Currency,
     targeting: Targeting,
     #[serde(flatten)]
     spender: Spender,
@@ -207,13 +192,16 @@ struct Entitlements {
 }
 
 impl<'a> PlayerInfo<'a> {
-    fn new(handle: &'a str) -> Self {
+    fn new(handle: &'a str, activity: PlayerActivityFields) -> Self {
+        let activity = activity.with_defaults();
+        let currency = activity.currency.clone();
         Self {
             handle,
             player_handle: handle,
             level: 1,
             level_max_xp: 100,
             can_use_all_heroes: true,
+            activity,
             entitlements: Entitlements {
                 entitlement_casual: true,
                 entitlement_5v5_casual: true,
@@ -223,6 +211,7 @@ impl<'a> PlayerInfo<'a> {
             },
             targeting: Targeting {
                 level: 1,
+                currency,
                 ..Default::default()
             },
             ..Default::default()

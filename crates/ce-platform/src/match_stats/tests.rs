@@ -133,7 +133,7 @@ async fn legacy_projections_and_incremental_match_statistics() {
             "NULL",
         );
         let meta = Meta::open(&path).unwrap();
-        let migrated = meta.player_fields(player).await.unwrap();
+        let migrated = wire_activity(&meta, player).await;
         assert_eq!(migrated["completed"], 3);
         assert_eq!(migrated["wins"], 2);
         assert_eq!(migrated["completed_non_tutorial"], 2);
@@ -203,12 +203,11 @@ async fn legacy_projections_and_incremental_match_statistics() {
         };
         settle("aral_casual", Value::Bool(false));
         settle("casual_5v5", Value::Bool(false));
-        assert_eq!(meta.player_fields(player).await.unwrap()["lossStreak"], 2);
+        assert_eq!(wire_activity(&meta, player).await["lossStreak"], 2);
         settle("casual_5v5", Value::Null);
         assert!(
-            meta.player_fields(player)
+            wire_activity(&meta, player)
                 .await
-                .unwrap()
                 .get("lossStreak")
                 .is_none()
         );
@@ -225,7 +224,7 @@ async fn legacy_projections_and_incremental_match_statistics() {
             .unwrap(),
         );
 
-        let final_stats = meta.player_fields(player).await.unwrap();
+        let final_stats = wire_activity(&meta, player).await;
         assert_eq!(final_stats["completed"], 8);
         assert_eq!(final_stats["wins"], 4);
         assert_eq!(final_stats["winsToday"], 2 + i32::from(with_day));
@@ -262,7 +261,7 @@ async fn legacy_projections_and_incremental_match_statistics() {
         assert_eq!(quest_progress("active_complete"), (5, "active".into()));
         drop(meta);
         let reopened = Meta::open(&path).unwrap();
-        assert_eq!(reopened.player_fields(player).await.unwrap(), final_stats);
+        assert_eq!(wire_activity(&reopened, player).await, final_stats);
         assert_eq!(quest_progress("win"), (2, "active".into()));
     }
 }
@@ -317,4 +316,8 @@ struct HeroStats<'a> {
     hero: &'a str,
     completed: u32,
     wins: u32,
+}
+
+async fn wire_activity(meta: &Meta, player: Uuid) -> Value {
+    serde_json::to_value(meta.player_fields(player).await.unwrap()).unwrap()
 }
