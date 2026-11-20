@@ -37,11 +37,16 @@ pub(super) fn submit(
         return None;
     }
     world.command(actor, Command::MoveTo(position)).ok()?;
-    let mut reply = [0; 9];
-    reply[0] = slot;
-    reply[1..5].copy_from_slice(&position.x.to_be_bytes());
-    reply[5..9].copy_from_slice(&position.y.to_be_bytes());
-    Some(Message::new(0x03f8, reply))
+    Some(destination(slot, position))
+}
+
+/// The native path action addresses the actor by the recipient's scene slot.
+pub(super) fn destination(slot: u8, point: Position) -> Message {
+    let mut body = [0; 9];
+    body[0] = slot;
+    body[1..5].copy_from_slice(&point.x.to_be_bytes());
+    body[5..9].copy_from_slice(&point.y.to_be_bytes());
+    Message::new(0x03f8, body)
 }
 
 pub(super) fn aral_slot(actor: &Entity) -> Option<u8> {

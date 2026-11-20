@@ -132,7 +132,14 @@ fn sanitize(m: &mut Message) -> bool {
                     m.body[116..122],
                     [52..=199, 0, 0, 1, 1, 1] | [52..=199, 0, 0, 1, 4, 2]
                 )) || super::aral_spawn::recordable(&m.body)) => {}
-        0x3f8 if m.body.len() == 9 && (14..=23).contains(&m.body[0]) => {}
+        0x3f8
+            if m.body.len() == 9
+                && (14..=199).contains(&m.body[0])
+                && m.body[1..]
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .all(|b| f32::from_be_bytes(*b).is_finite()) => {}
         // Only the authored hero-slot and target combinations have verified wire meanings.
         0x435 if super::aral::announcements::recordable(&m.body) => {}
         0x43a

@@ -367,20 +367,34 @@ mod tests {
 
     #[tokio::test]
     async fn six_authenticated_aral_streams_cross_into_game_without_reconnect() {
-        play_six_seats(false, false).await;
+        play_six_seats(Scenario::Crystal).await;
     }
 
     #[tokio::test]
     async fn six_authenticated_seats_receive_one_result_after_a_team_surrenders() {
-        play_six_seats(true, false).await;
+        play_six_seats(Scenario::Surrender).await;
     }
 
     #[tokio::test]
     async fn encrypted_aral_shop_replays_measured_components_and_reconnects() {
-        play_six_seats(false, true).await;
+        play_six_seats(Scenario::Shop).await;
     }
 
-    async fn play_six_seats(surrender: bool, shop: bool) {
+    #[tokio::test]
+    async fn encrypted_player_and_observer_receive_declared_wave_destinations() {
+        play_six_seats(Scenario::LanePaths).await;
+    }
+
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum Scenario {
+        Crystal,
+        Surrender,
+        Shop,
+        LanePaths,
+    }
+
+    async fn play_six_seats(scenario: Scenario) {
+        let surrender = scenario == Scenario::Surrender;
         let room_id = Uuid::new_v4();
         let rooms = Rooms::new(Ipv4Addr::LOCALHOST.into(), "127.0.0.1".into(), 1, None);
         let players: Vec<_> = (0..SEATS).map(|_| Uuid::new_v4()).collect();
@@ -540,7 +554,7 @@ mod tests {
                 .iter()
                 .all(|seat| seat.world_actor_written)
         );
-        if shop {
+        if scenario == Scenario::Shop {
             super::shop_tests::shop_sequence(
                 &mut clients,
                 &cipher,
@@ -743,7 +757,50 @@ mod tests {
             let cleared = until(socket, &cipher, 0x0481).await;
             assert_eq!(cleared.body, [0, 0, 5, 220, 255, 0]);
         }
+        if scenario == Scenario::LanePaths {
+            let (wire_actor, destination) = {
+                let mut state = room.lock().unwrap();
+                state.world.tick = 15 * halcyon_sim::TICK_HZ - 1;
+                for _ in 0..10 {
+                    state.tick();
+                }
+                let wave = state
+                    .world
+                    .entities
+                    .iter()
+                    .find(|e| e.kind == Kind::Minion && e.team == 0)
+                    .unwrap();
+                (
+                    u32::from(crate::messages::wire_id(wave.id)),
+                    wave.lane_step().unwrap().0,
+                )
+            };
+            for viewer in [&mut clients[2], &mut observer] {
+                let mut registered = None;
+                tokio::time::timeout(Duration::from_secs(2), async {
+                    loop {
+                        let m = next(viewer, &cipher).await;
+                        if matches!(m.opcode, 0x03f2 | 0x03f3)
+                            && m.body[8..12] == wire_actor.to_be_bytes()
+                        {
+                            registered = Some(m.body[if m.opcode == 0x03f2 { 116 } else { 745 }]);
+                        }
+                        if m.opcode == 0x03f8 && Some(m.body[0]) == registered {
+                            let expected =
+                                crate::point_move::destination(registered.unwrap(), destination);
+                            assert_eq!(m.body[..9], expected.body);
+                            break;
+                        }
+                    }
+                })
+                .await
+                .unwrap();
+            }
+        }
         rooms.revoke_observer(room_id, grant).unwrap();
+        if scenario == Scenario::LanePaths {
+            return;
+        }
         // Re-equip so the reconnect below restores both a positive selection and an explicit clear.
         clients[0]
             .write_all(&cipher.encode(&chosen.request()).unwrap())

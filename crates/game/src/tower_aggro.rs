@@ -12,6 +12,13 @@ pub(super) struct View {
     slots: HashMap<u8, u32>,
     // Target identity distinguishes two successive occupants of a recycled slot.
     previous: HashMap<u32, Option<(u32, u8)>>,
+    lane_paths: HashMap<u8, LanePath>,
+}
+
+struct LanePath {
+    actor: u32,
+    destination: halcyon_sim::Position,
+    tick: u64,
 }
 
 impl View {
@@ -48,8 +55,52 @@ impl View {
         }
     }
 
+    fn append_lane_path(
+        &mut self,
+        tick: u64,
+        actor: &halcyon_sim::Entity,
+        visible: &impl Fn(u32) -> bool,
+        out: &mut Batch,
+    ) {
+        let Some(&slot) = self.actors.get(&actor.id) else {
+            return;
+        };
+        if actor.hp <= 0. || !visible(actor.id) {
+            self.lane_paths.remove(&slot);
+            return;
+        }
+        let Some((destination, followed)) = actor.lane_step() else {
+            return;
+        };
+        if followed.is_some_and(|id| !visible(id) || !self.actors.contains_key(&id)) {
+            self.lane_paths.remove(&slot);
+            return;
+        }
+        if let Some(last) = self.lane_paths.get(&slot)
+            && last.actor == actor.id
+            && (last.destination == destination
+                || tick.saturating_sub(last.tick) < halcyon_sim::TICK_HZ / 5)
+        {
+            return;
+        }
+        self.lane_paths.insert(
+            slot,
+            LanePath {
+                actor: actor.id,
+                destination,
+                tick,
+            },
+        );
+        out.push(super::point_move::destination(slot, destination));
+    }
+
     pub fn append(&mut self, world: &World, visible: impl Fn(u32) -> bool, out: &mut Batch) {
-        for tower in &world.entities {
+        for actor in &world.entities {
+            if actor.kind == Kind::Minion && matches!(actor.type_id, 287..=289 | 335..=338) {
+                self.append_lane_path(world.tick, actor, &visible, out);
+                continue;
+            }
+            let tower = actor;
             if tower.kind != Kind::Tower || !matches!(tower.type_id, 300 | 301 | 340) {
                 continue;
             }
@@ -238,6 +289,95 @@ mod tests {
         let mut reconnect = View::default();
         reconnect.declarations(&[declaration(tower, 7), declaration(hero, 17)]);
         assert_eq!(frames(&mut reconnect, &world, |_| true), [state(Some(17))]);
+    }
+
+    #[test]
+    fn moving_lane_minions_use_each_receivers_slot_and_current_destination() {
+        let (mut world, _, _) = test_world();
+        world.tick = 15 * halcyon_sim::TICK_HZ - 1;
+        let mut view = View::default();
+        let mut observer = View::default();
+        let mut out = Vec::new();
+        let id = loop {
+            world.step();
+            if let Some(e) = world.entities.iter().find(|e| {
+                e.kind == Kind::Minion && e.team == 0 && matches!(e.lane_step(), Some((_, None)))
+            }) {
+                break e.id;
+            }
+            assert!(
+                world.tick < 320,
+                "expected the first wave's authoritative movement"
+            );
+        };
+        let current = |w: &World| {
+            w.entities
+                .iter()
+                .find(|e| e.id == id)
+                .unwrap()
+                .lane_step()
+                .unwrap()
+                .0
+        };
+        let first = current(&world);
+        view.append(&world, |_| true, &mut out);
+        assert!(out.is_empty());
+        view.declarations(&[declaration(id, 22)]);
+        observer.declarations(&[declaration(id, 73)]);
+        view.append(&world, |_| true, &mut out);
+        observer.append(&world, |_| true, &mut out);
+        assert_eq!(
+            out,
+            [
+                crate::point_move::destination(22, first),
+                crate::point_move::destination(73, first)
+            ]
+        );
+        out.clear();
+        view.append(&world, |_| true, &mut out);
+        assert!(out.is_empty());
+        view.append(&world, |_| false, &mut out);
+        view.append(&world, |_| true, &mut out);
+        assert_eq!(out, [crate::point_move::destination(22, first)]);
+        out.clear();
+        let m = world.entities.iter().find(|e| e.id == id).unwrap().position;
+        let enemy = world
+            .entities
+            .iter_mut()
+            .find(|e| e.team == 1 && e.kind == Kind::Hero)
+            .unwrap();
+        let hero = enemy.id;
+        enemy.position = Position {
+            x: m.x + 6.,
+            y: m.y,
+        };
+        for _ in 0..16 {
+            world.step();
+            if matches!(world.entities.iter().find(|e|e.id==id).unwrap().lane_step(),Some((_,Some(target))) if target==hero)
+            {
+                break;
+            }
+        }
+        let minion = world.entities.iter().find(|e| e.id == id).unwrap();
+        let (point, target) = minion.lane_step().expect("expected pursuit");
+        assert_eq!(target, Some(hero));
+        view.append(&world, |_| true, &mut out);
+        assert!(out.is_empty(), "unregistered pursuit target");
+        view.declarations(&[declaration(hero, 17)]);
+        view.append(&world, |a| a != hero, &mut out);
+        assert!(out.is_empty(), "hidden pursuit target");
+        let t = world.tick + 4;
+        view.append_lane_path(t, minion, &|_| true, &mut out);
+        assert_eq!(out, [crate::point_move::destination(22, point)]);
+        out.clear();
+        let mut recycled = minion.clone();
+        recycled.id += 10000;
+        view.declarations(&[declaration(recycled.id, 22)]);
+        view.append_lane_path(t, &recycled, &|_| true, &mut out);
+        assert_eq!(out, [crate::point_move::destination(22, point)]);
+        out.clear();
+        view.append_lane_path(t, minion, &|_| true, &mut out);
+        assert!(out.is_empty());
     }
 
     #[test]

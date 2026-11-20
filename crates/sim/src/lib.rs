@@ -271,6 +271,10 @@ pub struct Entity {
     path: nav::Path,
     #[serde(skip)]
     last_seen: Option<(u32, Position, u64)>,
+    // Last waypoint actually stepped toward by this lane minion. A pursued
+    // actor is retained so network projections can filter its position by sight.
+    #[serde(skip)]
+    lane_step: Option<(Position, Option<u32>)>,
     #[serde(skip)]
     stats: Stats,
     #[serde(skip)]
@@ -307,6 +311,9 @@ pub struct World {
     rally: [Option<Position>; 2],
 }
 impl Entity {
+    pub fn lane_step(&self) -> Option<(Position, Option<u32>)> {
+        self.lane_step
+    }
     pub fn attack_target(&self) -> Option<u32> {
         match self.order {
             Command::Attack(target) if self.hp > 0. => Some(target),
@@ -621,6 +628,7 @@ impl World {
             cooldown: [0; 3],
             status: Status::default(),
             last_seen: None,
+            lane_step: None,
             path: Default::default(),
             stats: s,
             order: Command::Stop,
@@ -726,6 +734,13 @@ impl World {
             .position
             .advance(waypoint, e.stats.speed * pace / TICK_HZ as f32);
         if pos != e.position {
+            if e.kind == Kind::Minion {
+                let followed = match e.order {
+                    Command::Attack(id) => Some(id),
+                    _ => None,
+                };
+                e.lane_step = Some((waypoint, followed));
+            }
             e.position = pos;
             events.push(Event::Move {
                 id: e.id,
@@ -807,6 +822,7 @@ impl World {
         for offset in 0..n {
             let i = (first + offset) % n;
             let e = &mut self.entities[i];
+            e.lane_step = None;
             if e.hp <= 0. {
                 if e.kind == Kind::Hero && e.respawn <= self.tick {
                     e.hp = e.max_hp;
