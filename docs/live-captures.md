@@ -252,3 +252,33 @@ a completed sale by owned instance. The client request path, sale eligibility
 and refund policy for other items remain unverified.
 
 [Server emission matrix for all 103 observed opcodes](server-emissions.md)
+
+### ARAL announcements and flyout text
+
+All seven ARAL connections received seven consecutive `0435` rows per
+announcement. Word 0 ran through native hero IDs 1505 down to 1500, then
+`ffffffff`. Each connection saw all seven rows, including the opponents'
+rows. Two triggers repeated in all seven matches:
+
+| Trigger | Word 1 | Word 2 | Word 3 | Words 4–5 |
+|---|---|---|---|---|
+| First two template-289 lane spawns, about 15.1 seconds after start | Same as word 0 | `140be4b6` | `ffffffff` | Both `ffffffff` |
+| First hero death, killed by another hero in all seven | Killer's native actor ID | `46482c5d` | 125 | Both `ffffffff` |
+
+The original rows followed the spawn or death records. The host emits these
+two sequences once per ARAL room, after normal replication, to registered
+native world connections and active authorized observers. A reconnect receives
+future announcements. If a nonhero causes the first hero death, the simulator
+uses up first blood. The host therefore skips its announcement rather than
+assigning a later hero kill the bonus. Announcement delivery does not modify
+gold. Other captured keys lack equivalent coverage of their triggering rule.
+
+The 60 `0440` flyouts had three operands: actor, 16-bit selector, and
+`ffffffff`. Selectors 5, 7, 8, 13 and 16 appeared 8, 33, 9, 8 and 2 times.
+All 60 were within 250 ms of a buff application to the same actor. For
+selector 5 the nearest such application by record order used definition 740
+in 8/8 cases, and for selector 13 it used 806 in 8/8. Only 2/60 flyouts
+were within that window of a death involving the actor, and 33/60 of a
+same-actor gold change. No rendered text or second simultaneous player
+perspective establishes the label or recipients. The host reads these flyouts.
+All 14 Solo VGR chunks (43,160 records) contained zero `0435` and `0440`.

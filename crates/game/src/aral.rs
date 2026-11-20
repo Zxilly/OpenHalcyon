@@ -1,3 +1,4 @@
+pub(super) mod announcements;
 use super::{Batch, Message, Room, messages};
 
 pub(super) use halcyon_data::LEGACY_ARAL_SEATS as SEATS;

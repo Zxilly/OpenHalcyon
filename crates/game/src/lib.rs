@@ -144,6 +144,7 @@ struct Room {
     solo_slots: actor_slots::ActorSlots,
     aral_slots: aral_spawn::WaveSlots,
     dead_actors: Vec<aral_death::Pending>,
+    aral_announcements: aral::announcements::Announcements,
     surrender: [surrender::Ballot; 2],
     visible: [HashSet<u32>; 2],
     next_visible: [HashSet<u32>; 2],
@@ -575,6 +576,7 @@ impl Rooms {
             solo_slots: actor_slots::ActorSlots::from_roster(&world.entities),
             aral_slots: Default::default(),
             dead_actors: Vec::new(),
+            aral_announcements: Default::default(),
             surrender: Default::default(),
             visible: Default::default(),
             next_visible: Default::default(),
@@ -1300,6 +1302,9 @@ impl Room {
             }
         }
         self.replicate(&events);
+        if legacy {
+            aral::announcements::publish(self, &events);
+        }
         if legacy || self.solo_scene() {
             for (i, (seat, actor)) in self.seats.iter().zip(&self.world.entities).enumerate() {
                 if !seat.world_actor_written

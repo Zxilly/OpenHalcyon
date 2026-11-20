@@ -134,6 +134,7 @@ fn sanitize(m: &mut Message) -> bool {
                 )) || super::aral_spawn::recordable(&m.body)) => {}
         0x3f8 if m.body.len() == 9 && (14..=23).contains(&m.body[0]) => {}
         // Only the authored hero-slot and target combinations have verified wire meanings.
+        0x435 if super::aral::announcements::recordable(&m.body) => {}
         0x43a
             if matches!(m.body.as_slice(), [0, 0, 5, 220..=229, 0, 0, 0, operand]
             if halcyon_sim::known_native_learn_operand(*operand)) => {}

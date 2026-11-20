@@ -57,7 +57,7 @@ The host paths are in [room dispatch](../crates/game/src/lib.rs), [transport](..
 | `0432` | 63 | A | ActionActorRespawn · Simulated hero respawn |
 | `0433` | 103 | A | ActionStartRespawnTimer · Eligible ARAL hero respawn timer |
 | `0434` | 315 | A | ActionLevelUp · Hero level increase |
-| `0435` | 210 | R | ActionMakeAnnouncement |
+| `0435` | 210 | A | ARAL first lane wave and first hero-on-hero death |
 | `0436` | 329 | E | ActionRequestUpgradeAbility_Client · Accepted supported ability learn request |
 | `0438` | 4 | R | ActionReorderItem |
 | `0439` | 342 | E | ActionBuyItem · Successful supported purchase |
