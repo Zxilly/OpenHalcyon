@@ -23,6 +23,7 @@ mod result_frames;
 mod ringo;
 mod scene;
 mod surrender;
+mod tick_latency;
 mod transport;
 use chrono::{DateTime, Utc};
 use halcyon_data::GameData;
@@ -39,7 +40,7 @@ use responses::{Channel, EventDetail, EventKind};
 pub use responses::{RoomParticipant, RoomPhase, RoomSummary, TickLatencyReport};
 use serde_json::Value;
 use std::{
-    collections::{HashMap, HashSet, VecDeque},
+    collections::{HashMap, HashSet},
     net::{IpAddr, TcpListener},
     sync::{
         Arc, Mutex,
@@ -119,42 +120,6 @@ struct Pick {
     selected: bool,
     locked: bool,
 }
-#[derive(Default)]
-struct TickLatency {
-    count: u64,
-    total_us: u64,
-    max_us: u64,
-    misses: u64,
-    over40: u64,
-    recent: VecDeque<u64>,
-}
-impl TickLatency {
-    fn observe(&mut self, us: u64) {
-        self.count += 1;
-        self.total_us = self.total_us.saturating_add(us);
-        self.max_us = self.max_us.max(us);
-        self.over40 += u64::from(us > 40_000);
-        self.misses += u64::from(us > 1_000_000 / halcyon_sim::TICK_HZ);
-        if self.recent.len() == 1024 {
-            self.recent.pop_front();
-        }
-        self.recent.push_back(us);
-    }
-    fn report(&self) -> TickLatencyReport {
-        let mut recent: Vec<_> = self.recent.iter().copied().collect();
-        recent.sort_unstable();
-        let index = (recent.len() * 99).div_ceil(100).saturating_sub(1);
-        TickLatencyReport {
-            count: self.count,
-            total_us: self.total_us,
-            max_us: self.max_us,
-            missed_deadlines: self.misses,
-            over40ms: self.over40,
-            recent_sample_count: recent.len(),
-            p99_us: recent.get(index).copied(),
-        }
-    }
-}
 #[derive(Clone, Copy, Default, serde::Serialize)]
 struct Combat {
     kills: u32,
@@ -180,7 +145,7 @@ struct Room {
     next_visible: [HashSet<u32>; 2],
     replay_bytes: Arc<AtomicU64>,
     observers: HashMap<Uuid, observer::Observer>,
-    latency: TickLatency,
+    latency: tick_latency::TickLatency,
     admitted: bool,
     admission_ready: watch::Sender<bool>,
     data: Option<Arc<GameData>>,
@@ -698,7 +663,7 @@ impl Rooms {
             replay_bytes: Arc::default(),
             admission_ready: watch::channel(admitted).0,
             observers: HashMap::new(),
-            latency: TickLatency::default(),
+            latency: tick_latency::TickLatency::default(),
             admitted,
             data: self.0.data.clone(),
             picks,

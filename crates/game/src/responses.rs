@@ -39,6 +39,24 @@ pub struct TickLatencyReport {
     pub over40ms: u64,
     pub recent_sample_count: usize,
     pub p99_us: Option<u64>,
+    pub stages: TickStages,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TickStages {
+    pub wake_delay: TickStageReport,
+    pub lock_wait: TickStageReport,
+    pub room_work: TickStageReport,
+}
+
+#[derive(Clone, Copy, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TickStageReport {
+    pub total_us: u64,
+    pub max_us: u64,
+    pub over40ms: u64,
+    pub dominant_over40ms: u64,
 }
 
 #[derive(Serialize)]

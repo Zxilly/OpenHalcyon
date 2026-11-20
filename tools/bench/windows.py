@@ -137,7 +137,8 @@ def measure(args, root, humans, cpu):
                     load_cpu=load_times.user+load_times.system
                 except psutil.NoSuchProcess:
                     load_cpu=None
-                row = {"wall_s": time.monotonic()-t0, "cpu_s": cpu_times.user+cpu_times.system, "load_cpu_s":load_cpu, "hosting":host, "rss":proc.memory_info().rss,
+                measured_at = time.monotonic()
+                row = {"wall_s": measured_at-t0, "perf_counter_s": time.perf_counter(), "cpu_s": cpu_times.user+cpu_times.system, "load_cpu_s":load_cpu, "hosting":host, "rss":proc.memory_info().rss,
                     "rooms":[{k:r.get(k) for k in ("id","phase","tickLatency","fanoutQueueFull","simTick","admitted")} for r in rooms],"client":latest_client(client_path)}
                 log.write(json.dumps(row,separators=(",",":"))+"\n")
                 samples.append(row)
@@ -177,6 +178,21 @@ def measure(args, root, humans, cpu):
         begin = {r["id"]:r["tickLatency"] for r in start["rooms"] if r["tickLatency"]}
         ticks = sum(v["count"]-begin.get(k,{}).get("count",0) for k,v in last.items())
         over = sum(v["over40ms"]-begin.get(k,{}).get("over40ms",0) for k,v in last.items())
+        tick_stages = {}
+        if all("stages" in v for v in last.values()):
+            for stage in ("wakeDelay", "lockWait", "roomWork"):
+                totals = {
+                    field: sum(v["stages"][stage][field]
+                               - begin.get(k, {}).get("stages", {}).get(stage, {}).get(field, 0)
+                               for k, v in last.items())
+                    for field in ("totalUs", "over40ms", "dominantOver40ms")
+                }
+                totals["meanUs"] = totals["totalUs"] / ticks if ticks else None
+                # The maxima cover each room's lifetime up to the last sample.
+                totals["lifetimeMaxUs"] = max(v["stages"][stage]["maxUs"] for v in last.values())
+                tick_stages[stage] = totals
+            if sum(stage["dominantOver40ms"] for stage in tick_stages.values()) != over:
+                raise RuntimeError("tick tail stage counts do not add up to the aggregate")
         # All intervals include wall-clock scheduling time. Keep the oldest point
         # spanning at least a minute for each rolling process-CPU observation.
         left = 0
@@ -204,6 +220,7 @@ def measure(args, root, humans, cpu):
             "peak_sampled_rss_bytes":max(r["rss"] for r in active),"ticks":ticks,"over40ms":over,
             "max_sampled_room_window_p99_us":max(v["p99Us"] or 0 for r in active for x in r["rooms"] if (v:=x["tickLatency"])),
             "max_tick_us":max(v["maxUs"] for v in last.values()),"p99_within_40ms":ticks>0 and over/ticks<=0.01,
+            "tick_stages":tick_stages,
             "gs_rx_bytes_per_sec":byte_delta/elapsed,"gs_rx_bytes_per_sec_per_human":byte_delta/elapsed/(humans*args.rooms),
             "client":end["client"],"steady_samples":len(active),"intentional_rotations":len(rotated)}
         write_json(run/"result.json",report)

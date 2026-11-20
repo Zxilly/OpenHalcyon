@@ -466,6 +466,40 @@ components:
         humanPlayers: {type: integer, minimum: 0, description: 房间中分配给真人的席位数}
         botPlayers: {type: integer, minimum: 0, description: 分配给英雄 Bot 的席位数}
         poolId: {type: [string, 'null'], description: 负责匹配的池，本地独立匹配为空}
+        tickLatency:
+          $ref: '#/components/schemas/TickLatency'
+    TickLatency:
+      type: object
+      required: [count, totalUs, maxUs, missedDeadlines, over40ms, recentSampleCount, p99Us, stages]
+      properties:
+        count: {type: integer, minimum: 0}
+        totalUs: {type: integer, minimum: 0}
+        maxUs: {type: integer, minimum: 0}
+        missedDeadlines: {type: integer, minimum: 0}
+        over40ms: {type: integer, minimum: 0}
+        recentSampleCount: {type: integer, minimum: 0, maximum: 1024}
+        p99Us: {type: [integer, 'null'], minimum: 0}
+        stages:
+          type: object
+          required: [wakeDelay, lockWait, roomWork]
+          properties:
+            wakeDelay:
+              $ref: '#/components/schemas/TickStage'
+              description: 从计划运行到房间任务开始执行的墙钟时间
+            lockWait:
+              $ref: '#/components/schemas/TickStage'
+              description: 等待房间互斥锁的墙钟时间
+            roomWork:
+              $ref: '#/components/schemas/TickStage'
+              description: 持锁处理 tick 的墙钟时间，包括仿真、广播入队和期间被抢占的时间
+    TickStage:
+      type: object
+      required: [totalUs, maxUs, over40ms, dominantOver40ms]
+      properties:
+        totalUs: {type: integer, minimum: 0, description: 自房间建立以来的累计微秒数}
+        maxUs: {type: integer, minimum: 0, description: 自房间建立以来的最大微秒数}
+        over40ms: {type: integer, minimum: 0, description: 此阶段自身超过 40 ms 的 tick 数}
+        dominantOver40ms: {type: integer, minimum: 0, description: 整个 tick 超过 40 ms 且本阶段最长的次数，时间相同则按阶段顺序计入}
     MatchEvent:
       type: object
       required: [seq, at, kind, message]

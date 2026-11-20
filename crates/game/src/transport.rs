@@ -393,8 +393,14 @@ pub(super) async fn serve(
             _=stopped.changed()=>break,
             scheduled=tick.tick()=>{
                 {
-                    let mut state=room.lock().unwrap();let before=state.world.tick;state.tick();
-                    if state.world.tick!=before{let us=scheduled.elapsed().as_micros().min(u128::from(u64::MAX)) as u64;state.latency.observe(us);}
+                    let wake = time::Instant::now();
+                    let mut state = room.lock().unwrap();
+                    let locked = time::Instant::now();
+                    let before = state.world.tick;
+                    state.tick();
+                    if state.world.tick != before {
+                        state.latency.observe(scheduled, wake, locked, time::Instant::now());
+                    }
                 }
                 // Share the runtime with sockets and other rooms between catch-up ticks.
                 if scheduled.elapsed()>=tick.period(){tokio::task::yield_now().await;}
