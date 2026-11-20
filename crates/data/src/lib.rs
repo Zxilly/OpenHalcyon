@@ -304,7 +304,7 @@ impl GameData {
     pub fn load_with_extra(dir: impl AsRef<Path>, extra: Option<&Path>) -> io::Result<Self> {
         let dir = dir.as_ref();
         let mut hash = Sha256::new();
-        let (hero_names, skin_names) = read_catalog(dir, &mut hash)?;
+        let mut catalog = read_catalog(dir, &mut hash)?;
         Ok(Self {
             units: read(dir, "units.json", &mut hash)?,
             items: read(dir, "items.json", &mut hash)?,
@@ -314,11 +314,14 @@ impl GameData {
             abilities: read(dir, "ability_raw.json", &mut hash)?,
             combat_constants: read(dir, "combat_constants.json", &mut hash)?,
             extra: match extra {
-                Some(dir) => ExtraData::load(dir, &mut hash, &hero_names, &skin_names)?,
+                Some(dir) => ExtraData::load(dir, &mut hash, &mut catalog)?,
                 None => ExtraData::default(),
             },
-            hero_names,
-            skin_names,
+            hero_names: catalog
+                .as_mut()
+                .map(|c| std::mem::take(&mut c.heroes))
+                .unwrap_or_default(),
+            skin_names: catalog.map(|c| c.skins).unwrap_or_default(),
             content_digest: format!("{:x}", hash.finalize()),
         })
     }
@@ -364,32 +367,37 @@ fn read<T: DeserializeOwned>(dir: &Path, name: &str, hash: &mut Sha256) -> io::R
     })
 }
 
-fn read_catalog(dir: &Path, hash: &mut Sha256) -> io::Result<(Vec<String>, Vec<String>)> {
+#[derive(Default)]
+struct DraftCatalog {
+    heroes: Vec<String>,
+    skins: Vec<String>,
+}
+
+fn read_catalog(dir: &Path, hash: &mut Sha256) -> io::Result<Option<DraftCatalog>> {
     use std::io::BufReader;
     let names: Vec<String> = match fs::File::open(dir.join("catalog.json")) {
         Ok(file) => serde_json::from_reader(BufReader::new(file))?,
         Err(e) if e.kind() == io::ErrorKind::NotFound => {
             match fs::File::open(dir.join("../match_decoded.jsonl")) {
                 Ok(file) => catalog_from_trace(BufReader::new(file))?,
-                Err(e) if e.kind() == io::ErrorKind::NotFound => Vec::new(),
+                Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
                 Err(e) => return Err(e),
             }
         }
         Err(e) => return Err(e),
     };
-    let mut heroes = Vec::new();
-    let mut skins = Vec::new();
+    let mut catalog = DraftCatalog::default();
     for name in names {
         validate_name(&name)?;
         hash.update([0x04, 0x53, name.len() as u8]);
         hash.update(name.as_bytes());
         if let Some(hero) = name.strip_prefix('*').and_then(|s| s.strip_suffix('*')) {
-            heroes.push(hero.to_owned())
+            catalog.heroes.push(hero.to_owned())
         } else {
-            skins.push(name)
+            catalog.skins.push(name)
         }
     }
-    Ok((heroes, skins))
+    Ok(Some(catalog))
 }
 
 fn validate_name(name: &str) -> io::Result<()> {

@@ -1,7 +1,7 @@
 use crate::GameData;
 use halcyon_protocol::skin_hash;
 use serde::{Deserialize, Serialize};
-use sha2::Sha256;
+use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet},
     io,
@@ -89,11 +89,35 @@ impl SkinIndex {
     pub(crate) fn load(
         dir: &Path,
         hash: &mut Sha256,
-        heroes: &[String],
-        skins: &[String],
+        draft: &mut Option<crate::DraftCatalog>,
     ) -> io::Result<Self> {
-        let catalog = crate::read(dir, "heroes_and_skins.json", hash)?;
-        Self::build(catalog, heroes, skins)
+        let catalog: Catalog = crate::read(dir, "heroes_and_skins.json", hash)?;
+        if draft.is_none() {
+            // A public default skin identifies a selectable hero. Optional skins
+            // have a separate advertisement contract in the original draft.
+            let defaults: BTreeSet<_> = catalog
+                .official_skins
+                .iter()
+                .filter(|s| s.visible && s.tier == 0)
+                .map(|s| s.skin_key.as_str())
+                .collect();
+            let mut fallback = crate::DraftCatalog::default();
+            for hero in &catalog.heroes {
+                if hero.entity_type_id.is_some() && defaults.contains(hero.default_skin.as_str()) {
+                    let entry = format!("*{}*", hero.hero_id);
+                    crate::validate_name(&entry)?;
+                    hash.update(halcyon_protocol::Opcode::HeroCatalog.raw().to_be_bytes());
+                    hash.update([entry.len() as u8]);
+                    hash.update(entry.as_bytes());
+                    fallback.heroes.push(hero.hero_id.clone());
+                }
+            }
+            *draft = Some(fallback);
+        }
+        let draft = draft
+            .as_ref()
+            .expect("explicit or supplemental draft catalog");
+        Self::build(catalog, &draft.heroes, &draft.skins)
     }
 
     fn build(catalog: Catalog, heroes: &[String], skins: &[String]) -> io::Result<Self> {
@@ -263,6 +287,31 @@ mod tests {
         let mut c = catalog();
         c.heroes[0].default_skin_hash_u32 ^= 1;
         assert!(SkinIndex::build(c, &[], &[]).is_err());
+    }
+
+    #[test]
+    #[ignore = "requires the CE supplement and the independent original draft announcement"]
+    fn standalone_supplement_advertises_exactly_the_original_playable_heroes() {
+        let delivery = std::path::PathBuf::from(std::env::var_os("HALCYON_DELIVERY").unwrap());
+        let extra = std::path::PathBuf::from(std::env::var_os("HALCYON_DATA_EXTRA").unwrap());
+        let reference = crate::read_catalog(&delivery, &mut Sha256::new())
+            .unwrap()
+            .unwrap();
+        let mut draft = None;
+        let index = SkinIndex::load(&extra, &mut Sha256::new(), &mut draft).unwrap();
+        let draft = draft.unwrap();
+        assert_eq!(draft.heroes.len(), 57);
+        assert_eq!(
+            draft.heroes.iter().collect::<BTreeSet<_>>(),
+            reference.heroes.iter().collect()
+        );
+        assert!(draft.skins.is_empty());
+        for hero in &reference.heroes {
+            assert!(index.select(hero, None).is_some());
+        }
+        let mut explicit = Some(crate::DraftCatalog::default());
+        SkinIndex::load(&extra, &mut Sha256::new(), &mut explicit).unwrap();
+        assert!(explicit.unwrap().heroes.is_empty());
     }
     #[test]
     #[ignore = "requires delivery and skin supplement files"]

@@ -34,8 +34,7 @@ impl ExtraData {
     pub(super) fn load(
         dir: &Path,
         hash: &mut Sha256,
-        hero_names: &[String],
-        skin_names: &[String],
+        catalog: &mut Option<crate::DraftCatalog>,
     ) -> io::Result<Self> {
         let references = crate::reference::References::load(dir)?;
         let mut combat = crate::combat_content::CombatContent::load(dir, hash)?;
@@ -50,9 +49,7 @@ impl ExtraData {
                 .transpose()?,
             solo_lane_rewards: Some(crate::SoloLaneRewards::from_rows(combat.units())?),
             item_bonuses: crate::item_bonuses::ItemBonuses::from_catalog(&items)?,
-            skins: Some(crate::skins::SkinIndex::load(
-                dir, hash, hero_names, skin_names,
-            )?),
+            skins: Some(crate::skins::SkinIndex::load(dir, hash, catalog)?),
             combat,
             items: Some(items),
         })
