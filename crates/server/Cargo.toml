@@ -18,7 +18,6 @@ halcyon-chat = { path = "../chat" }
 halcyon-data = { path = "../data" }
 halcyon-federation = { path = "../federation" }
 halcyon-game = { path = "../game" }
-halcyon-matchmaking = { path = "../matchmaking" }
 halcyon-peer-play = { path = "../peer-play" }
 halcyon-platform = { path = "../platform" }
 halcyon-sim = { path = "../sim" }
@@ -34,6 +33,7 @@ uuid.workspace = true
 
 [dev-dependencies]
 halcyon-community = { path = "../community" }
+halcyon-matchmaking = { path = "../matchmaking" }
 halcyon-federation = { path = "../federation", features = ["test-hooks"] }
 halcyon-protocol = { path = "../protocol" }
 rusqlite = { version = "0.37", features = ["bundled"] }

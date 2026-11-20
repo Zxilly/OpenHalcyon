@@ -51,15 +51,7 @@ impl Network {
             loop {
                 let read = tokio::time::timeout(
                     Duration::from_secs(2),
-                    source.inspect(|pool| {
-                        pool.tickets()
-                            .values()
-                            .filter(|e| {
-                                e.ticket.home == id
-                                    && e.phase != halcyon_matchmaking::TicketPhase::Closed
-                            })
-                            .count()
-                    }),
+                    source.inspect(|pool| pool.active_ticket_count(id)),
                 )
                 .await;
                 let healthy = if let Ok(Ok(count)) = read {

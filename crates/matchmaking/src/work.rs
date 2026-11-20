@@ -58,6 +58,14 @@ pub struct WorkingSet {
 }
 
 impl Pool {
+    /// Count queued and assigned tickets for the home without scanning closed entries.
+    pub fn active_ticket_count(&self, home: Uuid) -> usize {
+        self.active_tickets
+            .iter()
+            .filter(|&id| self.tickets[id].ticket.home == home)
+            .count()
+    }
+
     /// Copy only active data plus explicitly requested home and host history.
     /// Callers must obtain the underlying pool through a quorum-confirmed read.
     pub fn working_set(

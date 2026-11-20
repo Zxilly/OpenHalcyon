@@ -248,6 +248,8 @@ fn working_set_keeps_only_active_and_requested_terminal_entries() {
     assert_eq!(work.tickets[&waiting.id].phase, TicketPhase::Queued);
     let only_active = pool.working_set([], []);
     assert_eq!(only_active.tickets.len(), 1);
+    assert_eq!(pool.active_ticket_count(waiting.home), 1);
+    assert_eq!(pool.active_ticket_count(host), 0);
     assert!(only_active.allocations.is_empty());
     assert_eq!(pool.allocations().len(), 2);
 
@@ -257,8 +259,10 @@ fn working_set_keeps_only_active_and_requested_terminal_entries() {
     };
     pool.apply(newer.home, Command::Enqueue(newer.clone()))
         .unwrap();
+    assert_eq!(pool.active_ticket_count(newer.home), 2);
     pool.apply(newer.home, Command::Cancel(key(&newer)))
         .unwrap();
+    assert_eq!(pool.active_ticket_count(newer.home), 1);
     let work = pool.working_set([newer.id], []);
     assert!(work.finished(key(&newer)).is_none());
     assert!(work.allocations.is_empty());
