@@ -40,7 +40,7 @@ mod pfx;
 pub use pfx::PlayPfxAtLocation;
 mod gold;
 mod item_actions;
-pub use item_actions::ItemAction;
+pub use item_actions::{ItemAction, ItemActivationMode};
 mod live;
 pub use live::LiveFields;
 mod mutations;
