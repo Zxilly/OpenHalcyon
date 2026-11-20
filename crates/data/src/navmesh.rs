@@ -104,10 +104,17 @@ fn vertex_at(bytes: &[u8], offset: usize) -> Result<Vertex> {
     }
 }
 
-impl NavMesh {
-    /// Parse the 32-byte game wrapper followed by native (tileRef, size) records.
-    pub fn parse(bytes: &[u8]) -> Result<Self> {
-        let mut file = Reader(bytes);
+struct Wrapper {
+    count: usize,
+    origin: Vertex,
+    tile_width: f32,
+    tile_depth: f32,
+    max_tiles: usize,
+    max_polygons: usize,
+}
+
+impl Wrapper {
+    fn read(file: &mut Reader<'_>) -> Result<Self> {
         let count = file.word()? as usize;
         let origin = vertex_at(file.take(12)?, 0)?;
         let tile_width = f32::from_bits(file.word()?);
@@ -124,6 +131,58 @@ impl NavMesh {
         {
             return Err(NavMeshError("invalid navmesh header"));
         }
+        Ok(Self {
+            count,
+            origin,
+            tile_width,
+            tile_depth,
+            max_tiles,
+            max_polygons,
+        })
+    }
+}
+
+impl NavMesh {
+    pub(super) fn check_index(bytes: &[u8], index: &crate::MeshHeader) -> Result<()> {
+        let mut file = Reader(bytes);
+        let header = Wrapper::read(&mut file)?;
+        let _tile_reference = file.word()?;
+        let size = file.word()? as usize;
+        let first = file.take(size)?;
+        let signature = first
+            .first_chunk::<8>()
+            .ok_or(NavMeshError("missing first tile signature"))?;
+        // The extraction tool rounded geometry in the index to four decimals.
+        let matches = |a: f32, b: f32| (a - b).abs() <= 0.00006;
+        if header.count != index.tile_count
+            || header.max_tiles != index.max_tiles
+            || header.max_polygons != index.max_polys
+            || !matches(header.tile_width, index.tile_width)
+            || !matches(header.tile_depth, index.tile_height)
+            || !header
+                .origin
+                .into_iter()
+                .zip(index.origin_xyz)
+                .all(|(a, b)| matches(a, b))
+            || signature[..4] != *index.tile0_magic.as_bytes()
+            || u32_at(signature, 4) != index.tile0_version
+        {
+            return Err(NavMeshError("mesh header differs from its index"));
+        }
+        Ok(())
+    }
+
+    /// Parse the 32-byte game wrapper followed by native (tileRef, size) records.
+    pub fn parse(bytes: &[u8]) -> Result<Self> {
+        let mut file = Reader(bytes);
+        let Wrapper {
+            count,
+            origin,
+            tile_width,
+            tile_depth,
+            max_polygons,
+            ..
+        } = Wrapper::read(&mut file)?;
 
         let mut mesh = Self {
             origin,

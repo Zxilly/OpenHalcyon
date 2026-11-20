@@ -163,10 +163,16 @@ impl References {
             ("en", "localization/en.json"),
             ("zh_CN", "localization/zh_CN.json"),
         ] {
-            if !languages.contains_key(lang) {
-                return Err(invalid("dictionary missing from language index"));
+            let index = languages
+                .get(lang)
+                .ok_or_else(|| invalid("dictionary missing from language index"))?;
+            let entries: BTreeMap<String, String> = crate::read(dir, file, &mut hash)?;
+            if usize::try_from(index.entry_count).ok() != Some(entries.len()) {
+                return Err(invalid(
+                    "dictionary entry count differs from language index",
+                ));
             }
-            dictionaries.insert(lang.into(), crate::read(dir, file, &mut hash)?);
+            dictionaries.insert(lang.into(), entries);
         }
         let mut observations = BTreeMap::new();
         for row in crate::read::<Vec<OpcodeObservation>>(

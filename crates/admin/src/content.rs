@@ -190,7 +190,25 @@ pub(super) async fn browse(
         Collection::Talents => f.page(combat.talents().map(|t| (&t.id, t))),
         Collection::Items => f.page(items()?.items()),
         Collection::Stores => f.page(items()?.stores()),
-        Collection::Skins => f.page(cosmetics()?.official_skins.iter().map(|s| (&s.skin_key, s))),
+        Collection::Skins => {
+            #[derive(Serialize)]
+            struct SkinDetail<'a> {
+                #[serde(flatten)]
+                definition: &'a halcyon_data::skins::OfficialSkin,
+                skin_hash_u32: u32,
+                skin_hash_hex: &'a str,
+            }
+            f.page(cosmetics()?.official_skins.iter().map(|s| {
+                (
+                    &s.skin_key,
+                    SkinDetail {
+                        definition: s,
+                        skin_hash_u32: s.skin_hash_u32,
+                        skin_hash_hex: &s.skin_hash_hex,
+                    },
+                )
+            }))
+        }
         Collection::Themes => f.page(
             cosmetics()?
                 .official_themes

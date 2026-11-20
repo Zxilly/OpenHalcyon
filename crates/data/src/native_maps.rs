@@ -161,13 +161,9 @@ impl NativeMaps {
             hash.update(relative.as_bytes());
             hash.update((bytes.len() as u64).to_be_bytes());
             hash.update(&bytes);
-            let header_count = bytes.first_chunk::<4>().copied().map(u32::from_le_bytes);
-            if header_count.map(|count| count as usize) != Some(asset.detour_header.tile_count) {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!("mesh tile count mismatch for {relative}"),
-                ));
-            }
+            NavMesh::check_index(&bytes, &asset.detour_header).map_err(|error| {
+                io::Error::new(io::ErrorKind::InvalidData, format!("{relative}: {error}"))
+            })?;
             asset.sha256 = format!("{:x}", Sha256::digest(&bytes));
             let key = asset.source_path.clone();
             let mesh = MeshAsset {
@@ -186,6 +182,19 @@ impl NativeMaps {
             read::<Vec<LevelLayout>>(dir, "maps/level_layouts.json", hash)?,
             |l| &l.level_id,
         )?;
+        for level in levels.values() {
+            if !meshes.contains_key(&level.navmesh)
+                || level
+                    .vismesh
+                    .as_ref()
+                    .is_some_and(|key| !meshes.contains_key(key))
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("unindexed mesh in level {}", level.level_id),
+                ));
+            }
+        }
         let modes_and_camps = unique(
             read::<Vec<CampOrMode>>(dir, "maps/camps_and_modes.json", hash)?,
             |m| &m.id,
@@ -276,7 +285,7 @@ mod tests {
     #[ignore = "requires the operator's local server-data supplement"]
     fn loads_supplement_and_can_query_every_indexed_variant() {
         let dir = std::path::PathBuf::from(std::env::var_os("HALCYON_DATA_EXTRA").unwrap());
-        let data = NativeMaps::load(&dir, &mut Sha256::new()).unwrap();
+        let mut data = NativeMaps::load(&dir, &mut Sha256::new()).unwrap();
         assert_eq!(data.mesh_paths().count(), 16);
         for path in data.mesh_paths() {
             assert!(data.mesh(path).unwrap().is_some(), "{path}");
@@ -289,5 +298,8 @@ mod tests {
                 .iter()
                 .all(|spawn| camp.spawn_position(spawn).is_some())
         }));
+        let asset = data.meshes.values_mut().next().unwrap();
+        asset.info.detour_header.origin_xyz[0] += 1.;
+        assert!(NavMesh::check_index(&asset.bytes, &asset.info.detour_header).is_err());
     }
 }

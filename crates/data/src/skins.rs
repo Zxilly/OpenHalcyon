@@ -60,6 +60,8 @@ pub struct OfficialSkin {
     pub skin_key: String,
     #[serde(rename = "skin_hash_u32", skip_serializing)]
     pub skin_hash_u32: u32,
+    #[serde(rename = "skin_hash_hex", skip_serializing)]
+    pub skin_hash_hex: String,
     pub image_name: String,
     pub tier: u16,
     pub priority: i32,
@@ -81,6 +83,14 @@ pub struct OfficialSkin {
 struct Choices {
     default: u32,
     advertised: BTreeSet<u32>,
+}
+
+fn hash_matches(name: &str, numeric: u32, hex: &str) -> bool {
+    skin_hash(name) == numeric
+        && hex
+            .strip_prefix("0x")
+            .and_then(|value| u32::from_str_radix(value, 16).ok())
+            == Some(numeric)
 }
 #[derive(Debug)]
 pub(crate) struct SkinIndex(BTreeMap<String, Choices>, Catalog);
@@ -136,8 +146,11 @@ impl SkinIndex {
                 .strip_prefix('*')
                 .and_then(|h| h.strip_suffix('*'))
                 .ok_or_else(invalid)?;
-            if skin_hash(&record.skin_key) != record.skin_hash_u32
-                || owners.insert(record.skin_key.as_str(), owner).is_some()
+            if !hash_matches(
+                &record.skin_key,
+                record.skin_hash_u32,
+                &record.skin_hash_hex,
+            ) || owners.insert(record.skin_key.as_str(), owner).is_some()
             {
                 return Err(invalid());
             }
@@ -145,7 +158,11 @@ impl SkinIndex {
         let mut attached = BTreeSet::new();
         let mut index = BTreeMap::new();
         for hero in &catalog.heroes {
-            if skin_hash(&hero.default_skin) != hero.default_skin_hash_u32 {
+            if !hash_matches(
+                &hero.default_skin,
+                hero.default_skin_hash_u32,
+                &hero.default_skin_hash_hex,
+            ) {
                 return Err(invalid());
             }
             if owners
@@ -157,7 +174,7 @@ impl SkinIndex {
             let mut allowed = BTreeSet::new();
             for skin in &hero.skins {
                 if owners.get(skin.name.as_str()).copied() != Some(hero.hero_id.as_str())
-                    || skin_hash(&skin.name) != skin.skin_hash_u32
+                    || !hash_matches(&skin.name, skin.skin_hash_u32, &skin.skin_hash_hex)
                 {
                     return Err(invalid());
                 }
@@ -196,7 +213,7 @@ impl SkinIndex {
         if catalog
             .cff0_skin_manifest
             .iter()
-            .any(|s| skin_hash(&s.name) != s.skin_hash_u32)
+            .any(|s| !hash_matches(&s.name, s.skin_hash_u32, &s.skin_hash_hex))
         {
             return Err(invalid());
         }
@@ -230,6 +247,7 @@ mod tests {
         Skin {
             name: name.into(),
             skin_hash_u32: skin_hash(name),
+            skin_hash_hex: format!("{:#010x}", skin_hash(name)),
             ..Default::default()
         }
     }
@@ -240,6 +258,7 @@ mod tests {
                 hero_id: "Hero009".into(),
                 default_skin: names[0].into(),
                 default_skin_hash_u32: skin_hash(names[0]),
+                default_skin_hash_hex: format!("{:#010x}", skin_hash(names[0])),
                 skins: names.map(skin).into(),
                 ..Default::default()
             }],
@@ -249,6 +268,7 @@ mod tests {
                     owner: "*Hero009*".into(),
                     skin_key: s.into(),
                     skin_hash_u32: skin_hash(s),
+                    skin_hash_hex: format!("{:#010x}", skin_hash(s)),
                     ..Default::default()
                 })
                 .collect(),
