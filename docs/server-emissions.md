@@ -22,7 +22,7 @@ The host paths are in [room dispatch](../crates/game/src/lib.rs), [transport](..
 | `03F8` | 37,568 | A | ActionMoveTo · Accepted Solo 03F5 destination, visible registered ARAL hero route from 03F4/03F5, and [visible native lane-minion waypoints](native-motion.md#lane-minion-destinations) |
 | `03F9` | 2,548 | R | [ActionMoveToServerAuthoritative](native-motion.md) |
 | `03FA` | 1,978 | R | [ActionMoveToAndFace](native-motion.md) |
-| `03FB` | 1,829 | R | [ActionStopActor](native-motion.md) |
+| `03FB` | 1,829 | A | [ActionStopActor](native-motion.md#aral-chakram-movement-interruption) for the registered teammate view of an ARAL Idris B release that interrupted walking |
 | `0402` | 25 | R | [ActionAutoActorBounce](aral-orbit.md) |
 | `0403` | 525 | R | ActionAutoMoveTo |
 | `0406` | 25 | R | [ActionAutoOrbit](aral-orbit.md) |

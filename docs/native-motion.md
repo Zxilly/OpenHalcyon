@@ -29,3 +29,35 @@ ARAL has 29,434 lane-minion `042E` position corrections. Among 20,061 orders wit
 Solo has 4,102 lane orders for templates 335–338, respectively 1,259, 1,870, 786 and 187. All 130 minions had an order within 250 ms of first declaration, including 129 at the same timestamp. No first order equaled the spawn position. This replay had 327 distinct destinations, 1,180 repeats and zero `042E` records.
 
 The host records the waypoint actually used by a moving lane minion each simulation tick. Each native scene receives that waypoint using its own registered minion slot. A pursuit requires that the pursued actor is also registered and visible to the recipient. Hidden or newly registered actors and recycled slots have independent state. For continuous visibility, the host suppresses unchanged destinations and limits changes per minion to five per second. This cadence is a host policy. Authorized observer streams resolve slots independently. [Simulation movement](../crates/sim/src/lib.rs) · [Per-recipient projection](../crates/game/src/tower_aggro.rs)
+
+## ARAL Chakram movement interruption
+
+Of 38 Idris B releases in two played ARAL records, 24 were immediately
+preceded by `03FB` for the same actor at the same timestamp. All 24 were
+viewed from a teammate's connection. The other ten teammate-view releases
+and all four caster-view releases had no preceding stop. All 24 carried
+flag zero and height bits `0x3D192E1F`. Their X and Z words matched the
+first following same-actor `042E` correction. Each had a same-actor
+`03F8` movement order 0.2–0.8 seconds earlier. For the 14 releases
+without a stop, the previous correction and the release correction had
+identical X/Z. Lorelai's six A and five B releases had no such stops.
+
+The server emits `03FB`, `0416` and `042E` in that order to registered
+teammates with sight of Idris when an authenticated ARAL Chakram both
+interrupts actual walking and successfully releases. The host checks
+for a real movement step on the latest completed simulation tick and
+uses the actor's position at release. This authoring is limited to the
+recorded stop profile's horizontal extent, X −58.21 to 23.38 and Z −1.83
+to 9.47. The fixed height comes from that captured action, and the
+simulation models no vertical variation for this profile. Stationary
+releases, interrupted casts, replaced issuing connections, and other
+views or abilities do not produce the new stop.
+
+In all 1,978 live `03FA` actions the next same-actor correction had the
+same X/Z at the same capture timestamp. A matching entity-targeted release
+followed within 0.5 seconds in 1,832 cases. This establishes the
+move-and-face position and reference without identifying which hosted
+attack transitions should emit it. None of the 525 `0403` actions matched
+the next correction's X/Z when treated as the `03FB` position layout.
+The independent reader converts five words and a byte. The host retains
+this action as read-only pending operand and displacement semantics.

@@ -226,6 +226,7 @@ fn sanitize(m: &mut Message) -> bool {
                 return false;
             }
         }
+        0x3fb if super::native_abilities::recordable_stop(m) => {}
         0x452 | 0x48f if m.body.is_empty() => {}
         0x48d if m.body.len() == 1612 => {}
         0x3f1 if matches!(m.body.as_slice(), [0, 0, 0, 1 | 2, 0 | 2, 0]) => {}

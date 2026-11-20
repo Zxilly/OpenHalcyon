@@ -5,6 +5,9 @@ use halcyon_sim::{
 
 use super::{Batch, Message, Room, messages::wire_id, transport::Delivery};
 
+mod chakram_motion;
+pub(super) use chakram_motion::recordable_stop;
+
 const IDRIS: u16 = 273;
 const SELECTOR: u8 = 3;
 const LORELAI: u16 = 409;
@@ -12,6 +15,7 @@ const LORELAI: u16 = 409;
 #[derive(Default)]
 pub(super) struct NativeAbilities {
     learned_at: Option<u64>,
+    walked_at: Option<u64>,
     cast: Option<PendingCast>,
 }
 
@@ -20,6 +24,7 @@ struct PendingCast {
     target: CastTarget,
     reply: Message,
     generation: u64,
+    interrupted_walk: Option<Position>,
 }
 
 pub(super) fn receive(room: &mut Room, seat: usize, channel: usize, m: Message) -> Batch {
@@ -39,6 +44,8 @@ pub(super) fn receive(room: &mut Room, seat: usize, channel: usize, m: Message) 
     let generation = peer.generation;
     let id = actor.id;
     let hero = actor.type_id;
+    let position = actor.position;
+    let aral = room.legacy_aral();
     let state = &mut room.seats[seat].native_abilities;
     match m.opcode {
         0x0436 if m.body.len() == 6 && m.body[1..] == [0; 5] => {
@@ -52,7 +59,7 @@ pub(super) fn receive(room: &mut Room, seat: usize, channel: usize, m: Message) 
             }
             state.learned_at = Some(room.world.tick);
             let grant = Message::ability_learned(u32::from(wire_id(id)), u32::from(operand));
-            witness(room, id, None, &grant);
+            witness(room, id, None, &grant, None);
             vec![m, grant]
         }
         0x0412 if m.body.len() == 14 && m.body[13] == 0 => {
@@ -79,6 +86,10 @@ pub(super) fn receive(room: &mut Room, seat: usize, channel: usize, m: Message) 
                     generation,
                     slot,
                     target,
+                    interrupted_walk: (aral
+                        && hero == IDRIS
+                        && state.walked_at == Some(room.world.tick))
+                    .then_some(position),
                     reply: Message::ability_point_used(
                         u32::from(wire_id(id)),
                         coordinates,
@@ -115,6 +126,7 @@ pub(super) fn receive(room: &mut Room, seat: usize, channel: usize, m: Message) 
                     slot,
                     target,
                     reply: Message::ability_target_used(u32::from(wire_id(id)), wire_target, 2),
+                    interrupted_walk: None,
                 });
             }
             Vec::new()
@@ -135,9 +147,16 @@ fn cast_selector(hero: u16, slot: AbilitySlot) -> Option<u8> {
 
 // The origin has a generation-bound confirmation on its issuing control socket.
 // Every other seat receives one release on its current world stream.
-fn witness(room: &mut Room, source: u32, target: Option<u32>, message: &Message) {
+fn witness(
+    room: &mut Room,
+    source: u32,
+    target: Option<u32>,
+    message: &Message,
+    chakram_stop: Option<(u8, [Message; 2])>,
+) {
     let mut shared = None;
-    for (seat, actor) in room.seats.iter().zip(&room.world.entities) {
+    let mut walking = None;
+    for (index, (seat, actor)) in room.seats.iter().zip(&room.world.entities).enumerate() {
         let visible = &room.visible[actor.team as usize];
         if actor.id != source
             && (seat.world_actor_written || seat.peers[1].is_some())
@@ -145,8 +164,21 @@ fn witness(room: &mut Room, source: u32, target: Option<u32>, message: &Message)
             && target.is_none_or(|id| visible.contains(&id))
             && let Some(peer) = seat.gameplay_peer()
         {
-            let batch = shared
-                .get_or_insert_with(|| super::transport::TeamBatch::new(vec![message.clone()]));
+            let batch = if let Some((team, [stop, correction])) = &chakram_stop
+                && *team == actor.team
+                && room.scene_views[index].knows(source)
+            {
+                walking.get_or_insert_with(|| {
+                    super::transport::TeamBatch::new(vec![
+                        stop.clone(),
+                        message.clone(),
+                        correction.clone(),
+                    ])
+                })
+            } else {
+                shared
+                    .get_or_insert_with(|| super::transport::TeamBatch::new(vec![message.clone()]))
+            };
             peer.send(Delivery::Team(batch.clone()));
         }
     }
@@ -159,6 +191,14 @@ pub(super) fn publish(room: &mut Room, events: &[Event]) {
     }
     let aral = room.legacy_aral();
     for (event_index, event) in events.iter().enumerate() {
+        if aral
+            && let Event::Move { id, .. } = *event
+            && let Some(index) = id.checked_sub(1).map(|v| v as usize)
+            && let Some(seat) = room.seats.get_mut(index)
+            && room.world.entities[index].type_id == IDRIS
+        {
+            seat.native_abilities.walked_at = Some(room.world.tick);
+        }
         let (source, slot) = match *event {
             Event::Cast { source, slot, .. } | Event::Learned { source, slot } => (source, slot),
             _ => continue,
@@ -183,6 +223,7 @@ pub(super) fn publish(room: &mut Room, events: &[Event]) {
                     source,
                     None,
                     &Message::ability_learned(actor_wire, operand.into()),
+                    None,
                 );
             }
             continue;
@@ -228,6 +269,8 @@ pub(super) fn publish(room: &mut Room, events: &[Event]) {
             None
         };
         let team = actor.team;
+        let position = actor.position;
+        let mut stop = None;
         if let Some(seat) = room.seats.get_mut(index)
             && let Some(pending) = seat.native_abilities.cast.take()
             && pending.slot == slot
@@ -237,6 +280,9 @@ pub(super) fn publish(room: &mut Room, events: &[Event]) {
                 .as_ref()
                 .filter(|p| p.generation == pending.generation)
         {
+            if chakram.is_some() && pending.interrupted_walk == Some(position) {
+                stop = chakram_motion::stop(actor_wire, position).map(|messages| (team, messages));
+            }
             message = pending.reply;
             let mut batch = vec![message.clone()];
             if aral
@@ -268,7 +314,7 @@ pub(super) fn publish(room: &mut Room, events: &[Event]) {
             batch.extend(chakram.iter().cloned());
             peer.send(Delivery::Private(batch));
         }
-        witness(room, source, target_id, &message);
+        witness(room, source, target_id, &message, stop);
         if let Some(effect) = chakram {
             let mut shared = None;
             for (recipient, seat) in room.seats.iter().enumerate() {
@@ -374,9 +420,22 @@ mod tests {
         room.tick();
         assert!(drain(&mut recipients[0]).is_empty());
 
+        room.world
+            .command(1, Command::MoveTo(Position { x: 9., y: 0. }))
+            .unwrap();
+        room.tick();
         assert_eq!(
             room.receive(0, 0, cast.clone()).unwrap().as_slice(),
             std::slice::from_ref(&cast)
+        );
+        assert!(
+            room.seats[0]
+                .native_abilities
+                .cast
+                .as_ref()
+                .unwrap()
+                .interrupted_walk
+                .is_some()
         );
         room.world.command(1, Command::Stop).unwrap();
         for _ in 0..12 {
@@ -384,6 +443,13 @@ mod tests {
         }
         assert!(drain(&mut recipients[0]).is_empty());
         assert!(drain(&mut recipients[1]).is_empty());
+        assert!(drain(&mut recipients[2]).is_empty());
+        room.world
+            .command(1, Command::MoveTo(Position { x: 9., y: 0. }))
+            .unwrap();
+        room.tick();
+        let stopped = room.world.entities[0].position;
+        assert!(stopped.x > 8.);
         assert_eq!(
             room.receive(0, 0, cast.clone()).unwrap().as_slice(),
             std::slice::from_ref(&cast)
@@ -414,7 +480,13 @@ mod tests {
         assert!(buff.prefix.instance > 1505);
         assert_eq!(buff.suffix, [0; 6]);
         assert_eq!(drain(&mut recipients[1]), issuer[..1]);
-        assert_eq!(drain(&mut recipients[2]), issuer);
+        let teammate = drain(&mut recipients[2]);
+        let [stop, correction] = chakram_motion::stop(1500, stopped).unwrap();
+        assert!(recordable_stop(&stop));
+        assert_eq!(
+            teammate,
+            [stop, issuer[0].clone(), correction, issuer[1].clone()]
+        );
         assert!(room.receive(0, 0, cast).unwrap().is_empty());
         for _ in 0..12 {
             room.tick();
@@ -573,6 +645,7 @@ mod tests {
         room.world.entities[0].type_id = LORELAI;
         let target = CastTarget::Entity(2);
         room.seats[0].native_abilities.cast = Some(PendingCast {
+            interrupted_walk: None,
             slot: AbilitySlot::C,
             target,
             reply: Message::ability_target_used(1500, 1501, 2),
@@ -734,12 +807,11 @@ mod tests {
     fn drain(receiver: &mut mpsc::Receiver<Delivery>) -> Vec<Message> {
         let mut replies = vec![];
         while let Ok(batch) = receiver.try_recv() {
-            replies.extend(
-                batch
-                    .into_records()
-                    .into_iter()
-                    .filter(|m| matches!(m.opcode, 0x0416 | 0x043e)),
-            );
+            let records = batch.into_records();
+            let stop_batch = records.iter().any(|m| m.opcode == 0x03fb);
+            replies.extend(records.into_iter().filter(|m| {
+                matches!(m.opcode, 0x03fb | 0x0416 | 0x043e) || (stop_batch && m.opcode == 0x042e)
+            }));
         }
         replies
     }
