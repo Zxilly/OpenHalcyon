@@ -146,6 +146,14 @@ fn sanitize(m: &mut Message) -> bool {
             if matches!(m.body.as_slice(), [0, 0, 5, 220..=229, 0, 0, 0, operand]
             if halcyon_sim::known_native_learn_operand(*operand)) => {}
         0x40d if super::npc_projectile::recordable(m) => {}
+        0x43e
+            if matches!(m.fields(), Ok(halcyon_protocol::Fields::BuffApplication(effect))
+                if (1500..=1505).contains(&effect.prefix.source)
+                    && (1500..=1505).contains(&effect.prefix.target)
+                    && effect.prefix.source != effect.prefix.target
+                    && effect.prefix.instance > 1505
+                    && effect.prefix.duration_bits == 0x4400
+                    && effect.prefix.definition == 954 && effect.suffix == [0; 6]) => {}
         0x415 if super::npc_attack::actors(m).is_some() => {}
         0x415
             if matches!(
@@ -321,6 +329,19 @@ mod tests {
             Message::ability_learned(1501, 4),
             Message::ability_point_used(1501, [-40.5, -0.0, 1.], 3),
             Message::new(0x0415, [0, 0, 5, 220, 0, 0, 5, 221, 2]),
+            halcyon_protocol::BuffApplication {
+                prefix: halcyon_protocol::BuffPrefix {
+                    target: 1502,
+                    source: 1500,
+                    duration_bits: 0x4400,
+                    instance: 1800,
+                    definition: 954,
+                },
+                extras: None,
+                suffix: &[0; 6],
+            }
+            .to_message()
+            .unwrap(),
             Message::new(0x0481, [0, 0, 5, 220, 255, 0]),
             Message::new(0x0481, [0, 0, 5, 225, 1, 1]),
             Message::new(0x0488, [0, 0, 5, 220, 254]),

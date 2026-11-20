@@ -342,7 +342,7 @@ impl World {
         };
         match s {
             Skill::FishFood | Skill::Splashdown | Skill::Waterwall => {
-                self.cast_water(i, c.slot, c.target, r);
+                self.cast_water(i, c.slot, c.target, r, events);
             }
             Skill::Chakram => {
                 self.chakrams.push(chakram::Chakram::new(

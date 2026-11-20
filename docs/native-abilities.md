@@ -126,7 +126,24 @@ remain pending evidence for those fields and recipients.
 Five observed Lorelai B releases each preceded a template 411 at the cast X/Z
 by 0.9–1.1 seconds. Six template 411 actors appeared in total, including one
 without a matching B request. All six died 8.38–8.47 seconds after birth.
-The single observed C release coincided with definition 954 on its allied
-target. Across two matches, all 38 witnessed Idris B releases coincided with
-definition 820 on Idris, which also appeared 25 times outside those releases.
-These observations do not establish a unique B or C buff lifecycle to emit.
+The single observed C release targeted another living ally. In the caster's
+stream the targeted `0x0415` preceded `0x043E` definition 954 in the same
+timestamp group. The application repeated the release's source and target,
+carried a distinct instance ID, duration bits `0x4400` (four seconds), and six
+zero padding bytes. The next record increased target stat 4 by 500.
+No target impact or death occurred during the following 4.1 seconds.
+
+For ARAL the host emits this application on the authenticated caster's
+issuing connection after the successful release, using a fresh world
+instance ID. The simulation reports it when a base four-second veil takes
+effect on another ally with no remaining barrier. The archive supplies no
+comparison for refresh, empowered veil, early shield depletion, self-cast or
+the target's own view. No explicit duration update, cancel or timeout in the
+seven matches referenced any instance of definition 954.
+
+Across all nine TCP captures the lossless codecs reproduced 44,346 short and
+17,018 extended applications, 385 duration updates, 1,398 explicit cancels
+and 18 timeouts. Matching by target and instance also yielded zero mutations
+for definitions 820 and 949 through 953. Across two matches, all 38 witnessed
+Idris B releases coincided with definition 820 on Idris. It also appeared
+25 times outside those releases, leaving its general trigger unresolved.

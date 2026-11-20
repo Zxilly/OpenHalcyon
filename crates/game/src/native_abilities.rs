@@ -157,6 +157,7 @@ pub(super) fn publish(room: &mut Room, events: &[Event]) {
     if !(room.solo_scene() || room.legacy_aral()) {
         return;
     }
+    let aral = room.legacy_aral();
     for event in events {
         let (source, slot) = match *event {
             Event::Cast { source, slot, .. } | Event::Learned { source, slot } => (source, slot),
@@ -211,7 +212,34 @@ pub(super) fn publish(room: &mut Room, events: &[Event]) {
                 .filter(|p| p.generation == pending.generation)
         {
             message = pending.reply;
-            peer.send(Delivery::Private(vec![message.clone()]));
+            let mut batch = vec![message.clone()];
+            if aral
+                && hero == LORELAI
+                && slot == AbilitySlot::C
+                && let Some(target) = target_id
+                && let Some(instance) = events.iter().find_map(|event| match *event {
+                    Event::WaterwallApplied {
+                        source: caster,
+                        target: ally,
+                        id,
+                    } if caster == source && ally == target => id.checked_add(1499),
+                    _ => None,
+                })
+            {
+                let apply = halcyon_protocol::BuffApplication {
+                    prefix: halcyon_protocol::BuffPrefix {
+                        target: u32::from(wire_id(target)),
+                        source: actor_wire,
+                        duration_bits: 0x4400,
+                        instance,
+                        definition: 954,
+                    },
+                    extras: None,
+                    suffix: &[0; 6],
+                };
+                batch.push(apply.to_message().expect("fixed Waterwall format"));
+            }
+            peer.send(Delivery::Private(batch));
         }
         witness(room, source, target_id, &message);
     }
@@ -392,6 +420,12 @@ mod tests {
                 body[4] = 2;
                 Message::new(0x0411, body)
             };
+            if selector == 2 {
+                // The native report witnessed a base veil away from the earlier pools.
+                let dry = Position { x: 9., y: 1. };
+                room.world.entities[0].position = dry;
+                room.world.entities[(ally - 1) as usize].position = dry;
+            }
             let response = room.receive(0, 0, packet.clone()).unwrap();
             if selector < 2 {
                 assert_eq!(response, [packet]);
@@ -415,7 +449,23 @@ mod tests {
                     break;
                 }
             }
-            assert!(matches!(rx.try_recv(), Ok(Delivery::Private(batch)) if batch == [expected]));
+            let batch = rx.try_recv().unwrap().into_records();
+            assert_eq!(batch[0], expected);
+            if selector == 2 {
+                assert_eq!(batch.len(), 2);
+                let Ok(halcyon_protocol::Fields::BuffApplication(effect)) = batch[1].fields()
+                else {
+                    panic!("expected the targeted base Waterwall after its release");
+                };
+                assert_eq!(effect.prefix.source, 1500);
+                assert_eq!(effect.prefix.target, u32::from(wire_id(ally)));
+                assert_eq!(effect.prefix.definition, 954);
+                assert_eq!(effect.prefix.duration(), 4.);
+                assert!(effect.prefix.instance > 1505);
+                assert_eq!(effect.suffix, [0; 6]);
+            } else {
+                assert_eq!(batch.len(), 1);
+            }
         }
     }
 
@@ -466,7 +516,17 @@ mod tests {
             slot: AbilitySlot::C,
             target,
         };
-        publish(&mut room, std::slice::from_ref(&cast));
+        publish(
+            &mut room,
+            &[
+                cast.clone(),
+                Event::WaterwallApplied {
+                    source: 1,
+                    target: 2,
+                    id: 90,
+                },
+            ],
+        );
         assert!(streams[0].try_recv().is_err());
         assert_eq!(
             streams[1].try_recv().unwrap().into_records(),

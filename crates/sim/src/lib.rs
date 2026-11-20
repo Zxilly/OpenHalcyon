@@ -81,6 +81,11 @@ pub enum Command {
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Event {
+    WaterwallApplied {
+        source: u32,
+        target: u32,
+        id: u32,
+    },
     Learned {
         source: u32,
         slot: AbilitySlot,

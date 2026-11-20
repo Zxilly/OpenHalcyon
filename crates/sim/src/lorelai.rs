@@ -65,6 +65,7 @@ impl World {
         slot: AbilitySlot,
         target: CastTarget,
         rank: usize,
+        events: &mut Vec<Event>,
     ) {
         let e = &self.entities[caster];
         let owner = e.id;
@@ -111,6 +112,15 @@ impl World {
                 // Concurrent veils refresh duration and preserve the larger remaining barrier.
                 if ally.status.barrier_until <= self.tick {
                     ally.status.barrier = 0.;
+                }
+                if !empowered && id != owner && ally.status.barrier <= 0. {
+                    let instance = self.next_id;
+                    self.next_id += 1;
+                    events.push(Event::WaterwallApplied {
+                        source: owner,
+                        target: id,
+                        id: instance,
+                    });
                 }
                 ally.status.barrier = ally.status.barrier.max(strength);
                 let duration = if empowered { 6 } else { 4 } * TICK_HZ;
@@ -276,6 +286,55 @@ mod tests {
         assert_eq!(w.water[0].start, w.tick + 14);
         assert!(matches!(w.water[0].pool,Pool::Fish {stun,..} if stun>10));
     }
+    #[test]
+    fn only_a_fresh_normal_allied_wall_acquires_a_buff_instance_after_release() {
+        for (target, existing, empowered, expected) in [
+            (3, false, false, true),
+            (1, false, false, false),
+            (3, true, false, false),
+            (3, false, true, false),
+        ] {
+            let mut w = setup();
+            if existing {
+                w.entities[2].status.barrier = 35.;
+                w.entities[2].status.barrier_until = 80;
+            }
+            if empowered {
+                let p = w.entities[0].position;
+                cast(&mut w, AbilitySlot::B, CastTarget::Point(p));
+                for _ in 0..6 {
+                    w.step();
+                }
+            }
+            let before = w.next_id;
+            w.command(
+                1,
+                Command::Cast {
+                    slot: AbilitySlot::C,
+                    target: CastTarget::Entity(target),
+                },
+            )
+            .unwrap();
+            let events = w.step();
+            let release = events
+                .iter()
+                .position(|e| {
+                    matches!(
+                        e,
+                        Event::Cast {
+                            slot: AbilitySlot::C,
+                            ..
+                        }
+                    )
+                })
+                .unwrap();
+            let applied=events.iter().position(|e|matches!(e,Event::WaterwallApplied{source:1,target:t,id} if *t==target && *id==before));
+            assert_eq!(applied.is_some(), expected);
+            assert!(applied.is_none_or(|i| i > release));
+            assert_eq!(w.next_id, before + u32::from(expected));
+        }
+    }
+
     #[test]
     fn waterwall_cleanses_absorbs_then_drops_at_the_recipients_new_position() {
         let mut w = setup();
