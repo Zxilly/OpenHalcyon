@@ -384,6 +384,25 @@ impl Room {
             true
         });
     }
+    pub(super) fn publish_item_observers(
+        &mut self,
+        id: u32,
+        batch: &Batch,
+        eligible: impl Fn(&mut tower_aggro::View) -> bool,
+    ) {
+        self.observers.retain(|_, observer| {
+            if let Some(tx) = &observer.live
+                && observer.scene.is_some()
+                && observer.view.knows(id)
+                && eligible(&mut observer.view)
+                && tx.try_send(batch.clone()).is_err()
+            {
+                observer.stop.send_replace(true);
+                return false;
+            }
+            true
+        });
+    }
     pub(super) fn publish_observer_actor(&mut self, actor: u32, batch: &Batch) {
         self.publish_observer_actors(&[actor], batch);
     }

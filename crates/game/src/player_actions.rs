@@ -97,6 +97,9 @@ impl Rooms {
         }
         use halcyon_sim::{Command, Position};
         let command = match r.action {
+            PlayerAction::ActivateReflexBlock { instance } => {
+                Command::ActivateReflexBlock { instance }
+            }
             PlayerAction::ConsumeInfusion { instance } => Command::ConsumeInfusion { instance },
             PlayerAction::DeployScoutTrap { instance } => Command::DeployScoutTrap { instance },
             PlayerAction::DeployVisionTotem { instance, x, z } => Command::DeployVisionTotem {

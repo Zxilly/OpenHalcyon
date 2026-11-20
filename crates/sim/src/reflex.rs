@@ -157,10 +157,10 @@ mod tests {
         let activate = Command::ActivateReflexBlock {
             instance: bought.instance,
         };
-        assert!(world.command(2, activate.clone()).is_err());
+        assert!(world.command(2, activate).is_err());
         let rank = world.entities[0].level;
-        world.command(1, activate.clone()).unwrap();
-        assert!(world.command(1, activate.clone()).is_err());
+        world.command(1, activate).unwrap();
+        assert!(world.command(1, activate).is_err());
         let hp = world.entities[0].hp;
         let mut events = Vec::new();
         world.hurt(2, 1, 0, 20., DamageSchool::True, &mut events);
@@ -186,7 +186,7 @@ mod tests {
         }
         assert_ne!(starts, 0);
         assert_eq!(ends, [starts]);
-        assert!(world.command(1, activate.clone()).is_err());
+        assert!(world.command(1, activate).is_err());
         world.tick = 90 * TICK_HZ;
         world.command(1, activate).unwrap();
     }

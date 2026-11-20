@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
 pub enum PlayerAction {
+    ActivateReflexBlock { instance: u32 },
     ConsumeInfusion { instance: u32 },
     DeployVisionTotem { instance: u32, x: f32, z: f32 },
     DeployScoutTrap { instance: u32 },
@@ -26,7 +27,8 @@ impl ActionRequest {
                     instance != 0 && x.is_finite() && z.is_finite()
                 }
                 PlayerAction::HitScoutCam { device } => device != 0,
-                PlayerAction::ConsumeInfusion { instance }
+                PlayerAction::ActivateReflexBlock { instance }
+                | PlayerAction::ConsumeInfusion { instance }
                 | PlayerAction::DeployScoutTrap { instance }
                 | PlayerAction::Sell { instance } => instance != 0,
             }

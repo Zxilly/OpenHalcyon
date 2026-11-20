@@ -39,7 +39,23 @@ fn action(world: &World, event: &Event) -> Option<(u32, Batch)> {
                 vec![request.to_message().ok()?, activation.to_message().ok()?],
             ))
         }
-        Event::FlaskActivated { actor, instance } => {
+        Event::ReflexExpired { actor, effect } => {
+            let m = halcyon_protocol::BuffMutation {
+                target: u32::from(wire_id(actor)),
+                instance: effect.checked_add(1499)?,
+                change: halcyon_protocol::BuffChange::Timeout,
+                padding: &[],
+            }
+            .to_message()
+            .ok()?;
+            Some((actor, vec![m]))
+        }
+        Event::ReflexActivated {
+            actor,
+            item: instance,
+            ..
+        }
+        | Event::FlaskActivated { actor, instance } => {
             let active = ItemAction::Activation {
                 actor: u32::from(wire_id(actor)),
                 instance,
@@ -48,18 +64,56 @@ fn action(world: &World, event: &Event) -> Option<(u32, Batch)> {
                 mode: ItemActivationMode::Untargeted,
                 suffix: &[],
             };
-            Some((
-                actor,
-                vec![
-                    ItemAction::Activate {
-                        instance,
-                        suffix: &[],
+            let mut batch = vec![
+                ItemAction::Activate {
+                    instance,
+                    suffix: &[],
+                }
+                .to_message()
+                .ok()?,
+                active.to_message().ok()?,
+            ];
+            if let Event::ReflexActivated {
+                first_effect,
+                barrier,
+                ..
+            } = *event
+            {
+                let actor = u32::from(wire_id(actor));
+                let first = first_effect.checked_add(1499)?;
+                for (offset, definition, duration_bits) in
+                    [(0, 61, 0x4066), (1, 268, 0x3e00), (2, 18, 0x3e00)]
+                {
+                    if offset == 2 {
+                        batch.push(
+                            ResourceChange {
+                                actor,
+                                value: barrier,
+                                index: 4,
+                                set_mode: 0,
+                                flags: [1, 0],
+                            }
+                            .message(),
+                        );
                     }
-                    .to_message()
-                    .expect("native item prefix"),
-                    active.to_message().expect("native activation prefix"),
-                ],
-            ))
+                    batch.push(
+                        halcyon_protocol::BuffApplication {
+                            prefix: halcyon_protocol::BuffPrefix {
+                                target: actor,
+                                source: actor,
+                                duration_bits,
+                                instance: first.checked_add(offset)?,
+                                definition,
+                            },
+                            extras: None,
+                            suffix: &[],
+                        }
+                        .to_message()
+                        .ok()?,
+                    );
+                }
+            }
+            Some((actor, batch))
         }
         Event::ItemSold(sale)
             if matches!(
@@ -157,6 +211,22 @@ pub(super) fn recordable(message: &Message) -> bool {
         _ => false,
     }
 }
+fn witnessed(view: &mut tower_aggro::View, event: &Event) -> bool {
+    match *event {
+        Event::ReflexActivated {
+            actor,
+            first_effect,
+            ..
+        } => {
+            view.reflex_effects[(actor - 1) as usize] = Some(first_effect + 1);
+            true
+        }
+        Event::ReflexExpired { actor, effect } => {
+            view.reflex_effects[(actor - 1) as usize].take() == Some(effect)
+        }
+        _ => true,
+    }
+}
 impl Room {
     pub(super) fn publish_aral_items(&mut self, events: &[Event]) {
         if !self.legacy_aral() {
@@ -169,10 +239,17 @@ impl Room {
             let Some(entity) = self.world.entities.iter().find(|e| e.id == id) else {
                 continue;
             };
+            if matches!(event, Event::ReflexExpired { .. }) && entity.hp <= 0. {
+                continue;
+            }
             for (i, (seat, viewer)) in self.seats.iter().zip(&self.world.entities).enumerate() {
                 let team = viewer.team;
                 if matches!(event, Event::VisionDeployed{device,..} if team!=device.team && !self.world.sees_position(team,device.point))
-                    || viewer.id == id
+                    || (viewer.id == id
+                        && !matches!(
+                            event,
+                            Event::ReflexActivated { .. } | Event::ReflexExpired { .. }
+                        ))
                     || !seat.world_actor_written
                     || !seat.preamble.confirmed()
                     || !self.scene_views[i].knows(id)
@@ -181,11 +258,17 @@ impl Room {
                 {
                     continue;
                 }
-                if let Some(peer) = seat.gameplay_peer() {
-                    peer.send(transport::Delivery::Private(batch.clone()));
+                if let Some(peer) = seat.gameplay_peer()
+                    && witnessed(&mut self.scene_views[i], event)
+                {
+                    // The initiating client already sent its button press.
+                    let start = usize::from(
+                        viewer.id == id && matches!(event, Event::ReflexActivated { .. }),
+                    );
+                    peer.send(transport::Delivery::Private(batch[start..].to_vec()));
                 }
             }
-            self.publish_observer_actor(id, &batch);
+            self.publish_item_observers(id, &batch, |view| witnessed(view, event));
         }
     }
 }
@@ -193,6 +276,36 @@ impl Room {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn reflex_vectors_match_the_item_transaction_fixture() {
+        let (_, batch) = action(
+            &World::new(1, 6),
+            &Event::ReflexActivated {
+                actor: 6,
+                item: 2006,
+                first_effect: 0x27e2 - 1499,
+                barrier: 509.09,
+            },
+        )
+        .unwrap();
+        for (frame, expected) in [
+            (&batch[0], "0448000007d60000"),
+            (
+                &batch[1],
+                "044c000005e1000007d6ffffffff00000000000000000200",
+            ),
+            (
+                &batch[3],
+                "043e000005e1000005e13e00000027e3010c000000000000",
+            ),
+        ] {
+            let mut bytes = frame.opcode.to_be_bytes().to_vec();
+            bytes.extend_from_slice(&frame.body);
+            bytes.resize(bytes.len().next_multiple_of(8), 0);
+            let actual: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+            assert_eq!(actual, expected);
+        }
+    }
     #[test]
     fn authoritative_cam_and_trap_choose_distinct_witness_prefixes() {
         use halcyon_sim::{Command, Position};

@@ -173,6 +173,17 @@ fn sanitize(m: &mut Message) -> bool {
             if super::structure_effects::recordable(m) => {}
         Some(crate::Opcode::EntityProp)
             if matches!(m.fields(), Ok(halcyon_protocol::Fields::BuffApplication(effect))
+            if effect.prefix.source == effect.prefix.target && (1500..1506).contains(&effect.prefix.target)
+                && effect.prefix.instance > 1505 && matches!((effect.prefix.definition,effect.prefix.duration_bits),
+                    (61,0x4066)|(268|18,0x3e00)) && matches!(effect.suffix,[]|[0,0,0,0,0,0])) => {}
+        Some(crate::Opcode::TimeoutBuff)
+            if m.buff_mutation().is_some_and(|e| {
+                (1500..1506).contains(&e.target)
+                    && e.instance > 1505
+                    && e.padding.iter().all(|&v| v == 0)
+            }) => {}
+        Some(crate::Opcode::EntityProp)
+            if matches!(m.fields(), Ok(halcyon_protocol::Fields::BuffApplication(effect))
             if effect.prefix.definition==654 && effect.prefix.duration_bits==0x3c00 && (1500..=1505).contains(&effect.prefix.source)
                 && effect.prefix.target!=effect.prefix.source && (1500..=u32::from(u16::MAX)).contains(&effect.prefix.target) && effect.prefix.instance>1505
                 && effect.suffix==[0;6]) => {}

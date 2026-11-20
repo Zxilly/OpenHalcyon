@@ -1269,6 +1269,14 @@ impl Room {
             Fields::Live(halcyon_protocol::LiveFields::Item(
                 halcyon_protocol::ItemAction::Reorder { actor, slots },
             )) => aral_inventory::reorder(self, i, ch, actor, slots),
+            Fields::Live(halcyon_protocol::LiveFields::Item(
+                halcyon_protocol::ItemAction::Activate { instance, suffix },
+            )) if game && legacy && suffix.iter().all(|&byte| byte == 0) => {
+                let actor = self.world.entities[i].id;
+                let _ = self
+                    .world
+                    .command(actor, Command::ActivateReflexBlock { instance });
+            }
             Fields::Live(halcyon_protocol::LiveFields::TalentSelection(selection)) => {
                 out = aral::talent_response(self, i, ch, selection);
             }

@@ -1084,6 +1084,48 @@ mod tests {
                 room.world.command(id, halcyon_sim::Command::Stop).unwrap();
                 room.tick();
             }
+            let buy_block = Message::known(
+                Opcode::ShopRequest,
+                [1500u32.to_be_bytes(), 485u32.to_be_bytes()].concat(),
+            );
+            clients[0]
+                .write_all(&cipher.encode(&buy_block).unwrap())
+                .await
+                .unwrap();
+            let instance = loop {
+                let m = until(&mut clients[0], &cipher, crate::wire_opcode::ItemGrant).await;
+                if m.body[4..8] == 485u32.to_be_bytes() {
+                    break u32::from_be_bytes(m.body[8..12].try_into().unwrap());
+                }
+            };
+            let press = Message::known(Opcode::RequestActivateItem, instance.to_be_bytes());
+            let packet = cipher.encode(&press).unwrap();
+            clients[0]
+                .write_all(&[packet.as_slice(), packet.as_slice()].concat())
+                .await
+                .unwrap();
+            let [owner, ally] = clients.get_disjoint_mut([0, 2]).unwrap();
+            for socket in [owner, ally, &mut observer] {
+                until(socket, &cipher, crate::wire_opcode::ItemActivated).await;
+                let mut key = 0;
+                for opcode in [
+                    Opcode::EntityProp,
+                    Opcode::EntityProp,
+                    Opcode::EntityStat,
+                    Opcode::EntityProp,
+                ] {
+                    let m = next(socket, &cipher).await;
+                    assert!(m.is(opcode));
+                    if let Fields::BuffApplication(effect) = m.fields().unwrap()
+                        && effect.prefix.definition == 268
+                    {
+                        key = effect.prefix.instance;
+                    }
+                }
+                assert!(key > 1505);
+                let end = until(socket, &cipher, crate::wire_opcode::TimeoutBuff).await;
+                assert_eq!(end.buff_mutation().unwrap().instance, key);
+            }
             let buy = Message::known(
                 Opcode::ShopRequest,
                 [1500u32.to_be_bytes(), 473u32.to_be_bytes()].concat(),
