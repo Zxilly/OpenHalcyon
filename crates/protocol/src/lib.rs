@@ -62,7 +62,7 @@ pub use outbound::{OUTBOUND_LAYOUTS, OutboundAction, OutboundLayout, OutboundOpe
 mod skin;
 mod static_actions;
 pub use metadata::{AndroidLayout, READ_SIZES};
-pub use opcode::{Opcode, wire_opcode};
+pub use opcode::{Opcode, UnknownOpcodeName, wire_opcode};
 pub use skin::skin_hash;
 pub use static_actions::{STATIC_ACTIONS, StaticAction, StaticActionLayout, StaticValue};
 pub const MAX_PAYLOAD: usize = 0x2800 - 2;

@@ -24,7 +24,6 @@ pub enum Phase {
 
 pub struct Entry {
     pub opcode: Opcode,
-    pub name: &'static str,
     pub direction: Direction,
     pub phase: Phase,
     pub layout: Option<Layout>,

@@ -734,10 +734,10 @@ impl Room {
                 opcode,
                 ..
             } => {
-                tracing::debug!(room=%self.id,?kind,message,?channel,generation,opcode=opcode.as_deref(),"room event")
+                tracing::debug!(room=%self.id,?kind,message,?channel,generation,?opcode,"room event")
             }
             EventDetail::Action { opcode, .. } => {
-                tracing::debug!(room=%self.id,?kind,message,opcode,"room event")
+                tracing::debug!(room=%self.id,?kind,message,?opcode,"room event")
             }
             _ => tracing::debug!(room=%self.id,?kind,message,"room event"),
         }
@@ -1184,7 +1184,7 @@ impl Room {
                     player_id: self.players[i],
                     channel: Channel::for_game(ch != 0),
                     generation,
-                    opcode: Some(format!("0x{:04X}", m.opcode)),
+                    opcode: Some(m.opcode.into()),
                 },
             );
         }
@@ -1335,7 +1335,7 @@ impl Room {
                         "Hero locked",
                         EventDetail::Action {
                             player_id: self.players[i],
-                            opcode: format!("0x{op:04X}"),
+                            opcode: op.into(),
                         },
                     );
                     let roster = self.roster_update(Some(i));

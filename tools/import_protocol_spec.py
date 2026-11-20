@@ -12,8 +12,8 @@ def generate(source, crate):
         raise ValueError("expected Android build 147219")
     with (source / "protocol.csv").open(encoding="utf-8-sig", newline="") as stream:
         rows = sorted(csv.DictReader(stream), key=lambda row: int(row["opcode_hex"], 16))
-    names = {int(value, 16): name for name, value in re.findall(
-        r"^    (\w+) = (0x[0-9a-f]+),$", (crate / "opcode.rs").read_text(), re.M)}
+    names = {int(value, 16): (variant, name) for variant, value, name in re.findall(
+        r'^    (\w+) = (0x[0-9a-f]+) => "([^"]+)",$', (crate / "opcode.rs").read_text(), re.M)}
     directions = {"BIDIR": "Bidirectional", "C->S": "ClientToServer",
                   "S->C": "ServerToClient", "RESERVED": "Reserved"}
     types = {"u32": "U32", "i32": "I32", "f32": "F32", "u8": "U8", "u16": "U16",
@@ -29,8 +29,10 @@ def generate(source, crate):
         if opcode in seen:
             raise ValueError(f"duplicate opcode {key}")
         seen.add(opcode)
-        label = json.dumps(row["name"])
-        lines.append(f'    Entry {{ opcode: Opcode::{names[opcode]}, name: {label}, '
+        variant, name = names[opcode]
+        if name != row["name"]:
+            raise ValueError(f"canonical name mismatch for {key}")
+        lines.append(f'    Entry {{ opcode: Opcode::{variant}, '
                      f'direction: Direction::{directions[row["direction"]]}, '
                      f'phase: Phase::{row["phase"].title()},')
         spec = layouts["messages"].get(key)

@@ -18,6 +18,7 @@ tokio-util = { version = "0.7", features = ["codec"] }
 md-5 = "0.10"
 
 [dev-dependencies]
+ciborium = "0.2"
 stats_alloc = "0.1"
 tokio.workspace = true
 syn = { version = "2", features = ["full", "visit"] }

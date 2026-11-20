@@ -123,13 +123,31 @@ pub(super) enum EventDetail {
         player_id: Uuid,
         channel: Channel,
         generation: Option<u64>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        opcode: Option<String>,
+        #[serde(flatten)]
+        opcode: Option<EventOpcode>,
     },
     Action {
         player_id: Uuid,
-        opcode: String,
+        #[serde(flatten)]
+        opcode: EventOpcode,
     },
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct EventOpcode {
+    opcode: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    opcode_name: Option<halcyon_protocol::Opcode>,
+}
+
+impl From<u16> for EventOpcode {
+    fn from(raw: u16) -> Self {
+        Self {
+            opcode: format!("0x{raw:04X}"),
+            opcode_name: halcyon_protocol::Opcode::try_from(raw).ok(),
+        }
+    }
 }
 #[derive(Debug, Clone, Copy, Serialize)]
 #[serde(rename_all = "lowercase")]

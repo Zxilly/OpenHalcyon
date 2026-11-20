@@ -1698,6 +1698,7 @@ dependencies = [
  "binrw",
  "blowfish",
  "bytes",
+ "ciborium",
  "half",
  "md-5",
  "serde",
