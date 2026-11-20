@@ -16,10 +16,18 @@ pub(super) struct Chakram {
     returning: bool,
     hit: Vec<u32>,
     damage: f32,
+    stamina_refund: Option<f32>,
 }
 
 impl Chakram {
-    pub fn new(source: u32, team: u8, position: Position, aim: Position, damage: f32) -> Self {
+    pub fn new(
+        source: u32,
+        team: u8,
+        position: Position,
+        aim: Position,
+        damage: f32,
+        stamina_refund: Option<f32>,
+    ) -> Self {
         Self {
             source,
             team,
@@ -28,6 +36,7 @@ impl Chakram {
             returning: false,
             hit: Vec::new(),
             damage,
+            stamina_refund,
         }
     }
 }
@@ -57,18 +66,35 @@ impl World {
                     || target.team == p.team
                     || !matches!(target.kind, Kind::Hero | Kind::Minion)
                     || p.hit.contains(&target.id)
-                    || combat::line_distance(target.position, p.position, next) > 0.75
+                    || combat::line_distance(target.position, p.position, next)
+                        > 0.75 + target.stats.physiology.map_or(0., |p| p.collision_radius)
                     || !self.layout.clear(p.position, target.position)
                 {
                     continue;
                 }
                 p.hit.push(target.id);
-                let damage = shop::mitigated(
-                    p.damage,
-                    target.stats.armor,
-                    self.entities[owner].item_stats.armor_pierce,
-                );
-                self.hurt(p.source, p.team, i, damage, DamageSchool::Weapon, events);
+                let hero = target.kind == Kind::Hero;
+                let (resist, pierce, school) = if p.stamina_refund.is_some() {
+                    (
+                        target.stats.shield,
+                        self.entities[owner].item_stats.shield_pierce,
+                        DamageSchool::Crystal,
+                    )
+                } else {
+                    (
+                        target.stats.armor,
+                        self.entities[owner].item_stats.armor_pierce,
+                        DamageSchool::Weapon,
+                    )
+                };
+                let damage = shop::mitigated(p.damage, resist, pierce);
+                self.hurt(p.source, p.team, i, damage, school, events);
+                if hero && let Some(refund) = p.stamina_refund {
+                    let available = stamina(&self.entities[owner], self.tick);
+                    let status = &mut self.entities[owner].status;
+                    status.stamina_spent = (100. - available - refund).max(0.);
+                    status.stamina_spent_at = self.tick;
+                }
             }
             p.position = next;
             if next == goal {

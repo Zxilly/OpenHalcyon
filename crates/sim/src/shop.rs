@@ -1,4 +1,5 @@
 use super::*;
+use halcyon_data::items::{ItemActiveParameter, ItemTuning};
 /// Base-shop purchases backed by named stats and observed component semantics.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BasicItem {
@@ -551,20 +552,32 @@ impl BasicItem {
 
 #[derive(Serialize)]
 struct Offer {
+    permitted: bool,
+    boot_move: f32,
+    components: Vec<BasicItem>,
+    refund: Option<u32>,
     standard_5v5: bool,
     combine: u32,
     bonuses: Vec<(u8, f32)>,
 }
 #[derive(Serialize)]
 pub(super) struct Shop {
+    flask: Option<FlaskRule>,
+    sprint: Option<SprintRule>,
     offers: Vec<Offer>,
 }
 impl Default for Shop {
     fn default() -> Self {
         Self {
+            flask: None,
+            sprint: None,
             offers: OFFERS
                 .iter()
                 .map(|d| Offer {
+                    permitted: true,
+                    boot_move: 0.,
+                    components: d.components.to_vec(),
+                    refund: None,
                     standard_5v5: true,
                     combine: d.combine,
                     bonuses: d.bonuses.to_vec(),
@@ -573,9 +586,88 @@ impl Default for Shop {
         }
     }
 }
+#[derive(Clone, Copy, Serialize)]
+struct FlaskRule {
+    duration: u64,
+    cooldown: u64,
+    barrier: f32,
+    heal: f32,
+    energy_fraction: f32,
+}
+impl FlaskRule {
+    fn load(item: &halcyon_data::items::FullItem) -> Option<Self> {
+        let positive = |key| item.passive_value(key).filter(|&v| v > 0.);
+        let energy_fraction = positive(ItemTuning::EnergyPercent.key()).filter(|&v| v <= 1.)?;
+        Some(Self {
+            duration: seconds_to_ticks(positive(ItemTuning::Duration.key())?)?,
+            cooldown: seconds_to_ticks(
+                item.fixed_active_seconds(ItemActiveParameter::Cooldown.key())?,
+            )?,
+            barrier: positive(ItemTuning::Barrier.key())?,
+            heal: positive(ItemTuning::HealAmount.key())?,
+            energy_fraction,
+        })
+    }
+}
+fn seconds_to_ticks(seconds: f32) -> Option<u64> {
+    (seconds > 0. && seconds <= 86400.).then(|| (seconds * TICK_HZ as f32).ceil() as u64)
+}
+#[derive(Serialize, Clone, Copy)]
+struct SprintRule {
+    speed: f32,
+    duration: u64,
+    cooldown: u64,
+}
+impl SprintRule {
+    fn load(item: &halcyon_data::items::FullItem) -> Option<Self> {
+        Some(Self {
+            speed: item
+                .passive_value(ItemTuning::Sprint.key())
+                .filter(|&v| v > 0.)?,
+            duration: seconds_to_ticks(item.passive_value(ItemTuning::SprintDuration.key())?)?,
+            cooldown: seconds_to_ticks(
+                item.fixed_active_seconds(ItemActiveParameter::Cooldown.key())?,
+            )?,
+        })
+    }
+}
 impl Shop {
+    pub(super) fn bot_item(
+        &self,
+        inventory_size: usize,
+        gold: u32,
+        solo: bool,
+    ) -> Option<BasicItem> {
+        let preferred = match inventory_size {
+            1 if self.sprint.is_some() => SprintBoots,
+            2 => LightArmor,
+            _ => WeaponBlade,
+        };
+        [preferred, WeaponBlade, LightArmor, LightShield, Oakheart]
+            .into_iter()
+            .find(|&item| {
+                let offer = &self.offers[item as usize];
+                offer.permitted
+                    && (!solo || offer.standard_5v5)
+                    && offer.combine > 0
+                    && offer.combine <= gold
+            })
+    }
+
+    fn boot_speed(&self, inventory: &[HeldItem]) -> f32 {
+        inventory
+            .iter()
+            .map(|i| self.offers[i.kind as usize].boot_move)
+            .fold(0., f32::max)
+    }
     pub fn load(data: &GameData) -> Result<Self, String> {
-        let mut shop = Self::default();
+        let mut shop = Self {
+            flask: data
+                .item_catalog()
+                .and_then(|c| c.item("Item_HealingFlask"))
+                .and_then(FlaskRule::load),
+            ..Self::default()
+        };
         if let Some(names) = data.standard_5v5_items() {
             shop.set_standard_5v5(names);
         }
@@ -592,6 +684,46 @@ impl Shop {
                 .cost_a
                 .filter(|n| *n > 0)
                 .ok_or_else(|| format!("invalid cost {}", d.name))?;
+            if let Some(catalog) = data.item_catalog() {
+                let Some(full) = catalog.item(d.name) else {
+                    offer.combine = 0;
+                    continue;
+                };
+                if matches!(
+                    d.kind,
+                    SprintBoots | TravelBoots | JourneyBoots | HalcyonChargers | WarTreads
+                ) {
+                    offer.boot_move = full
+                        .passive_value(ItemTuning::Move.key())
+                        .filter(|&v| v > 0.)
+                        .unwrap_or_default();
+                }
+                if d.kind == SprintBoots {
+                    shop.sprint = SprintRule::load(full);
+                }
+                offer.combine = full.cost_a.unwrap_or_default();
+                offer.refund = full.cost_b;
+                let mut recipe = Vec::with_capacity(full.components.len());
+                if full.components.len() > 8 || !(1..=3).contains(&full.tier) {
+                    return Err(format!("invalid recipe shape for {}", d.name));
+                }
+                for name in &full.components {
+                    let Some(component) = OFFERS.iter().find(|c| c.name == name) else {
+                        offer.combine = 0;
+                        break;
+                    };
+                    if catalog
+                        .item(name)
+                        .is_none_or(|row| row.tier >= full.tier || row.tier == 0)
+                    {
+                        return Err(format!("invalid recipe tier for {}", d.name));
+                    }
+                    recipe.push(component.kind);
+                }
+                if offer.combine != 0 {
+                    offer.components = recipe;
+                }
+            }
             for (stat, value) in &mut offer.bonuses {
                 if let Some(full) = data.supplemental_item_bonus(d.name, *stat) {
                     *value = full;
@@ -616,6 +748,18 @@ impl Shop {
                 }
             }
         }
+        // Validate the merged operator and fallback graph before recursive pricing.
+        fn valid_recipe(shop: &Shop, item: BasicItem, remaining: u8) -> bool {
+            let parts = &shop.offers[item as usize].components;
+            parts.is_empty()
+                || (remaining > 0
+                    && parts
+                        .iter()
+                        .all(|&part| valid_recipe(shop, part, remaining - 1)))
+        }
+        if OFFERS.iter().any(|d| !valid_recipe(&shop, d.kind, 2)) {
+            return Err("item recipes exceed three tiers".into());
+        }
         Ok(shop)
     }
 
@@ -635,23 +779,22 @@ impl Shop {
             loaded
         };
         u64::from(combine)
-            + item
-                .definition()
+            + self.offers[item as usize]
                 .components
                 .iter()
                 .map(|&part| self.cost(part))
                 .sum::<u64>()
     }
 
-    fn consume_branch(kind: BasicItem, held: &[HeldItem], consumed: &mut Vec<HeldItem>) {
+    fn consume_branch(&self, kind: BasicItem, held: &[HeldItem], consumed: &mut Vec<HeldItem>) {
         if let Some(&owned) = held
             .iter()
             .find(|h| h.kind == kind && !consumed.contains(h))
         {
             consumed.push(owned);
         } else {
-            for &part in kind.definition().components {
-                Self::consume_branch(part, held, consumed);
+            for &part in &self.offers[kind as usize].components {
+                self.consume_branch(part, held, consumed);
             }
         }
     }
@@ -686,18 +829,19 @@ impl World {
         if self.winner.is_some() || h.hp <= 0. {
             return Err("shop closed");
         }
-        if h.kind != Kind::Hero || !self.layout.at_base(h, true) {
+        if h.kind != Kind::Hero || !self.at_item_shop(h) {
             return Err("outside base shop");
         }
         let offer = &self.shop.offers[item as usize];
-        if offer.combine == 0
+        if !offer.permitted
+            || offer.combine == 0
             || (matches!(self.layout, Layout::SoloMid { .. }) && !offer.standard_5v5)
         {
             return Err("item unavailable");
         }
         let mut consumed = Vec::new();
-        for &part in item.definition().components {
-            Shop::consume_branch(part, &h.inventory, &mut consumed);
+        for &part in &self.shop.offers[item as usize].components {
+            self.shop.consume_branch(part, &h.inventory, &mut consumed);
         }
         let price =
             self.shop.cost(item) - consumed.iter().map(|h| self.shop.cost(h.kind)).sum::<u64>();
@@ -735,25 +879,10 @@ impl World {
         for &(stat, value) in &self.shop.offers[item as usize].bonuses {
             delta[stat as usize] += value;
         }
-        h.bonus_hp += delta[0];
-        h.max_hp += delta[0];
-        h.hp = (h.hp + delta[0]).clamp(0., h.max_hp);
-        h.max_energy += delta[2];
-        h.energy = (h.energy + delta[2]).clamp(0., h.max_energy);
-        h.item_stats.energy_regen += delta[3];
-        h.stats.weapon += delta[4];
-        h.item_stats.crystal += delta[5];
-        h.stats.armor += delta[7];
-        h.stats.shield += delta[8];
-        h.item_stats.armor_pierce += delta[9];
-        h.item_stats.shield_pierce += delta[11];
-        h.item_stats.move_speed_amp += delta[18];
-        h.item_stats.attack_speed += delta[15];
-        h.item_stats.cooldown += delta[25];
-        h.item_stats.crit_chance += delta[30];
-        h.item_stats.crit_damage += delta[31];
+        apply_item_delta(h, delta);
         h.gold -= price as u32;
         h.inventory.push(granted);
+        h.item_stats.boot_speed = self.shop.boot_speed(&h.inventory);
         Ok(Some(Purchase {
             actor: h.id,
             paid: price as u32,
@@ -763,8 +892,134 @@ impl World {
     }
 }
 
+fn apply_item_delta(h: &mut Entity, delta: [f32; 32]) {
+    h.bonus_hp += delta[0];
+    h.max_hp += delta[0];
+    h.hp = (h.hp + delta[0]).clamp(0., h.max_hp);
+    h.max_energy += delta[2];
+    h.energy = (h.energy + delta[2]).clamp(0., h.max_energy);
+    h.item_stats.energy_regen += delta[3];
+    h.stats.weapon += delta[4];
+    h.item_stats.crystal += delta[5];
+    h.stats.armor += delta[7];
+    h.stats.shield += delta[8];
+    h.item_stats.armor_pierce += delta[9];
+    h.item_stats.shield_pierce += delta[11];
+    h.item_stats.move_speed_amp += delta[18];
+    h.item_stats.attack_speed += delta[15];
+    h.item_stats.cooldown += delta[25];
+    h.item_stats.crit_chance += delta[30];
+    h.item_stats.crit_damage += delta[31];
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ItemSale {
+    pub actor: u32,
+    pub sold: HeldItem,
+    pub refund: u32,
+    pub balance: u32,
+}
+impl World {
+    /// Activate the ARAL starter instance in this actor's own native slots.
+    pub fn activate_healing_flask(
+        &mut self,
+        actor: u32,
+        instance: u32,
+    ) -> Result<(), &'static str> {
+        const FLASK_TEMPLATE: u32 = 457;
+        let rule = self.shop.flask.ok_or("flask definition unavailable")?;
+        let index = self.index(actor).ok_or("unknown actor")?;
+        let h = &mut self.entities[index];
+        if self.winner.is_some()
+            || h.kind != Kind::Hero
+            || h.hp <= 0.
+            || self.tick < h.item_stats.flask_ready
+            || !h.aral_inventory.as_ref().is_some_and(|held| {
+                held.slots()
+                    .iter()
+                    .flatten()
+                    .any(|i| i.template == FLASK_TEMPLATE && i.instance == instance)
+            })
+        {
+            return Err("cannot activate flask");
+        }
+        h.item_stats.flask_ready = self.tick.saturating_add(rule.cooldown);
+        h.status.flask_until = self.tick.saturating_add(rule.duration);
+        h.status.flask_barrier = rule.barrier;
+        h.status.flask_heal_per_tick = rule.heal / rule.duration as f32;
+        h.status.flask_energy_per_tick = h.max_energy * rule.energy_fraction / rule.duration as f32;
+        Ok(())
+    }
+    pub fn activate_sprint_boots(&mut self, actor: u32, instance: u32) -> Result<(), &'static str> {
+        let rule = self.shop.sprint.ok_or("sprint definition unavailable")?;
+        let index = self.index(actor).ok_or("unknown actor")?;
+        let h = &mut self.entities[index];
+        if self.winner.is_some()
+            || h.kind != Kind::Hero
+            || h.hp <= 0.
+            || self.tick < h.item_stats.sprint_ready
+            || !h
+                .inventory
+                .iter()
+                .any(|i| i.instance == instance && i.kind == SprintBoots)
+        {
+            return Err("cannot activate sprint");
+        }
+        h.item_stats.sprint_speed = rule.speed;
+        h.item_stats.sprint_until = self.tick.saturating_add(rule.duration);
+        h.item_stats.sprint_ready = self.tick.saturating_add(rule.cooldown);
+        Ok(())
+    }
+
+    pub fn use_item_store(&mut self, entries: &[String]) {
+        for (offer, definition) in self.shop.offers.iter_mut().zip(&OFFERS) {
+            offer.permitted = entries.iter().any(|entry| entry == definition.name);
+        }
+    }
+
+    /// Sell a held instance at base. Captures establish the completed sale.
+    pub fn sell_item(&mut self, actor: u32, instance: u32) -> Result<ItemSale, &'static str> {
+        let index = self.index(actor).ok_or("unknown actor")?;
+        let h = &self.entities[index];
+        if self.winner.is_some() || h.hp <= 0. || h.kind != Kind::Hero || !self.at_item_shop(h) {
+            return Err("outside base shop");
+        }
+        let offset = h
+            .inventory
+            .iter()
+            .position(|i| i.instance == instance)
+            .ok_or("item not held")?;
+        let sold = h.inventory[offset];
+        let offer = &self.shop.offers[sold.kind as usize];
+        let refund = offer.refund.ok_or("sale price unavailable")?;
+        let balance = h.gold.checked_add(refund).ok_or("gold limit")?;
+        let mut delta = [0.; 32];
+        for &(stat, value) in &offer.bonuses {
+            delta[stat as usize] -= value;
+        }
+        let h = &mut self.entities[index];
+        if let Some(slots) = &mut h.aral_inventory {
+            slots.remove_held(sold)?;
+        }
+        h.inventory.remove(offset);
+        h.item_stats.boot_speed = self.shop.boot_speed(&h.inventory);
+        h.gold = balance;
+        apply_item_delta(h, delta);
+        Ok(ItemSale {
+            actor,
+            sold,
+            refund,
+            balance,
+        })
+    }
+}
 #[derive(Clone, Copy, Default, Debug, Serialize)]
 pub struct ItemStats {
+    flask_ready: u64,
+    pub(super) boot_speed: f32,
+    pub(super) sprint_speed: f32,
+    pub(super) sprint_until: u64,
+    pub(super) sprint_ready: u64,
     pub crit_chance: f32,
     pub crit_damage: f32,
     pub armor_pierce: f32,
@@ -803,12 +1058,156 @@ pub(super) fn mitigated(raw: f32, defense: f32, pierce: f32) -> f32 {
 mod tests {
     use super::*;
     #[test]
+    fn flask_uses_current_actor_slot_absorbs_actual_damage_and_recovers_for_100_ticks() {
+        let mut w = World::new(9, 6);
+        w.use_six_human_roster().unwrap();
+        w.use_aral_lane().unwrap();
+        w.shop.flask = Some(FlaskRule {
+            duration: 100,
+            cooldown: 2400,
+            barrier: 115.,
+            heal: 200.,
+            energy_fraction: 0.3,
+        });
+        w.entities.truncate(1);
+        let e = &mut w.entities[0];
+        e.position = Position { x: 60., y: 20. };
+        e.max_hp = 1000.;
+        e.hp = 50.;
+        e.energy = 0.;
+        assert!(
+            w.command(1, Command::ActivateHealingFlask { instance: 2001 })
+                .is_err()
+        );
+        w.command(1, Command::ActivateHealingFlask { instance: 2000 })
+            .unwrap();
+        assert!(
+            w.command(1, Command::ActivateHealingFlask { instance: 2000 })
+                .is_err()
+        );
+        let mut events = Vec::new();
+        w.hurt(2, 1, 0, 125., DamageSchool::Weapon, &mut events);
+        assert_eq!(w.entities[0].hp, 40.);
+        let restored: f32 = (0..101)
+            .flat_map(|_| w.step())
+            .filter_map(|event| match event {
+                Event::Heal {
+                    source: 1,
+                    target: 1,
+                    amount,
+                    ..
+                } => Some(amount),
+                _ => None,
+            })
+            .sum();
+        assert_eq!(restored, 200.);
+        assert!(w.entities[0].energy >= 0.3 * w.entities[0].max_energy);
+        assert!(w.entities[0].item_stats.flask_ready > w.tick);
+    }
+
+    #[test]
+    fn sprint_checks_held_instance_and_uses_server_cooldown_across_resale() {
+        let mut w = World::new(5, 1);
+        w.entities[0].gold = 2000;
+        w.shop.sprint = Some(SprintRule {
+            speed: 2.,
+            duration: 40,
+            cooldown: 3000,
+        });
+        w.shop.offers[SprintBoots as usize].boot_move = 0.3;
+        w.shop.offers[SprintBoots as usize].refund = Some(150);
+        let first = w.purchase(1, SprintBoots).unwrap().granted;
+        let second = w.purchase(1, SprintBoots).unwrap().granted;
+        assert_eq!(w.entities[0].item_stats.boot_speed, 0.3);
+        assert!(w.activate_sprint_boots(2, first.instance).is_err());
+        w.command(
+            1,
+            Command::ActivateSprintBoots {
+                instance: first.instance,
+            },
+        )
+        .unwrap();
+        assert_eq!(w.entities[0].item_stats.sprint_until, 40);
+        w.command(
+            1,
+            Command::Sell {
+                instance: first.instance,
+            },
+        )
+        .unwrap();
+        assert_eq!(w.entities[0].item_stats.boot_speed, 0.3);
+        assert!(w.activate_sprint_boots(1, second.instance).is_err());
+        w.tick = 3000;
+        assert!(w.activate_sprint_boots(1, first.instance).is_err());
+        w.activate_sprint_boots(1, second.instance).unwrap();
+        w.sell_item(1, second.instance).unwrap();
+        assert_eq!(w.entities[0].item_stats.boot_speed, 0.);
+    }
+
+    #[test]
+    fn sales_require_ownership_and_remove_the_instance_and_its_stats_once() {
+        let mut w = World::new(5, 6);
+        w.use_six_human_roster().unwrap();
+        w.use_aral_lane().unwrap();
+        w.shop.offers[Hourglass as usize].refund = Some(125);
+        let receipt = w.purchase(1, Hourglass).unwrap();
+        let held = receipt.granted;
+        assert!(w.sell_item(2, held.instance).is_err());
+        let balance = w.entities[0].gold;
+        let sale = w.sell_item(1, held.instance).unwrap();
+        assert_eq!(
+            (sale.balance, sale.sold, sale.refund),
+            (balance + 125, held, 125)
+        );
+        assert_eq!(w.entities[0].item_stats.cooldown, 0.);
+        assert!(
+            w.entities[0]
+                .aral_inventory
+                .as_ref()
+                .unwrap()
+                .slots()
+                .iter()
+                .flatten()
+                .all(|s| s.instance != held.instance)
+        );
+        assert!(w.sell_item(1, held.instance).is_err());
+        assert_eq!(w.entities[0].gold, balance + 125);
+    }
+
+    #[test]
     #[ignore = "requires the operator's delivery and supplement directories"]
     fn original_supplement_supplies_verified_nonflat_item_bonuses() {
         let delivery = std::env::var_os("HALCYON_DELIVERY").expect("HALCYON_DELIVERY");
         let extra = std::env::var_os("HALCYON_DATA_EXTRA").expect("HALCYON_DATA_EXTRA");
         let data = GameData::load_with_extra(delivery, Some(std::path::Path::new(&extra))).unwrap();
         let shop = Shop::load(&data).unwrap();
+        let catalog = data.item_catalog().unwrap();
+        assert_eq!((catalog.items().len(), catalog.stores().len()), (93, 5));
+        assert_eq!(
+            catalog
+                .item("Item_SprintBoots")
+                .unwrap()
+                .fixed_active_seconds(ItemActiveParameter::Cooldown.key()),
+            Some(150.)
+        );
+        assert_eq!(shop.sprint.unwrap().duration, 40);
+        assert_eq!(shop.offers[Hourglass as usize].refund, Some(125));
+        for (kind, refund) in [(BlazingSalvo, 350), (Stormcrown, 1200)] {
+            assert_eq!(shop.offers[kind as usize].refund, Some(refund));
+        }
+        assert_eq!(catalog.item("Item_ScoutTrap").unwrap().cost_b, Some(25));
+        use halcyon_data::items::StoreSettings;
+        for settings in [
+            StoreSettings::Five,
+            StoreSettings::HalcyonFold,
+            StoreSettings::BlitzRevamp,
+        ] {
+            assert!(
+                data.store_for_settings(settings.key())
+                    .is_some_and(|items| !items.is_empty())
+            );
+        }
+
         for (kind, stat, value) in [
             (SwiftShooter, 15, 0.1),
             (Hourglass, 25, 0.075),

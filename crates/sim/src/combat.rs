@@ -68,15 +68,22 @@ pub(super) struct Status {
     pub(super) stamina_spent_at: u64,
     pub(super) stun_until: u64,
     pub(super) water_speed_until: u64,
+    pub(super) water_speed_bonus: Option<f32>,
     pub(super) water_slow_until: u64,
     pub(super) water_slow_factor: f32,
+    pub(super) flask_until: u64,
+    pub(super) flask_barrier: f32,
+    pub(super) flask_heal_per_tick: f32,
+    pub(super) flask_energy_per_tick: f32,
     pub(super) barrier: f32,
     pub(super) barrier_until: u64,
     pub slow_until: u64,
     pub slow_factor: f32,
     pub haste_until: u64,
+    pub(super) twirl_rank: Option<usize>,
     pub empowered: u8,
     pub empower_damage: f32,
+    pub(super) agent_crystal_until: Option<u64>,
     pub(super) channel: u64,
     pub(super) channel_until: u64,
 }
@@ -121,8 +128,49 @@ impl<const N: usize> CastRanks<N> {
     }
 }
 
+#[derive(Clone, Default, Debug, Serialize)]
+struct ExtraCast {
+    range: Option<Vec<f32>>,
+    cost: Option<Vec<f32>>,
+    cooldown: Option<Vec<f32>>,
+}
+impl ExtraCast {
+    fn read(
+        data: &GameData,
+        hero: &str,
+        id: &str,
+        rank_count: usize,
+        alt: bool,
+    ) -> Result<Self, String> {
+        let values = |name: &str| -> Result<Option<Vec<f32>>, String> {
+            let Some(v) = data.ability_ranks(hero, id, name) else {
+                return Ok(None);
+            };
+            if v.len() != rank_count || v.iter().any(|x| !x.is_finite() || *x < 0.) {
+                return Err(format!("invalid {id}.{name} ranks"));
+            }
+            Ok(Some(v.to_vec()))
+        };
+        Ok(Self {
+            range: values(halcyon_data::AbilityParameter::Range.as_str())?,
+            cost: values(if alt {
+                "Alt Energy Cost"
+            } else {
+                halcyon_data::AbilityParameter::EnergyCost.as_str()
+            })?,
+            cooldown: values(halcyon_data::AbilityParameter::Cooldown.as_str())?,
+        })
+    }
+}
 #[derive(Clone, Debug, Serialize)]
 pub(super) struct AbilityBook {
+    extra_casts: [ExtraCast; Skill::Waterwall as usize + 1],
+    other: Option<super::native_combat::OtherSpells>,
+    pub(super) lorelai: Option<super::native_combat::LorelaiRanks>,
+    pub(super) ringo_b: Option<super::native_combat::TwirlingSilver>,
+    ringo_c: Option<super::native_combat::Hellfire>,
+    ringo_a: Option<super::native_combat::Achilles>,
+    pub(super) idris_b: Option<super::native_combat::ChakramRanks>,
     achilles: CastRanks<5>,
     twirl: CastRanks<5>,
     hellfire: CastRanks<3>,
@@ -143,6 +191,13 @@ pub(super) struct AbilityBook {
 impl Default for AbilityBook {
     fn default() -> Self {
         Self {
+            extra_casts: Default::default(),
+            other: None,
+            lorelai: None,
+            ringo_b: None,
+            ringo_c: None,
+            ringo_a: None,
+            idris_b: None,
             achilles: CastRanks {
                 range: [7.; 5],
                 energy: [20.; 5],
@@ -205,7 +260,35 @@ impl AbilityBook {
         achilles.load(data, "Ability__Ringo__A", true)?;
         twirl.load(data, "Ability__Ringo__B", false)?;
         hellfire.load(data, "Ability__Ringo__C", true)?;
+        let mut extra_casts: [ExtraCast; Skill::Waterwall as usize + 1] = Default::default();
+        for (skill, hero, slot, ranks) in [
+            (Skill::Chakram, "Idris", "B", 5),
+            (Skill::FishFood, "Lorelai", "A", 5),
+            (Skill::Splashdown, "Lorelai", "B", 5),
+            (Skill::Waterwall, "Lorelai", "C", 3),
+            (Skill::Gift, "Adagio", "A", 5),
+            (Skill::Agent, "Adagio", "B", 5),
+            (Skill::Sigil, "Lyra", "A", 5),
+            (Skill::Suppress, "SAW", "B", 5),
+            (Skill::Wind, "Karas", "B", 5),
+            (Skill::Strike, "Shin", "C", 3),
+        ] {
+            extra_casts[skill as usize] = ExtraCast::read(
+                data,
+                hero,
+                &format!("Ability__{hero}__{slot}"),
+                ranks,
+                skill == Skill::Chakram,
+            )?;
+        }
         Ok(Self {
+            extra_casts,
+            other: super::native_combat::OtherSpells::load(data)?,
+            lorelai: super::native_combat::LorelaiRanks::load(data)?,
+            ringo_b: super::native_combat::TwirlingSilver::load(data)?,
+            ringo_c: super::native_combat::Hellfire::load(data)?,
+            ringo_a: super::native_combat::Achilles::load(data)?,
+            idris_b: super::native_combat::ChakramRanks::load(data)?,
             achilles,
             twirl,
             hellfire,
@@ -262,11 +345,13 @@ impl World {
             Skill::Wind => (7., 24., 5, 8.),
             Skill::Strike => (7., 36., 7, 20.),
         };
+        let extra = &self.abilities.extra_casts[s as usize];
+        let seconds = extra.cooldown.as_ref().map_or(seconds, |r| r[rank]);
         Rules {
-            range,
-            cost,
+            range: extra.range.as_ref().map_or(range, |r| r[rank]),
+            cost: extra.cost.as_ref().map_or(cost, |r| r[rank]),
             windup,
-            cooldown: (seconds * TICK_HZ as f32) as u64,
+            cooldown: (seconds * TICK_HZ as f32).ceil() as u64,
         }
     }
     pub(super) fn can_learn(&self, i: usize, slot: AbilitySlot) -> bool {
@@ -305,7 +390,13 @@ impl World {
         let rank = e.ability_ranks[slot.idx()]
             .checked_sub(1)
             .ok_or("ability not learned")? as usize;
-        let r = self.rules(s, rank);
+        let mut r = self.rules(s, rank);
+        if s == Skill::Achilles
+            && let Some(t) = e.long_shot
+        {
+            r.range += t.range;
+            r.cooldown = (r.cooldown as f32 * t.cooldown).ceil() as u64;
+        }
         let resource = if s == Skill::Chakram {
             chakram::stamina(e, self.tick)
         } else {
@@ -398,6 +489,7 @@ impl World {
         let origin = e.position;
         let bonus_hp = e.bonus_hp;
         let weapon = e.stats.weapon;
+        let cp = e.item_stats.crystal;
         events.push(Event::Cast {
             source: src,
             slot: c.slot,
@@ -418,12 +510,26 @@ impl World {
                 self.cast_water(i, c.slot, c.target, r, events);
             }
             Skill::Chakram => {
+                let (damage, refund) = if let Some(ranks) = &self.abilities.idris_b {
+                    // The tooltip specifies CBASE, CR and BWR (bonus weapon ratio).
+                    let bonus_weapon = self.entities[i]
+                        .inventory
+                        .iter()
+                        .flat_map(|item| self.item_bonuses(item.kind))
+                        .filter(|(stat, _)| *stat == 4)
+                        .map(|(_, v)| v)
+                        .sum();
+                    (
+                        ranks
+                            .damage
+                            .at(r, self.entities[i].item_stats.crystal, bonus_weapon),
+                        Some(ranks.stamina_from_hero[r]),
+                    )
+                } else {
+                    (weapon * self.abilities.chakram_weapon_ratio, None)
+                };
                 self.chakrams.push(chakram::Chakram::new(
-                    src,
-                    team,
-                    origin,
-                    point,
-                    weapon * self.abilities.chakram_weapon_ratio,
+                    src, team, origin, point, damage, refund,
                 ));
                 if matches!(self.layout, Layout::Aral { .. }) {
                     let id = self.next_id;
@@ -433,10 +539,19 @@ impl World {
             }
             Skill::Achilles => {
                 let j = aimed.unwrap();
-                self.entities[j].status.slow_until = self.tick + 30;
-                self.entities[j].status.slow_factor = 0.7;
+                let (raw, duration, factor) = match &self.abilities.ringo_a {
+                    Some(a) => (
+                        a.damage.at(r, self.entities[i].item_stats.crystal, 0.),
+                        a.duration[r],
+                        1. - a.slow[r],
+                    ),
+                    None => (65. + r as f32 * 30., 1.5, 0.7),
+                };
+                self.entities[j].status.slow_until =
+                    self.tick + (duration * TICK_HZ as f32).ceil() as u64;
+                self.entities[j].status.slow_factor = factor;
                 let dmg = shop::mitigated(
-                    65. + r as f32 * 30.,
+                    raw * self.entities[i].long_shot.map_or(1., |t| t.damage),
                     self.entities[j].stats.shield,
                     self.entities[i].item_stats.shield_pierce,
                 );
@@ -444,13 +559,42 @@ impl World {
             }
             Skill::Twirl => {
                 let e = &mut self.entities[i];
-                e.status.haste_until = self.tick + 60;
+                let duration = self
+                    .abilities
+                    .ringo_b
+                    .as_ref()
+                    .map_or(60, |b| (b.duration[r] * TICK_HZ as f32).ceil() as u64);
+                e.status.haste_until = self.tick + duration;
+                e.status.twirl_rank = self.abilities.ringo_b.as_ref().map(|_| r);
                 e.next_attack = self.tick;
             }
             Skill::Hellfire => {
                 let j = aimed.unwrap();
                 let travel =
                     (origin.dist(self.entities[j].position) * TICK_HZ as f32 / 12.).ceil() as u64;
+                if let Some(c) = &self.abilities.ringo_c {
+                    let cp = self.entities[i].item_stats.crystal;
+                    let impact = self.tick + travel;
+                    let base = SpellEffect {
+                        due: impact,
+                        src,
+                        team,
+                        area: Area::Hellfire(id, c.radius[r], true),
+                        damage: c.impact.at(r, cp, 0.),
+                        heal: 0.,
+                        channel: 0,
+                    };
+                    self.effects.push(base);
+                    for second in 1..=c.duration[r] as u64 {
+                        self.effects.push(SpellEffect {
+                            due: impact + second * TICK_HZ,
+                            area: Area::Hellfire(id, c.burn_radius[r], false),
+                            damage: c.burn.at(r, cp, 0.),
+                            ..base
+                        });
+                    }
+                    return;
+                }
                 let damage = 140. + r as f32 * 45.;
                 self.effects.push(SpellEffect::impact(
                     self.tick + travel,
@@ -476,14 +620,29 @@ impl World {
                 self.heal(
                     src,
                     j,
-                    45. + 25. * r as f32 + bonus_hp * self.abilities.gift_hp,
+                    self.abilities
+                        .other
+                        .as_ref()
+                        .map_or(45. + 25. * r as f32, |o| o.gift.at(r, cp, 0.))
+                        + bonus_hp * self.abilities.gift_hp,
                     events,
                 );
             }
             Skill::Agent => {
                 let t = &mut self.entities[aimed.unwrap()];
                 t.status.empowered = self.abilities.empower[r] as u8;
-                t.status.empower_damage = 25. + r as f32 * 10.;
+                if let Some(o) = &self.abilities.other {
+                    t.status.empower_damage = o.agent.at(r, cp, 0.)
+                        + if t.id == src {
+                            o.self_agent.at(r, cp, 0.)
+                        } else {
+                            0.
+                        };
+                    t.status.agent_crystal_until =
+                        Some(self.tick + (o.agent_duration[r] * TICK_HZ as f32).round() as u64);
+                } else {
+                    t.status.empower_damage = 25. + r as f32 * 10.;
+                }
             }
             Skill::Sigil => {
                 let bonus = bonus_hp;
@@ -493,8 +652,18 @@ impl World {
                         due: self.tick + 1 + sec * TICK_HZ,
                         src,
                         team,
-                        area: Area::Circle(point, 2.5),
-                        damage: 40. + 15. * r as f32,
+                        area: Area::Circle(
+                            point,
+                            self.abilities
+                                .other
+                                .as_ref()
+                                .map_or(2.5, |o| o.sigil_radius[r]),
+                        ),
+                        damage: self
+                            .abilities
+                            .other
+                            .as_ref()
+                            .map_or(40. + 15. * r as f32, |o| o.sigil_dps.at(r, cp, 0.)),
                         heal,
                         channel: 0,
                     });
@@ -503,18 +672,41 @@ impl World {
             Skill::Suppress | Skill::Strike => {
                 let token = self.tick;
                 self.entities[i].status.channel = token;
+                let mut area = Area::Line(origin, point, 1.4);
                 let (hits, pulse, damage) = if s == Skill::Strike {
-                    (self.abilities.strike_hits, 5, self.abilities.strike_dmg)
+                    (
+                        self.abilities.strike_hits,
+                        5.,
+                        self.abilities
+                            .other
+                            .as_ref()
+                            .map_or(self.abilities.strike_dmg, |o| o.shin.at(r, cp, 0.)),
+                    )
+                } else if let Some(o) = &self.abilities.other {
+                    let count = o.saw_ticks[r];
+                    area = Area::Suppression {
+                        from: origin,
+                        to: point,
+                        slow: 1. - o.saw_slow[r],
+                        ticks: (o.saw_slow_duration[r] * TICK_HZ as f32).round() as u64,
+                        minion_multiplier: 1. - o.saw_minion_reduction[r],
+                    };
+                    (
+                        count as u8,
+                        o.saw_duration[r] * TICK_HZ as f32 / count,
+                        o.saw_dps.at(r, cp, 0.) * o.saw_duration[r] / count,
+                    )
                 } else {
-                    (4, 10, self.abilities.suppress_dps[r] * 0.5)
+                    (4, 10., self.abilities.suppress_dps[r] * 0.5)
                 };
-                self.entities[i].status.channel_until = self.tick + 1 + u64::from(hits - 1) * pulse;
+                self.entities[i].status.channel_until =
+                    self.tick + 1 + (f32::from(hits - 1) * pulse).round() as u64;
                 for n in 0..hits {
                     self.effects.push(SpellEffect {
-                        due: self.tick + 1 + u64::from(n) * pulse,
+                        due: self.tick + 1 + (f32::from(n) * pulse).round() as u64,
                         src,
                         team,
-                        area: Area::Line(origin, point, 1.4),
+                        area,
                         damage,
                         heal: 0.,
                         channel: token,
@@ -527,7 +719,11 @@ impl World {
                     src,
                     team,
                     area: Area::Circle(point, 2.),
-                    damage: self.abilities.wind_dmg[r],
+                    damage: self
+                        .abilities
+                        .other
+                        .as_ref()
+                        .map_or(self.abilities.wind_dmg[r], |o| o.karas.at(r, cp, 0.)),
                     heal: 0.,
                     channel: 0,
                 });
@@ -539,8 +735,16 @@ impl World {
 enum Area {
     Target(u32, DamageSchool),
     NpcWindup(u32),
+    Hellfire(u32, f32, bool),
     Circle(Position, f32),
     Line(Position, Position, f32),
+    Suppression {
+        from: Position,
+        to: Position,
+        slow: f32,
+        ticks: u64,
+        minion_multiplier: f32,
+    },
 }
 #[derive(Clone, Copy, Debug, Serialize)]
 pub(super) struct SpellEffect {
@@ -697,6 +901,18 @@ impl World {
                 }
                 return false;
             }
+            let mut shield_ignoring = false;
+            if let Area::Hellfire(id, radius, impact) = v.area {
+                let Some(target) = self
+                    .index(id)
+                    .map(|i| &self.entities[i])
+                    .filter(|t| t.hp > 0.)
+                else {
+                    return false;
+                };
+                v.area = Area::Circle(target.position, radius);
+                shield_ignoring = impact;
+            }
             let pierce = self
                 .index(v.src)
                 .map_or(0., |i| self.entities[i].item_stats.shield_pierce);
@@ -707,8 +923,11 @@ impl World {
                 }
                 let hit = match v.area {
                     Area::Circle(p, r) => p.dist(e.position) <= r,
+                    Area::Suppression { from, to, .. } => {
+                        line_distance(e.position, from, to) <= 1.4
+                    }
                     Area::Line(a, b, r) => line_distance(e.position, a, b) <= r,
-                    Area::Target(..) | Area::NpcWindup(_) => unreachable!(),
+                    Area::Target(..) | Area::NpcWindup(_) | Area::Hellfire(..) => unreachable!(),
                 };
                 if !hit {
                     continue;
@@ -718,7 +937,23 @@ impl World {
                         self.heal(v.src, i, v.heal, events)
                     }
                 } else {
-                    let dmg = shop::mitigated(v.damage, e.stats.shield, pierce);
+                    let mut raw = v.damage;
+                    if let Area::Suppression {
+                        minion_multiplier, ..
+                    } = v.area
+                        && e.kind == Kind::Minion
+                    {
+                        raw *= minion_multiplier;
+                    }
+                    let dmg = if shield_ignoring {
+                        raw
+                    } else {
+                        shop::mitigated(raw, e.stats.shield, pierce)
+                    };
+                    if let Area::Suppression { slow, ticks, .. } = v.area {
+                        self.entities[i].status.slow_factor = slow;
+                        self.entities[i].status.slow_until = self.tick + ticks;
+                    }
                     self.hurt(v.src, v.team, i, dmg, DamageSchool::Crystal, events)
                 }
             }

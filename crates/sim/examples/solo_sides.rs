@@ -10,11 +10,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let dir = args
         .next()
         .ok_or("expected the external delivery directory")?;
-    let data = GameData::load(dir)?;
+    let data = GameData::load(&dir)?;
     match (args.next().as_deref(), args.next()) {
-        (Some("--bot-diagnostics"), None) => return diagnose(&data),
+        (Some("--bot-diagnostics"), None) => return diagnose(&data, false),
+        (Some("--native-map-diagnostics"), Some(extra)) => {
+            let maps = GameData::load_with_extra(dir, Some(std::path::Path::new(&extra)))?;
+            return diagnose(&maps, true);
+        }
         (None, None) => {}
-        _ => return Err("expected optional --bot-diagnostics".into()),
+        _ => return Err("expected --bot-diagnostics or --native-map-diagnostics EXTRA".into()),
     }
     println!("mode,seed,winner,ticks,west_towers,east_towers,first_tower,first_tower_tick");
     for mode in ["fallback", "mirror", "recorded", "swapped"] {
@@ -64,7 +68,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn diagnose(data: &GameData) -> Result<(), Box<dyn std::error::Error>> {
+fn diagnose(data: &GameData, use_mesh: bool) -> Result<(), Box<dyn std::error::Error>> {
     let seed = 0;
     let recorded = || -> Result<World, String> {
         let mut world = World::from_data(seed, 0, data)?;
@@ -72,6 +76,9 @@ fn diagnose(data: &GameData) -> Result<(), Box<dyn std::error::Error>> {
             world.select_hero(seat, [WEST, EAST][seat % 2][seat / 2], data)?;
         }
         world.use_solo_mid_lane()?;
+        if use_mesh {
+            world.install_native_navigation(data.native_maps().ok_or("map supplement missing")?)?;
+        }
         world.set_bot_difficulty(Some(BotDifficulty::Medium));
         Ok(world)
     };

@@ -603,6 +603,12 @@ impl Rooms {
             Some(d) => World::from_data(seed, n, d).map_err(|_| PlatformError::HostUnavailable)?,
             None => World::new(seed, n),
         };
+        if let (Some(data), Some(queue)) = (&self.0.data, known_queue)
+            && let Some(entries) = halcyon_data::items::StoreSettings::for_mode(queue.mode())
+                .and_then(|settings| data.store_for_settings(settings.key()))
+        {
+            world.use_item_store(entries);
+        }
         if !req.teams.is_empty()
             && (req.teams.len() != req.players.len()
                 || req.teams.iter().any(|t| *t > 1)
@@ -624,6 +630,12 @@ impl Rooms {
             world
                 .use_aral_lane()
                 .map_err(|_| PlatformError::Invalid("invalid ARAL layout"))?;
+            if let Some(maps) = self.0.data.as_ref().and_then(|data| data.native_maps()) {
+                world.install_native_navigation(maps).map_err(|error| {
+                    tracing::warn!(%error, "invalid ARAL map assets");
+                    PlatformError::HostUnavailable
+                })?;
+            }
         }
         world.set_bot_difficulty(req.difficulty);
         let mut picks = Vec::with_capacity(hero_seats);

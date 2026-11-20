@@ -6,8 +6,14 @@ const DURATION: u64 = 8 * TICK_HZ;
 
 #[derive(Clone, Copy, Debug, Serialize)]
 enum Pool {
-    Fish { rank: usize, stun: u64 },
-    Splash { slow_factor: f32 },
+    Fish {
+        rank: usize,
+        stun: u64,
+    },
+    Splash {
+        slow_factor: f32,
+        speed: Option<f32>,
+    },
 }
 
 impl Pool {
@@ -81,34 +87,84 @@ impl World {
         if let Some(i) = standing {
             self.water.remove(i);
         }
+        let rules = self.abilities.lorelai.as_ref();
+        let splash_rank = if slot == AbilitySlot::B {
+            rank
+        } else {
+            e.ability_ranks[1].saturating_sub(1) as usize
+        };
+        let skip_pool = rules.is_some() && slot == AbilitySlot::C && e.ability_ranks[1] == 0;
+        let crystal = e.item_stats.crystal;
         let splash = Pool::Splash {
-            slow_factor: 1. - (0.25 + 0.00017 * bonus_hp).min(0.5),
+            speed: rules.map(|r| r.speed[splash_rank]),
+            slow_factor: 1.
+                - rules.map_or_else(
+                    || (0.25 + 0.00017 * bonus_hp).min(0.5),
+                    |r| {
+                        (r.slow[splash_rank] + r.hp_to_slow[splash_rank] * bonus_hp)
+                            .min(r.slow_cap[splash_rank])
+                    },
+                ),
         };
         let (position, follows, delay, pool) = match (slot, target) {
             (AbilitySlot::A, CastTarget::Point(p)) => {
-                let stun_seconds =
-                    (0.5 + 0.0003 * bonus_hp).min(0.95) + if empowered { 0.35 } else { 0. };
+                let stun_seconds = rules.map_or_else(
+                    || (0.5 + 0.0003 * bonus_hp).min(0.95) + if empowered { 0.35 } else { 0. },
+                    |r| {
+                        (r.stun[rank] + r.hp_to_stun[rank] * bonus_hp).min(r.stun_cap[rank])
+                            * if empowered {
+                                r.empowered_stun[rank]
+                            } else {
+                                1.
+                            }
+                    },
+                );
                 (
                     p,
                     None,
-                    14,
+                    rules.map_or(14, |r| (r.snap_delay[rank] * TICK_HZ as f32).round() as u64),
                     Pool::Fish {
                         rank,
                         stun: (stun_seconds * TICK_HZ as f32).round() as u64,
                     },
                 )
             }
-            (AbilitySlot::B, CastTarget::Point(p)) => {
-                (p, None, if empowered { 2 } else { 6 }, splash)
-            }
+            (AbilitySlot::B, CastTarget::Point(p)) => (
+                p,
+                None,
+                rules.map_or_else(
+                    || if empowered { 2 } else { 6 },
+                    |r| {
+                        ((if empowered {
+                            r.empowered_delay[rank]
+                        } else {
+                            r.splash_delay[rank]
+                        }) * TICK_HZ as f32)
+                            .round() as u64
+                    },
+                ),
+                splash,
+            ),
             (AbilitySlot::C, CastTarget::Entity(id)) => {
                 let i = self.index(id).expect("validated Waterwall target");
                 let ally = &mut self.entities[i];
                 ally.status.stun_until = 0;
                 ally.status.slow_until = 0;
                 ally.status.water_slow_until = 0;
-                let strength = (500. + rank as f32 * 250. + 0.15 * bonus_hp)
-                    * if empowered { 1.25 } else { 1. };
+                let strength = rules.map_or_else(
+                    || {
+                        (500. + rank as f32 * 250. + 0.15 * bonus_hp)
+                            * if empowered { 1.25 } else { 1. }
+                    },
+                    |r| {
+                        let (base, ratio) = if empowered {
+                            (r.empowered_barrier[rank], r.crystal_to_empowered_barrier)
+                        } else {
+                            (r.barrier[rank], r.crystal_to_barrier)
+                        };
+                        base + ratio * crystal + r.hp_to_barrier[rank] * bonus_hp
+                    },
+                );
                 // Concurrent veils refresh duration and preserve the larger remaining barrier.
                 if ally.status.barrier_until <= self.tick {
                     ally.status.barrier = 0.;
@@ -123,12 +179,25 @@ impl World {
                     });
                 }
                 ally.status.barrier = ally.status.barrier.max(strength);
-                let duration = if empowered { 6 } else { 4 } * TICK_HZ;
+                let duration = rules.map_or_else(
+                    || if empowered { 6. } else { 4. },
+                    |r| {
+                        if empowered {
+                            r.empowered_duration[rank]
+                        } else {
+                            r.duration[rank]
+                        }
+                    },
+                );
+                let duration = (duration * TICK_HZ as f32).round() as u64;
                 ally.status.barrier_until = self.tick + duration;
                 (ally.position, Some(id), duration, splash)
             }
             _ => unreachable!("validated Lorelai cast"),
         };
+        if skip_pool {
+            return;
+        }
         self.water.push(Water {
             owner,
             team,
@@ -163,6 +232,9 @@ impl World {
             if matches!(w.pool, Pool::Fish { .. }) && !elapsed.is_multiple_of(TICK_HZ) {
                 return true;
             }
+            let cp = self
+                .index(w.owner)
+                .map_or(0., |i| self.entities[i].item_stats.crystal);
             let pierce = self
                 .index(w.owner)
                 .map_or(0., |i| self.entities[i].item_stats.shield_pierce);
@@ -185,7 +257,14 @@ impl World {
                             e.status.channel = 0;
                             e.status.channel_until = 0;
                         }
-                        let raw = if elapsed == 0 {
+                        let raw = if let Some(rules) = &self.abilities.lorelai {
+                            (if elapsed == 0 {
+                                &rules.impact
+                            } else {
+                                &rules.per_second
+                            })
+                            .at(rank, cp, 0.)
+                        } else if elapsed == 0 {
                             80. + 35. * rank as f32
                         } else {
                             [55., 95., 135., 175., 255.][rank]
@@ -193,10 +272,18 @@ impl World {
                         let damage = shop::mitigated(raw, e.stats.shield, pierce);
                         self.hurt(w.owner, w.team, i, damage, DamageSchool::Crystal, events);
                     }
-                    Pool::Splash { .. } if e.team == w.team => {
+                    Pool::Splash { speed, .. } if e.team == w.team => {
+                        e.status.water_speed_bonus = if e.status.water_speed_until > self.tick {
+                            match (e.status.water_speed_bonus, speed) {
+                                (Some(a), Some(b)) => Some(a.max(b)),
+                                (a, b) => a.or(b),
+                            }
+                        } else {
+                            speed
+                        };
                         e.status.water_speed_until = self.tick + 1;
                     }
-                    Pool::Splash { slow_factor } => {
+                    Pool::Splash { slow_factor, .. } => {
                         e.status.water_slow_factor = if e.status.water_slow_until > self.tick {
                             e.status.water_slow_factor.min(slow_factor)
                         } else {

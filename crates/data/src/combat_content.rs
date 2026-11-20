@@ -300,6 +300,21 @@ impl Ability {
     }
 }
 
+impl Ability {
+    /// Damage block headers use 32-bit FNV-1a of the exact tooltip operand (including case).
+    pub fn damage(&self, operand: &str) -> Option<&DamageVariable> {
+        let header = operand.bytes().fold(0x811c9dc5_u32, |h, byte| {
+            (h ^ u32::from(byte)).wrapping_mul(0x01000193)
+        });
+        let mut found = self
+            .damage_variables
+            .iter()
+            .filter(|v| v.header_u32 == header);
+        let first = found.next()?;
+        found.next().is_none().then_some(first)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

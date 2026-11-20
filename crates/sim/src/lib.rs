@@ -12,7 +12,9 @@ mod chakram;
 mod combat;
 mod layout;
 mod lorelai;
+mod native_combat;
 mod native_learn;
+mod native_navigation;
 mod nav;
 use layout::Layout;
 mod progression;
@@ -27,7 +29,7 @@ pub use native_learn::{known_native_learn_operand, native_learn_operand, native_
 use score::DamageSchool;
 pub use score::{PlayerScore, TeamScore};
 use serde::{Deserialize, Serialize};
-pub use shop::{BasicItem, HeldItem, ItemStats, Purchase};
+pub use shop::{BasicItem, HeldItem, ItemSale, ItemStats, Purchase};
 
 /// Different simulation sources or content packs receive distinct federation queue keys.
 pub fn rules_digest(data: Option<&GameData>) -> String {
@@ -84,6 +86,15 @@ pub enum Command {
     },
     Learn(AbilitySlot),
     Buy(BasicItem),
+    Sell {
+        instance: u32,
+    },
+    ActivateHealingFlask {
+        instance: u32,
+    },
+    ActivateSprintBoots {
+        instance: u32,
+    },
     Stop,
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -184,6 +195,20 @@ struct Stats {
     energy: f32,
     shield: f32,
     growth: Growth,
+    physiology: Option<Physiology>,
+}
+#[derive(Clone, Copy, Debug, Serialize)]
+struct Physiology {
+    hp_regen: f32,
+    hp_regen_growth: f32,
+    energy_regen: f32,
+    energy_regen_growth: f32,
+    attack_speed: f32,
+    attack_speed_growth: f32,
+    collision_radius: f32,
+    sight: f32,
+    gold_bounty: f32,
+    xp_bounty: f32,
 }
 #[derive(Clone, Copy, Debug, Default, Serialize)]
 struct Growth {
@@ -229,6 +254,7 @@ impl Stats {
             } else {
                 armor
             },
+            physiology: None,
             growth: if matches!(template, EntityTemplate::Ringo) {
                 Growth {
                     hp: 127.64,
@@ -257,9 +283,27 @@ impl Stats {
     }
 }
 impl Stats {
-    fn load(id: u16, u: &Unit) -> Self {
+    fn sight(self) -> f32 {
+        self.physiology.map_or(SIGHT, |p| p.sight)
+    }
+    fn load(id: u16, u: &Unit, data: &GameData) -> Self {
         Self {
             id,
+            physiology: data
+                .full_unit(&u.name)
+                .filter(|unit| unit.entity_type_id == Some(id))
+                .map(|unit| Physiology {
+                    hp_regen: unit.hp_regen,
+                    hp_regen_growth: unit.hp_regen_per_level,
+                    energy_regen: unit.energy_regen,
+                    energy_regen_growth: unit.energy_regen_per_level,
+                    attack_speed: unit.attack_speed,
+                    attack_speed_growth: unit.attack_speed_per_level,
+                    collision_radius: unit.collision_radius,
+                    sight: unit.vision_range,
+                    gold_bounty: unit.gold_bounty,
+                    xp_bounty: unit.xp_bounty,
+                }),
             hp: u.hp,
             energy: u.energy,
             weapon: u.weapon,
@@ -279,6 +323,7 @@ impl Stats {
 }
 #[derive(Debug, Clone, Serialize)]
 pub struct Entity {
+    long_shot: Option<native_combat::LongShot>,
     pub id: u32,
     pub team: u8,
     pub kind: Kind,
@@ -352,6 +397,7 @@ pub struct World {
     chakrams: Vec<chakram::Chakram>,
     water: Vec<lorelai::Water>,
     nav_budget: u8,
+    native_navigation: Option<Box<native_navigation::NativeNavigation>>,
     first_blood: bool,
     scores: [PlayerScore; 10],
     team_scores: [TeamScore; 2],
@@ -413,6 +459,9 @@ impl World {
         .expect("finite simulation state");
         if let Some(rewards) = self.solo_lane_rewards {
             serde_json::to_writer(&mut hash, &rewards).expect("finite unit rewards");
+        }
+        if let Some(map) = &self.native_navigation {
+            map.digest(&mut hash);
         }
         if let Some(difficulty) = self.bot_difficulty {
             hash.update(difficulty.as_str().as_bytes());
@@ -480,7 +529,7 @@ impl World {
             let id = data
                 .type_id(name)
                 .ok_or_else(|| format!("missing manifest entry {name}"))?;
-            Ok::<_, String>(Stats::load(id, unit))
+            Ok::<_, String>(Stats::load(id, unit, data))
         });
         let stats: Vec<_> = units.into_iter().collect::<Result<_, _>>()?;
         let timing = |key: &str| {
@@ -582,7 +631,8 @@ impl World {
         let id = data
             .type_id(name)
             .ok_or_else(|| format!("missing manifest entry {name}"))?;
-        hero.stats = Stats::load(id, unit);
+        hero.long_shot = None;
+        hero.stats = Stats::load(id, unit, data);
         hero.energy = unit.energy;
         hero.max_energy = unit.energy;
         hero.type_id = id;
@@ -620,6 +670,7 @@ impl World {
             chakrams: Vec::new(),
             water: Vec::new(),
             nav_budget: 0,
+            native_navigation: None,
             first_blood: false,
             scores: Default::default(),
             team_scores: Default::default(),
@@ -667,6 +718,7 @@ impl World {
             self.scores[(id - 1) as usize].gold_income.starting_balance = starting_gold;
         }
         self.entities.push(Entity {
+            long_shot: None,
             id,
             team,
             kind,
@@ -709,8 +761,12 @@ impl World {
         self.entities.iter().any(|e| {
             e.team == team
                 && e.hp > 0.
-                && e.position.dist(p) <= SIGHT
+                && e.position.dist(p) <= e.stats.sight()
                 && self.layout.clear(e.position, p)
+                && self
+                    .native_navigation
+                    .as_ref()
+                    .is_none_or(|map| map.can_see(e.position, p))
         })
     }
     pub fn visible(&self, team: u8, e: &Entity) -> bool {
@@ -719,9 +775,13 @@ impl World {
                 && self.entities.iter().any(|a| {
                     a.team == team
                         && a.hp > 0.
-                        && (a.position.x - e.position.x).abs() <= SIGHT
-                        && a.position.dist(e.position) <= SIGHT
+                        && (a.position.x - e.position.x).abs() <= a.stats.sight()
+                        && a.position.dist(e.position) <= a.stats.sight()
                         && self.layout.clear(a.position, e.position)
+                        && self
+                            .native_navigation
+                            .as_ref()
+                            .is_none_or(|map| map.can_see(a.position, e.position))
                 }))
     }
     pub fn command(&mut self, id: u32, cmd: Command) -> Result<(), &'static str> {
@@ -748,10 +808,25 @@ impl World {
             return Err("stunned");
         }
         match cmd {
-            Command::MoveTo(p) if !self.layout.walkable(p) => {
+            Command::MoveTo(p)
+                if !self.layout.walkable(p)
+                    && !self
+                        .native_navigation
+                        .as_ref()
+                        .is_some_and(|map| map.can_project(p)) =>
+            {
                 return Err("outside lane");
             }
             Command::Buy(item) => return self.buy(i, item).map(|_| ()),
+            Command::Sell { instance } => {
+                return self.sell_item(self.entities[i].id, instance).map(|_| ());
+            }
+            Command::ActivateHealingFlask { instance } => {
+                return self.activate_healing_flask(self.entities[i].id, instance);
+            }
+            Command::ActivateSprintBoots { instance } => {
+                return self.activate_sprint_boots(self.entities[i].id, instance);
+            }
             Command::Learn(slot) => return self.learn(i, slot),
             Command::Cast { slot, target } => return self.begin_cast(i, slot, target),
             Command::Attack(id) => {
@@ -798,26 +873,37 @@ impl World {
         if e.stats.speed <= 0. {
             return;
         }
-        let next = match &self.layout {
-            Layout::Validation => e.path.next(e.position, p, &mut self.nav_budget),
-            Layout::SoloMid { .. }
-                if e.kind == Kind::Minion
-                    && e.order == Command::MoveTo(p)
-                    && p == self.layout.objective(1 - e.team) =>
-            {
-                if e.solo_side == 0 {
-                    Some(solo_route::march(e, p))
-                } else {
-                    let marker = solo_side::march(e, p);
-                    solo_side::steer(e.position, marker)
+        let next = if e.kind == Kind::Hero
+            && let Some(map) = &mut self.native_navigation
+        {
+            map.next(e, self.tick, p, &mut self.nav_budget)
+        } else {
+            match &self.layout {
+                Layout::Validation => e.path.next(e.position, p, &mut self.nav_budget),
+                Layout::SoloMid { .. }
+                    if e.kind == Kind::Minion
+                        && e.order == Command::MoveTo(p)
+                        && p == self.layout.objective(1 - e.team) =>
+                {
+                    if e.solo_side == 0 {
+                        Some(solo_route::march(e, p))
+                    } else {
+                        let marker = solo_side::march(e, p);
+                        solo_side::steer(e.position, marker)
+                    }
                 }
+                Layout::SoloMid { .. } => solo_side::steer(e.position, p),
+                Layout::Aral { .. } => self.layout.clear(e.position, p).then_some(p),
             }
-            Layout::SoloMid { .. } => solo_side::steer(e.position, p),
-            Layout::Aral { .. } => self.layout.clear(e.position, p).then_some(p),
         };
         let Some(waypoint) = next else {
             return;
         };
+        let twirl = self.abilities.ringo_b.as_ref().zip(
+            e.status
+                .twirl_rank
+                .filter(|_| e.status.haste_until > self.tick),
+        );
         let pace = if e.status.slow_until > self.tick {
             e.status.slow_factor
         } else {
@@ -827,14 +913,31 @@ impl World {
             e.status.water_slow_factor
         } else {
             1.
-        }) * if e.status.haste_until.max(e.status.water_speed_until) > self.tick {
+        }) * if (e.status.water_speed_until > self.tick
+            && e.status.water_speed_bonus.is_none())
+            || (twirl.is_none() && e.status.haste_until > self.tick)
+        {
             1.25
         } else {
             1.
         };
         let pos = e.position.advance(
             waypoint,
-            e.stats.speed * (1. + e.item_stats.move_speed_amp) * pace / TICK_HZ as f32,
+            (e.stats.speed
+                + e.status
+                    .water_speed_bonus
+                    .filter(|_| e.status.water_speed_until > self.tick)
+                    .unwrap_or(0.)
+                + twirl.map_or(0., |(b, r)| b.move_speed[r])
+                + e.item_stats.boot_speed
+                + if self.tick < e.item_stats.sprint_until {
+                    e.item_stats.sprint_speed
+                } else {
+                    0.
+                })
+                * (1. + e.item_stats.move_speed_amp)
+                * pace
+                / TICK_HZ as f32,
         );
         if pos != e.position {
             if e.kind == Kind::Minion {
@@ -845,6 +948,11 @@ impl World {
                 e.lane_step = Some((waypoint, followed));
             }
             e.position = pos;
+            if e.kind == Kind::Hero
+                && let Some(map) = &mut self.native_navigation
+            {
+                map.moved(e.id, pos);
+            }
             events.push(Event::Move {
                 id: e.id,
                 position: pos,
@@ -965,6 +1073,9 @@ impl World {
                     e.status = Default::default();
                     e.path = Default::default();
                     e.position = self.layout.home(e);
+                    if let Some(map) = &mut self.native_navigation {
+                        map.forget_route(e.id);
+                    }
                     events.push(Event::Spawn { id: e.id });
                     events.push(Event::Respawn {
                         id: e.id,
@@ -973,17 +1084,41 @@ impl World {
                 }
                 continue;
             }
-            if e.kind == Kind::Hero && self.layout.at_base(e, false) {
+            if e.status.flask_until >= self.tick && e.status.flask_until != 0 {
+                let before = e.hp;
+                e.hp = (e.hp + e.status.flask_heal_per_tick).min(e.max_hp);
+                e.energy = (e.energy + e.status.flask_energy_per_tick).min(e.max_energy);
+                if e.hp > before {
+                    events.push(Event::Heal {
+                        source: e.id,
+                        target: e.id,
+                        amount: e.hp - before,
+                        hp: e.hp,
+                    });
+                }
+            }
+            let levels = f32::from(e.level.saturating_sub(1));
+            if let Some(p) = e.stats.physiology
+                && matches!(e.kind, Kind::Hero | Kind::Minion)
+            {
+                let regen = p.hp_regen + levels * p.hp_regen_growth;
+                e.hp = (e.hp + regen / TICK_HZ as f32).min(e.max_hp);
+            }
+            let fountain = e.kind == Kind::Hero
+                && self
+                    .native_navigation
+                    .as_ref()
+                    .map_or_else(|| self.layout.at_base(e, false), |map| map.at_fountain(e));
+            if fountain {
                 e.hp = (e.hp + e.max_hp * 0.003).min(e.max_hp);
             }
             if e.kind == Kind::Hero {
                 e.energy = (e.energy
                     + e.item_stats.energy_regen / TICK_HZ as f32
-                    + if self.layout.at_base(e, false) {
-                        1.2
-                    } else {
-                        0.10
+                    + e.stats.physiology.map_or(0.1, |p| {
+                        (p.energy_regen + levels * p.energy_regen_growth) / TICK_HZ as f32
                     })
+                    + if fountain { 1.1 } else { 0. })
                 .min(e.max_energy);
                 if self.tick >= 35 * TICK_HZ
                     && self.tick.is_multiple_of(TICK_HZ)
@@ -1016,15 +1151,16 @@ impl World {
             let offset = self.tick + u64::from(e.id);
             let decide = automated && offset.is_multiple_of(self.decision_interval(e));
             if automated && e.bot && offset.is_multiple_of(5) {
-                if e.gold >= 300 && e.inventory.len() < 6 && self.layout.at_base(e, true) {
-                    let item = if e.inventory.len() == 2 {
-                        BasicItem::LightArmor
-                    } else {
-                        BasicItem::WeaponBlade
-                    };
-                    if let Ok(receipt) = self.buy(i, item) {
-                        events.push(Event::Purchase(receipt));
-                    }
+                if e.inventory.len() < 6
+                    && self.at_item_shop(e)
+                    && let Some(item) = self.shop.bot_item(
+                        e.inventory.len(),
+                        e.gold,
+                        matches!(self.layout, Layout::SoloMid { .. }),
+                    )
+                    && let Ok(receipt) = self.buy(i, item)
+                {
+                    events.push(Event::Purchase(receipt));
                 }
                 for slot in [AbilitySlot::C, AbilitySlot::A, AbilitySlot::B] {
                     if self.learn(i, slot).is_ok() {
@@ -1035,6 +1171,18 @@ impl World {
                         break;
                     }
                 }
+            }
+            if decide
+                && self.entities[i].kind == Kind::Hero
+                && self.entities[i].bot
+                && self.tick >= self.entities[i].item_stats.sprint_ready
+                && matches!(self.entities[i].order,Command::MoveTo(goal) if self.entities[i].position.dist(goal)>8.)
+                && let Some(boot) = self.entities[i]
+                    .inventory
+                    .iter()
+                    .find(|item| item.kind == BasicItem::SprintBoots)
+            {
+                let _ = self.activate_sprint_boots(self.entities[i].id, boot.instance);
             }
             if decide {
                 let started = if DIAG && self.entities[i].kind == Kind::Hero && self.entities[i].bot
@@ -1065,7 +1213,13 @@ impl World {
                 }
             }
             match self.entities[i].order {
-                Command::Stop | Command::Buy(_) | Command::Learn(_) | Command::Cast { .. } => {}
+                Command::Stop
+                | Command::Buy(_)
+                | Command::Sell { .. }
+                | Command::ActivateHealingFlask { .. }
+                | Command::ActivateSprintBoots { .. }
+                | Command::Learn(_)
+                | Command::Cast { .. } => {}
                 Command::MoveTo(p) => {
                     self.walk_diagnosed::<DIAG>(i, p, events, diagnostics.as_deref_mut());
                 }
@@ -1110,7 +1264,8 @@ impl World {
                     }
                     let source = e.id;
                     let team = e.team;
-                    let bonus = if e.status.empowered > 0 {
+                    let bonus = if e.status.empowered > 0 && e.status.agent_crystal_until.is_none()
+                    {
                         e.status.empower_damage
                     } else {
                         0.
@@ -1150,22 +1305,57 @@ impl World {
                         )
                     };
                     let haste = e.status.haste_until > self.tick;
+                    let twirl = self
+                        .abilities
+                        .ringo_b
+                        .as_ref()
+                        .zip(e.status.twirl_rank.filter(|_| haste));
                     let crystal = e.kind == Kind::Crystal;
                     // Karas's 4.13 basic-attack coefficient is explicitly named in official_rules.
-                    let karas_crystal = if e.type_id == EntityTemplate::Karas.as_raw() {
+                    let bonus_crystal = if e.type_id == EntityTemplate::Karas.as_raw() {
                         shop::mitigated(
                             e.item_stats.crystal * self.abilities.karas_basic_crystal_ratio,
+                            t.stats.shield,
+                            e.item_stats.shield_pierce,
+                        )
+                    } else if let Some((b, r)) = twirl {
+                        shop::mitigated(
+                            b.damage.at(r, e.item_stats.crystal, 0.),
                             t.stats.shield,
                             e.item_stats.shield_pierce,
                         )
                     } else {
                         0.
                     };
+                    let bonus_crystal = bonus_crystal
+                        + if e.status.empowered > 0
+                            && e.status
+                                .agent_crystal_until
+                                .is_some_and(|until| until > self.tick)
+                        {
+                            shop::mitigated(
+                                e.status.empower_damage,
+                                t.stats.shield,
+                                e.item_stats.shield_pierce,
+                            )
+                        } else {
+                            0.
+                        };
                     let npc_launch = self.npc_launch_delay(e, t);
                     let ranged = e.kind == Kind::Hero && e.stats.range >= 4.;
                     let travel = (e.position.dist(t.position) * TICK_HZ as f32 / 18.).ceil() as u64;
-                    let interval =
-                        (if haste { 10.0 } else { 17.0 }) / (1. + e.item_stats.attack_speed);
+                    let speed =
+                        e.stats
+                            .physiology
+                            .filter(|p| p.attack_speed > 0.)
+                            .map_or(1., |p| {
+                                p.attack_speed
+                                    + f32::from(e.level.saturating_sub(1)) * p.attack_speed_growth
+                            });
+                    let interval = (if haste && twirl.is_none() { 10.0 } else { 17.0 })
+                        / (speed
+                            + e.item_stats.attack_speed
+                            + twirl.map_or(0., |(b, r)| b.attack_speed[r]));
                     self.entities[i].winding = None;
                     self.entities[i].next_attack = self.tick + interval.ceil() as u64;
                     self.entities[i].status.empowered =
@@ -1203,14 +1393,14 @@ impl World {
                     } else {
                         self.hurt(source, team, j, damage, school, events);
                     }
-                    if karas_crystal > 0. {
+                    if bonus_crystal > 0. {
                         if ranged {
                             self.effects.push(SpellEffect::impact(
                                 self.tick + travel,
                                 source,
                                 team,
                                 id,
-                                karas_crystal,
+                                bonus_crystal,
                                 DamageSchool::Crystal,
                             ));
                         } else {
@@ -1218,7 +1408,7 @@ impl World {
                                 source,
                                 team,
                                 j,
-                                karas_crystal,
+                                bonus_crystal,
                                 DamageSchool::Crystal,
                                 events,
                             );

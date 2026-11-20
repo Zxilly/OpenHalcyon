@@ -40,6 +40,20 @@ impl AralInventory {
         self.0[first_free..].iter().all(Option::is_none)
     }
 
+    pub(super) fn remove_held(&mut self, held: HeldItem) -> Result<(), &'static str> {
+        let slot = self
+            .0
+            .iter_mut()
+            .find(|slot| {
+                slot.is_some_and(|item| {
+                    item.instance == held.instance && item.template == held.kind.template()
+                })
+            })
+            .ok_or("item slot missing")?;
+        *slot = None;
+        Ok(())
+    }
+
     pub(super) fn with_purchase(&self, consumed: &[HeldItem], granted: HeldItem) -> Option<Self> {
         let mut next = self.clone();
         for item in consumed {

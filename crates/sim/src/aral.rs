@@ -51,7 +51,7 @@ impl Units {
             "VainTurret",
         ]) {
             if let Some(unit) = data.unit(name) {
-                *stats = Stats::load(stats.id, unit);
+                *stats = Stats::load(stats.id, unit, data);
             }
         }
     }

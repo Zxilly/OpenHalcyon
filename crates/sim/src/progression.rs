@@ -103,7 +103,14 @@ impl World {
             0.
         };
         t.status.barrier -= absorbed;
-        let amount = (n - absorbed).min(t.hp);
+        let remaining = n - absorbed;
+        let flask_absorbed = if self.tick < t.status.flask_until {
+            remaining.min(t.status.flask_barrier)
+        } else {
+            0.
+        };
+        t.status.flask_barrier -= flask_absorbed;
+        let amount = (remaining - flask_absorbed).min(t.hp);
         if amount <= 0. {
             return;
         }
@@ -186,6 +193,13 @@ impl World {
                 let measured = if matches!(self.layout, Layout::SoloMid { .. }) {
                     self.solo_lane_rewards
                         .and_then(|table| table.for_template(template?))
+                } else if matches!(self.layout, Layout::Aral { .. })
+                    && template.is_some_and(EntityTemplate::is_aral_lane_minion)
+                {
+                    // All three recorded templates pay twice their unit base before proximity sharing.
+                    t.stats
+                        .physiology
+                        .map(|p| ((2. * p.gold_bounty) as u32, 2. * p.xp_bounty))
                 } else {
                     None
                 };

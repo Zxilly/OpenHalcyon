@@ -35,9 +35,9 @@ impl World {
             return Command::MoveTo(home);
         }
         let sensor = if matches!(e.kind, Kind::Tower | Kind::Crystal) {
-            e.stats.range.min(SIGHT)
+            e.stats.range.min(e.stats.sight())
         } else {
-            SIGHT
+            e.stats.sight()
         };
         let mut candidate = None;
         let mut best = (u8::MAX, f32::MAX, u32::MAX);

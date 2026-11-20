@@ -115,7 +115,7 @@ impl World {
             .zip(["Turret5v5", "ArmoryTurret5v5"])
         {
             if let Some(unit) = data.unit(name) {
-                *stats = Stats::load(stats.id, unit);
+                *stats = Stats::load(stats.id, unit, data);
             }
         }
     }

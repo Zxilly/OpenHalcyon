@@ -8,6 +8,80 @@ use std::{
     path::Path,
 };
 
+use halcyon_protocol::ce::NativeMode;
+
+/// Gameplay settings records with direct store references used by native queues.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
+pub enum StoreSettings {
+    #[serde(rename = "Standard_HF")]
+    HalcyonFold,
+    #[serde(rename = "Standard_5v5")]
+    Five,
+    #[serde(rename = "Practice_5v5")]
+    Practice,
+    #[serde(rename = "Blitz_3v3_Revamp")]
+    BlitzRevamp,
+}
+impl StoreSettings {
+    pub const fn key(self) -> &'static str {
+        match self {
+            Self::HalcyonFold => "Standard_HF",
+            Self::Five => "Standard_5v5",
+            Self::Practice => "Practice_5v5",
+            Self::BlitzRevamp => "Blitz_3v3_Revamp",
+        }
+    }
+    pub const fn for_mode(mode: NativeMode) -> Option<Self> {
+        match mode {
+            NativeMode::Aral => None,
+            NativeMode::RankedFold => Some(Self::HalcyonFold),
+            NativeMode::Practice => Some(Self::Practice),
+            NativeMode::CasualFive
+            | NativeMode::RankedFive
+            | NativeMode::SoloBots
+            | NativeMode::CoopBots
+            | NativeMode::Private
+            | NativeMode::PrivateDraft
+            | NativeMode::PrivateBots => Some(Self::Five),
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+pub enum ItemTuning {
+    Move,
+    Sprint,
+    SprintDuration,
+    Duration,
+    Barrier,
+    HealAmount,
+    EnergyPercent,
+}
+impl ItemTuning {
+    pub const fn key(self) -> &'static str {
+        match self {
+            Self::Move => "MOVE",
+            Self::Sprint => "SPRINT",
+            Self::SprintDuration => "SPRINT_DURATION",
+            Self::Duration => "DURATION",
+            Self::Barrier => "BARRIER",
+            Self::HealAmount => "HEAL_AMOUNT",
+            Self::EnergyPercent => "ENERGY_PERCENT",
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+pub enum ItemActiveParameter {
+    Cooldown,
+}
+impl ItemActiveParameter {
+    pub const fn key(self) -> &'static str {
+        match self {
+            Self::Cooldown => "Cooldown",
+        }
+    }
+}
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ItemStore {
     Blitz3v3,
