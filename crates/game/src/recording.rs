@@ -118,6 +118,7 @@ fn sanitize(m: &mut Message) -> bool {
         0x3f2
             if m.body.len() == 122
                 && (super::compact::recordable_mid_structure(&m.body)
+                    || super::compact::recordable_minion_birth(&m.body)
                     || (matches!(
                         u32::from_be_bytes(m.body[..4].try_into().unwrap()),
                         335..=338

@@ -13,7 +13,7 @@ The Android CE 147219 Solo recording provides positions in native X/Z world unit
 
 The opening hero placements correspond to slots 14–18 and 19–23. Ownership and actor IDs remain those of the matchmaking roster, including when seats from the two teams alternate. In all 14 local replay chunks combined, compact minion declarations with mask 1 at body offset 117 and routes 1 or 4 at offset 120 contained 25 creation records per side. Their Z was always zero and the recorded vertical height was approximately 0.06. Mask-0 hydration records carry a moving actor's current position and are excluded from the spawn measurement.
 
-Navigation uses a straight, unobstructed mid-lane corridor bounded by X ±101 and Z ±6. These bounds are a project approximation based on the measured opening extrema. The simulator implements all three mid towers and the crystal on each side. Vision, movement checks, bot rallying and retreat, ability range checks and attacks use these same world positions. Each hero respawns at its assigned opening slot. Base regeneration and the shop use the existing three-unit radius around each friendly opening pad. Combat timings and wave composition continue to follow the simulation rules. Side lanes, jungle geometry and original terrain collision are outside this layout.
+Navigation uses a straight, unobstructed mid-lane corridor bounded by X ±101 and Z ±6. These bounds are a project approximation based on the measured opening extrema. The simulator implements all three mid towers and the crystal on each side. Vision, movement checks, bot rallying and retreat, ability range checks and attacks use these same world positions. Each hero respawns at its assigned opening slot. Base regeneration and the shop use the existing three-unit radius around each friendly opening pad. Mid-lane wave timing follows the native replay clock. Side lanes, jungle geometry and original terrain collision are outside this layout.
 
 Run `cargo test --locked -p halcyon-sim --lib layout::tests` to check the team slots, shop range, movement, vision, cast cooldown and respawn. The bot test follows the first wave and advances both teams until one actually destroys the opposing crystal.
 
@@ -32,3 +32,23 @@ gets a full declaration for each visible living tower with current health,
 native slot and actor ID. The fallback uses a team-facing heading. The
 original rotating aim and timer fields for arbitrary runtime states remain
 unverified. Crystals retain their compact geometry across all fourteen chunks.
+
+### Mid-lane waves
+
+The Solo replay's `03EF` start marker is at replay time 5.116 s. Routes 1
+and 4 each show 25 mask-1 minion births in five waves. Relative to the marker,
+the first home-side births were at 19.113, 44.093, 69.404, 94.269 and
+119.401 s. The host starts each side at game second 19, repeats every 25 s,
+and emits one minion per side per second for five seconds. Waves 1, 2, 3
+and 5 contained templates 336, 336, 337, 335, 335. Wave 4 contained 336,
+336, 335, 335, 338. The host repeats that four-wave cycle beyond the observed
+five waves. The single recording ends before a sixth wave is due.
+
+Of 457 mask-0 minion declarations across all lanes, 156 belong to these two
+routes. All 156 have level byte 1. Every included template had its delivered
+base maximum HP (475, 575, 880 and 950 for 335 through 338). The host retains
+those stats after the observed period. A fresh, pristine mid-lane birth can
+use mask 1 at X −70 or +70, Z 0. An already moving or wounded minion first
+seen later, or restored after reconnect, instead receives mask 0 with its
+current position, HP and maximum HP. A nonstandard maximum HP also requires
+explicit values at birth. The two routes consume no side-lane spawn slots.

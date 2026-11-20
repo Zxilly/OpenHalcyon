@@ -71,9 +71,35 @@ pub(super) fn recordable_mid_structure(body: &[u8]) -> bool {
     body[..36] == expected.body[..36] && body[44..] == expected.body[44..]
 }
 
-/// Center-lane snapshot with numeric fields, even at first visibility. Mask 1
-/// would substitute native defaults and lose the simulation's scaled health.
-pub(super) fn minion(entity: &Entity, slot: u8) -> Option<Message> {
+/// Fresh births use the native template defaults at the measured route anchor.
+fn pristine_minion(template: u32, actor: u32, slot: u8, team: u8) -> Message {
+    let mut b = [0; BODY_LEN];
+    put_word(&mut b, 0, template);
+    put_word(&mut b, 4, 0xeb39ce55);
+    put_word(&mut b, 8, actor);
+    put_word(&mut b, 12, if team == 0 { -70f32 } else { 70f32 }.to_bits());
+    put_word(&mut b, 16, 0x3d75_be29);
+    put_word(&mut b, 32, 1f32.to_bits());
+    b[88..96].fill(1);
+    b[97 + usize::from(team)] = 1;
+    put_word(&mut b, 112, u32::MAX);
+    b[116..122].copy_from_slice(&[slot, 1, 0, 1, if team == 0 { 1 } else { 4 }, team + 1]);
+    Message::new(0x3f2, b)
+}
+
+pub(super) fn recordable_minion_birth(b: &[u8]) -> bool {
+    if b.len() != BODY_LEN || !(52..200).contains(&b[116]) || !(1..=2).contains(&b[121]) {
+        return false;
+    }
+    let template = u32::from_be_bytes(b[..4].try_into().unwrap());
+    let actor = u32::from_be_bytes(b[8..12].try_into().unwrap());
+    matches!(template, 335..=338)
+        && (2122..65535).contains(&actor)
+        && pristine_minion(template, actor, b[116], b[121] - 1).body == b
+}
+
+/// Subsequent visibility entries and reconnects carry current numeric state.
+pub(super) fn minion(entity: &Entity, slot: u8, fresh: bool) -> Option<Message> {
     if entity.kind != Kind::Minion
         || !matches!(entity.type_id, 335..=338)
         || entity.team > 1
@@ -88,6 +114,15 @@ pub(super) fn minion(entity: &Entity, slot: u8) -> Option<Message> {
     {
         return None;
     }
+    let default_hp = [475., 575., 880., 950.][usize::from(entity.type_id - 335)];
+    if fresh && entity.level == 1 && entity.hp == default_hp && entity.max_hp == default_hp {
+        return Some(pristine_minion(
+            u32::from(entity.type_id),
+            u32::from(wire_id(entity.id)),
+            slot,
+            entity.team,
+        ));
+    }
     let mut body = [0; BODY_LEN];
     put_word(&mut body, 0, u32::from(entity.type_id));
     put_word(&mut body, 4, 0xeb39ce55);
@@ -95,7 +130,7 @@ pub(super) fn minion(entity: &Entity, slot: u8) -> Option<Message> {
     let forward = if entity.team == 0 { 1.0_f32 } else { -1.0 };
     for (offset, value) in [
         (12, entity.position.x),
-        (16, 0.06),
+        (16, f32::from_bits(0x3d75_be29)),
         (20, entity.position.y),
         (24, forward),
         (36, entity.hp),
@@ -163,14 +198,18 @@ mod tests {
 
     #[test]
     fn recording_accepts_only_the_registered_mid_lane_opening_profile() {
-        let encoded = halcyon_protocol::SoloStructure::at_slot(27).unwrap().message(2065);
+        let encoded = halcyon_protocol::SoloStructure::at_slot(27)
+            .unwrap()
+            .message(2065);
         assert!(recordable_mid_structure(&encoded.body));
         for offset in [0, 4, 8, 16, 24, 28, 64, 97, 116, 121] {
             let mut other = encoded.body.clone();
             other[offset] ^= 1;
             assert!(!recordable_mid_structure(&other), "changed byte {offset}");
         }
-        let side_lane = halcyon_protocol::SoloStructure::at_slot(25).unwrap().message(2051);
+        let side_lane = halcyon_protocol::SoloStructure::at_slot(25)
+            .unwrap()
+            .message(2051);
         assert!(!recordable_mid_structure(&side_lane.body));
     }
 

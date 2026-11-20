@@ -809,6 +809,8 @@ impl World {
         }
         if matches!(self.layout, Layout::Aral { .. }) {
             self.spawn_aral_wave(events);
+        } else if matches!(self.layout, Layout::SoloMid { .. }) {
+            self.spawn_solo_mid_wave(events);
         } else if self.tick >= self.first_wave
             && (self.tick - self.first_wave).is_multiple_of(self.wave_interval)
         {

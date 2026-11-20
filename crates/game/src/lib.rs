@@ -1408,7 +1408,7 @@ impl Room {
         let postgame = result_frames::aral_lost_crystal(self.legacy_aral(), &self.world);
         let legacy_aral = self.legacy_aral();
         let control_stream = legacy_aral || native_solo;
-        let born: HashSet<u32> = if legacy_aral {
+        let born: HashSet<u32> = if control_stream {
             events
                 .iter()
                 .filter_map(|event| match event {
@@ -1438,11 +1438,12 @@ impl Room {
                 if e.hp > 0. && self.world.visible(team as u8, e) {
                     if !previous.contains(&e.id) {
                         let message = if native_solo {
-                            self.solo_slots.declaration(
+                            self.solo_slots.declaration_at(
                                 &self.world,
                                 e,
                                 &self.picks,
                                 self.data.as_deref(),
+                                born.contains(&e.id),
                             )
                         } else if legacy_aral {
                             self.aral_slots.declaration(

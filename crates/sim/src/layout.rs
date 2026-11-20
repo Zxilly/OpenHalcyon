@@ -119,6 +119,30 @@ impl World {
         }
     }
 
+    /// The native Solo replay has independent, staggered home/away mid lanes.
+    pub(super) fn spawn_solo_mid_wave(&mut self, events: &mut Vec<Event>) {
+        let Some(elapsed) = self.tick.checked_sub(19 * TICK_HZ) else {
+            return;
+        };
+        let offset = elapsed % (25 * TICK_HZ);
+        if !offset.is_multiple_of(TICK_HZ) {
+            return;
+        }
+        let wave = elapsed / (25 * TICK_HZ) + 1;
+        let lineup = if wave.is_multiple_of(4) {
+            [4, 4, 5, 5, 7]
+        } else {
+            [4, 4, 6, 5, 5]
+        };
+        let Some(&stat) = lineup.get((offset / TICK_HZ) as usize) else {
+            return;
+        };
+        for team in 0..2 {
+            let id = self.spawn(team, Kind::Minion, stat, self.layout.wave(team, 0), false);
+            events.push(Event::Spawn { id });
+        }
+    }
+
     /// Install the measured Solo mid-lane coordinates after team assignment and before the opening tick.
     pub fn use_solo_mid_lane(&mut self) -> Result<(), String> {
         if self.tick != 0 {
@@ -277,6 +301,54 @@ mod tests {
     }
 
     #[test]
+    fn first_five_mid_waves_follow_the_game_clock_without_health_growth() {
+        let mut w = World::new(37, 10);
+        w.use_solo_mid_lane().unwrap();
+        let mut counts = [0; 2];
+        for tick in 1..144 * TICK_HZ {
+            let events = w.step();
+            let spawns: Vec<_> = events
+                .iter()
+                .filter_map(|ev| {
+                    if let Event::Spawn { id } = ev {
+                        Some(*id)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            let sec = tick / TICK_HZ;
+            let expected = tick.is_multiple_of(TICK_HZ) && sec >= 19 && (sec - 19) % 25 < 5;
+            assert_eq!(spawns.len(), if expected { 2 } else { 0 }, "tick {tick}");
+            if !expected {
+                continue;
+            }
+            let wave = (sec - 19) / 25;
+            let slot = ((sec - 19) % 25) as usize;
+            let lineup = if wave == 3 {
+                [336, 336, 335, 335, 338]
+            } else {
+                [336, 336, 337, 335, 335]
+            };
+            for (team, id) in spawns.into_iter().enumerate() {
+                let e = &w.entities[w.index(id).unwrap()];
+                assert_eq!((e.team, e.type_id, e.level), (team as u8, lineup[slot], 1));
+                assert_eq!(
+                    e.max_hp,
+                    [475., 575., 880., 950.][usize::from(e.type_id - 335)]
+                );
+                assert_eq!(e.hp, e.max_hp);
+                assert!(
+                    e.position.dist(point(team as u8, 70., 0.))
+                        <= e.stats.speed / TICK_HZ as f32 + 0.001
+                );
+                counts[team] += 1;
+            }
+        }
+        assert_eq!(counts, [25, 25]);
+    }
+
+    #[test]
     fn solo_mid_waves_and_bots_reach_an_authoritative_crystal_victory() {
         let mut w = World::new(17, 0);
         w.use_solo_mid_lane().unwrap();
@@ -304,7 +376,7 @@ mod tests {
                     })
                     .collect();
                 if !born.is_empty() {
-                    assert_eq!(born.len(), 8);
+                    assert_eq!(born.len(), 2);
                     for e in born {
                         assert!(
                             e.position.dist(point(e.team, 70., 0.))

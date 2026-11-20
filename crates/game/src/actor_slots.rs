@@ -52,12 +52,23 @@ impl ActorSlots {
         picks: &[Pick],
         data: Option<&halcyon_data::GameData>,
     ) -> Option<Message> {
+        self.declaration_at(world, entity, picks, data, false)
+    }
+
+    pub fn declaration_at(
+        &mut self,
+        world: &World,
+        entity: &Entity,
+        picks: &[Pick],
+        data: Option<&halcyon_data::GameData>,
+        fresh: bool,
+    ) -> Option<Message> {
         if !(1..=u32::from(u16::MAX) - 1500).contains(&entity.id) {
             return None;
         }
         if entity.kind == Kind::Minion {
             if let Some(slot) = self.minion(entity.id) {
-                return Some(compact::minion(entity, slot).unwrap_or_else(|| {
+                return Some(compact::minion(entity, slot, fresh).unwrap_or_else(|| {
                     let mut message = messages::spawn(entity, picks, data);
                     set_full(&mut message, slot);
                     message
@@ -165,6 +176,53 @@ mod tests {
         assert_eq!(snapshot.body[36..40], living.hp.to_be_bytes());
         assert_eq!(snapshot.body[40..44], living.max_hp.to_be_bytes());
         assert_eq!(slots.minion(4000), Some(*released));
+    }
+
+    #[test]
+    fn solo_birth_uses_route_defaults_and_rejoin_keeps_slot_with_current_health() {
+        let mut world = World::new(7, 10);
+        world.use_solo_mid_lane().unwrap();
+        let mut slots = ActorSlots::from_roster(&world.entities);
+        for _ in 0..19 * halcyon_sim::TICK_HZ {
+            world.step();
+        }
+        for e in world.entities.iter().filter(|e| e.kind == Kind::Minion) {
+            let birth = slots.declaration_at(&world, e, &[], None, true).unwrap();
+            let b = &birth.body;
+            assert!(compact::recordable_minion_birth(b));
+            assert_eq!(
+                b[12..16],
+                (if e.team == 0 { -70f32 } else { 70f32 }).to_be_bytes()
+            );
+            assert_eq!(b[16..20], 0x3d75_be29u32.to_be_bytes());
+            assert_eq!(b[24..36], [0, 0, 0, 0, 0, 0, 0, 0, 0x3f, 0x80, 0, 0]);
+            assert_eq!(b[36..88], [0; 52]);
+            assert_eq!(
+                [b[117], b[119], b[120], b[121]],
+                [1, 1, if e.team == 0 { 1 } else { 4 }, e.team + 1]
+            );
+            let mut live = e.clone();
+            live.hp -= 17.;
+            for fresh in [false, true] {
+                let snapshot = slots
+                    .declaration_at(&world, &live, &[], None, fresh)
+                    .unwrap();
+                assert_eq!(snapshot.body[116], b[116]);
+                assert_eq!(snapshot.body[117], 0);
+                assert_eq!(snapshot.body[36..40], 558f32.to_be_bytes());
+                assert_eq!(snapshot.body[40..44], 575f32.to_be_bytes());
+                assert!(!compact::recordable_minion_birth(&snapshot.body));
+            }
+            live.hp = live.max_hp + 100.;
+            live.max_hp = live.hp;
+            assert_eq!(
+                slots
+                    .declaration_at(&world, &live, &[], None, true)
+                    .unwrap()
+                    .body[117],
+                0
+            );
+        }
     }
 
     #[test]

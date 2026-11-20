@@ -198,7 +198,7 @@ impl ObserverScene {
             let actor = &world.entities[i];
             let replacement = match self {
                 Self::Aral(slots) => slots.declaration(world, actor, picks, data, 0, fresh_spawns),
-                Self::Solo(slots) => slots.declaration(world, actor, picks, data),
+                Self::Solo(slots) => slots.declaration_at(world, actor, picks, data, fresh_spawns),
             };
             if let Some(m) = replacement {
                 *message = m;
