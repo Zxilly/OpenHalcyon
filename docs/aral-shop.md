@@ -53,3 +53,90 @@ receives the two remaining instances with restored balances and modifiers.
 This uses an automated game client. Native shop UI presentation and item
 passive effects beyond these receipts are outside this verification.
 [Encrypted-room regression](../crates/game/src/aral_shop_test.rs)
+
+## Purchases visible to other seats
+
+The seven room streams contain 342 server `0439` purchase records and 425
+`043D` grants. Pairing each purchase to its subsequent same-actor,
+same-template grant before the next purchase yields 341 transactions across
+63 templates. One Weapon Blade record preceded an infusion purchase without
+an intervening Weapon Blade grant. A grant alone does not establish a debit.
+The table uses mode-0 stat-6 debits, identifies each removed `044B` instance
+by its earlier grant, and compares the ordered equipment modifiers with the
+delivered item definitions. The 50 witnessed catalog entries cover 256
+transactions and 91 distinct debit/component profiles. For all 256, the
+ordered negative modifiers in the supported stat categories matched the
+bonuses of exactly the removed component instances.
+
+The full price is the published combine fee plus the value of each required
+component. Each held instance can apply to one branch. A completed branch
+takes precedence over its leaves. Two branches can consume two separately
+owned copies of the same leaf. The purchase checks capacity after removing
+components. Failure preserves the balance, instances and modifiers. First
+visibility and reconnection project the authoritative inventory.
+
+| Template | Equipment | Full price | Matched receipts | Observed debits |
+|---:|---|---:|---:|---|
+| 458 | Weapon Blade | 300 | 11 | 300 |
+| 459 | Crystal Bit | 300 | 19 | 300 |
+| 460 | Swift Shooter | 300 | 10 | 300 |
+| 461 | Six Sins | 650 | 8 | 350, 650 |
+| 462 | Eclipse Prism | 650 | 10 | 350, 650 |
+| 463 | Blazing Salvo | 700 | 12 | 400, 700 |
+| 464 | Sorrowblade | 3100 | 5 | 1300, 2150, 2500, 2800, 3100 |
+| 465 | Shatterglass | 3000 | 10 | 1300, 1650, 1950, 2400, 3000 |
+| 467 | Oakheart | 300 | 3 | 300 |
+| 468 | Dragonheart | 650 | 0 | component definition only |
+| 469 | Light Armor | 300 | 4 | 300 |
+| 470 | Coat Of Plates | 750 | 1 | 750 |
+| 471 | Metal Jacket | 1900 | 1 | 1900 |
+| 472 | Energy Battery | 300 | 8 | 300 |
+| 473 | Hourglass | 250 | 3 | 250 |
+| 474 | Void Battery | 700 | 3 | 400, 700 |
+| 475 | Chronograph | 800 | 6 | 800 |
+| 476 | Clockwork | 2400 | 2 | 1600, 2100 |
+| 477 | Sprint Boots | 300 | 16 | 300 |
+| 478 | Travel Boots | 650 | 7 | 350, 650 |
+| 479 | Serpent Mask | 2800 | 5 | 850, 1350, 2000, 2800 |
+| 485 | Reflex Block | 700 | 4 | 400, 700 |
+| 486 | Frostburn | 2700 | 3 | 1350, 2700 |
+| 487 | Fountain of Renewal | 2100 | 2 | 500, 700 |
+| 488 | Crucible | 2000 | 1 | 1300 |
+| 489 | Journey Boots | 1400 | 1 | 1100 |
+| 490 | Halcyon Chargers | 1400 | 9 | 50, 800, 1100, 1400 |
+| 492 | Aftershock | 2600 | 1 | 2600 |
+| 497 | War Treads | 1600 | 3 | 950, 1300, 1600 |
+| 498 | Atlas Pauldron | 1700 | 1 | 1700 |
+| 499 | Book Of Eulogies | 300 | 6 | 300 |
+| 500 | Barbed Needle | 800 | 10 | 500, 800 |
+| 501 | Light Shield | 300 | 3 | 300 |
+| 502 | Kinetic Shield | 750 | 3 | 750 |
+| 504 | Lifespring | 800 | 3 | 500, 800 |
+| 505 | Heavy Steel | 1150 | 13 | 850, 1150 |
+| 507 | Breaking Point | 2700 | 2 | 1250, 2700 |
+| 509 | Alternating Current | 2800 | 6 | 1750, 1800, 2800 |
+| 511 | Eve Of Harvest | 2600 | 2 | 1900, 2300 |
+| 512 | Heavy Prism | 1050 | 11 | 750, 1050 |
+| 513 | Stormguard Banner | 600 | 5 | 600 |
+| 516 | Contraption | 2100 | 1 | 1500 |
+| 518 | Flaregun | 600 | 2 | 600 |
+| 519 | Stormcrown | 2400 | 1 | 1000 |
+| 520 | Poisoned Shiv | 2750 | 1 | 1950 |
+| 522 | Spellfire | 2700 | 3 | 1000, 2100, 2700 |
+| 523 | Dragon's Eye | 3000 | 2 | 2350, 3000 |
+| 524 | Spellsword | 2800 | 1 | 2800 |
+| 525 | Slumbering Husk | 2100 | 2 | 1050, 2100 |
+| 538 | Warmail | 800 | 4 | 500, 800 |
+| 539 | Seraphic Shell | 1900 | 6 | 1150, 1200, 1600 |
+
+Heavy Prism is the intermediate branch of Alternating Current. All eight
+observed Energy Battery purchases granted +1.5 energy regeneration as well
+as +100 maximum energy. Dragonheart enters the table through its published
+recipe and attributes. Its full value reconciles the final-item debits.
+
+The simulator applies the equipment's supported HP, energy, regeneration,
+weapon power, crystal power, armor, shield, attack speed and cooldown
+modifiers. Items requiring timed infusions, consumable charges, critical
+hits, penetration or additional unmodeled modifier types remain outside
+this table. Passive procs, deployables and on-use effects need independently
+established triggers.

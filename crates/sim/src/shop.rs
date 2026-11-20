@@ -18,6 +18,41 @@ pub enum BasicItem {
     TravelBoots,
     AlternatingCurrent,
     StormguardBanner,
+    EclipsePrism,
+    Sorrowblade,
+    Shatterglass,
+    CoatOfPlates,
+    MetalJacket,
+    VoidBattery,
+    Clockwork,
+    SerpentMask,
+    ReflexBlock,
+    Frostburn,
+    FountainOfRenewal,
+    Crucible,
+    JourneyBoots,
+    HalcyonChargers,
+    Aftershock,
+    WarTreads,
+    AtlasPauldron,
+    BookOfEulogies,
+    BarbedNeedle,
+    KineticShield,
+    Lifespring,
+    BreakingPoint,
+    EveOfHarvest,
+    HeavyPrism,
+    Contraption,
+    Flaregun,
+    Stormcrown,
+    PoisonedShiv,
+    Spellfire,
+    DragonsEye,
+    Spellsword,
+    SlumberingHusk,
+    Warmail,
+    SeraphicShell,
+    Dragonheart,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HeldItem {
@@ -61,9 +96,7 @@ const fn def(
     }
 }
 
-// Alternating Current's Heavy Prism branch contains Crystal Bit. This shop
-// supports buying the observed leaf and charges the missing Prism combine fee.
-const OFFERS: [Definition; 16] = [
+const OFFERS: [Definition; 51] = [
     def(WeaponBlade, 458, "Item_WeaponBlade", 300, &[], &[(4, 10.)]),
     def(LightArmor, 469, "Item_LightArmor", 300, &[], &[(7, 25.)]),
     def(LightShield, 501, "Item_LightShield", 300, &[], &[(8, 25.)]),
@@ -74,7 +107,7 @@ const OFFERS: [Definition; 16] = [
         "Item_EnergyBattery",
         300,
         &[],
-        &[(2, 100.)],
+        &[(2, 100.), (3, 1.5)],
     ),
     def(
         HeavySteel,
@@ -139,7 +172,7 @@ const OFFERS: [Definition; 16] = [
         509,
         "Item_AlternatingCurrent",
         1050,
-        &[BlazingSalvo, CrystalBit],
+        &[BlazingSalvo, HeavyPrism],
         &[(5, 45.), (15, 0.4)],
     ),
     def(
@@ -149,6 +182,286 @@ const OFFERS: [Definition; 16] = [
         300,
         &[Oakheart],
         &[(0, 150.)],
+    ),
+    def(
+        EclipsePrism,
+        462,
+        "Item_EclipsePrism",
+        350,
+        &[CrystalBit],
+        &[(5, 30.0)],
+    ),
+    def(
+        Sorrowblade,
+        464,
+        "Item_Sorrowblade",
+        1300,
+        &[SixSins, HeavySteel],
+        &[(4, 120.0)],
+    ),
+    def(
+        Shatterglass,
+        465,
+        "Item_Shatterglass",
+        1300,
+        &[EclipsePrism, HeavyPrism],
+        &[(5, 130.0)],
+    ),
+    def(
+        CoatOfPlates,
+        470,
+        "Item_CoatOfPlates",
+        450,
+        &[LightArmor],
+        &[(7, 55.0)],
+    ),
+    def(
+        MetalJacket,
+        471,
+        "Item_MetalJacket",
+        1150,
+        &[CoatOfPlates],
+        &[(7, 95.0)],
+    ),
+    def(
+        VoidBattery,
+        474,
+        "Item_VoidBattery",
+        400,
+        &[EnergyBattery],
+        &[(2, 250.0), (3, 3.0)],
+    ),
+    def(
+        Clockwork,
+        476,
+        "Item_Clockwork",
+        900,
+        &[Chronograph, VoidBattery],
+        &[(5, 30.0), (2, 400.0), (3, 5.0), (25, 0.2)],
+    ),
+    def(
+        SerpentMask,
+        479,
+        "Item_SerpentMask",
+        850,
+        &[HeavySteel, BarbedNeedle],
+        &[(4, 70.0)],
+    ),
+    def(
+        ReflexBlock,
+        485,
+        "Item_ReflexBlock",
+        400,
+        &[Oakheart],
+        &[(0, 150.0)],
+    ),
+    def(
+        Frostburn,
+        486,
+        "Item_Frostburn",
+        1000,
+        &[HeavyPrism, EclipsePrism],
+        &[(5, 90.0)],
+    ),
+    def(
+        FountainOfRenewal,
+        487,
+        "Item_FountainOfRenewal",
+        500,
+        &[Warmail, Lifespring],
+        &[(0, 400.0), (7, 40.0), (8, 40.0)],
+    ),
+    def(
+        Crucible,
+        488,
+        "Item_Crucible",
+        650,
+        &[ReflexBlock, Dragonheart],
+        &[(0, 550.0)],
+    ),
+    def(
+        JourneyBoots,
+        489,
+        "Item_JourneyBoots",
+        750,
+        &[TravelBoots],
+        &[(0, 150.0)],
+    ),
+    def(
+        HalcyonChargers,
+        490,
+        "Item_HalcyonChargers",
+        50,
+        &[TravelBoots, VoidBattery],
+        &[(0, 150.0), (25, 0.1), (2, 250.0), (3, 3.5)],
+    ),
+    def(
+        Aftershock,
+        492,
+        "Item_Aftershock",
+        1150,
+        &[Chronograph, EclipsePrism],
+        &[(5, 30.0), (3, 1.0), (25, 0.15)],
+    ),
+    def(
+        WarTreads,
+        497,
+        "Item_WarTreads",
+        300,
+        &[Dragonheart, TravelBoots],
+        &[(0, 400.0)],
+    ),
+    def(
+        AtlasPauldron,
+        498,
+        "Item_AtlasPauldron",
+        950,
+        &[CoatOfPlates],
+        &[(7, 65.0)],
+    ),
+    def(
+        BookOfEulogies,
+        499,
+        "Item_BookOfEulogies",
+        300,
+        &[],
+        &[(4, 5.0)],
+    ),
+    def(
+        BarbedNeedle,
+        500,
+        "Item_BarbedNeedle",
+        500,
+        &[BookOfEulogies],
+        &[(4, 10.0)],
+    ),
+    def(
+        KineticShield,
+        502,
+        "Item_KineticShield",
+        450,
+        &[LightShield],
+        &[(8, 55.0)],
+    ),
+    def(
+        Lifespring,
+        504,
+        "Item_Lifespring",
+        500,
+        &[Oakheart],
+        &[(0, 200.0)],
+    ),
+    def(
+        BreakingPoint,
+        507,
+        "Item_BreakingPoint",
+        850,
+        &[HeavySteel, BlazingSalvo],
+        &[(4, 50.0), (15, 0.2)],
+    ),
+    def(
+        EveOfHarvest,
+        511,
+        "Item_EveOfHarvest",
+        850,
+        &[VoidBattery, HeavyPrism],
+        &[(5, 60.0), (2, 300.0), (3, 4.0)],
+    ),
+    def(
+        HeavyPrism,
+        512,
+        "Item_HeavyPrism",
+        750,
+        &[CrystalBit],
+        &[(5, 45.0)],
+    ),
+    def(
+        Contraption,
+        516,
+        "Item_Contraption",
+        700,
+        &[Chronograph, Flaregun],
+        &[(0, 450.0), (3, 2.0), (25, 0.2)],
+    ),
+    def(
+        Flaregun,
+        518,
+        "Item_Flaregun",
+        300,
+        &[Oakheart],
+        &[(0, 300.0)],
+    ),
+    def(
+        Stormcrown,
+        519,
+        "Item_Stormcrown",
+        1000,
+        &[StormguardBanner, Chronograph],
+        &[(0, 300.0), (3, 2.0), (25, 0.2)],
+    ),
+    def(
+        PoisonedShiv,
+        520,
+        "Item_PoisonedShiv",
+        1250,
+        &[BlazingSalvo, BarbedNeedle],
+        &[(4, 35.0), (15, 0.35)],
+    ),
+    def(
+        Spellfire,
+        522,
+        "Item_Spellfire",
+        1000,
+        &[HeavyPrism, EclipsePrism],
+        &[(5, 80.0)],
+    ),
+    def(
+        DragonsEye,
+        523,
+        "Item_DragonsEye",
+        1300,
+        &[EclipsePrism, HeavyPrism],
+        &[(5, 75.0)],
+    ),
+    def(
+        Spellsword,
+        524,
+        "Item_Spellsword",
+        200,
+        &[HeavySteel, SixSins, Chronograph],
+        &[(4, 85.0), (25, 0.2), (3, 2.0)],
+    ),
+    def(
+        SlumberingHusk,
+        525,
+        "Item_SlumberingHusk",
+        600,
+        &[KineticShield, CoatOfPlates],
+        &[(7, 55.0), (8, 55.0)],
+    ),
+    def(
+        Warmail,
+        538,
+        "Item_Warmail",
+        200,
+        &[LightArmor, LightShield],
+        &[(7, 30.0), (8, 30.0)],
+    ),
+    def(
+        SeraphicShell,
+        539,
+        "Item_SeraphicShell",
+        450,
+        &[KineticShield, ReflexBlock],
+        &[(8, 95.0), (0, 300.0)],
+    ),
+    def(
+        Dragonheart,
+        468,
+        "Item_Dragonheart",
+        350,
+        &[Oakheart],
+        &[(0, 350.0)],
     ),
 ];
 
@@ -171,17 +484,18 @@ struct Offer {
 }
 #[derive(Serialize)]
 pub(super) struct Shop {
-    offers: [Offer; 16],
-    prism_combine: u32,
+    offers: Vec<Offer>,
 }
 impl Default for Shop {
     fn default() -> Self {
         Self {
-            offers: OFFERS.each_ref().map(|d| Offer {
-                combine: d.combine,
-                bonuses: d.bonuses.to_vec(),
-            }),
-            prism_combine: 750,
+            offers: OFFERS
+                .iter()
+                .map(|d| Offer {
+                    combine: d.combine,
+                    bonuses: d.bonuses.to_vec(),
+                })
+                .collect(),
         }
     }
 }
@@ -216,16 +530,10 @@ impl Shop {
                         .filter(|v| v.is_finite() && *v > 0.)
                         .ok_or_else(|| format!("invalid bonus {}", d.name))?
                         as f32;
-                } else if (d.kind as usize) < 7 {
+                } else if (d.kind as usize) < 7 && d.bonuses[0].0 == *stat {
                     return Err(format!("missing bonus {}", d.name));
                 }
             }
-        }
-        if let Some(prism) = data.items.iter().find(|row| row.id == "Item_HeavyPrism") {
-            shop.prism_combine = prism
-                .cost_a
-                .filter(|v| *v > 0)
-                .ok_or("invalid Heavy Prism combine cost")?;
         }
         Ok(shop)
     }
@@ -240,11 +548,6 @@ impl Shop {
             loaded
         };
         u64::from(combine)
-            + if item == AlternatingCurrent {
-                u64::from(self.prism_combine)
-            } else {
-                0
-            }
             + item
                 .definition()
                 .components
@@ -349,6 +652,140 @@ pub struct ItemStats {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn every_recorded_supported_recipe_debits_and_consumes_the_correct_instances() {
+        for (index, definition) in OFFERS.iter().enumerate() {
+            assert_eq!(definition.kind as usize, index);
+            assert_eq!(
+                BasicItem::from_template(definition.template),
+                Some(definition.kind)
+            );
+        }
+        let profiles: &[(u32, u32, &[u32])] = &[
+            (458, 300, &[]),
+            (459, 300, &[]),
+            (460, 300, &[]),
+            (461, 350, &[458]),
+            (461, 650, &[]),
+            (462, 350, &[459]),
+            (462, 650, &[]),
+            (463, 400, &[460]),
+            (463, 700, &[]),
+            (464, 1300, &[461, 505]),
+            (464, 2150, &[461, 458]),
+            (464, 2500, &[458, 458]),
+            (464, 2800, &[458]),
+            (464, 3100, &[]),
+            (465, 1300, &[462, 512]),
+            (465, 1650, &[459, 512]),
+            (465, 1950, &[512]),
+            (465, 2400, &[459, 459]),
+            (465, 3000, &[]),
+            (467, 300, &[]),
+            (469, 300, &[]),
+            (470, 750, &[]),
+            (471, 1900, &[]),
+            (472, 300, &[]),
+            (473, 250, &[]),
+            (474, 400, &[472]),
+            (474, 700, &[]),
+            (475, 800, &[]),
+            (476, 1600, &[475]),
+            (476, 2100, &[472]),
+            (477, 300, &[]),
+            (478, 350, &[477]),
+            (478, 650, &[]),
+            (479, 850, &[505, 500]),
+            (479, 1350, &[505, 499]),
+            (479, 2000, &[500]),
+            (479, 2800, &[]),
+            (485, 400, &[467]),
+            (485, 700, &[]),
+            (486, 1350, &[512, 459]),
+            (486, 2700, &[]),
+            (487, 500, &[538, 504]),
+            (487, 700, &[469, 501, 504]),
+            (488, 1300, &[485]),
+            (489, 1100, &[477]),
+            (490, 50, &[478, 474]),
+            (490, 800, &[477, 472]),
+            (490, 1100, &[472]),
+            (490, 1100, &[477]),
+            (490, 1400, &[]),
+            (492, 2600, &[]),
+            (497, 950, &[478]),
+            (497, 1300, &[477]),
+            (497, 1600, &[]),
+            (498, 1700, &[]),
+            (499, 300, &[]),
+            (500, 500, &[499]),
+            (500, 800, &[]),
+            (501, 300, &[]),
+            (502, 750, &[]),
+            (504, 500, &[467]),
+            (504, 800, &[]),
+            (505, 850, &[458]),
+            (505, 1150, &[]),
+            (507, 1250, &[505, 460]),
+            (507, 2700, &[]),
+            (509, 1750, &[512]),
+            (509, 1800, &[463, 459]),
+            (509, 2800, &[]),
+            (511, 1900, &[474]),
+            (511, 2300, &[459]),
+            (512, 750, &[459]),
+            (512, 1050, &[]),
+            (513, 600, &[]),
+            (516, 1500, &[518]),
+            (518, 600, &[]),
+            (519, 1000, &[513, 475]),
+            (520, 1950, &[500]),
+            (522, 1000, &[512, 462]),
+            (522, 2100, &[459, 459]),
+            (522, 2700, &[]),
+            (523, 2350, &[462]),
+            (523, 3000, &[]),
+            (524, 2800, &[]),
+            (525, 1050, &[502, 469]),
+            (525, 2100, &[]),
+            (538, 500, &[469]),
+            (538, 800, &[]),
+            (539, 1150, &[502]),
+            (539, 1200, &[485]),
+            (539, 1600, &[501]),
+        ];
+        for &(template, debit, parts) in profiles {
+            let mut w = World::new(7, 6);
+            w.entities[0].position = base(0);
+            w.entities[0].gold = 10_000;
+            // Buy finished branches first so acquiring one never consumes
+            // a separately held leaf from the captured pre-purchase inventory.
+            let mut order: Vec<_> = parts
+                .iter()
+                .enumerate()
+                .map(|(i, &key)| (i, BasicItem::from_template(key).unwrap()))
+                .collect();
+            order.sort_by_key(|&(_, part)| std::cmp::Reverse(w.acquisition_value(part)));
+            let mut held: Vec<_> = order
+                .into_iter()
+                .map(|(i, part)| (i, w.purchase(1, part).unwrap().granted))
+                .collect();
+            held.sort_by_key(|&(i, _)| i);
+            let owned: Vec<_> = held.into_iter().map(|(_, item)| item).collect();
+            let item = BasicItem::from_template(template).unwrap();
+            let original_inventory = w.entities[0].inventory.clone();
+            w.entities[0].gold = debit - 1;
+            assert!(w.purchase(1, item).is_err(), "template {template}");
+            assert_eq!(w.entities[0].inventory, original_inventory);
+            w.entities[0].gold = debit;
+            let result = w.purchase(1, item).unwrap();
+            assert_eq!(result.paid, debit, "template {template}");
+            assert_eq!(result.consumed, owned, "template {template}");
+            assert_eq!(w.entities[0].inventory, [result.granted]);
+            assert_eq!(w.entities[0].gold, 0);
+        }
+    }
+
     #[test]
     fn bought_crystal_power_contributes_the_published_karas_basic_ratio() {
         let mut w = World::new(3, 10);

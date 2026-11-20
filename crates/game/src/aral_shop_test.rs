@@ -44,6 +44,8 @@ pub(super) async fn shop_sequence(
     // Independent seats reproduce the other recorded opening purchases with
     // their own two thousand gold, including a direct, component-free upgrade.
     for (seat, sequence) in [
+        (4, &[(459, 300), (512, 750), (462, 650)][..]),
+        (5, &[(469, 300), (538, 500), (475, 800)][..]),
         (1, &[(505, 1150), (461, 650)][..]),
         (2, &[(513, 600), (477, 300), (475, 800)]),
         (
