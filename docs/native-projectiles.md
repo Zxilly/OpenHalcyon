@@ -29,4 +29,29 @@ In the seven played ARAL matches, no fire ID collided with any declared actor. T
 
 The level here is the source's compact spawn level. All 2,022 level-2 minion records match these six combinations. The codec keeps the float as an operand. For example, only 31 of 1,005 template-287 fires followed within one second by a same-pair impact had any such impact equal to that operand in magnitude. Higher-level minion records showed multiple operands for the same source template and target kind.
 
-For the supported profiles, the host sends `040D` at authoritative launch to active ARAL scenes where both participants are visible and registered. The read-only observer uses its own registered slots. A reconnect receives subsequent launches. The VGR writer retains the supported profiles within the player's delivered stream. Damage remains a separate simulation event. None of the captured tower or lane-minion fires matched a detonation, so the host emits no `0410` for these attacks. The Solo template-340 timing and the point and directed fire variants remain outside this production path. [Network projection](../crates/game/src/npc_projectile.rs) · [Simulation attack resolution](../crates/sim/src/lib.rs)
+For the supported profiles, the host sends `040D` at authoritative launch to active ARAL scenes where both participants are visible and registered. The read-only observer uses its own registered slots. A reconnect receives subsequent launches. The VGR writer retains the supported profiles within the player's delivered stream. Damage remains a separate simulation event. None of the captured tower or lane-minion fires matched a detonation, so the host emits no `0410` for these attacks. The point and directed fire variants remain outside this production path. [Network projection](../crates/game/src/npc_projectile.rs) · [Simulation attack resolution](../crates/sim/src/lib.rs)
+
+## Solo outer towers
+
+Among the 71 tracked launches by template 340, 58 targeted the three lane
+minion templates below. Every one came from a tower declared at slot 9, 11
+or 13. The wire uses the ARAL tower profile word 403962522 and positive zero
+scalar, with Solo operand 113. Each recipient must currently see both actors
+and have declarations for both on its active scene. The two source slots
+repeat that tower's slot, and the last names the particular target. A reused
+minion slot loses its previous binding. The recorder accepts this specific
+Solo shape. No corresponding detonation was observed.
+
+| Minion | Releases matched to launch | Unique paired negative impacts | Median release to launch (s) | Median launch to impact (s) | Host ticks before/after launch |
+|---|---:|---:|---:|---:|---:|
+| 335 ranged | 14 | 12 | 0.091 | 0.357 | 2 / 7 |
+| 336 melee | 28 | 26 | 0.091 | 0.342 | 2 / 7 |
+| 337 siege | 16 | 16 | 0.096 | 0.274 | 2 / 5 |
+
+These are host timing approximations rounded to the nearest 50 ms from the
+paired receive-time medians. Target position samples are sparse. The host
+uses these target classes without estimating projectile speed or borrowing
+ARAL's distance curve. A shot gets its ID at launch and can impact after its
+tower dies. A dead or removed victim takes no subsequent damage. The 13
+recorded shots against three hero templates and towers outside these three
+source slots retain their existing simulation timing.

@@ -1372,8 +1372,10 @@ impl Room {
             }
         }
         self.replicate(&events);
-        if legacy {
+        if legacy || self.solo_scene() {
             npc_projectile::publish(self, &events);
+        }
+        if legacy {
             aral::announcements::publish(self, &events);
         }
         if legacy || self.solo_scene() {

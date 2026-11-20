@@ -1,4 +1,4 @@
-//! Authored tracked fire actions for measured ARAL tower and minion profiles.
+//! Tracked fire actions for measured native tower and minion profiles.
 use halcyon_protocol::{ProjectileAction, ProjectileFire};
 use halcyon_sim::{Entity, Event, Kind, World};
 
@@ -17,6 +17,14 @@ pub(super) struct Shot {
 }
 
 fn profile(source: &Entity, target: &Entity) -> Option<(u32, f32, u16)> {
+    if source.kind == Kind::Tower
+        && source.type_id == 340
+        && matches!(super::compact::structure_slot(source), Some(9 | 11 | 13))
+        && target.kind == Kind::Minion
+        && matches!(target.type_id, 335..=337)
+    {
+        return Some((TOWER_PROFILE, 0., 113));
+    }
     let aral_minion = target.kind == Kind::Minion && matches!(target.type_id, 287..=289);
     if source.kind == Kind::Tower
         && matches!(source.type_id, 300 | 301)
@@ -116,7 +124,9 @@ pub(super) fn publish(room: &mut Room, events: &[Event]) {
             peer.send(Delivery::Private(out));
         }
     }
-    room.publish_observer_projectiles(&shots);
+    if room.legacy_aral() {
+        room.publish_observer_projectiles(&shots);
+    }
 }
 
 pub(super) fn recordable(m: &Message) -> bool {
@@ -129,6 +139,9 @@ pub(super) fn recordable(m: &Message) -> bool {
         return false;
     }
     match (f.profile_word, f.operand) {
+        (TOWER_PROFILE, 113) => {
+            matches!(a, 9 | 11 | 13) && (52..200).contains(&b) && f.values[0].to_bits() == 0
+        }
         (TOWER_PROFILE, 112) => {
             matches!(a,3..=7|11..=15) && (16..200).contains(&b) && f.values[0].to_bits() == 0
         }
@@ -197,6 +210,50 @@ mod tests {
                 &Event::Attack {
                     source: a,
                     target: b
+                }
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn solo_tower_projectile_requires_the_declared_target_and_current_visibility() {
+        let mut world = World::new(1, 10);
+        world.use_solo_mid_lane().unwrap();
+        world.tick = 45 * halcyon_sim::TICK_HZ - 1;
+        world.step();
+        let target = world
+            .entities
+            .iter()
+            .find(|e| e.kind == Kind::Minion && matches!(e.type_id, 335..=337) && e.team == 1)
+            .unwrap()
+            .id;
+        let shot = Shot::from_event(
+            &world,
+            &Event::NpcProjectile {
+                id: 900,
+                source: 510,
+                target,
+            },
+        )
+        .unwrap();
+        let mut view = View::default();
+        register(&mut view, 510, 9);
+        assert!(shot.project(&view, &|_| true).is_none());
+        register(&mut view, target, 53);
+        assert!(shot.project(&view, &|a| a != target).is_none());
+        let m = shot.project(&view, &|_| true).unwrap();
+        assert_eq!(m.body[12..17], [0, 113, 9, 9, 53]);
+        assert!(recordable(&m));
+        register(&mut view, target + 3000, 53);
+        assert!(shot.project(&view, &|_| true).is_none());
+        assert!(
+            Shot::from_event(
+                &world,
+                &Event::NpcProjectile {
+                    id: 901,
+                    source: 510,
+                    target: 2
                 }
             )
             .is_none()

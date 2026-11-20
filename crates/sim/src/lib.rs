@@ -1128,7 +1128,7 @@ impl World {
                     } else {
                         0.
                     };
-                    let npc_launch = self.npc_launch_delay(e);
+                    let npc_launch = self.npc_launch_delay(e, t);
                     let ranged = e.kind == Kind::Hero && e.stats.range >= 4.;
                     let travel = (e.position.dist(t.position) * TICK_HZ as f32 / 18.).ceil() as u64;
                     let interval =

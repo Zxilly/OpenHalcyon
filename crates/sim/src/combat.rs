@@ -513,7 +513,14 @@ impl SpellEffect {
 }
 /// Median launch-to-impact delays by two-unit separation band, quantized to
 /// 20 Hz. The sparse outer bands reuse the last populated band.
-fn npc_flight_ticks(template: u16, distance: f32) -> u64 {
+fn npc_flight_ticks(template: u16, victim: u16, distance: f32) -> u64 {
+    if template == 340 {
+        return match victim {
+            335 | 336 => 7,
+            337 => 5,
+            _ => unreachable!("only measured Solo minion targets schedule a windup"),
+        };
+    }
     let bins = match template {
         287 => [2, 6, 12, 14, 14],
         288 => [2, 6, 10, 10, 10],
@@ -546,7 +553,15 @@ impl World {
             .sum();
         (e.hp - incoming).max(0.)
     }
-    pub(super) fn npc_launch_delay(&self, attacker: &Entity) -> Option<u64> {
+    pub(super) fn npc_launch_delay(&self, attacker: &Entity, victim: &Entity) -> Option<u64> {
+        if matches!(self.layout, Layout::SoloMid { .. }) {
+            return (attacker.kind == Kind::Tower
+                && attacker.type_id == 340
+                && matches!(attacker.id, 510 | 512 | 514)
+                && victim.kind == Kind::Minion
+                && matches!(victim.type_id, 335..=337))
+            .then_some(2);
+        }
         if !matches!(self.layout, Layout::Aral { .. }) {
             return None;
         }
@@ -582,7 +597,7 @@ impl World {
                     return false;
                 }
                 let distance = source.position.dist(victim.position);
-                let ticks = npc_flight_ticks(source.type_id, distance);
+                let ticks = npc_flight_ticks(source.type_id, victim.type_id, distance);
                 let id = self.next_id;
                 self.next_id += 1;
                 v.area = Area::Target(target, DamageSchool::Weapon);
@@ -716,10 +731,62 @@ mod tests {
     }
 
     #[test]
+    fn solo_outer_tower_launches_then_impacts_only_the_measured_minion_profiles() {
+        for (stat, flight) in [(5, 7), (4, 7), (6, 5)] {
+            let mut w = World::new(12, 10);
+            w.use_solo_mid_lane().unwrap();
+            let tower = w.index(510).unwrap();
+            let p = w.entities[tower].position;
+            let target = w.spawn(
+                1,
+                Kind::Minion,
+                stat,
+                Position {
+                    x: p.x + 3.,
+                    y: p.y,
+                },
+                false,
+            );
+            let victim = w.index(target).unwrap();
+            assert_eq!(
+                w.npc_launch_delay(&w.entities[tower], &w.entities[victim]),
+                Some(2)
+            );
+            assert_eq!(w.npc_launch_delay(&w.entities[tower], &w.entities[1]), None);
+            w.entities[tower].order = Command::Attack(target);
+            w.entities[tower].winding = Some((1, target));
+            let events = w.step();
+            assert!(
+                events
+                    .iter()
+                    .any(|e| matches!(e,Event::Attack{source:510,target:t} if *t==target))
+            );
+            for n in 1..=flight + 2 {
+                let events = w.step();
+                assert_eq!(
+                    events.iter().any(
+                        |e| matches!(e,Event::NpcProjectile{source:510,target:t,..} if *t==target)
+                    ),
+                    n == 2
+                );
+                assert_eq!(
+                    events
+                        .iter()
+                        .any(|e| matches!(e,Event::Damage{source:510,target:t,..} if *t==target)),
+                    n == flight + 2
+                );
+                if n == 2 {
+                    w.entities[tower].hp = 0.;
+                }
+            }
+        }
+    }
+
+    #[test]
     fn only_original_aral_ranged_npcs_use_the_measured_delays() {
         let mut w = World::new(3, 6);
         let tower = w.entities.iter().find(|e| e.kind == Kind::Tower).unwrap();
-        assert_eq!(w.npc_launch_delay(tower), None);
+        assert_eq!(w.npc_launch_delay(tower, &w.entities[0]), None);
         w.use_six_human_roster().unwrap();
         w.use_aral_lane().unwrap();
         for _ in 0..18 * TICK_HZ {
@@ -731,12 +798,12 @@ mod tests {
                 287 | 288 => Some(10),
                 _ => None,
             };
-            assert_eq!(w.npc_launch_delay(e), delay);
+            assert_eq!(w.npc_launch_delay(e, &w.entities[0]), delay);
         }
-        assert_eq!(npc_flight_ticks(287, 5.), 12);
-        assert_eq!(npc_flight_ticks(288, 5.), 10);
-        assert_eq!(npc_flight_ticks(300, 5.), 6);
-        assert_eq!(npc_flight_ticks(301, 9.), 14);
+        assert_eq!(npc_flight_ticks(287, 243, 5.), 12);
+        assert_eq!(npc_flight_ticks(288, 243, 5.), 10);
+        assert_eq!(npc_flight_ticks(300, 243, 5.), 6);
+        assert_eq!(npc_flight_ticks(301, 243, 9.), 14);
     }
 
     #[test]
