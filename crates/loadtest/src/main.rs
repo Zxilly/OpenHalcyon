@@ -2,8 +2,15 @@
 use anyhow::{Context, Result, ensure};
 use clap::Parser;
 use halcyon_protocol::{ACK_FRAME, MAX_PAYLOAD, MatchCipher, Message, hello_with_port};
+use halcyon_protocol::{
+    Opcode,
+    ce::{LobbyState, RpcMethod},
+};
 use reqwest::{Certificate, Client};
-use serde_json::{Value, json};
+use serde::{
+    Deserialize, Serialize,
+    de::{DeserializeOwned, IgnoredAny},
+};
 use std::{
     path::PathBuf,
     sync::{
@@ -50,6 +57,28 @@ struct Args {
     #[arg(long)]
     allow_admin_rotation: bool,
 }
+#[derive(Serialize)]
+struct Sample {
+    elapsed_s: f64,
+    steady_s: Option<f64>,
+    opened: u64,
+    initial_rooms: u64,
+    completed: u64,
+    slow_disconnects: u64,
+    clocks_sent: u64,
+    clock_echoes: u64,
+    clock_sequence_errors: u64,
+    end_frames: u64,
+    damage_frames: u64,
+    heal_frames: u64,
+    death_frames: u64,
+    hero_kill_increments: u64,
+    hero_death_increments: u64,
+    frames: u64,
+    gs_bytes: u64,
+    positions: u64,
+    client_commands: u64,
+}
 #[derive(Default)]
 struct Stats {
     frames: AtomicU64,
@@ -70,16 +99,29 @@ struct Stats {
     hero_kill_increments: AtomicU64,
     hero_death_increments: AtomicU64,
 }
+#[derive(Clone, Copy)]
+#[repr(u8)]
+enum HeroCounter {
+    Kills = 41,
+    Deaths = 42,
+}
+
 impl Stats {
     fn received(&self, wire_len: usize, msg: &Message) {
         self.frames.fetch_add(1, Ordering::Relaxed);
         self.bytes.fetch_add(wire_len as u64, Ordering::Relaxed);
-        let counter = match msg.opcode {
-            0x42e => &self.positions,
-            0x430 => &self.death_frames,
-            0x41c if msg.body.get(12) == Some(&41) => &self.hero_kill_increments,
-            0x41c if msg.body.get(12) == Some(&42) => &self.hero_death_increments,
-            0x41e if msg.body.len() >= 12 => {
+        let counter = match msg.known_opcode() {
+            Some(Opcode::Position) => &self.positions,
+            Some(Opcode::ActorDeath) => &self.death_frames,
+            Some(Opcode::StatModifier) if msg.body.get(12) == Some(&(HeroCounter::Kills as u8)) => {
+                &self.hero_kill_increments
+            }
+            Some(Opcode::StatModifier)
+                if msg.body.get(12) == Some(&(HeroCounter::Deaths as u8)) =>
+            {
+                &self.hero_death_increments
+            }
+            Some(Opcode::HealthImpact) if msg.body.len() >= 12 => {
                 let delta = f32::from_be_bytes(msg.body[8..12].try_into().unwrap());
                 if delta < 0. {
                     &self.damage_frames
@@ -100,26 +142,77 @@ struct Api {
     client: Client,
     aral_queue: Arc<tokio::sync::Mutex<()>>,
 }
+const BUILD: &str = "147219";
+
+#[derive(Serialize)]
+struct Request<P> {
+    method: RpcMethod,
+    params: P,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Reply<T> {
+    code: i64,
+    return_value: Option<T>,
+    session_token: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct Identity<T> {
+    #[serde(rename = "playerUUID")]
+    player: T,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LobbyUpdate {
+    state: LobbyState,
+    match_id: Option<String>,
+    host: Option<String>,
+    port: Option<u16>,
+}
+
+#[derive(Serialize)]
+struct LobbySelection<'a> {
+    lobby: &'a str,
+}
+
 impl Api {
-    async fn rpc(&self, method: &str, args: Value) -> Result<Value> {
-        let v: Value = self
+    async fn rpc<P: Serialize, T: DeserializeOwned>(
+        &self,
+        method: RpcMethod,
+        params: P,
+    ) -> Result<Reply<T>> {
+        let name = method.as_str();
+        let reply: Reply<T> = self
             .client
-            .post(format!("{}/JSONRpc/{method}", self.base))
+            .post(format!("{}/JSONRpc/{name}", self.base))
             .header("content-type", "application/x-www-form-urlencoded")
-            .body(json!({"method":method,"params":args}).to_string())
+            .body(serde_json::to_vec(&Request { method, params })?)
             .send()
             .await?
             .error_for_status()?
             .json()
             .await?;
-        ensure!(v["code"] == 0, "{method} returned {}", v["code"]);
-        Ok(v)
+        ensure!(reply.code == 0, "{name} returned {}", reply.code);
+        Ok(reply)
+    }
+    async fn command(&self, method: RpcMethod, params: impl Serialize) -> Result<()> {
+        self.rpc::<_, IgnoredAny>(method, params).await?;
+        Ok(())
+    }
+    async fn update(&self, player: &Player) -> Result<LobbyUpdate> {
+        self.rpc(RpcMethod::Update, [&player.token])
+            .await?
+            .return_value
+            .context("missing lobby update")
     }
     async fn guest(&self) -> Result<Player> {
-        let v = self
-            .rpc(
-                "createGuestPlayer",
-                json!([
+        let guest = self
+            .rpc::<_, Identity<String>>(
+                RpcMethod::CreateGuestPlayer,
+                (
                     "kindred",
                     "en",
                     "US",
@@ -128,26 +221,24 @@ impl Api {
                     "BAKLAVA",
                     "android",
                     "",
-                    "147219",
+                    BUILD,
                     1,
                     "benchmark",
                     "synthetic",
-                    "0"
-                ]),
+                    "0",
+                ),
             )
             .await?;
-        let v = self
-            .rpc(
-                "startSessionForPlayer",
-                json!([v["returnValue"]["playerUUID"]]),
-            )
+        let recovery = guest.return_value.context("missing guest identity")?.player;
+        let reply = self
+            .rpc::<_, Identity<Uuid>>(RpcMethod::StartSessionForPlayer, [recovery])
             .await?;
         Ok(Player {
-            id: v["returnValue"]["playerUUID"]
-                .as_str()
-                .context("missing playerUUID")?
-                .parse()?,
-            token: v["sessionToken"].as_str().context("missing token")?.into(),
+            id: reply
+                .return_value
+                .context("missing public identity")?
+                .player,
+            token: reply.session_token.context("missing token")?,
         })
     }
 }
@@ -177,7 +268,7 @@ impl Socket {
         };
         let mut id = [0; 70];
         id[..36].copy_from_slice(player.to_string().as_bytes());
-        sock.write(Message::new(0x3e8, id)).await?;
+        sock.write(Message::known(Opcode::PlayerUuid, id)).await?;
         Ok(sock)
     }
     async fn write(&mut self, msg: Message) -> Result<()> {
@@ -197,20 +288,20 @@ impl Socket {
         self.stats.received(len + 2, &msg);
         Ok(msg)
     }
-    async fn until(&mut self, op: u16) -> Result<Message> {
+    async fn until(&mut self, op: Opcode) -> Result<Message> {
         timeout(
-            Duration::from_secs(if op == 0x046c { 40 } else { 8 }),
+            Duration::from_secs(if op == Opcode::BeginLoading { 40 } else { 8 }),
             async {
                 loop {
                     let message = self.read().await?;
-                    if message.opcode == op {
+                    if message.is(op) {
                         return Ok(message);
                     }
                 }
             },
         )
         .await
-        .with_context(|| format!("waiting for opcode {op:#06x}"))?
+        .with_context(|| format!("waiting for opcode {:#06x}", op.raw()))?
     }
     async fn play(
         self,
@@ -236,7 +327,7 @@ impl Socket {
                 rd.read_exact(&mut b).await?;
                 let m = cipher.decode(&b)?;
                 stats.received(n + 2, &m);
-                if m.opcode == 0 && m.body.len() >= 4 {
+                if m.is(Opcode::ClockSync) && m.body.len() >= 4 {
                     let time = f32::from_be_bytes(m.body[..4].try_into().unwrap());
                     let index = (time / 0.4).round() as u32;
                     let stride = if game { 5 } else { 1 };
@@ -249,7 +340,9 @@ impl Socket {
                 if !delay.is_zero() {
                     sleep(delay).await;
                 }
-                if m.opcode == 0x03f1 && matches!(m.body.as_slice(), [0, 0, 0, 1 | 2, 0 | 2, 0]) {
+                if m.is(Opcode::TickSyncC)
+                    && matches!(m.body.as_slice(), [0, 0, 0, 1 | 2, 0 | 2, 0])
+                {
                     stats.end_frames.fetch_add(1, Ordering::Relaxed);
                     return Ok(true);
                 }
@@ -269,7 +362,7 @@ impl Socket {
                     Message::clock(index as f32 * 0.4)
                 };
                 wr.write_all(&cipher.encode(&msg)?).await?;
-                if msg.opcode == 0 {
+                if msg.is(Opcode::ClockSync) {
                     stats.clocks_sent.fetch_add(1, Ordering::Relaxed);
                 }
                 stats.writes.fetch_add(1, Ordering::Relaxed);
@@ -290,31 +383,37 @@ async fn aral_streams(
         // Every seat must continuously drain the timed draft roster broadcasts.
         entrants.spawn(async move {
             let mut socket = Socket::connect(&addr, &room, id, stats).await?;
-            let draft = socket.until(0x045a).await?;
+            let draft = socket.until(Opcode::SnapshotAral).await?;
             let roster = halcyon_protocol::AralRoster::new(&draft.body)?;
             let identity = id.to_string();
             let seat = (0..6)
                 .find(|&i| roster.identity(i) == Some(identity.as_bytes()))
                 .context("ARAL player absent from assigned roster")?;
-            socket.until(0x046c).await?;
-            socket.write(Message::new(0x046e, [0; 6])).await?;
+            socket.until(Opcode::BeginLoading).await?;
+            socket
+                .write(Message::known(Opcode::RequestScene, [0; 6]))
+                .await?;
             let mut request = [0; 6];
             request[..4].copy_from_slice(&(1500 + seat as u32).to_be_bytes());
             request[4] = 1;
-            socket.write(Message::new(0x0471, request)).await?;
+            socket
+                .write(Message::known(Opcode::SceneOwner, request))
+                .await?;
             // Peer entry also triggers 046E/0471 notices. Wait for our own actor.
             timeout(Duration::from_secs(10), async {
                 loop {
                     let echoed = socket.read().await?;
-                    if echoed.opcode == 0x0471 && echoed.body == request {
+                    if echoed.is(Opcode::SceneOwner) && echoed.body == request {
                         return Ok::<_, anyhow::Error>(());
                     }
                 }
             })
             .await
             .context("waiting for own ARAL scene confirmation")??;
-            socket.write(Message::new(0x046d, [0; 6])).await?;
-            socket.until(0x03ef).await?;
+            socket
+                .write(Message::known(Opcode::SceneConfirmed, [0; 6]))
+                .await?;
+            socket.until(Opcode::TickSyncA).await?;
             Ok::<_, anyhow::Error>((index, socket))
         });
     }
@@ -332,48 +431,52 @@ async fn aral_streams(
 async fn setup(
     api: &Api,
     players: &[Player],
-    mode: &str,
+    workload: &Workload,
+    group_number: usize,
     stats: &Arc<Stats>,
 ) -> Result<(String, Vec<(Option<Socket>, Socket)>)> {
     // Cohorts use the same native queue. Serialize lobby entry only so that a
     // later cohort cannot consume seats belonging to this one.
-    let group = if mode == "casual_aral" {
+    let group = if matches!(workload, Workload::NativeAral) {
         Some(api.aral_queue.lock().await)
     } else {
         None
     };
+    let queue = workload.queue(group_number);
     for p in players {
-        api.rpc("joinLobby", json!([p.token,{"lobby":mode},"147219"]))
-            .await?;
+        api.command(
+            RpcMethod::JoinLobby,
+            (&p.token, LobbySelection { lobby: &queue }, BUILD),
+        )
+        .await?;
     }
     for p in players {
-        api.rpc("acceptMatch", json!([p.token])).await?;
+        api.command(RpcMethod::AcceptMatch, [&p.token]).await?;
     }
     let mut endpoint = None;
     let mut match_id = None;
     for p in players {
-        let v = api.rpc("update", json!([p.token])).await?;
-        let v = &v["returnValue"];
+        let update = api.update(p).await?;
         ensure!(
-            v["state"] == "playing",
+            update.state == LobbyState::Playing,
             "room hasn't started: {}",
-            v["state"]
+            update.state.as_str()
         );
-        let id = v["matchId"].as_str().context("missing matchId")?.to_owned();
+        let id = update.match_id.context("missing matchId")?;
         if let Some(old) = &match_id {
             ensure!(old == &id, "players assigned to different rooms")
         };
         match_id = Some(id);
         endpoint = Some(format!(
             "{}:{}",
-            v["host"].as_str().context("missing host")?,
-            v["port"].as_u64().context("missing port")?
+            update.host.context("missing host")?,
+            update.port.context("missing port")?
         ));
     }
     let room = match_id.context("no seats")?;
     let addr = endpoint.context("no endpoint")?;
     drop(group);
-    if mode == "casual_aral" {
+    if matches!(workload, Workload::NativeAral) {
         let sockets = aral_streams(players, &addr, &room, stats).await?;
         stats.opened.fetch_add(1, Ordering::Relaxed);
         return Ok((room, sockets));
@@ -381,30 +484,33 @@ async fn setup(
     let mut controls = Vec::new();
     for p in players {
         let mut s = Socket::connect(&addr, &room, p.id, stats.clone()).await?;
-        s.until(0x459).await?;
-        let lock = if mode == "5v5_bots_solo" {
-            0x0463
+        s.until(Opcode::Snapshot5V5).await?;
+        let lock = if matches!(workload, Workload::NativeSolo) {
+            Opcode::LockSelection
         } else {
-            0x0455
+            Opcode::HeroLock
         };
-        s.write(Message::new(lock, [0; 6])).await?;
+        s.write(Message::known(lock, [0; 6])).await?;
         s.until(lock).await?;
         controls.push(s);
     }
     let mut sockets = Vec::new();
     for (p, mut c) in players.iter().zip(controls) {
-        if mode == "5v5_bots_solo" {
-            c.until(0x046c).await?;
-            c.write(Message::new(0x046e, [0; 6])).await?;
-            c.write(Message::new(0x0471, [0, 0, 5, 220, 1, 0])).await?;
-            c.until(0x045c).await?;
-            c.write(Message::new(0x046d, [0; 6])).await?;
-            c.until(0x03ef).await?;
+        if matches!(workload, Workload::NativeSolo) {
+            c.until(Opcode::BeginLoading).await?;
+            c.write(Message::known(Opcode::RequestScene, [0; 6]))
+                .await?;
+            c.write(Message::known(Opcode::SceneOwner, [0, 0, 5, 220, 1, 0]))
+                .await?;
+            c.until(Opcode::SceneReadiness).await?;
+            c.write(Message::known(Opcode::SceneConfirmed, [0; 6]))
+                .await?;
+            c.until(Opcode::TickSyncA).await?;
             sockets.push((None, c));
             continue;
         }
         let mut game = Socket::connect(&addr, &room, p.id, stats.clone()).await?;
-        game.until(0x3f3).await?;
+        game.until(Opcode::EntitySpawn).await?;
         sockets.push((Some(c), game));
     }
     stats.opened.fetch_add(1, Ordering::Relaxed);
@@ -415,6 +521,22 @@ enum Workload {
     NativeSolo,
     NativeAral,
 }
+impl Workload {
+    fn queue(&self, group: usize) -> std::borrow::Cow<'static, str> {
+        match self {
+            Self::NativeAral => "casual_aral".into(),
+            Self::NativeSolo => "5v5_bots_solo".into(),
+            Self::Validation(_) => format!("bench_{group}").into(),
+        }
+    }
+    fn seats(&self) -> usize {
+        match self {
+            Self::NativeAral => 6,
+            Self::NativeSolo => 1,
+            Self::Validation(n) => *n,
+        }
+    }
+}
 async fn room(
     api: Api,
     workload: Workload,
@@ -424,11 +546,7 @@ async fn room(
     stats: Arc<Stats>,
     stop: watch::Receiver<bool>,
 ) -> Result<()> {
-    let (human_count, mode) = match workload {
-        Workload::NativeAral => (6, "casual_aral".to_owned()),
-        Workload::NativeSolo => (1, "5v5_bots_solo".to_owned()),
-        Workload::Validation(n) => (n, format!("bench_{number}")),
-    };
+    let human_count = workload.seats();
     let mut players = Vec::new();
     for _ in 0..human_count {
         players.push(api.guest().await?)
@@ -438,7 +556,7 @@ async fn room(
         if *stop.borrow() {
             return Ok(());
         }
-        let (room_id, sockets) = setup(&api, &players, &mode, &stats).await?;
+        let (room_id, sockets) = setup(&api, &players, &workload, number, &stats).await?;
         round += 1;
         if round == 1 {
             stats.initial_rooms.fetch_add(1, Ordering::Relaxed);
@@ -475,8 +593,8 @@ async fn room(
         let (failed_seat, game_channel, res) = loop {
             let (seat, game, slow, res) = peers.join_next().await.context("no sockets")??;
             if slow && res.is_err() {
-                let state = api.rpc("update", json!([players[0].token])).await?;
-                if state["returnValue"]["state"] == "playing" {
+                let state = api.update(&players[0]).await?;
+                if state.state == LobbyState::Playing {
                     stats.slow_disconnects.fetch_add(1, Ordering::Relaxed);
                     continue;
                 }
@@ -490,22 +608,23 @@ async fn room(
         let until = Instant::now() + Duration::from_secs(3);
         loop {
             let p = &players[0];
-            let v = api.rpc("update", json!([p.token])).await?;
-            if v["returnValue"]["state"] == "post_match"
-                || (allow_admin_rotation && v["returnValue"]["state"] == "menus")
+            let v = api.update(p).await?;
+            if v.state == LobbyState::PostMatch
+                || (allow_admin_rotation && v.state == LobbyState::Menus)
             {
                 break;
             }
             ensure!(
                 Instant::now() < until,
                 "socket ended before settlement: group={number} round={round} room={room_id} seat={failed_seat} game={game_channel} state={} result={res:?}",
-                v["returnValue"]["state"]
+                v.state.as_str()
             );
             sleep(Duration::from_millis(100)).await;
         }
         peers.shutdown().await;
         for p in &players {
-            api.rpc("notifyExitPostMatch", json!([p.token])).await?;
+            api.command(RpcMethod::NotifyExitPostMatch, [&p.token])
+                .await?;
         }
         stats.completed.fetch_add(1, Ordering::Relaxed);
     }
@@ -579,18 +698,28 @@ async fn main() -> Result<()> {
                 || started.elapsed() < Duration::from_secs(90_u64.saturating_add(a.ramp_seconds)),
             "startup deadline"
         );
-        let sample = json!({
-            "elapsed_s":started.elapsed().as_secs_f64(),"steady_s":full.map(|t|t.elapsed().as_secs_f64()),
-            "opened":opened,"initial_rooms":established,"completed":stats.completed.load(Ordering::Relaxed),
-            "slow_disconnects":stats.slow_disconnects.load(Ordering::Relaxed),
-            "clocks_sent":stats.clocks_sent.load(Ordering::Relaxed),"clock_echoes":stats.clock_echoes.load(Ordering::Relaxed),
-            "clock_sequence_errors":stats.clock_sequence_errors.load(Ordering::Relaxed),"end_frames":stats.end_frames.load(Ordering::Relaxed),
-            "damage_frames":stats.damage_frames.load(Ordering::Relaxed),"heal_frames":stats.heal_frames.load(Ordering::Relaxed),"death_frames":stats.death_frames.load(Ordering::Relaxed),
-            "hero_kill_increments":stats.hero_kill_increments.load(Ordering::Relaxed),"hero_death_increments":stats.hero_death_increments.load(Ordering::Relaxed),
-            "frames":stats.frames.load(Ordering::Relaxed),"gs_bytes":stats.bytes.load(Ordering::Relaxed),
-            "positions":stats.positions.load(Ordering::Relaxed),"client_commands":stats.writes.load(Ordering::Relaxed)
-        });
-        println!("{sample}");
+        let sample = Sample {
+            elapsed_s: started.elapsed().as_secs_f64(),
+            steady_s: full.map(|t| t.elapsed().as_secs_f64()),
+            opened,
+            initial_rooms: established,
+            completed: stats.completed.load(Ordering::Relaxed),
+            slow_disconnects: stats.slow_disconnects.load(Ordering::Relaxed),
+            clocks_sent: stats.clocks_sent.load(Ordering::Relaxed),
+            clock_echoes: stats.clock_echoes.load(Ordering::Relaxed),
+            clock_sequence_errors: stats.clock_sequence_errors.load(Ordering::Relaxed),
+            end_frames: stats.end_frames.load(Ordering::Relaxed),
+            damage_frames: stats.damage_frames.load(Ordering::Relaxed),
+            heal_frames: stats.heal_frames.load(Ordering::Relaxed),
+            death_frames: stats.death_frames.load(Ordering::Relaxed),
+            hero_kill_increments: stats.hero_kill_increments.load(Ordering::Relaxed),
+            hero_death_increments: stats.hero_death_increments.load(Ordering::Relaxed),
+            frames: stats.frames.load(Ordering::Relaxed),
+            gs_bytes: stats.bytes.load(Ordering::Relaxed),
+            positions: stats.positions.load(Ordering::Relaxed),
+            client_commands: stats.writes.load(Ordering::Relaxed),
+        };
+        println!("{}", serde_json::to_string(&sample)?);
         if full.is_some_and(|t| t.elapsed() >= Duration::from_secs(a.seconds)) {
             break;
         }
@@ -598,4 +727,101 @@ async fn main() -> Result<()> {
     stop.send_replace(true);
     workers.shutdown().await;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::{
+        io::{AsyncBufReadExt, BufReader},
+        net::TcpListener,
+    };
+
+    #[tokio::test]
+    async fn guest_session_and_lobby_use_the_public_wire_contract() -> Result<()> {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await?;
+        let base = format!("http://{}", listener.local_addr()?);
+        let server = tokio::spawn(async move {
+            for (name, params, body) in [
+                (
+                    "createGuestPlayer",
+                    r#"["kindred","en","US","production","en","BAKLAVA","android","","147219",1,"benchmark","synthetic","0"]"#,
+                    r#"{"code":0,"returnValue":{"playerUUID":"recovery-fixture"},"sessionToken":""}"#,
+                ),
+                (
+                    "startSessionForPlayer",
+                    r#"["recovery-fixture"]"#,
+                    r#"{"code":0,"returnValue":{"playerUUID":"00000000-0000-0000-0000-000000000001"},"sessionToken":"session-fixture"}"#,
+                ),
+                (
+                    "joinLobby",
+                    r#"["session-fixture",{"lobby":"bench_27"},"147219"]"#,
+                    r#"{"code":0,"returnValue":null}"#,
+                ),
+                (
+                    "acceptMatch",
+                    r#"["session-fixture"]"#,
+                    r#"{"code":0,"returnValue":true}"#,
+                ),
+                (
+                    "update",
+                    r#"["session-fixture"]"#,
+                    r#"{"code":0,"returnValue":{"state":"playing","matchId":"scene","host":"127.0.0.1","port":41123}}"#,
+                ),
+                (
+                    "notifyExitPostMatch",
+                    r#"["session-fixture"]"#,
+                    r#"{"code":0}"#,
+                ),
+            ] {
+                let (mut socket, _) = listener.accept().await?;
+                let mut rd = BufReader::new(&mut socket);
+                let mut header = String::new();
+                rd.read_line(&mut header).await?;
+                assert_eq!(header, format!("POST /JSONRpc/{name} HTTP/1.1\r\n"));
+                let mut length = None;
+                loop {
+                    header.clear();
+                    rd.read_line(&mut header).await?;
+                    if header == "\r\n" {
+                        break;
+                    }
+                    if let Some(n) = header.to_ascii_lowercase().strip_prefix("content-length:") {
+                        length = Some(n.trim().parse::<usize>()?);
+                    }
+                }
+                let mut request = vec![0; length.context("missing HTTP length")?];
+                rd.read_exact(&mut request).await?;
+                assert_eq!(
+                    String::from_utf8(request)?,
+                    format!(r#"{{"method":"{name}","params":{params}}}"#)
+                );
+                socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).as_bytes()).await?;
+            }
+            Ok::<_, anyhow::Error>(())
+        });
+        let api = Api {
+            base,
+            client: Client::builder().no_proxy().build()?,
+            aral_queue: Arc::default(),
+        };
+        let player = api.guest().await?;
+        assert_eq!(player.id, Uuid::from_u128(1));
+        let queue = Workload::Validation(4).queue(27);
+        api.command(
+            RpcMethod::JoinLobby,
+            (&player.token, LobbySelection { lobby: &queue }, BUILD),
+        )
+        .await?;
+        api.command(RpcMethod::AcceptMatch, [&player.token]).await?;
+        let update = api.update(&player).await?;
+        assert_eq!(
+            (update.state, update.port),
+            (LobbyState::Playing, Some(41123))
+        );
+        api.command(RpcMethod::NotifyExitPostMatch, [&player.token])
+            .await?;
+        server.await??;
+        Ok(())
+    }
 }
