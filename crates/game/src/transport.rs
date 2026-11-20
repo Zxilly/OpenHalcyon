@@ -324,6 +324,14 @@ async fn connection(mut sock: TcpStream, room: Shared, manager: Rooms) -> io::Re
             }
             next = next_delivery(&mut rx, &mut ended).await;
         }
+        // The existing authorized whole-room termination has a native menu-exit
+        // signal. Each socket receives only its own authenticated UUID.
+        let force_menu = room.lock().unwrap().reason == Some(crate::RoomEndReason::AdminTerminated);
+        if force_menu {
+            bytes.clear();
+            encode(&cipher, &[kick(uuid)], &mut bytes)?;
+            write(&mut wr, &manager.0, &bytes).await?;
+        }
         wr.shutdown().await
     };
     let read_loop = async {
@@ -378,11 +386,26 @@ async fn connection(mut sock: TcpStream, room: Shared, manager: Rooms) -> io::Re
         r=&mut write_loop=>return r,
         r=read_loop=>return r,
     }
-    if room.lock().unwrap().reason != Some(crate::RoomEndReason::Completed) {
+    if !allows_final_flush(room.lock().unwrap().reason) {
         return Ok(());
     }
     tokio::select! {biased; _=slow.changed()=>Err(bad("output queue full")),r=&mut write_loop=>r}
 }
+fn kick(player: Uuid) -> Message {
+    let mut body = [0; 66];
+    let mut uuid = Uuid::encode_buffer();
+    body[..36].copy_from_slice(player.hyphenated().encode_lower(&mut uuid).as_bytes());
+    // Native disconnect code zero requests an immediate return to menus.
+    Message::known(crate::Opcode::KickPlayer, body)
+}
+
+fn allows_final_flush(reason: Option<RoomEndReason>) -> bool {
+    matches!(
+        reason,
+        Some(RoomEndReason::Completed | RoomEndReason::AdminTerminated)
+    )
+}
+
 pub(super) async fn serve(
     listener: TcpListener,
     room: Shared,
@@ -419,10 +442,10 @@ pub(super) async fn serve(
         }
     }
     drop(listener);
-    let completed = room.lock().unwrap().reason == Some(crate::RoomEndReason::Completed);
+    let final_flush = allows_final_flush(room.lock().unwrap().reason);
     // Settlement and room capacity are independent of any socket's flush deadline.
     manager.finished(&room);
-    close_clients(&mut tasks, completed).await;
+    close_clients(&mut tasks, final_flush).await;
 }
 
 #[cfg(test)]
@@ -493,6 +516,44 @@ mod tests {
         peer.send(Delivery::Private(vec![]));
         peer.send(Delivery::Private(vec![]));
         assert!(*slow.borrow());
+    }
+
+    #[tokio::test]
+    async fn admin_termination_writes_one_targeted_native_exit_before_eof() {
+        let rooms = Rooms::new("127.0.0.1".parse().unwrap(), "127.0.0.1".into(), 1, None);
+        let id = Uuid::new_v4();
+        let players = [Uuid::new_v4(), Uuid::new_v4()];
+        let hosted = rooms
+            .reserve(Reservation {
+                talent_levels: Vec::new(),
+                match_id: id,
+                players: players.to_vec(),
+                teams: vec![0, 1],
+                mode: "5v5_pvp_casual".into(),
+                difficulty: None,
+            })
+            .unwrap();
+        let cipher = MatchCipher::new(&id.to_string());
+        let a = identified(&hosted.address, players[0], &cipher).await;
+        let b = identified(&hosted.address, players[1], &cipher).await;
+        rooms.terminate(id, "operator", "maintenance").unwrap();
+        let (a, b) = tokio::join!(final_frames(a, &cipher), final_frames(b, &cipher));
+        for (stream, id) in [a, b].iter().zip(players) {
+            let mut kicks = stream.iter().filter(|m| m.is(crate::Opcode::KickPlayer));
+            let m = kicks.next().unwrap();
+            assert!(kicks.next().is_none());
+            assert_eq!(stream.last(), Some(m));
+            let Fields::Live(halcyon_protocol::LiveFields::KickPlayer {
+                player_uuid,
+                disconnect_code,
+            }) = m.fields().unwrap()
+            else {
+                panic!("expected native exit")
+            };
+            assert_eq!(&player_uuid[..36], id.to_string().as_bytes());
+            assert_eq!(&player_uuid[36..], &[0; 28]);
+            assert_eq!(disconnect_code, 0);
+        }
     }
 
     #[tokio::test]
