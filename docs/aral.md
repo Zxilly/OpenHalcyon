@@ -106,3 +106,21 @@ notification goes to the world connections that received the death and to
 the same still-authorized observer streams. Reconnection begins from the
 current scene. These timings are hosting rules derived from recorded
 network arrival times. Other transient templates exhibited different delays.
+
+
+### Draft seat registration
+
+Sixteen archived server `0x03E8` records carry another seat's UUID already
+present in the preceding draft roster. Each decoded body is 70 bytes, with
+zeros after the 36-byte UUID. Fourteen first occurrences across three streams
+arrive 0.174–1.194 seconds after connection setup. Each is followed by another
+registration or roster refresh. An independent Windows sender supplies the
+64-byte original body size, which pads to 70 in the encrypted frame. Two
+later live records are outside the draft, including one repeated UUID. Their
+trigger remains open.
+
+The host sends the draft shape to currently connected seats on the first
+successful control registration of a different reserved seat. It never
+replays past registrations to a newcomer. Rejected, duplicate and resumed
+registrations do not produce a new draft notification. Spectators and seats
+in other rooms do not receive it.

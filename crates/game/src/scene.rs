@@ -40,6 +40,27 @@ impl Preamble {
     }
 }
 
+/// An already connected draft seat can observe a different reserved seat's first registration.
+pub(super) fn announce_aral_registration(room: &Room, entering: usize) {
+    let mut recipients = room
+        .seats
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| *index != entering)
+        .filter_map(|(_, seat)| seat.peers[0].as_ref())
+        .peekable();
+    if recipients.peek().is_none() {
+        return;
+    }
+    let mut body = [0; 64];
+    let id = room.players[entering].as_hyphenated();
+    id.encode_lower(&mut body[..36]);
+    let notice = super::transport::TeamBatch::new(vec![Message::new(0x03e8, body)]);
+    for peer in recipients {
+        peer.send(super::transport::Delivery::Team(notice.clone()));
+    }
+}
+
 /// An ARAL connection already in the scene can observe another seat joining it.
 pub(super) fn announce_aral_entry(room: &Room, entering: usize, registration: &Message) {
     let mut recipients = room
@@ -168,6 +189,124 @@ mod tests {
     use std::time::{Duration, Instant};
     use tokio::sync::{mpsc, watch};
     use uuid::Uuid;
+
+    #[tokio::test]
+    async fn aral_draft_registers_new_seats_once_to_connected_players() {
+        use halcyon_protocol::{ACK_FRAME, Fields, MatchCipher, hello};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpStream;
+        use tokio::time::timeout;
+
+        async fn login(address: &str, player: Uuid, cipher: &MatchCipher) -> TcpStream {
+            let mut socket = TcpStream::connect(address).await.unwrap();
+            socket
+                .write_all(&hello("127.0.0.1").unwrap())
+                .await
+                .unwrap();
+            let mut ack = [0; 5];
+            socket.read_exact(&mut ack).await.unwrap();
+            assert_eq!(ack, ACK_FRAME);
+            let identity = Message::new(0x03e8, player.to_string().as_bytes());
+            socket
+                .write_all(&cipher.encode(&identity).unwrap())
+                .await
+                .unwrap();
+            socket
+        }
+        async fn read_until(socket: &mut TcpStream, cipher: &MatchCipher, end: u16) -> Batch {
+            timeout(Duration::from_secs(3), async {
+                let mut messages = Vec::new();
+                loop {
+                    let body = crate::transport::frame(socket).await.unwrap();
+                    let message = cipher.decode_owned(body).unwrap();
+                    let done = message.opcode == end;
+                    messages.push(message);
+                    if done {
+                        return messages;
+                    }
+                }
+            })
+            .await
+            .unwrap()
+        }
+        async fn registrations(socket: &mut TcpStream, cipher: &MatchCipher) -> Batch {
+            let barrier = Message::new(0, [0; 6]);
+            socket
+                .write_all(&cipher.encode(&barrier).unwrap())
+                .await
+                .unwrap();
+            read_until(socket, cipher, 0)
+                .await
+                .into_iter()
+                .filter(|m| m.opcode == 0x03e8)
+                .collect()
+        }
+        fn assert_notice(messages: Batch, expected: Uuid) {
+            assert_eq!(messages.len(), 1);
+            let notice = &messages[0];
+            assert_eq!(
+                notice.fields().unwrap(),
+                Fields::PlayerUuid(&expected.to_string())
+            );
+            assert_eq!(notice.body.len(), 70);
+            assert_eq!(notice.body[36..], [0; 34]);
+        }
+
+        let rooms = Rooms::new("127.0.0.1".parse().unwrap(), "127.0.0.1".into(), 1, None);
+        let room_id = Uuid::new_v4();
+        let players: Vec<_> = (0..6).map(|_| Uuid::new_v4()).collect();
+        let address = rooms
+            .reserve(Reservation {
+                talent_levels: Vec::new(),
+                match_id: room_id,
+                players: players.clone(),
+                teams: Vec::new(),
+                mode: "casual_aral".into(),
+                difficulty: None,
+            })
+            .unwrap()
+            .address;
+        let cipher = MatchCipher::new(&room_id.to_string());
+        let mut a = login(&address, players[0], &cipher).await;
+        read_until(&mut a, &cipher, 0x045a).await;
+        let mut b = login(&address, players[1], &cipher).await;
+        assert!(
+            read_until(&mut b, &cipher, 0x045a)
+                .await
+                .iter()
+                .all(|m| m.opcode != 0x03e8)
+        );
+        assert_notice(registrations(&mut a, &cipher).await, players[1]);
+        assert!(registrations(&mut b, &cipher).await.is_empty());
+
+        for denied in [players[1], Uuid::new_v4()] {
+            let mut socket = login(&address, denied, &cipher).await;
+            assert_eq!(
+                timeout(Duration::from_secs(3), socket.read(&mut [0; 1]))
+                    .await
+                    .unwrap()
+                    .unwrap(),
+                0,
+            );
+        }
+        assert!(registrations(&mut a, &cipher).await.is_empty());
+
+        assert!(rooms.observe(room_id, Uuid::new_v4()).is_err());
+        b.shutdown().await.unwrap();
+        timeout(Duration::from_secs(3), b.read_to_end(&mut Vec::new()))
+            .await
+            .unwrap()
+            .unwrap();
+        let mut b = login(&address, players[1], &cipher).await;
+        read_until(&mut b, &cipher, 0x045a).await;
+        assert!(registrations(&mut a, &cipher).await.is_empty());
+
+        let mut c = login(&address, players[2], &cipher).await;
+        read_until(&mut c, &cipher, 0x045a).await;
+        assert_notice(registrations(&mut a, &cipher).await, players[2]);
+        assert_notice(registrations(&mut b, &cipher).await, players[2]);
+        assert!(registrations(&mut c, &cipher).await.is_empty());
+    }
 
     #[tokio::test]
     async fn solo_promotes_only_the_requesting_socket_and_reconnects_with_fog() {

@@ -776,6 +776,7 @@ impl Room {
             tx,
             stalled,
         });
+        let first_registration = self.seats[idx].last.is_none();
         self.seats[idx].last = Some(Utc::now());
         if self.phase == "allocated" {
             self.phase("hero_select");
@@ -824,6 +825,9 @@ impl Room {
             if self.seats.iter().all(|s| s.peers[1].is_some()) {
                 self.phase("running");
             }
+        }
+        if legacy_aral && first_registration && self.phase == "hero_select" {
+            scene::announce_aral_registration(self, idx);
         }
         Some((idx, ch, self.generation, batch))
     }

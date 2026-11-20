@@ -457,6 +457,13 @@ mod tests {
             clients.push(socket);
         }
 
+        for player in &players[1..] {
+            let notice = until(&mut clients[0], &cipher, 0x03e8).await;
+            assert_eq!(
+                notice.fields().unwrap(),
+                Fields::PlayerUuid(&player.to_string())
+            );
+        }
         for refresh in 0..3 {
             let request = Message::new(0x0458, [0; 6]);
             clients[0]
@@ -510,7 +517,7 @@ mod tests {
             loop {
                 let frame = next(socket, &cipher).await;
                 match frame.opcode {
-                    0x045a => {}
+                    0x03e8 | 0x045a => {}
                     0x03ee => roster_count += 1,
                     0x046c => break,
                     other => panic!("unexpected frame {other:#x} before world request"),
