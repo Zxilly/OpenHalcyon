@@ -2,17 +2,17 @@
 
 ## Platform
 
-The [RPC inventory](ce-rpc.tsv) lists 155 method and alias names. Its evidence
+The [RPC inventory](ce-rpc.tsv) lists 156 method and alias names. Its evidence
 tags overlap. The iOS-era interceptor archive has 2,946 complete request and
 response pairs across 30 methods. All 14 Android relay names also appear in
-those 30. Another 124 rows have Android callsite or iOS parser evidence only
+those 30. Another 125 rows have Android callsite or iOS parser evidence only
 for their wire use. The remaining name, `getSkinProgress`, is a local-spec alias.
 A capture establishes the observed request and envelope only to the extent
 that the interceptor preserved them. Static identification establishes a
 name or parser family. Argument order, optional fields and successful behavior
 for those rows still need client comparison.
 
-The implementation column describes local routing. It includes 67 community
+The implementation column describes local routing. It includes 68 community
 handlers and three local aliases. `charm` and `social_ping_pack` have static
 callsite evidence as names and are supported as local equipment aliases.
 Operator-defined content, attestation and community state are local features
@@ -33,6 +33,7 @@ committed state changes.
 | Cross-instance parties | Three TLS-authenticated voters, party members on one home and a solo player on another, served by a third node. Integration tests cover individual acceptance, the game socket, team allocation, settlement and independent exits. |
 | Spectators | A confirmed friend on the player's home can watch a local or peer-hosted match through a dedicated read-only listener. A three-voter test covers roster ownership, snapshot delivery, revocation on visibility changes, and cleanup at settlement. Native spectator admission and friendships registered on different homes still need verification. |
 | Items, guilds, quests and accounts | SQLite transactions, permission and retry tests exercise the local rules. Operator-defined exchanges specify actual costs and rewards. Some archived methods have only static schema evidence. |
+| Inbox, reliable messages and friend notifications | `friendNotify`, `askInGameFriendToPlay`, `friendReplyFromInGame`, `queryPlayerInboxMessages`, `processMessage` and `dismissReliableMessage` enforce confirmed-friendship checks (`-5`), 100-message recipient unread caps (`-6`), control-character/UUID validation (`-32602`), idempotent `dismissed=0` transitions (`{ "success": true }`), SQLite persistence across reopen, and notification wakeup on insert. These six static-only methods retain locally established parameter aliases and response shapes pending live client traffic. |
 
 All 17 archived `joinLobby` successes for the legacy three-per-side queues
 included `state: "pending_auto"` and `numPlayers` with the standard success
@@ -171,7 +172,7 @@ Set the top-level `native_state_updates = true` in the server TOML to advertise 
 
 WebSocket and HTTP long polling use the same recipient-local SQLite cursor. To resume, send the previous envelope's `time` and `tag` as query parameters. A request without a cursor starts with the current player snapshot. Invitations go to the invitee alone, roster changes go to party members, and kicks go to the removed player. A departure is sent to the remaining members. Dissolving the party sends a state-change notice to its former members. Retries of an existing invitation or an already accepted invitation add no duplicate events. Revoked invitations and obsolete roster notices replay as a generic state snapshot at the original cursor.
 
-The 155-method inventory establishes the available party RPC names. The local protocol notes (§4) and the generated `stateUpdateCallback` analysis identify the envelope and the four `quintParty*` keys in `text`. This server emits those keys as markers with empty objects. The generated reports and demonstration server suggest inner fields, but the original values and native UI behavior remain unverified. Details are available from the authorized party RPCs.
+The 156-method inventory establishes the available party RPC names. The local protocol notes (§4) and the generated `stateUpdateCallback` analysis identify the envelope and the four `quintParty*` keys in `text`. This server emits those keys as markers with empty objects. The generated reports and demonstration server suggest inner fields, but the original values and native UI behavior remain unverified. Details are available from the authorized party RPCs.
 
 ### Captured platform RPC coverage
 
