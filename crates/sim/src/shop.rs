@@ -1239,14 +1239,13 @@ impl World {
         self.shop.flask.is_some() && self.tick >= self.entities[index].item_stats.flask_ready
     }
     pub(super) fn flask_instance(&self, index: usize) -> Option<u32> {
-        const HEALING_FLASK: u32 = 457;
         self.entities[index]
             .aral_inventory
             .as_ref()?
             .slots()
             .iter()
             .flatten()
-            .find(|item| item.template == HEALING_FLASK)
+            .find(|item| item.template == AralStarter::HealingFlask.grant().template)
             .map(|item| item.instance)
     }
     /// Activate the ARAL starter instance in this actor's own native slots.

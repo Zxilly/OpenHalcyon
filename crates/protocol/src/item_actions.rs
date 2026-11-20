@@ -10,6 +10,7 @@ use crate::{Message, Opcode, invalid};
 pub enum ItemActivationMode {
     Target,
     Position,
+    Untargeted,
     Unknown(u8),
 }
 impl From<u8> for ItemActivationMode {
@@ -17,7 +18,19 @@ impl From<u8> for ItemActivationMode {
         match raw {
             0 => Self::Target,
             1 => Self::Position,
+            2 => Self::Untargeted,
             other => Self::Unknown(other),
+        }
+    }
+}
+
+impl From<ItemActivationMode> for u8 {
+    fn from(mode: ItemActivationMode) -> Self {
+        match mode {
+            ItemActivationMode::Target => 0,
+            ItemActivationMode::Position => 1,
+            ItemActivationMode::Untargeted => 2,
+            ItemActivationMode::Unknown(value) => value,
         }
     }
 }
@@ -51,7 +64,7 @@ pub enum ItemAction<'a> {
         instance: u32,
         target_word: u32,
         coordinate_bits: [u32; 2],
-        mode: u8,
+        mode: ItemActivationMode,
         suffix: &'a [u8],
     },
 }
@@ -147,7 +160,7 @@ impl<'a> ItemAction<'a> {
                         coordinate_bits[1],
                     ],
                 );
-                head[20] = mode;
+                head[20] = mode.into();
             }
         }
         tail.copy_from_slice(self.suffix());
@@ -199,7 +212,7 @@ impl<'a> ItemAction<'a> {
                 instance: word(4),
                 target_word: word(8),
                 coordinate_bits: [word(12), word(16)],
-                mode: body[20],
+                mode: body[20].into(),
                 suffix,
             },
             _ => unreachable!(),
@@ -208,7 +221,7 @@ impl<'a> ItemAction<'a> {
 
     pub fn activation_mode(&self) -> Option<ItemActivationMode> {
         match self {
-            Self::Activation { mode, .. } => Some((*mode).into()),
+            Self::Activation { mode, .. } => Some(*mode),
             _ => None,
         }
     }
@@ -308,7 +321,7 @@ mod tests {
                         instance: 0x84858687,
                         target_word: 0x88898a8b,
                         coordinate_bits: [0x8c8d8e8f, 0x90919293],
-                        mode: 0x94,
+                        mode: ItemActivationMode::Unknown(0x94),
                         suffix,
                     },
                 };
@@ -337,7 +350,7 @@ mod tests {
             instance: 259,
             target_word: 0x7f800011,
             coordinate_bits: [0x80000000, 0x7fc00012],
-            mode: 0xfe,
+            mode: ItemActivationMode::Unknown(0xfe),
             suffix: &[0xb5],
         };
         assert_eq!(

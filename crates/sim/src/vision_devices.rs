@@ -138,7 +138,7 @@ impl World {
                 .slots()
                 .iter()
                 .flatten()
-                .any(|s| s.instance == instance && s.template == 526)
+                .any(|s| s.instance == instance && s.template == AralStarter::VisionTotem.grant().template)
             {
                 return Err("vision totem not held");
             }

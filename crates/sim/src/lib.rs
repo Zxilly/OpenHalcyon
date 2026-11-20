@@ -8,7 +8,7 @@ pub use vision_devices::{VisionDevice, VisionDeviceKind};
 mod aral_inventory;
 mod armory;
 mod bot_diagnostics;
-pub use aral_inventory::{ARAL_ITEM_CAPACITY, AralInventory, AralItem};
+pub use aral_inventory::{ARAL_ITEM_CAPACITY, AralInventory, AralItem, AralStarter};
 pub use bot_diagnostics::{BotDiagnostics, BotHeroDiagnostics};
 mod bulwark;
 #[cfg(test)]

@@ -9,20 +9,35 @@ pub struct AralItem {
     pub instance: u32,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AralStarter {
+    HealingFlask,
+    VisionTotem,
+}
+
+impl AralStarter {
+    pub const fn grant(self) -> AralItem {
+        match self {
+            Self::HealingFlask => AralItem {
+                template: 457,
+                instance: 2000,
+            },
+            Self::VisionTotem => AralItem {
+                template: 526,
+                instance: 2001,
+            },
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct AralInventory([Option<AralItem>; ARAL_ITEM_CAPACITY]);
 
 impl AralInventory {
     pub(super) fn starting() -> Self {
         let mut slots = [None; ARAL_ITEM_CAPACITY];
-        slots[0] = Some(AralItem {
-            template: 457,
-            instance: 2000,
-        });
-        slots[1] = Some(AralItem {
-            template: 526,
-            instance: 2001,
-        });
+        slots[0] = Some(AralStarter::HealingFlask.grant());
+        slots[1] = Some(AralStarter::VisionTotem.grant());
         Self(slots)
     }
 

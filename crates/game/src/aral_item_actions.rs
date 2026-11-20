@@ -1,5 +1,5 @@
 use super::*;
-use halcyon_protocol::{ItemAction, ResourceChange};
+use halcyon_protocol::{ItemAction, ItemActivationMode, ResourceChange};
 use halcyon_sim::{BasicItem, Event};
 
 /// The ARAL camera recorded other actors' transactions from either team.
@@ -14,7 +14,7 @@ fn action(world: &World, event: &Event) -> Option<(u32, Batch)> {
                         argument: instance,
                         suffix: &[],
                     },
-                    1,
+                    ItemActivationMode::Position,
                     point,
                 ),
                 halcyon_sim::VisionDeviceKind::ScoutTrap => (
@@ -22,7 +22,7 @@ fn action(world: &World, event: &Event) -> Option<(u32, Batch)> {
                         instance,
                         suffix: &[],
                     },
-                    2,
+                    ItemActivationMode::Untargeted,
                     [0, 0],
                 ),
             };
@@ -40,13 +40,12 @@ fn action(world: &World, event: &Event) -> Option<(u32, Batch)> {
             ))
         }
         Event::FlaskActivated { actor, instance } => {
-            const FLASK_MODE: u8 = 2;
             let active = ItemAction::Activation {
                 actor: u32::from(wire_id(actor)),
                 instance,
                 target_word: u32::MAX,
                 coordinate_bits: [0, 0],
-                mode: FLASK_MODE,
+                mode: ItemActivationMode::Untargeted,
                 suffix: &[],
             };
             Some((
@@ -109,24 +108,28 @@ fn action(world: &World, event: &Event) -> Option<(u32, Batch)> {
 /// unrelated trailing data. The player writer has already checked visibility.
 pub(super) fn recordable(message: &Message) -> bool {
     use halcyon_protocol::{Fields, LiveFields};
+    const STARTER_FLASK: u32 = halcyon_sim::AralStarter::HealingFlask.grant().instance;
+    const STARTER_TOTEM: u32 = halcyon_sim::AralStarter::VisionTotem.grant().instance;
     let hero = |actor: u32| (1500..1506).contains(&actor);
     match message.fields() {
         Ok(Fields::Live(LiveFields::Item(ItemAction::Activate { instance, suffix }))) => {
-            (instance == 2000 || instance >= 40000) && suffix.iter().all(|&v| v == 0)
+            (instance == STARTER_FLASK || instance >= 40000) && suffix.iter().all(|&v| v == 0)
         }
         Ok(Fields::Live(LiveFields::Item(ItemAction::Activation {
             actor,
             instance,
             target_word: u32::MAX,
             coordinate_bits: [0, 0],
-            mode: 2,
+            mode: ItemActivationMode::Untargeted,
             suffix,
         }))) => {
-            hero(actor) && (instance == 2000 || instance >= 40000) && suffix.iter().all(|&v| v == 0)
+            hero(actor)
+                && (instance == STARTER_FLASK || instance >= 40000)
+                && suffix.iter().all(|&v| v == 0)
         }
         Ok(Fields::Live(LiveFields::Item(ItemAction::VectorRequest {
             vector_bits: [x, 0, z],
-            argument: 2001,
+            argument: STARTER_TOTEM,
             suffix,
         }))) => {
             f32::from_bits(x).is_finite()
@@ -135,10 +138,10 @@ pub(super) fn recordable(message: &Message) -> bool {
         }
         Ok(Fields::Live(LiveFields::Item(ItemAction::Activation {
             actor,
-            instance: 2001,
+            instance: STARTER_TOTEM,
             target_word: u32::MAX,
             coordinate_bits: [x, z],
-            mode: 1,
+            mode: ItemActivationMode::Position,
             suffix,
         }))) => {
             hero(actor)
