@@ -98,6 +98,7 @@ impl Peer {
 }
 #[derive(Default)]
 struct Seat {
+    last_hud: Option<Instant>,
     used_aral_reroll: bool,
     presence: player_presence::Presence,
     action_receipts: player_actions::Receipts,
@@ -124,6 +125,7 @@ impl Seat {
     }
 }
 mod draft_preferences;
+mod native_hud;
 struct Pick {
     preferences: draft_preferences::Preferences,
     name: String,
@@ -1310,6 +1312,12 @@ impl Room {
                     && m.body[1..] == [0; 5] =>
             {
                 self.vote_surrender(i, vote);
+            }
+            Fields::Live(
+                request @ (halcyon_protocol::LiveFields::MapPing(_)
+                | halcyon_protocol::LiveFields::HudQuickMessage(_)),
+            ) if game && self.room_hud_connection(i, ch) => {
+                out = native_hud::submit(self, i, request);
             }
             Fields::Live(request) if game => {
                 if let Some(command) = commands::from_live(request) {

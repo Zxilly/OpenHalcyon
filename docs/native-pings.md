@@ -9,4 +9,18 @@ The nine complete TCP captures contain 84 server map pings and 48 server HUD qui
 
 All 132 sender words resolved to declared heroes. The six item template IDs match the archived entity manifest entries for Healing Flask (457), Blazing Salvo (463), Chronograph (475), Reflex Block (485), Vision Totem (526) and Seraphic Shell (539). The selected HUD text, meaning of its float and the on-screen ping labels have no synchronized UI observation in this corpus.
 
-The authenticated receiver saw pings from 62 allied and 22 opposing senders, and HUD messages from 36 allied and 12 opposing senders. This single-receiver evidence leaves recipient selection and the original input path unresolved. Both actions are available for offline decoding and lossless serialization. The host currently emits neither.
+The authenticated receiver saw pings from 62 allied and 22 opposing senders, and HUD messages from 36 allied and 12 opposing senders. The project uses the actor-first layout from the retained records and their fixture. The position-first field order in the supplemental notes conflicts with those bytes.
+
+An authenticated ARAL or Solo world connection can send tactical selectors
+2–5 with qualifiers 1–3. The host returns accepted pings to the sender and
+declared teammates. An actor-targeted ping needs a currently visible,
+declared target. The host substitutes its own horizontal coordinates.
+Cosmetic ping packs are not relayed.
+
+The host relays operand-free quick-message selectors 3–13 to declared
+teammates. GLHF (12) also reaches the opposite team. The supplied table and
+prose disagree on the enemy flag for GG (13), so its project scope remains
+team-only. Item recommendations and cooldown claims (0–2) remain decode-only.
+Pings and quick messages share a per-seat 750 ms interval and are omitted
+from spectator streams and server recordings. The native inbound packet flow
+remains statically identified; the archive has no inbound samples.
