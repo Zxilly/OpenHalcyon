@@ -6,6 +6,7 @@ use std::{
 
 #[path = "navmesh_route.rs"]
 mod route;
+pub use route::RouteSearch;
 
 const NAV_MAGIC: u32 = 0x444e_4156;
 const NAV_VERSION: u32 = 7;
@@ -567,6 +568,17 @@ mod tests {
         assert_eq!(aral.tile_count(), 511);
         assert!(solo.route([-90., 0.], [90., 0.], 1.).is_some());
         assert!(aral.route([-78.18, 0.88], [79.66, -0.91], 1.).is_some());
+        let mut scratch = RouteSearch::default();
+        for (mesh, start, destination) in [
+            (&solo, [-90., 0.], [90., 0.]),
+            (&aral, [-78.18, 0.88], [79.66, -0.91]),
+            (&solo, [90., 0.], [-90., 0.]),
+        ] {
+            assert_eq!(
+                mesh.route_with(start, destination, 1., &mut scratch),
+                mesh.route(start, destination, 1.)
+            );
+        }
         for (x, z) in [(90., 0.), (94., -6.), (101., -3.), (101., 3.), (94., 6.)] {
             assert!(solo.height_at(-x, z).is_some());
             assert!(solo.height_at(x, z).is_some());

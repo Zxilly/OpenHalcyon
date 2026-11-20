@@ -1,6 +1,7 @@
 use super::{NavMesh, Polygon, Tile, Vertex};
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BinaryHeap};
+use std::ops::Range;
 
 type Cell = (i32, i32);
 type Key = (Cell, usize);
@@ -8,15 +9,57 @@ type Key = (Cell, usize);
 #[derive(Debug, Default)]
 pub(super) struct Graph {
     nodes: Vec<Node>,
-    cells: BTreeMap<Cell, Vec<usize>>,
+    columns: BTreeMap<i32, BTreeMap<i32, CellNodes>>,
+}
+
+#[derive(Debug)]
+struct CellNodes {
+    nodes: Range<usize>,
+    bounds: [f32; 4],
 }
 
 #[derive(Debug)]
 struct Node {
     center: [f32; 2],
     key: Key,
-    edges: Vec<(usize, [f32; 2])>,
+    edges: Vec<Edge>,
     component: Option<usize>,
+}
+
+#[derive(Debug)]
+struct Edge {
+    next: usize,
+    point: [f32; 2],
+    cost: f32,
+}
+
+/// Reusable A* scratch space. Give each independently simulated world its own
+/// scratch space and share the immutable mesh.
+#[derive(Default)]
+pub struct RouteSearch {
+    generation: u32,
+    visits: Vec<SearchNode>,
+    frontier: BinaryHeap<Visit>,
+}
+
+#[derive(Clone, Default)]
+struct SearchNode {
+    generation: u32,
+    cost: f32,
+    previous: usize,
+    portal: [f32; 2],
+}
+
+impl RouteSearch {
+    fn begin(&mut self, count: usize) {
+        self.visits.resize(count, SearchNode::default());
+        self.generation = self.generation.wrapping_add(1);
+        if self.generation == 0 {
+            self.visits.fill(SearchNode::default());
+            self.generation = 1;
+        }
+        self.frontier.clear();
+    }
 }
 
 impl Graph {
@@ -24,10 +67,24 @@ impl Graph {
         let mut graph = Self::default();
         let mut indices = BTreeMap::new();
         for (&cell, tile) in tiles {
+            if tile.polygons.is_empty() {
+                continue;
+            }
+            let first = graph.nodes.len();
+            let mut bounds = [
+                f32::INFINITY,
+                f32::INFINITY,
+                f32::NEG_INFINITY,
+                f32::NEG_INFINITY,
+            ];
             for (index, poly) in tile.polygons.iter().enumerate() {
                 let mut center = [0.; 2];
                 for &v in &poly.vertices[..poly.count] {
                     let p = tile.vertices[usize::from(v)];
+                    bounds[0] = bounds[0].min(p[0]);
+                    bounds[1] = bounds[1].min(p[2]);
+                    bounds[2] = bounds[2].max(p[0]);
+                    bounds[3] = bounds[3].max(p[2]);
                     center[0] += p[0] / poly.count as f32;
                     center[1] += p[2] / poly.count as f32;
                 }
@@ -38,11 +95,18 @@ impl Graph {
                     edges: Vec::new(),
                     component: None,
                 });
-                graph.cells.entry(cell).or_default().push(id);
                 indices.insert((cell, poly.row), id);
             }
+            graph.columns.entry(cell.0).or_default().insert(
+                cell.1,
+                CellNodes {
+                    nodes: first..graph.nodes.len(),
+                    bounds,
+                },
+            );
         }
         let keys: Vec<_> = graph.nodes.iter().map(|node| node.key).collect();
+        let centers: Vec<_> = graph.nodes.iter().map(|node| node.center).collect();
         for node in &mut graph.nodes {
             let (cell, i) = node.key;
             let tile = &tiles[&cell];
@@ -62,8 +126,11 @@ impl Graph {
                                 },
                             )
                         {
-                            node.edges
-                                .push((id, [(a[0] + b[0]) * 0.5, (a[2] + b[2]) * 0.5]));
+                            node.edges.push(Edge {
+                                next: id,
+                                point: [(a[0] + b[0]) * 0.5, (a[2] + b[2]) * 0.5],
+                                cost: distance(node.center, centers[id]),
+                            });
                         }
                     }
                     _ => {
@@ -84,7 +151,12 @@ impl Graph {
                                         if let Some(point) =
                                             portal(a, b, c, d, axis, tile.climb.min(other.climb))
                                         {
-                                            node.edges.push((indices[&(adjacent, p.row)], point));
+                                            let id = indices[&(adjacent, p.row)];
+                                            node.edges.push(Edge {
+                                                next: id,
+                                                point,
+                                                cost: distance(node.center, centers[id]),
+                                            });
                                         }
                                     }
                                 }
@@ -104,7 +176,7 @@ impl Graph {
             while let Some(id) = stack.pop() {
                 let degree = graph.nodes[id].edges.len();
                 for edge in 0..degree {
-                    let next = graph.nodes[id].edges[edge].0;
+                    let next = graph.nodes[id].edges[edge].next;
                     if graph.nodes[next].component.is_none() {
                         graph.nodes[next].component = Some(origin);
                         stack.push(next);
@@ -113,6 +185,15 @@ impl Graph {
             }
         }
         graph
+    }
+
+    fn in_bounds(&self, low: Cell, high: Cell) -> impl Iterator<Item = (Cell, &CellNodes)> {
+        self.columns
+            .range(low.0.saturating_sub(1)..=high.0.saturating_add(1))
+            .flat_map(move |(&x, rows)| {
+                rows.range(low.1.saturating_sub(1)..=high.1.saturating_add(1))
+                    .map(move |(&z, nodes)| ((x, z), nodes))
+            })
     }
 }
 
@@ -187,16 +268,12 @@ impl NavMesh {
         let (x, z) = cell(a);
         let (u, v) = cell(b);
         let mut covered = Vec::new();
-        for (&(col, row), tile) in self
-            .tiles
-            .range((x.min(u).saturating_sub(1), i32::MIN)..=(x.max(u).saturating_add(1), i32::MAX))
+        for (key, cell) in self
+            .graph
+            .in_bounds((x.min(u), z.min(v)), (x.max(u), z.max(v)))
         {
-            if row < z.min(v).saturating_sub(1) || row > z.max(v).saturating_add(1) {
-                continue;
-            }
-            for (index, poly) in tile.polygons.iter().enumerate() {
-                let key = (col, row);
-                let node = self.graph.cells[&key][index];
+            let tile = &self.tiles[&key];
+            for (poly, node) in tile.polygons.iter().zip(cell.nodes.clone()) {
                 let c = self.graph.nodes[node].center;
                 let mut interval = (0f64, 1f64);
                 for edge in 0..poly.count {
@@ -253,22 +330,27 @@ impl NavMesh {
         };
         let low = grid([p[0] - radius, p[1] - radius]);
         let high = grid([p[0] + radius, p[1] + radius]);
-        let mut best = None;
-        for (&at, ids) in self
-            .graph
-            .cells
-            .range((low.0.saturating_sub(1), i32::MIN)..=(high.0.saturating_add(1), i32::MAX))
-        {
-            if at.1 < low.1.saturating_sub(1) || at.1 > high.1.saturating_add(1) {
+        let mut best: Option<(f32, usize, [f32; 2])> = None;
+        for (at, cell) in self.graph.in_bounds(low, high) {
+            let [lo_x, lo_z, hi_x, hi_z] = cell.bounds;
+            let distance_bound = (lo_x - p[0])
+                .max(p[0] - hi_x)
+                .max(lo_z - p[1])
+                .max(p[1] - hi_z);
+            // Allow room for the polygon's inclusive edge tolerance.
+            if distance_bound > best.map_or(radius, |(d, _, _)| d) + 0.001 {
                 continue;
             }
             let tile = &self.tiles[&at];
-            for &id in ids {
+            for id in cell.nodes.clone() {
                 if component.is_some() && self.graph.nodes[id].component != component {
                     continue;
                 }
                 let point = closest(tile, &tile.polygons[self.graph.nodes[id].key.1], p);
                 let dist = distance(p, point);
+                if dist == 0. {
+                    return Some((id, point));
+                }
                 if dist <= radius && best.is_none_or(|(d, _, _)| dist < d) {
                     best = Some((dist, id, point));
                 }
@@ -293,6 +375,17 @@ impl NavMesh {
         destination: [f32; 2],
         radius: f32,
     ) -> Option<Vec<[f32; 2]>> {
+        self.route_with(start, destination, radius, &mut RouteSearch::default())
+    }
+
+    /// The same corridor query with scratch storage retained across calls.
+    pub fn route_with(
+        &self,
+        start: [f32; 2],
+        destination: [f32; 2],
+        radius: f32,
+        search: &mut RouteSearch,
+    ) -> Option<Vec<[f32; 2]>> {
         let (from, entry) = self.closest_node(start, radius, None)?;
         let (to, goal) =
             self.closest_node(destination, radius, self.graph.nodes[from].component)?;
@@ -303,22 +396,29 @@ impl NavMesh {
                 vec![entry, goal]
             });
         }
-        let mut frontier = BinaryHeap::new();
-        let mut cost = vec![f32::INFINITY; self.graph.nodes.len()];
-        let mut predecessor = vec![None; self.graph.nodes.len()];
         let nodes = &self.graph.nodes;
-        cost[from] = 0.;
+        search.begin(nodes.len());
+        let generation = search.generation;
+        let visits = &mut search.visits;
+        let frontier = &mut search.frontier;
+        visits[from] = SearchNode {
+            generation,
+            cost: 0.,
+            previous: from,
+            portal: entry,
+        };
         frontier.push(Visit(from, 0., 0.));
         while let Some(Visit(id, dist, _)) = frontier.pop() {
-            if dist > cost[id] {
+            if dist > visits[id].cost {
                 continue;
             }
             if id == to {
                 let mut route = vec![goal];
                 let mut current = id;
-                while let Some((previous, point)) = predecessor[current] {
-                    route.push(point);
-                    current = previous;
+                while current != from {
+                    let row = &visits[current];
+                    route.push(row.portal);
+                    current = row.previous;
                 }
                 if entry != start {
                     route.push(entry);
@@ -326,11 +426,20 @@ impl NavMesh {
                 route.reverse();
                 return Some(route);
             }
-            for &(next, point) in &nodes[id].edges {
-                let new_cost = dist + distance(nodes[id].center, nodes[next].center);
-                if new_cost < cost[next] {
-                    cost[next] = new_cost;
-                    predecessor[next] = Some((id, point));
+            for &Edge { next, point, cost } in &nodes[id].edges {
+                let new_cost = dist + cost;
+                let old_cost = if visits[next].generation == generation {
+                    visits[next].cost
+                } else {
+                    f32::INFINITY
+                };
+                if new_cost < old_cost {
+                    visits[next] = SearchNode {
+                        generation,
+                        cost: new_cost,
+                        previous: id,
+                        portal: point,
+                    };
                     frontier.push(Visit(
                         next,
                         new_cost,

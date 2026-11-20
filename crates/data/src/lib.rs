@@ -12,7 +12,7 @@ pub use native_maps::{
     Area, CampOrMode, CampSpawn, ExtractedParameter, LevelLayout, MeshHeader, MeshInfo, NativeMaps,
     PlacedCamp, Placement,
 };
-pub use navmesh::{NavMesh, NavMeshError};
+pub use navmesh::{NavMesh, NavMeshError, RouteSearch};
 pub mod skins;
 mod unit_rewards;
 pub use difficulty::BotDifficulty;

@@ -1,5 +1,5 @@
 use super::*;
-use halcyon_data::{NativeMaps, NavMesh};
+use halcyon_data::{NativeMaps, NavMesh, RouteSearch};
 use std::{collections::VecDeque, sync::Arc};
 
 const PROJECT_RADIUS: f32 = 8.;
@@ -48,6 +48,7 @@ struct Route {
 
 pub(super) struct NativeNavigation {
     walk: Arc<NavMesh>,
+    search: RouteSearch,
     routes: [Route; 10],
     brushes: Vec<Brush>,
     fountains: [Vec<Triangle>; 2],
@@ -83,6 +84,7 @@ impl NativeNavigation {
     fn build(walk: Arc<NavMesh>, level: &halcyon_data::LevelLayout, aral: bool) -> Self {
         Self {
             walk,
+            search: RouteSearch::default(),
             routes: std::array::from_fn(|_| Route::default()),
             brushes: level
                 .brushes
@@ -182,7 +184,12 @@ impl NativeNavigation {
             cache.retry_at = tick + 10;
             cache.steps = self
                 .walk
-                .route(horizontal(actor.position), horizontal(goal), PROJECT_RADIUS)
+                .route_with(
+                    horizontal(actor.position),
+                    horizontal(goal),
+                    PROJECT_RADIUS,
+                    &mut self.search,
+                )
                 .into_iter()
                 .flatten()
                 .map(|[x, y]| Position { x, y })
