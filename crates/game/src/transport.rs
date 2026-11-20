@@ -1,8 +1,12 @@
 use super::*;
-use halcyon_protocol::{ACK_FRAME, MAX_PAYLOAD, MatchCipher, parse_hello};
+use halcyon_protocol::{
+    ACK_FRAME, MatchCipher,
+    async_frame::{FrameReader, FrameWriter},
+    parse_hello,
+};
 use std::{io, sync::OnceLock, time::Duration};
 use tokio::{
-    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
+    io::{AsyncWrite, AsyncWriteExt},
     net::{TcpListener, TcpStream},
     task::JoinSet,
     time::{self, timeout},
@@ -93,14 +97,32 @@ fn encode(cipher: &MatchCipher, messages: &[Message], buffer: &mut Vec<u8>) -> i
     }
     Ok(())
 }
-pub(super) async fn frame<R: AsyncRead + Unpin>(reader: &mut R) -> io::Result<Vec<u8>> {
+// Independent, exact-read test client so each assertion consumes just one frame.
+#[cfg(test)]
+pub(super) async fn frame<R: tokio::io::AsyncRead + Unpin>(reader: &mut R) -> io::Result<Vec<u8>> {
+    use tokio::io::AsyncReadExt;
     let size = reader.read_u16().await? as usize;
-    if !(2..=MAX_PAYLOAD).contains(&size) {
+    if !(2..=halcyon_protocol::MAX_PAYLOAD).contains(&size) {
         return Err(bad("invalid frame size"));
     }
     let mut bytes = vec![0; size];
     reader.read_exact(&mut bytes).await?;
     Ok(bytes)
+}
+pub(super) async fn acknowledge<W: AsyncWrite + Unpin>(
+    writer: &mut W,
+    manager: &Manager,
+) -> io::Result<()> {
+    let mut frames = FrameWriter::default();
+    timeout(
+        Duration::from_secs(5),
+        frames.write(writer, (&ACK_FRAME[2..]).into()),
+    )
+    .await??;
+    manager
+        .bytes
+        .fetch_add(ACK_FRAME.len() as u64, Ordering::Relaxed);
+    Ok(())
 }
 pub(super) async fn write<W: AsyncWrite + Unpin>(
     writer: &mut W,
@@ -152,6 +174,7 @@ async fn connection(mut sock: TcpStream, room: Shared, manager: Rooms) -> io::Re
         (room.admission_ready.subscribe(), room.stop.subscribe())
     };
     let mut handshake_stop = ended.clone();
+    let mut frames = FrameReader::new();
     let handshake = async {
         timeout(Duration::from_secs(10), admitted.wait_for(|ready| *ready))
             .await?
@@ -159,9 +182,9 @@ async fn connection(mut sock: TcpStream, room: Shared, manager: Rooms) -> io::Re
         sock.set_nodelay(true)?;
         let cipher = MatchCipher::new(&room.lock().unwrap().id.to_string());
         let uuid = timeout(Duration::from_secs(10), async {
-            parse_hello(&frame(&mut sock).await?)?;
-            write(&mut sock, &manager.0, &ACK_FRAME).await?;
-            let msg = cipher.decode_owned(frame(&mut sock).await?)?;
+            parse_hello(&frames.required(&mut sock).await?)?;
+            acknowledge(&mut sock, &manager.0).await?;
+            let msg = cipher.decode_owned(frames.required(&mut sock).await?.into())?;
             let Fields::PlayerUuid(s) = msg.fields()? else {
                 return Err(bad("expected roster identification"));
             };
@@ -305,9 +328,12 @@ async fn connection(mut sock: TcpStream, room: Shared, manager: Rooms) -> io::Re
         loop {
             let raw = timeout(
                 Duration::from_secs(if ch == 0 { 600 } else { 90 }),
-                frame(&mut rd),
+                frames.next(&mut rd),
             )
             .await??;
+            let Some(raw) = raw else {
+                return Ok(());
+            };
             if start.elapsed() >= Duration::from_secs(1) {
                 start = Instant::now();
                 budget = 0;
@@ -316,7 +342,7 @@ async fn connection(mut sock: TcpStream, room: Shared, manager: Rooms) -> io::Re
             if budget > 300 {
                 return Err(bad("input rate exceeded"));
             }
-            let m = cipher.decode_owned(raw)?;
+            let m = cipher.decode_owned(raw.into())?;
             let mut state = room.lock().unwrap();
             let out = match state.phase {
                 // ARAL keeps its authenticated connections open between the
@@ -393,6 +419,7 @@ pub(super) async fn serve(
 mod tests {
     use super::*;
     use halcyon_sim::Position;
+    use tokio::io::AsyncReadExt;
 
     async fn identified(addr: &str, identity: Uuid, cipher: &MatchCipher) -> TcpStream {
         let mut sock = TcpStream::connect(addr).await.unwrap();

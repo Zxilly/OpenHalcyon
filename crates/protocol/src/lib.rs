@@ -8,6 +8,7 @@ use md5::{Digest, Md5};
 use std::io::{self, Read, Write};
 
 mod actor_flags;
+pub mod async_frame;
 pub mod ce;
 pub use actor_flags::{ActorFlagChange, ActorFlags};
 mod tower_aggro;

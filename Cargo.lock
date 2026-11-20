@@ -1164,11 +1164,14 @@ name = "halcyon-protocol"
 version = "1.0.0-draft.1"
 dependencies = [
  "blowfish",
+ "bytes",
  "half",
  "md-5",
  "serde",
  "serde_json",
  "syn 2.0.119",
+ "tokio",
+ "tokio-util",
  "uuid",
 ]
 

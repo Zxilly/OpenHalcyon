@@ -1,7 +1,9 @@
 //! Independent CE load client. All mutation and traffic are through public client sockets.
 use anyhow::{Context, Result, ensure};
 use clap::Parser;
-use halcyon_protocol::{ACK_FRAME, MAX_PAYLOAD, MatchCipher, Message, hello_with_port};
+use halcyon_protocol::{
+    ACK_FRAME, MatchCipher, Message, async_frame::FrameReader, hello_with_port,
+};
 use halcyon_protocol::{
     Opcode,
     ce::{KnownQueue, LobbyState, RpcMethod},
@@ -20,7 +22,7 @@ use std::{
     time::Duration,
 };
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
+    io::AsyncWriteExt,
     net::TcpStream,
     sync::watch,
     task::JoinSet,
@@ -248,6 +250,7 @@ struct Player {
 }
 struct Socket {
     stream: TcpStream,
+    frames: FrameReader,
     cipher: MatchCipher,
     stats: Arc<Stats>,
 }
@@ -258,11 +261,12 @@ impl Socket {
         stream
             .write_all(&hello_with_port("127.0.0.1", stream.peer_addr()?.port())?)
             .await?;
-        let mut ack = [0; 5];
-        stream.read_exact(&mut ack).await?;
-        ensure!(ack == ACK_FRAME, "unexpected server ACK");
+        let mut frames = FrameReader::new();
+        let ack = frames.required(&mut stream).await?;
+        ensure!(ack[..] == ACK_FRAME[2..], "unexpected server ACK");
         let mut sock = Self {
             stream,
+            frames,
             cipher: MatchCipher::new(room),
             stats,
         };
@@ -277,14 +281,9 @@ impl Socket {
         Ok(())
     }
     async fn read(&mut self) -> Result<Message> {
-        let len = self.stream.read_u16().await? as usize;
-        ensure!(
-            (2..=MAX_PAYLOAD).contains(&len),
-            "invalid frame length {len}"
-        );
-        let mut bytes = vec![0; len];
-        self.stream.read_exact(&mut bytes).await?;
-        let msg = self.cipher.decode(&bytes)?;
+        let bytes = self.frames.required(&mut self.stream).await?;
+        let len = bytes.len();
+        let msg = self.cipher.decode_owned(bytes.into())?;
         self.stats.received(len + 2, &msg);
         Ok(msg)
     }
@@ -314,6 +313,7 @@ impl Socket {
             socket2::SockRef::from(&self.stream).set_recv_buffer_size(4096)?;
         }
         let (mut rd, mut wr) = self.stream.into_split();
+        let mut frames = self.frames;
         let cipher = &self.cipher;
         let stats = &self.stats;
         // Keep the frame reader alive across timer ticks. Cancelling a partial
@@ -321,11 +321,9 @@ impl Socket {
         let reader = async {
             let mut last_clock = 0u32;
             loop {
-                let n = rd.read_u16().await? as usize;
-                ensure!((2..=MAX_PAYLOAD).contains(&n), "invalid frame");
-                let mut b = vec![0; n];
-                rd.read_exact(&mut b).await?;
-                let m = cipher.decode(&b)?;
+                let bytes = frames.required(&mut rd).await?;
+                let n = bytes.len();
+                let m = cipher.decode_owned(bytes.into())?;
                 stats.received(n + 2, &m);
                 if m.is(Opcode::ClockSync) && m.body.len() >= 4 {
                     let time = f32::from_be_bytes(m.body[..4].try_into().unwrap());
@@ -732,6 +730,7 @@ async fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::io::AsyncReadExt;
     use tokio::{
         io::{AsyncBufReadExt, BufReader},
         net::TcpListener,

@@ -1,5 +1,5 @@
 use super::*;
-use halcyon_protocol::{ACK_FRAME, MatchCipher, parse_hello};
+use halcyon_protocol::{MatchCipher, parse_hello};
 use std::{io, time::Duration};
 use tokio::{
     io::AsyncWriteExt,
@@ -128,10 +128,11 @@ async fn client(
     let cipher = MatchCipher::new(&room.lock().unwrap().id.to_string());
     let mut ended = room.lock().unwrap().stop.subscribe();
     let mut handshake_stop = ended.clone();
+    let mut frames = halcyon_protocol::async_frame::FrameReader::new();
     let handshake = timeout(Duration::from_secs(10), async {
-        parse_hello(&transport::frame(&mut socket).await?)?;
-        transport::write(&mut socket, &manager.0, &ACK_FRAME).await?;
-        let m = cipher.decode_owned(transport::frame(&mut socket).await?)?;
+        parse_hello(&frames.required(&mut socket).await?)?;
+        transport::acknowledge(&mut socket, &manager.0).await?;
+        let m = cipher.decode_owned(frames.required(&mut socket).await?.into())?;
         if !matches!(m.fields()?,Fields::PlayerUuid(s) if Uuid::parse_str(s)==Ok(grant)) {
             return Err(io::Error::from(io::ErrorKind::PermissionDenied));
         }
@@ -204,7 +205,10 @@ async fn client(
                 return Err(io::ErrorKind::InvalidData.into());
             }
 
-            let m = cipher.decode_owned(transport::frame(&mut rd).await?)?;
+            let Some(raw) = frames.next(&mut rd).await? else {
+                return Ok(());
+            };
+            let m = cipher.decode_owned(raw.into())?;
             if m.is_spectator_exit() {
                 // Handshake already bound this socket to this grant. Keep the room
                 // lock out of the home transaction. A transient write error retains
