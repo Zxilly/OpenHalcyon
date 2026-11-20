@@ -65,7 +65,7 @@ fn verify_layout(msg: &Message, expected: &serde_json::Map<String, serde_json::V
                 v.len() == raw.len() * 2
                     && raw
                         .iter()
-                        .zip(v.as_bytes().chunks_exact(2))
+                        .zip(v.as_bytes().as_chunks::<2>().0)
                         .all(|(byte, hex)| {
                             std::str::from_utf8(hex)
                                 .ok()
@@ -96,7 +96,9 @@ fn decode_operator_protocol_fixtures() {
             let raw: Vec<_> = f
                 .payload_hex
                 .as_bytes()
-                .chunks_exact(2)
+                .as_chunks::<2>()
+                .0
+                .iter()
                 .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
                 .collect();
             assert_eq!(2 * raw.len(), f.payload_hex.len(), "{}", f.id);
