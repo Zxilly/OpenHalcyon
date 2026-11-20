@@ -1352,7 +1352,7 @@ impl World {
 #[derive(Clone, Copy, Default, Debug, Serialize)]
 pub struct ItemStats {
     attack_passives: attack_items::Equipped,
-    bonus_weapon: f32,
+    pub(super) bonus_weapon: f32,
     infusion: Option<infusions::Active>,
     flask_ready: u64,
     pub(super) boot_speed: f32,

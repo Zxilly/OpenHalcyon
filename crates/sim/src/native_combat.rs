@@ -795,6 +795,19 @@ mod tests {
     fn supplemented_chakram_refunds_each_hero_impact_and_debits_stamina_at_release() {
         let data = original();
         let mut w = room(&data, "Idris");
+        w.entities[0].position = w.layout.home(&w.entities[0]);
+        let grant = w
+            .purchase(1, crate::BasicItem::WeaponInfusion)
+            .unwrap()
+            .granted;
+        w.command(
+            1,
+            Command::ConsumeInfusion {
+                instance: grant.instance,
+            },
+        )
+        .unwrap();
+        w.entities[0].position = Position::default();
         w.entities[1].position.x = 3.;
         w.entities[1].stats.shield = 0.;
         w.entities[0].item_stats.crystal = 25.;
@@ -828,7 +841,10 @@ mod tests {
                 _ => None,
             })
             .collect();
-        assert_eq!(hits, [85., 85.]);
+        let level_four_infusion = 20. + 20. * 3. / 11.;
+        let expected = 85. + 0.8 * level_four_infusion;
+        assert_eq!(hits.len(), 2);
+        assert!(hits.iter().all(|hit| (hit - expected).abs() < 0.001));
         assert!((crate::chakram::stamina(&w.entities[0], w.tick) - 94.).abs() < 0.01);
     }
 }

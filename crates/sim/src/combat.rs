@@ -751,17 +751,9 @@ impl World {
             Skill::Chakram => {
                 let (damage, refund) = if let Some(ranks) = &self.abilities.idris_b {
                     // The tooltip specifies CBASE, CR and BWR (bonus weapon ratio).
-                    let bonus_weapon = self.entities[i]
-                        .inventory
-                        .iter()
-                        .flat_map(|item| self.item_bonuses(item.kind))
-                        .filter(|(stat, _)| *stat == 4)
-                        .map(|(_, v)| v)
-                        .sum();
+                    let items = &self.entities[i].item_stats;
                     (
-                        ranks
-                            .damage
-                            .at(r, self.entities[i].item_stats.crystal, bonus_weapon),
+                        ranks.damage.at(r, items.crystal, items.bonus_weapon),
                         Some(ranks.stamina_from_hero[r]),
                     )
                 } else {
