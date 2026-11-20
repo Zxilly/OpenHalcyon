@@ -27,24 +27,10 @@ pub use shop::{BasicItem, HeldItem, ItemStats, Purchase};
 pub fn rules_digest(data: Option<&GameData>) -> String {
     use sha2::{Digest, Sha256};
     let mut h = Sha256::new();
-    for source in [
-        include_str!("lib.rs"),
-        include_str!("combat.rs"),
-        include_str!("chakram.rs"),
-        include_str!("lorelai.rs"),
-        include_str!("native_learn.rs"),
-        include_str!("progression.rs"),
-        include_str!("ai.rs"),
-        include_str!("aral.rs"),
-        include_str!("nav.rs"),
-        include_str!("layout.rs"),
-        include_str!("shop.rs"),
-        include_str!("score.rs"),
-    ] {
-        let normalized = source.replace("\r\n", "\n");
-        h.update((normalized.len() as u64).to_be_bytes());
-        h.update(normalized.as_bytes());
-    }
+    h.update(include_bytes!(concat!(
+        env!("OUT_DIR"),
+        "/simulation.sha256"
+    )));
     h.update(data.map_or("built-in", |d| &d.content_digest));
     format!("{:x}", h.finalize())
 }
