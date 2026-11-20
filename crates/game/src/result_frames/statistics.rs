@@ -34,7 +34,7 @@ pub(super) fn snapshot(world: &World) -> io::Result<Message> {
             deaths_by_turret: u8::try_from(score.turret_deaths).unwrap_or(u8::MAX),
             jungle_farm_at_five: 0,
             counter_jungle_farm: 0,
-            scout_cam_uses: 0,
+            scout_cam_uses: u8::try_from(score.scout_cam_uses).unwrap_or(u8::MAX),
             smurf_score: 0.,
             average_interactions_per_minute_alive: 0.,
             item_build: 0,
@@ -121,6 +121,48 @@ mod tests {
             assert_eq!(row.items[1..], [0xffff; 9]);
             assert_eq!(report.auxiliary_words(), [0; 19]);
         }
+    }
+
+    #[test]
+    fn report_counts_only_authorized_scout_cam_deployments_in_the_owning_seat() {
+        let mut world = World::new(17, 6);
+        world.use_six_human_roster().unwrap();
+        world.use_aral_lane().unwrap();
+        let point = world.entities[0].position;
+        let totem = halcyon_sim::AralStarter::VisionTotem.grant();
+        let deploy = halcyon_sim::Command::DeployVisionTotem {
+            instance: totem.instance,
+            point,
+        };
+        world.command(1, deploy).unwrap();
+        world.command(1, deploy).unwrap();
+        assert!(world.command(1, deploy).is_err());
+        let trap = world.purchase(1, BasicItem::ScoutTrap).unwrap().granted;
+        world
+            .command(
+                1,
+                halcyon_sim::Command::DeployScoutTrap {
+                    instance: trap.instance,
+                },
+            )
+            .unwrap();
+        world
+            .command(
+                2,
+                halcyon_sim::Command::DeployVisionTotem {
+                    instance: totem.instance,
+                    point: world.entities[1].position,
+                },
+            )
+            .unwrap();
+        assert_eq!(world.player_score(1).unwrap().scout_cam_uses, 2);
+        let message = snapshot(&world).unwrap();
+        let Fields::MatchStatistics(report) = message.fields().unwrap() else {
+            panic!("expected match statistics");
+        };
+        assert_eq!(report.slot(0).unwrap().scout_cam_uses, 2);
+        assert_eq!(report.slot(1).unwrap().scout_cam_uses, 1);
+        assert_eq!(report.slot(2).unwrap().scout_cam_uses, 0);
     }
 
     #[test]

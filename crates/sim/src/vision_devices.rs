@@ -190,6 +190,7 @@ impl Room<'_> {
                     c.next = state.tick + 180 * TICK_HZ;
                 }
                 c.spent += 1;
+                state.scores[i].scout_cam_uses += 1;
             }
             VisionDeviceKind::ScoutTrap => {
                 if c.trap_ready > state.tick {

@@ -70,6 +70,8 @@ pub struct TeamScore {
 pub struct PlayerScore {
     pub gold_income: GoldIncome,
     pub turret_deaths: u32,
+    #[serde(skip_serializing_if = "scout_cam_unused")]
+    pub scout_cam_uses: u32,
     pub damage_to_heroes: f64,
     pub damage_to_structures: f64,
     pub weapon_damage_to_heroes: f64,
@@ -80,6 +82,10 @@ pub struct PlayerScore {
     pub lane_last_hits_at_five: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub net_worth_at_five: Option<u64>,
+}
+
+fn scout_cam_unused(uses: &u32) -> bool {
+    *uses == 0
 }
 
 impl PlayerScore {
