@@ -106,6 +106,12 @@ pub enum Event {
     Spawn {
         id: u32,
     },
+    /// Native ARAL presentation only. The hero is still dead.
+    RespawnApproach {
+        id: u32,
+        team: u8,
+        home: Position,
+    },
     /// A previously dead hero has returned to its home position.
     Respawn {
         id: u32,
@@ -665,6 +671,14 @@ impl World {
     fn index(&self, id: u32) -> Option<usize> {
         self.entities.binary_search_by_key(&id, |e| e.id).ok()
     }
+    pub fn sees_position(&self, team: u8, p: Position) -> bool {
+        self.entities.iter().any(|e| {
+            e.team == team
+                && e.hp > 0.
+                && e.position.dist(p) <= SIGHT
+                && self.layout.clear(e.position, p)
+        })
+    }
     pub fn visible(&self, team: u8, e: &Entity) -> bool {
         e.team == team
             || (e.hp > 0.
@@ -866,6 +880,16 @@ impl World {
                 continue;
             }
             if e.hp <= 0. {
+                if e.kind == Kind::Hero
+                    && matches!(self.layout, Layout::Aral { .. })
+                    && e.respawn.checked_sub(self.tick) == Some(6)
+                {
+                    events.push(Event::RespawnApproach {
+                        id: e.id,
+                        team: e.team,
+                        home: self.layout.home(e),
+                    });
+                }
                 if e.kind == Kind::Hero && e.respawn <= self.tick {
                     e.hp = e.max_hp;
                     e.energy = e.max_energy;

@@ -83,7 +83,7 @@ These counts cover one 14-chunk Android replay. The dispatch addresses refer to 
 | 0x0403 | 11 | 0x82c92c | 5W + 1B, auto-move. Word 0 matches a spawned actor in all 11 records. |
 | 0x0406 | 10 | 0x82d048 | 8W, auto-orbit. Words 0 and 3 both match spawned actors in all 10 records. |
 | 0x0407 | 4 | 0x82ca1c | 4W, cancel-orbit. Word 0 matches a spawned actor in all four records. |
-| 0x0409 | 7 | 0x82ca60 | 4W + 1B, teleport. Word 0 matches a spawned actor in all seven records. |
+| 0x0409 | 7 | 0x82ca60 | Actor, world X/Y/Z and one flag. The seven-capture ARAL comparison below identifies flag 1 at respawn. |
 | 0x040E | 15 | 0x82bb60 | 6W + 1H + 2B, fire projectile. |
 | 0x0410 | 3 | 0x82cb58 | 4W + 1B, detonate projectile. |
 | 0x0416 | 21 | 0x82cba4 | 4W + 1B, play ability. Word 0 matches a spawned actor in all 21 records. |
@@ -281,3 +281,9 @@ appear before and after start. The host relays the supported authenticated
 flag-1 scene entry to the other ARAL seats whose own hero registration has
 been written. The encrypted six-seat test checks the order, handle, seat
 and registered actor for five successive arrivals.
+
+### ARAL pre-respawn relocation
+
+All 63 flag-1 `0409` actions in seven recordings pair one-to-one with the next `0432` of the same hero, including the first and last occurrences. Each immediately precedes a same-timestamp `042E` with identical actor and X/Z. The coordinates exactly match that hero's opening pad. Relocation height is 1.3 on team 0 and 1.5 on team 1. The later respawn followed in 0.177–0.423 seconds (median 0.304). Resource, visibility and some inventory updates can intervene before the respawn. The traces include eight relocations of the recording player's hero, 29 of allies and 26 of opponents.
+
+The host emits the pair six 20 Hz ticks before the existing authoritative respawn. Health and simulation position change only at respawn. The pair requires the actor's registration on the current gameplay connection. Opponents additionally need current sight of the destination. An authorized full-scene observer with that registration receives the same pair. Four archived flag-0 actions have a different context.

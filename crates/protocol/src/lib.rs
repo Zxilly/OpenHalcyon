@@ -141,6 +141,15 @@ impl Message {
         }
         .message()
     }
+    pub fn actor_relocation(actor: u32, xyz: [f32; 3], flag: u8) -> Self {
+        let mut body = [0; 22];
+        body[..4].copy_from_slice(&actor.to_be_bytes());
+        for (dst, value) in body[4..16].as_chunks_mut::<4>().0.iter_mut().zip(xyz) {
+            dst.copy_from_slice(&value.to_be_bytes());
+        }
+        body[16] = flag;
+        Self::new(0x0409, body)
+    }
     pub fn actor_respawn_timer(actor: u32, seconds: f32) -> Self {
         let mut body = [0; 14];
         body[..4].copy_from_slice(&actor.to_be_bytes());
@@ -279,6 +288,12 @@ impl Message {
                 values: [float(1)?, float(5)?, float(9)?],
                 flag: b[13],
                 remaining: &b[14..],
+            },
+            0x409 if matches!(b.len(), 17 | 22) => Fields::ActorRelocation {
+                actor: number(0)?,
+                xyz: [float(4)?, float(8)?, float(12)?],
+                flag: b[16],
+                remaining: &b[17..],
             },
             0x432 if matches!(b.len(), 16 | 22) => Fields::Respawn {
                 actor: number(0)?,
@@ -628,6 +643,12 @@ pub enum Fields<'a> {
     ServerMove {
         selector: u8,
         values: [f32; 3],
+        flag: u8,
+        remaining: &'a [u8],
+    },
+    ActorRelocation {
+        actor: u32,
+        xyz: [f32; 3],
         flag: u8,
         remaining: &'a [u8],
     },
@@ -1018,6 +1039,30 @@ impl<R: Read> ReplayReader<R> {
 mod tests {
     use super::*;
     #[test]
+    fn relocation_retains_all_coordinates_flag_and_padding() {
+        let mut m = Message::actor_relocation(1503, [79.66, 1.5, -0.91], 1);
+        assert_eq!(&m.body[8..12], &1.5f32.to_be_bytes());
+        assert!(matches!(
+            m.fields(),
+            Ok(Fields::ActorRelocation {
+                actor: 1503,
+                xyz: [79.66, 1.5, -0.91],
+                flag: 1,
+                remaining: [0, 0, 0, 0, 0]
+            })
+        ));
+        m.body.truncate(17);
+        m.body[16] = 0;
+        assert!(matches!(
+            m.fields(),
+            Ok(Fields::ActorRelocation {
+                flag: 0,
+                remaining: [],
+                ..
+            })
+        ));
+    }
+    #[test]
     fn respawn_timer_keeps_fractional_seconds_in_a_padded_frame() {
         let timer = Message::actor_respawn_timer(1503, 13.4974);
         assert_eq!(timer.opcode, Opcode::ActorRespawnTimer as u16);
@@ -1041,7 +1086,6 @@ mod tests {
             (0x403, 5, false, 1),
             (0x406, 8, false, 0),
             (0x407, 4, false, 0),
-            (0x409, 4, false, 1),
             (0x416, 4, false, 1),
             (0x419, 6, false, 0),
             (0x41f, 2, false, 0),

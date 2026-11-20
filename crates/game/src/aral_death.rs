@@ -89,3 +89,31 @@ pub(super) fn flush(room: &mut Room, now: u64) {
         }
     }
 }
+
+pub(super) fn publish_approaches(room: &mut Room, events: &[Event]) {
+    for ev in events {
+        let Event::RespawnApproach { id, team, home } = *ev else {
+            continue;
+        };
+        let height = if team == 0 { 1.3 } else { 1.5 };
+        let actor = wire_id(id);
+        let out = vec![
+            Message::actor_relocation(u32::from(actor), [home.x, height, home.y], 1),
+            Message::position(actor, home.x, home.y),
+        ];
+        room.publish_observer_approach(id, &out);
+        let batch = transport::TeamBatch::new(out);
+        let enemy_visible = room.world.sees_position(1 - team, home);
+        for (i, seat) in room.seats.iter().enumerate() {
+            if (room.world.entities[i].team == team || enemy_visible)
+                && seat.world_actor_written
+                && seat.preamble.confirmed()
+                && seat.peers[1].is_none()
+                && room.scene_views[i].knows(id)
+                && let Some(peer) = &seat.peers[0]
+            {
+                peer.send(transport::Delivery::Team(batch.clone()));
+            }
+        }
+    }
+}

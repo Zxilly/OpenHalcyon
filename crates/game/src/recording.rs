@@ -187,7 +187,8 @@ fn sanitize(m: &mut Message) -> bool {
         0x3ef if m.body.is_empty() || m.body == [0; 6] => {}
         0x41e if m.body.len() == 22 && m.body[16..] == [0; 6] => {}
         0x434 if m.body.len() == 14 && m.body[4..] == [0, 0, 0, 1, 0, 0, 0, 0, 0, 0] => {}
-        0x409 if matches!(m.fields(),Ok(halcyon_protocol::Fields::ActorRelocation{actor:1500..=1505,xyz,flag:1,remaining:[0,0,0,0,0]}) if [
+        0x409
+            if matches!(m.fields(),Ok(halcyon_protocol::Fields::ActorRelocation{actor:1500..=1505,xyz,flag:1,remaining:[0,0,0,0,0]}) if [
             [-78.18,1.3,0.88],[-81.81,1.3,1.97],[-77.03,1.3,-1.94],
             [79.66,1.5,-0.91],[78.60,1.5,-5.06],[83.22,1.5,0.72]
         ].contains(&xyz)) => {}
@@ -301,6 +302,16 @@ async fn save(dir: PathBuf, first_tick: u64, mut rx: mpsc::Receiver<Sample>) -> 
 mod tests {
     use super::*;
     use halcyon_protocol::ReplayReader;
+    #[test]
+    fn relocation_recording_requires_a_real_aral_seat_pad_and_flag() {
+        let mut m = Message::actor_relocation(1503, [79.66, 1.5, -0.91], 1);
+        assert!(sanitize(&mut m));
+        for (offset, byte) in [(0, 1), (5, 0), (16, 0), (17, 1)] {
+            let mut altered = m.clone();
+            altered.body[offset] = byte;
+            assert!(!sanitize(&mut altered));
+        }
+    }
     #[test]
     fn keeps_authored_combat_frames_without_arbitrary_tails() {
         let mut death = Message::actor_death(1510, 1511);

@@ -1312,7 +1312,7 @@ impl Room {
         if legacy {
             aral_death::flush(self, self.world.tick);
             aral_death::schedule(self, &events);
-            aral_death::publish_approaches(self,&events);
+            aral_death::publish_approaches(self, &events);
         }
         self.tick_observers(&events);
         for event in &events {

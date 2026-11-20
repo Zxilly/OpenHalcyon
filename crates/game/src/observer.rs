@@ -317,6 +317,19 @@ impl Room {
             true
         });
     }
+    pub(super) fn publish_observer_approach(&mut self, id: u32, out: &Batch) {
+        self.observers.retain(|_, o| {
+            if o.scene.is_some()
+                && o.view.knows(id)
+                && let Some(tx) = &o.live
+                && tx.try_send(out.clone()).is_err()
+            {
+                o.stop.send_replace(true);
+                return false;
+            }
+            true
+        });
+    }
     pub(super) fn death_observers(&self) -> Vec<mpsc::WeakSender<Batch>> {
         self.observers
             .values()
@@ -616,6 +629,68 @@ mod tests {
         while let Ok(batch) = streams[0].try_recv() {
             assert!(batch.into_records().iter().all(|m| m.opcode != 0x0433));
         }
+
+        // Use the native, confirmed gameplay stream for the relocation presentation.
+        for (i, seat) in room.seats.iter_mut().take(2).enumerate() {
+            seat.peers[0] = seat.peers[1].take();
+            seat.world_actor_written = true;
+            let actor = 1500 + i as u32;
+            seat.preamble.observe(&Message::new(0x46e, [0; 6]), actor);
+            let mut request = [0; 6];
+            request[..4].copy_from_slice(&actor.to_be_bytes());
+            request[4] = 1;
+            seat.preamble.observe(&Message::new(0x471, request), actor);
+            seat.preamble.observe(&Message::new(0x46d, [0; 6]), actor);
+        }
+        // Advance the same dead hero through its normal countdown.
+        let declaration = {
+            let mut b = vec![0; 750];
+            b[8..12].copy_from_slice(&1501u32.to_be_bytes());
+            b[745] = 17;
+            Message::new(0x03f3, b)
+        };
+        for view in &mut room.scene_views[..2] {
+            view.declarations(std::slice::from_ref(&declaration));
+        }
+        let scene = tower_aggro::ObserverScene::new(&room);
+        let o = room.observers.get_mut(&grant).unwrap();
+        o.scene = scene;
+        o.view.declarations(std::slice::from_ref(&declaration));
+        for stream in &mut streams {
+            while stream.try_recv().is_ok() {}
+        }
+        let mut teleported = None;
+        while room.world.entities[1].hp <= 0. {
+            let events = room.world.step();
+            if let Some(Event::RespawnApproach { home, .. }) = events
+                .iter()
+                .find(|e| matches!(e, Event::RespawnApproach { id: 2, .. }))
+            {
+                assert!(teleported.replace(room.world.tick).is_none());
+                assert_eq!(room.world.entities[1].hp, 0.);
+                assert_ne!(room.world.entities[1].position, *home);
+                let expected = vec![
+                    Message::actor_relocation(1501, [home.x, 1.5, home.y], 1),
+                    Message::position(1501, home.x, home.y),
+                ];
+                crate::aral_death::publish_approaches(&mut room, &events);
+                assert_eq!(streams[1].try_recv().unwrap().into_records(), expected);
+                assert!(streams[0].try_recv().is_err());
+                assert_eq!(observer.try_recv().unwrap(), expected);
+                room.world.entities[0].position = *home;
+                room.scene_views[1] = Default::default();
+                crate::aral_death::publish_approaches(&mut room, &events);
+                assert_eq!(streams[0].try_recv().unwrap().into_records(), expected);
+                assert!(streams[1].try_recv().is_err());
+            }
+            if events
+                .iter()
+                .any(|e| matches!(e, Event::Respawn { id: 2, .. }))
+            {
+                assert_eq!(teleported.unwrap() + 6, room.world.tick);
+            }
+        }
+        assert!(teleported.is_some());
     }
 
     #[tokio::test]
