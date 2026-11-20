@@ -2,6 +2,7 @@
 mod difficulty;
 mod entity_template;
 mod extra;
+mod item_bonuses;
 mod skins;
 pub use difficulty::BotDifficulty;
 pub use entity_template::EntityTemplate;
@@ -312,6 +313,9 @@ impl GameData {
     }
     pub fn standard_5v5_items(&self) -> Option<&std::collections::BTreeSet<String>> {
         self.extra.standard_five()
+    }
+    pub fn supplemental_item_bonus(&self, item: &str, stat: u8) -> Option<f32> {
+        self.extra.item_bonuses.get(item, stat)
     }
     pub fn unit(&self, name: &str) -> Option<&Unit> {
         self.units.iter().find(|v| v.name == name)

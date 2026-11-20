@@ -593,6 +593,10 @@ impl Shop {
                 .filter(|n| *n > 0)
                 .ok_or_else(|| format!("invalid cost {}", d.name))?;
             for (stat, value) in &mut offer.bonuses {
+                if let Some(full) = data.supplemental_item_bonus(d.name, *stat) {
+                    *value = full;
+                    continue;
+                }
                 if let Some(b) = row
                     .other
                     .get("bonuses")
@@ -798,6 +802,47 @@ pub(super) fn mitigated(raw: f32, defense: f32, pierce: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    #[ignore = "requires the operator's delivery and supplement directories"]
+    fn original_supplement_supplies_verified_nonflat_item_bonuses() {
+        let delivery = std::env::var_os("HALCYON_TEST_DELIVERY").expect("HALCYON_TEST_DELIVERY");
+        let extra = std::env::var_os("HALCYON_TEST_SUPPLEMENT").expect("HALCYON_TEST_SUPPLEMENT");
+        let data = GameData::load_with_extra(delivery, Some(std::path::Path::new(&extra))).unwrap();
+        let shop = Shop::load(&data).unwrap();
+        for (kind, stat, value) in [
+            (SwiftShooter, 15, 0.1),
+            (Hourglass, 25, 0.075),
+            (EnergyBattery, 3, 1.5),
+            (MinionsFoot, 30, 0.1),
+            (MinionsFoot, 31, 0.05),
+        ] {
+            assert_eq!(
+                data.supplemental_item_bonus(kind.definition().name, stat),
+                Some(value)
+            );
+            assert!(shop.offers[kind as usize].bonuses.contains(&(stat, value)));
+        }
+    }
+
+    #[test]
+    fn upgraded_components_remove_their_loaded_attack_speed_exactly_once() {
+        let mut world = World::new(37, 1);
+        let actor = world.entities[0].id;
+        world.entities[0].gold = 10_000;
+        world.shop.offers[SwiftShooter as usize].bonuses = vec![(15, 0.125)];
+        world.shop.offers[BlazingSalvo as usize].bonuses = vec![(15, 0.375)];
+        let before = world.entities[0].item_stats.attack_speed;
+        let component = world.purchase(actor, SwiftShooter).unwrap();
+        assert_eq!(world.entities[0].item_stats.attack_speed, before + 0.125);
+        let upgrade = world.purchase(actor, BlazingSalvo).unwrap();
+        assert_eq!(upgrade.consumed, [component.granted]);
+        assert_eq!(world.entities[0].item_stats.attack_speed, before + 0.375);
+        assert_eq!(
+            world.item_bonuses(BlazingSalvo).collect::<Vec<_>>(),
+            [(15, 0.375)]
+        );
+    }
+
     #[test]
     fn standard_store_filters_supported_solo_purchases_before_consuming_anything() {
         let names = [

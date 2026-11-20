@@ -45,13 +45,19 @@ struct Hero {
 
 #[derive(Default, Debug)]
 pub struct ExtraData {
+    pub(crate) item_bonuses: crate::item_bonuses::ItemBonuses,
     pub(crate) skins: Option<crate::skins::SkinIndex>,
     heroes: BTreeMap<String, BTreeMap<String, Vec<RankedVariable>>>,
     standard_five: Option<BTreeSet<String>>,
 }
 
 impl ExtraData {
-    pub(super) fn load(dir: &Path, hash: &mut Sha256, hero_names: &[String], skin_names: &[String]) -> io::Result<Self> {
+    pub(super) fn load(
+        dir: &Path,
+        hash: &mut Sha256,
+        hero_names: &[String],
+        skin_names: &[String],
+    ) -> io::Result<Self> {
         let mut heroes = BTreeMap::new();
         for hero in read::<Vec<Hero>>(dir, "abilities.json", hash)? {
             let mut abilities = BTreeMap::new();
@@ -90,7 +96,10 @@ impl ExtraData {
         }
         let stores: Stores = read(dir, "item_stores.json", hash)?;
         Ok(Self {
-            skins: Some(crate::skins::SkinIndex::load(dir, hash, hero_names, skin_names)?),
+            item_bonuses: crate::item_bonuses::ItemBonuses::load(dir, hash)?,
+            skins: Some(crate::skins::SkinIndex::load(
+                dir, hash, hero_names, skin_names,
+            )?),
             heroes,
             standard_five: Some(stores.standard_five),
         })
