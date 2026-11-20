@@ -1,4 +1,5 @@
 use super::*;
+use diesel::{ExpressionMethods, OptionalExtension as _, QueryDsl, RunQueryDsl, SqliteConnection};
 
 #[derive(Debug)]
 pub struct NativeSeat {
@@ -171,36 +172,52 @@ impl AppState {
     pub async fn native_offer(&self, session: &str) -> Result<Option<NativeOffer>> {
         let key = digest(session);
         self.run(move |state| {
-            let mut db = state.db.lock().map_err(|_| PlatformError::WorkerUnavailable)?;
-            let tx = db.transaction()?;
-            // A deferred read snapshot cannot upgrade safely during another writer.
-            // The CE request already renews presence when loading the user's profile.
-            let owner = session_owner(&tx, &key)?;
-            let binding: Option<(String, i64)> = tx.query_row(
-                "SELECT m.id, m.offered_at + 30 FROM tickets t JOIN matches m ON m.id=t.match_id WHERE t.player=?",
-                [owner], |row| Ok((row.get(0)?, row.get(1)?)),
-            ).optional()?;
-            let Some((room, expires)) = binding else { return Ok(None) };
-            let mut stmt = tx.prepare("SELECT player, accepted, entry FROM native_offer_seats WHERE room=? ORDER BY position")?;
-            let mut rows = stmt.query([&room])?;
-            let mut seats = Vec::new();
-            let mut entries = std::collections::BTreeSet::new();
-            while let Some(row) = rows.next()? {
-                let raw: String = row.get(0)?;
-                seats.push(NativeSeat {
-                    player: Uuid::parse_str(&raw).map_err(|_| PlatformError::WorkerUnavailable)?,
-                    accepted: row.get(1)?,
-                });
-                entries.insert(row.get::<_, String>(2)?);
-            }
-            Ok(Some(NativeOffer {
-                id: Uuid::parse_str(&room).map_err(|_| PlatformError::WorkerUnavailable)?,
-                seats,
-                entries: entries.len() as u32,
-                expires: Some(expires),
-            }))
-        }).await
+            state
+                .accounts
+                .lock()
+                .map_err(|_| PlatformError::WorkerUnavailable)?
+                .read_as(&key, read_native_offer)
+        })
+        .await
     }
+}
+
+fn read_native_offer(db: &mut SqliteConnection, owner: &str) -> Result<Option<NativeOffer>> {
+    use crate::orm_schema::{matches, native_offer_seats as roster, tickets};
+
+    let binding = tickets::table
+        .inner_join(matches::table)
+        .filter(tickets::player.eq(owner))
+        .select((matches::id, matches::offered_at))
+        .first::<(String, i64)>(db)
+        .optional()?;
+    let Some((room, offered_at)) = binding else {
+        return Ok(None);
+    };
+    let expires = offered_at
+        .checked_add(30)
+        .ok_or(PlatformError::WorkerUnavailable)?;
+    let mut entries = std::collections::BTreeSet::new();
+    let seats = roster::table
+        .filter(roster::room.eq(&room))
+        .order(roster::position)
+        .select((roster::player, roster::accepted, roster::entry))
+        .load::<(String, bool, String)>(db)?
+        .into_iter()
+        .map(|(player, accepted, entry)| {
+            entries.insert(entry);
+            Ok(NativeSeat {
+                player: Uuid::parse_str(&player).map_err(|_| PlatformError::WorkerUnavailable)?,
+                accepted,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(Some(NativeOffer {
+        id: Uuid::parse_str(&room).map_err(|_| PlatformError::WorkerUnavailable)?,
+        seats,
+        entries: entries.len() as u32,
+        expires: Some(expires),
+    }))
 }
 
 #[cfg(test)]
@@ -222,7 +239,7 @@ mod tests {
             PlatformConfig {
                 database_path: database.clone(),
                 public_address: "localhost".into(),
-                seats_per_match: 1,
+                seats_per_match: 2,
             },
             Arc::new(NoHost),
         )
@@ -232,6 +249,24 @@ mod tests {
             .join(&guest.session_token, "5v5_pvp_casual".into())
             .await
             .unwrap();
+
+        let second = state.create_guest("second".into()).await.unwrap();
+        state
+            .join(&second.session_token, "5v5_pvp_casual".into())
+            .await
+            .unwrap();
+        let outsider = state.create_guest("outside".into()).await.unwrap();
+        assert!(
+            state
+                .native_offer(&outsider.session_token)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(matches!(
+            state.native_offer("invalid").await,
+            Err(PlatformError::Unauthorized)
+        ));
 
         let mut external = Connection::open(database).unwrap();
         let writer = external
@@ -248,8 +283,17 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(offer.seats.len(), 1);
-        assert_eq!(offer.seats[0].player, guest.player_id);
+        assert_eq!(
+            offer
+                .seats
+                .iter()
+                .map(|seat| seat.player)
+                .collect::<Vec<_>>(),
+            [guest.player_id, second.player_id],
+        );
+        assert_eq!(offer.entries, 2);
+        assert!(offer.seats.iter().all(|seat| !seat.accepted));
+        assert!(offer.expires.is_some());
         writer.commit().unwrap();
         let last_seen: i64 = external
             .query_row(
