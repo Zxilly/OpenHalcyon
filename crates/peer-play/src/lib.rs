@@ -384,13 +384,27 @@ impl PeerPlay {
         self.inner.journal.finish(id, &result)
     }
 }
+fn aral_rules(base: &str, free_reroll: bool) -> String {
+    let feature = if free_reroll { "free-aral-reroll:" } else { "" };
+    format!(
+        "{}{feature}{base}",
+        halcyon_platform::ARAL_TALENT_RULES_PREFIX
+    )
+}
+
+fn accepts_default_rules(queue: &Queue, base: &str, free_reroll: bool) -> bool {
+    if KnownQueue::parse(&queue.name) == Some(KnownQueue::CasualAral) {
+        queue.rules_digest == aral_rules(base, free_reroll)
+            || (!free_reroll && queue.rules_digest == base)
+    } else {
+        queue.rules_digest == base
+    }
+}
+
 impl Inner {
     fn difficulty_for_queue(&self, queue: &Queue) -> anyhow::Result<Option<BotDifficulty>> {
         if queue.build == 147219 {
-            if queue.rules_digest == self.cfg.rules_digest
-                || (KnownQueue::parse(&queue.name) == Some(KnownQueue::CasualAral)
-                    && queue.rules_digest == self.aral_talent_rules())
-            {
+            if accepts_default_rules(queue, &self.cfg.rules_digest, self.rooms.free_aral_reroll()) {
                 return Ok(None);
             }
             if BotDifficulty::supports_queue(&queue.name)
@@ -406,11 +420,7 @@ impl Inner {
     }
 
     fn aral_talent_rules(&self) -> String {
-        format!(
-            "{}{}",
-            halcyon_platform::ARAL_TALENT_RULES_PREFIX,
-            self.cfg.rules_digest
-        )
+        aral_rules(&self.cfg.rules_digest, self.rooms.free_aral_reroll())
     }
 
     async fn ticket(
@@ -872,5 +882,36 @@ impl Worker {
             .await?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod rules_tests {
+    use super::*;
+
+    #[test]
+    fn free_aral_reroll_is_a_separate_rules_identity() {
+        let base = "old-simulation";
+        let mut queue = Queue {
+            name: KnownQueue::CasualAral.as_str().to_owned(),
+            seats: 6,
+            build: 147219,
+            rules_digest: base.to_owned(),
+        };
+        assert!(accepts_default_rules(&queue, base, false));
+        assert!(!accepts_default_rules(&queue, base, true));
+        queue.rules_digest = aral_rules(base, false);
+        assert_eq!(queue.rules_digest, "aral-talent-levels:old-simulation");
+        assert!(accepts_default_rules(&queue, base, false));
+        assert!(!accepts_default_rules(&queue, base, true));
+        queue.rules_digest = aral_rules(base, true);
+        assert!(accepts_default_rules(&queue, base, true));
+        assert!(!accepts_default_rules(&queue, base, false));
+        assert!(!accepts_default_rules(&queue, "different-simulation", true));
+
+        queue.name = KnownQueue::SoloBots.as_str().to_owned();
+        assert!(!accepts_default_rules(&queue, base, true));
+        queue.rules_digest = base.to_owned();
+        assert!(accepts_default_rules(&queue, base, true));
     }
 }

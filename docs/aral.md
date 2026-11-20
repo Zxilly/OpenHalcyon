@@ -154,5 +154,9 @@ authoritative per-use fee nor a replay-safe transaction key binding the
 home account debit to the room's new hero. The host can set
 `free_aral_reroll = true` to enable one free, deterministic hero change per draft
 seat when hero data is available. This optional rule defaults to disabled and
-does not debit any account currency. The host sends the updated roster before
+does not debit any account currency. In a federated pool, the setting is part
+of the ARAL rules identity. Tickets and host capacity must agree on it.
+Nodes with rerolls disabled retain the existing rules identity. Queued tickets
+retain their original rules identity. They need a compatible host or a fresh
+queue entry after cancellation. The host sends the updated roster before
 the zero-operand echo and sends the replacement default skin to its owner.

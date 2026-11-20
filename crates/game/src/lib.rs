@@ -253,6 +253,9 @@ impl Rooms {
     pub fn set_free_aral_reroll(&self, enabled: bool) {
         self.0.free_aral_reroll.store(enabled, Ordering::Relaxed);
     }
+    pub fn free_aral_reroll(&self) -> bool {
+        self.0.free_aral_reroll.load(Ordering::Relaxed)
+    }
     pub fn set_finish_handler(&self, handler: Finish) {
         *self.0.finish.lock().unwrap() = Some(handler);
     }
@@ -683,7 +686,7 @@ impl Rooms {
         let (stop, stopped) = watch::channel(false);
         let t = Utc::now();
         let mut room = Room {
-            free_aral_reroll: self.0.free_aral_reroll.load(Ordering::Relaxed),
+            free_aral_reroll: self.free_aral_reroll(),
             federation,
             ringo_attacks: Default::default(),
             scene_views: (0..req.players.len()).map(|_| Default::default()).collect(),

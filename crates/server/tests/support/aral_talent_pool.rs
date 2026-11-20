@@ -162,6 +162,110 @@ async fn next(socket: &mut TcpStream, cipher: &MatchCipher) -> Message {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn pooled_aral_reroll_rules_split_tickets_and_select_only_compatible_hosts() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (configs, listeners) = pool::configs(tmp.path());
+    let host_id = configs[2].node_id;
+    let mut members = Vec::new();
+    for (index, (config, listener)) in configs.iter().zip(listeners).enumerate() {
+        let member =
+            Member::start(tmp.path(), index, config.clone(), Some(listener), host_id).await;
+        member.rooms.set_free_aral_reroll(index != 1);
+        members.push(Some(member));
+    }
+    let (leader, _) = elected(&members, 1).await;
+    wait_replication(&members, leader).await;
+    let reader = node(&members, leader);
+    let join = |index: usize| {
+        let member = node(&members, index);
+        async move {
+            let guest = rpc(
+                &member.rpc,
+                RpcMethod::CreateGuestPlayer.as_str(),
+                android_guest("device", "0"),
+            )
+            .await;
+            let session = rpc(
+                &member.rpc,
+                RpcMethod::StartSessionForPlayer.as_str(),
+                (&guest["returnValue"]["playerUUID"],),
+            )
+            .await;
+            rpc(
+                &member.rpc,
+                RpcMethod::JoinLobby.as_str(),
+                (
+                    &session["sessionToken"],
+                    LobbyJoin {
+                        lobby: "casual_aral",
+                    },
+                    "147219",
+                ),
+            )
+            .await;
+        }
+    };
+    for index in [0, 0, 0, 1, 1, 1] {
+        join(index).await;
+    }
+    let mixed = wait_pool(reader, |pool| pool.tickets().len() == 6).await;
+    assert!(mixed.allocations().is_empty());
+    let legacy = format!(
+        "{}validation-v1",
+        halcyon_platform::ARAL_TALENT_RULES_PREFIX
+    );
+    let reroll = format!(
+        "{}free-aral-reroll:validation-v1",
+        halcyon_platform::ARAL_TALENT_RULES_PREFIX
+    );
+    for entry in mixed.tickets().values() {
+        let ticket = &entry.ticket;
+        assert_eq!(
+            ticket.queue.rules_digest,
+            if ticket.home == configs[1].node_id {
+                &legacy
+            } else {
+                &reroll
+            }
+            .as_str()
+        );
+    }
+    for _ in 0..3 {
+        join(2).await;
+    }
+    let offered = wait_pool(reader, |pool| {
+        pool.allocations()
+            .values()
+            .any(|a| a.endpoint.is_some() || a.phase == Phase::Aborted)
+    })
+    .await;
+    assert_eq!(offered.allocations().len(), 1);
+    let allocation = offered.allocations().values().next().unwrap();
+    assert_eq!(allocation.host, host_id);
+    assert_eq!(allocation.phase, Phase::Preparing);
+    assert!(allocation.endpoint.is_some());
+    assert_eq!(allocation.tickets.len(), 6);
+    for ticket in &allocation.tickets {
+        assert_eq!(
+            offered.tickets()[&ticket.id].ticket.queue.rules_digest,
+            reroll
+        );
+    }
+    assert_eq!(
+        offered
+            .tickets()
+            .values()
+            .filter(|e| e.phase == TicketPhase::Queued)
+            .count(),
+        3
+    );
+    for member in members.into_iter().flatten() {
+        member.peer_play.shutdown().await;
+        member.raft.shutdown().await.unwrap();
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn cross_home_aral_equips_only_committed_numeric_entitlements() {
     let tmp = tempfile::tempdir().unwrap();
     let (configs, listeners) = pool::configs(tmp.path());
