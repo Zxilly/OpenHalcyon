@@ -74,6 +74,13 @@ impl Rules {
 pub enum VisionDeviceKind {
     ScoutCam,
     ScoutTrap,
+    Flare,
+}
+fn is_zero_u8(v: &u8) -> bool {
+    *v == 0
+}
+fn is_zero_u64(v: &u64) -> bool {
+    *v == 0
 }
 #[derive(Component, Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct VisionDevice {
@@ -85,6 +92,41 @@ pub struct VisionDevice {
     born: u64,
     hits: u8,
     detonate: Option<u64>,
+    #[serde(default, skip_serializing_if = "is_zero_u8")]
+    extra_hits: u8,
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    expires_at: u64,
+    #[serde(default, skip_serializing_if = "core::ops::Not::not")]
+    pub revealed: bool,
+}
+impl VisionDevice {
+    pub(super) fn new(
+        id: u32,
+        owner: u32,
+        team: u8,
+        kind: VisionDeviceKind,
+        point: Position,
+        born: u64,
+    ) -> Self {
+        Self {
+            id,
+            owner,
+            team,
+            kind,
+            point,
+            born,
+            hits: 0,
+            detonate: None,
+            extra_hits: 0,
+            expires_at: 0,
+            revealed: false,
+        }
+    }
+    pub(super) fn with_extras(mut self, extra_hits: u8, expires_at: u64) -> Self {
+        self.extra_hits = extra_hits;
+        self.expires_at = expires_at;
+        self
+    }
 }
 #[derive(Default, Clone, Copy, Serialize)]
 pub(super) struct Charges {
@@ -93,10 +135,11 @@ pub(super) struct Charges {
     trap_ready: u64,
 }
 impl Charges {
-    fn recharge(&mut self, tick: u64) {
+    fn recharge_with_period(&mut self, tick: u64, period: u64) {
+        let step = period.max(TICK_HZ);
         while self.spent > 0 && self.next <= tick {
             self.spent -= 1;
-            self.next += 180 * TICK_HZ;
+            self.next += step;
         }
     }
 }
@@ -110,11 +153,41 @@ impl Room<'_> {
             .filter(|v| {
                 v.kind == VisionDeviceKind::ScoutCam
                     && v.team != e.team
-                    && self.tick < v.born + self.shop.vision.stealth
+                    && (self.tick < v.born + self.shop.vision.stealth
+                        || v.revealed
+                        || self.sees_stealth(e.team, v.point))
                     && self.sees_position(e.team, v.point)
             })
             .map(|v| v.id)
             .collect()
+    }
+    /// True if an active allied Flare grants true sight over `p`.
+    pub fn sees_stealth(&self, team: u8, p: Position) -> bool {
+        let radius = self.shop.effect_rules.active.flare_sight_radius;
+        self.vision_devices().any(|v| {
+            v.kind == VisionDeviceKind::Flare && v.team == team && v.point.dist(p) <= radius
+        })
+    }
+    pub(super) fn reveal_in_flare(&mut self, team: u8, center: Position, radius: f32, until: u64) {
+        let ids: Vec<Handle> = self.vision_device_ids.clone();
+        for handle in ids {
+            if let Some(mut v) = self.entities.ecs.get_mut::<VisionDevice>(handle)
+                && v.team != team
+                && v.point.dist(center) <= radius
+                && matches!(
+                    v.kind,
+                    VisionDeviceKind::ScoutTrap | VisionDeviceKind::ScoutCam
+                )
+            {
+                v.revealed = true;
+            }
+        }
+        for idx in 0..self.entities.len() {
+            let e = &mut self.entities[idx];
+            if e.team != team && e.hp > 0. && e.position.dist(center) <= radius {
+                e.status.reveal_until = e.status.reveal_until.max(until);
+            }
+        }
     }
     /// Live devices in deployment order. Gameplay and native IDs are independent of ECS handles.
     pub fn vision_devices(&self) -> impl ExactSizeIterator<Item = &VisionDevice> {
@@ -126,18 +199,28 @@ impl Room<'_> {
         })
     }
     pub(super) fn device_sight(&self, team: u8, p: Position) -> bool {
+        let flare_radius = self.shop.effect_rules.active.flare_sight_radius;
         self.vision_devices().any(|v| {
             v.team == team
-                && v.point.dist(p)
-                    <= match v.kind {
-                        VisionDeviceKind::ScoutCam => 10.,
-                        VisionDeviceKind::ScoutTrap => self.shop.vision.sight,
+                && match v.kind {
+                    VisionDeviceKind::Flare => v.point.dist(p) <= flare_radius,
+                    VisionDeviceKind::ScoutCam => {
+                        v.point.dist(p) <= 10.
+                            && self.layout.clear(v.point, p)
+                            && self
+                                .native_navigation
+                                .as_ref()
+                                .is_none_or(|nav| nav.can_see(v.point, p))
                     }
-                && self.layout.clear(v.point, p)
-                && self
-                    .native_navigation
-                    .as_ref()
-                    .is_none_or(|nav| nav.can_see(v.point, p))
+                    VisionDeviceKind::ScoutTrap => {
+                        v.point.dist(p) <= self.shop.vision.sight
+                            && self.layout.clear(v.point, p)
+                            && self
+                                .native_navigation
+                                .as_ref()
+                                .is_none_or(|nav| nav.can_see(v.point, p))
+                    }
+                }
         })
     }
     pub(super) fn deploy_device(
@@ -146,18 +229,22 @@ impl Room<'_> {
         instance: u32,
         point: Option<Position>,
     ) -> Result<(), &'static str> {
-        if !matches!(self.layout, Layout::Aral { .. })
-            || i >= 6
-            || self.vision_device_ids.len() >= 256
+        if self.vision_device_ids.len() >= 256
+            || self.entities[i].kind != Kind::Hero
+            || self.entities[i].hp <= 0.
         {
             return Err("vision deployment unavailable");
         }
         let hero = &self.entities[i];
-        let slots = hero
-            .aral_inventory
-            .as_ref()
-            .ok_or("ARAL inventory unavailable")?;
+        let active_rules = self.shop.effect_rules.active;
         let (kind, point) = if let Some(p) = point {
+            if !matches!(self.layout, Layout::Aral { .. }) || i >= 6 {
+                return Err("vision deployment unavailable");
+            }
+            let slots = hero
+                .aral_inventory
+                .as_ref()
+                .ok_or("ARAL inventory unavailable")?;
             if !slots.slots().iter().flatten().any(|s| {
                 s.instance == instance && s.template == AralStarter::VisionTotem.grant().template
             }) {
@@ -176,24 +263,62 @@ impl Room<'_> {
         } else {
             (VisionDeviceKind::ScoutTrap, hero.position)
         };
+        let bonus_charges = if hero.has_item(BasicItem::SuperScout2000) {
+            active_rules.super_scout_bonus_charges
+        } else if hero.has_item(BasicItem::ScoutPak) {
+            active_rules.scout_pak_bonus_charges
+        } else {
+            0
+        };
+        let cd_reduction = if hero.has_item(BasicItem::SuperScout2000) {
+            active_rules.super_scout_cd_reduction
+        } else if hero.has_item(BasicItem::ScoutPak) {
+            active_rules.scout_pak_cd_reduction
+        } else {
+            0
+        };
+        let extra_hits = if hero.has_item(BasicItem::SuperScout2000) {
+            active_rules.super_scout_bonus_hits
+        } else if hero.has_item(BasicItem::ScoutTuff) {
+            active_rules.scout_tuff_bonus_hits
+        } else {
+            0
+        };
+        let bonus_lifespan = if hero.has_item(BasicItem::SuperScout2000) {
+            active_rules.super_scout_bonus_lifespan
+        } else if hero.has_item(BasicItem::ScoutTuff) {
+            active_rules.scout_tuff_bonus_lifespan
+        } else {
+            0
+        };
         let id = self.next_id;
         let next = id.checked_add(1).ok_or("entity id exhausted")?;
-        let state = &mut *self.state;
-        let c = &mut state.vision_charges[i];
+        let tick = self.state.tick;
+        let vision_rules = self.shop.vision;
+        let mut device_expires = 0;
         match kind {
             VisionDeviceKind::ScoutCam => {
-                c.recharge(state.tick);
-                if c.spent >= state.shop.vision.charges {
+                let period = (180 * TICK_HZ).saturating_sub(cd_reduction);
+                let max_charges = vision_rules.charges.saturating_add(bonus_charges);
+                let c = &mut self.state.vision_charges[i];
+                c.recharge_with_period(tick, period);
+                if c.spent >= max_charges {
                     return Err("no scout cam charge");
                 }
                 if c.spent == 0 {
-                    c.next = state.tick + 180 * TICK_HZ;
+                    c.next = tick + period;
                 }
                 c.spent += 1;
-                state.scores[i].scout_cam_uses += 1;
+                self.state.scores[i].scout_cam_uses += 1;
+                device_expires = tick + vision_rules.life + bonus_lifespan;
             }
             VisionDeviceKind::ScoutTrap => {
-                if c.trap_ready > state.tick {
+                let on_cd = if let Some(c) = self.state.vision_charges.get(i) {
+                    c.trap_ready > tick
+                } else {
+                    self.entities[i].rt().is_some_and(|rt| rt.trap_ready > tick)
+                };
+                if on_cd {
                     return Err("trap cooldown");
                 }
                 let hero = &mut self.entities[i];
@@ -202,26 +327,29 @@ impl Room<'_> {
                     .iter()
                     .position(|item| item.instance == instance && item.kind == BasicItem::ScoutTrap)
                     .ok_or("scout trap not held")?;
-                hero.aral_inventory
-                    .as_mut()
-                    .unwrap()
-                    .remove_held(hero.inventory[index])?;
+                let sold = hero.inventory[index];
+                if let Some(aral) = hero.aral_inventory.as_mut() {
+                    aral.remove_held(sold)?;
+                }
                 hero.inventory.remove(index);
-                c.trap_ready = state.tick + state.shop.vision.cooldown;
+                if let Some(c) = self.state.vision_charges.get_mut(i) {
+                    c.trap_ready = tick + vision_rules.cooldown;
+                } else {
+                    hero.rt_mut().trap_ready = tick + vision_rules.cooldown;
+                }
             }
+            VisionDeviceKind::Flare => unreachable!(),
         }
         let hero = &self.entities[i];
         self.state.next_id = next;
-        let device = VisionDevice {
-            id,
-            owner: hero.id,
-            team: hero.team,
-            kind,
-            point,
-            born: self.tick,
-            hits: 0,
-            detonate: None,
-        };
+        let device = VisionDevice::new(id, hero.id, hero.team, kind, point, tick).with_extras(
+            if kind == VisionDeviceKind::ScoutCam {
+                extra_hits
+            } else {
+                0
+            },
+            device_expires,
+        );
         let handle = self.entities.ecs.spawn(device).id();
         self.vision_device_ids.push(handle);
         self.pending_item_events
@@ -238,9 +366,12 @@ impl Room<'_> {
         else {
             return Err("unknown device");
         };
+        let revealed = self.tick < v.born + self.shop.vision.stealth
+            || v.revealed
+            || self.sees_stealth(e.team, v.point);
         if v.kind != VisionDeviceKind::ScoutCam
             || v.team == e.team
-            || self.tick >= v.born + self.shop.vision.stealth
+            || !revealed
             || e.position.dist(v.point) > e.stats.range
             || !self.sees_position(e.team, v.point)
             || e.status.stun_until > self.tick
@@ -252,7 +383,8 @@ impl Room<'_> {
         let interval = self.basic_attack_interval(e);
         self.entities[i].next_attack = self.tick + interval;
         let handle = self.vision_device_ids[j];
-        if v.hits + 1 == 5 {
+        let max_hits = 5u8.saturating_add(v.extra_hits);
+        if v.hits + 1 >= max_hits {
             self.entities.ecs.despawn(handle);
             self.vision_device_ids.remove(j);
         } else {
@@ -268,7 +400,8 @@ impl Room<'_> {
         if self.vision_device_ids.is_empty() {
             return;
         }
-        let input = (self.tick, self.shop.vision);
+        let detonations = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let input = (self.tick, self.shop.vision, detonations.clone());
         self.entities
             .ecs
             .run_system_cached_with(step_devices, input)
@@ -277,11 +410,51 @@ impl Room<'_> {
         self.state
             .vision_device_ids
             .retain(|id| ecs.get::<VisionDevice>(*id).is_some());
+        let detonated = std::mem::take(&mut *detonations.lock().unwrap());
+        let blast = self.shop.vision.blast;
+        let rules = self.shop.effect_rules.active;
+        let mut trap_events = Vec::new();
+        for trap in detonated {
+            let level = self
+                .index(trap.owner)
+                .map_or(1, |idx| self.entities[idx].level);
+            let raw = rules.trap_damage_base
+                + rules.trap_damage_per_level * f32::from(level.saturating_sub(1));
+            for j in 0..self.entities.len() {
+                let target = &self.entities[j];
+                if target.kind != Kind::Hero
+                    || target.hp <= 0.
+                    || target.team == trap.team
+                    || target.position.dist(trap.point) > blast
+                {
+                    continue;
+                }
+                let dmg = shop::mitigated(raw, target.stats.shield, 0.);
+                self.hurt_item(
+                    trap.owner,
+                    trap.team,
+                    j,
+                    dmg,
+                    DamageSchool::Crystal,
+                    &mut trap_events,
+                );
+            }
+        }
+        self.state.pending_item_events.append(&mut trap_events);
     }
 }
 
+#[derive(Clone, Copy)]
+struct DetonatedTrap {
+    owner: u32,
+    team: u8,
+    point: Position,
+}
+
+type DetonationLog = std::sync::Arc<std::sync::Mutex<Vec<DetonatedTrap>>>;
+
 fn step_devices(
-    In((tick, rules)): In<(u64, Rules)>,
+    In((tick, rules, detonations)): In<(u64, Rules, DetonationLog)>,
     mut devices: Query<(Handle, &mut VisionDevice)>,
     mut actors: Query<&mut Entity>,
     mut commands: Commands,
@@ -289,7 +462,13 @@ fn step_devices(
     for (handle, mut device) in &mut devices {
         match device.kind {
             VisionDeviceKind::ScoutCam => {
-                if tick >= device.born + rules.life {
+                let expiry = device.expires_at.max(device.born + rules.life);
+                if tick >= expiry {
+                    commands.entity(handle).despawn();
+                }
+            }
+            VisionDeviceKind::Flare => {
+                if tick >= device.expires_at {
                     commands.entity(handle).despawn();
                 }
             }
@@ -308,6 +487,11 @@ fn step_devices(
                                     actor.status.reveal_until.max(tick + rules.reveal);
                             }
                         }
+                        detonations.lock().unwrap().push(DetonatedTrap {
+                            owner: device.owner,
+                            team: device.team,
+                            point: device.point,
+                        });
                         commands.entity(handle).despawn();
                     }
                 } else if tick >= device.born + rules.arm

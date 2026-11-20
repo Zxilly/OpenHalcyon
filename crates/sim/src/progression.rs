@@ -13,6 +13,17 @@ impl Entity {
     }
 }
 
+#[derive(Clone, Copy)]
+struct DamageSpec {
+    src: u32,
+    team: u8,
+    target_idx: usize,
+    amount: f32,
+    school: DamageSchool,
+    effect: ImpactEffect,
+    origin: item_actives::DamageOrigin,
+}
+
 impl Room<'_> {
     /// The measured XP threshold attribute in modeled native scene layouts.
     pub fn native_xp_required(&self, level: u8) -> Option<f32> {
@@ -71,19 +82,27 @@ impl Room<'_> {
         }
     }
     pub(super) fn heal(&mut self, src: u32, i: usize, n: f32, events: &mut Vec<Event>) {
-        let e = &mut self.entities[i];
-        if e.hp <= 0. || e.is_rebooting() {
+        if self.entities[i].hp <= 0. || self.entities[i].is_rebooting() || n <= 0. {
             return;
         }
+        let tick = self.state.tick;
+        let rules = self.state.shop.effect_rules.active;
+        let (src_idx, adjusted) =
+            item_actives::adjusted_heal_amount(&self.entities, src, i, n, tick, &rules);
+        if adjusted <= 0. {
+            return;
+        }
+        let e = &mut self.entities[i];
         let was = e.hp;
-        e.hp = (was + n).min(e.max_hp);
+        e.hp = (was + adjusted).min(e.max_hp);
         if e.hp > was {
             events.push(Event::Heal {
                 source: src,
                 target: e.id,
                 amount: e.hp - was,
                 hp: e.hp,
-            })
+            });
+            item_actives::on_heal_or_barrier_applied(&mut self.entities, src_idx, i, tick, &rules);
         }
     }
     pub(super) fn hurt(
@@ -95,7 +114,62 @@ impl Room<'_> {
         school: DamageSchool,
         events: &mut Vec<Event>,
     ) {
-        self.hurt_with_effect(src, team, i, n, (school, ImpactEffect::Standard), events);
+        self.hurt_with_origin(
+            DamageSpec {
+                src,
+                team,
+                target_idx: i,
+                amount: n,
+                school,
+                effect: ImpactEffect::Standard,
+                origin: item_actives::DamageOrigin::Ability,
+            },
+            events,
+        );
+    }
+    pub(super) fn hurt_basic(
+        &mut self,
+        src: u32,
+        team: u8,
+        i: usize,
+        n: f32,
+        school: DamageSchool,
+        events: &mut Vec<Event>,
+    ) {
+        self.hurt_with_origin(
+            DamageSpec {
+                src,
+                team,
+                target_idx: i,
+                amount: n,
+                school,
+                effect: ImpactEffect::Standard,
+                origin: item_actives::DamageOrigin::BasicAttack,
+            },
+            events,
+        );
+    }
+    pub(super) fn hurt_item(
+        &mut self,
+        src: u32,
+        team: u8,
+        i: usize,
+        n: f32,
+        school: DamageSchool,
+        events: &mut Vec<Event>,
+    ) {
+        self.hurt_with_origin(
+            DamageSpec {
+                src,
+                team,
+                target_idx: i,
+                amount: n,
+                school,
+                effect: ImpactEffect::Standard,
+                origin: item_actives::DamageOrigin::ItemProc,
+            },
+            events,
+        );
     }
     pub(super) fn hurt_with_effect(
         &mut self,
@@ -106,10 +180,26 @@ impl Room<'_> {
         (school, effect): (DamageSchool, ImpactEffect),
         events: &mut Vec<Event>,
     ) {
-        let (applied, reflection) = self.stormguard_reflection(i, n);
-        self.apply_damage(src, team, i, applied, (school, effect), events);
+        self.hurt_with_origin(
+            DamageSpec {
+                src,
+                team,
+                target_idx: i,
+                amount: n,
+                school,
+                effect,
+                origin: item_actives::DamageOrigin::Ability,
+            },
+            events,
+        );
+    }
+    fn hurt_with_origin(&mut self, mut spec: DamageSpec, events: &mut Vec<Event>) {
+        let (applied, reflection) = self.stormguard_reflection(spec.target_idx, spec.amount);
+        let idx = spec.target_idx;
+        spec.amount = applied;
+        self.apply_damage_with_origin(spec, events);
         if let Some(reflected) = reflection {
-            self.reflect_stormguard(i, reflected, events);
+            self.reflect_stormguard(idx, reflected, events);
         }
     }
     pub(super) fn apply_damage(
@@ -121,10 +211,55 @@ impl Room<'_> {
         (school, effect): (DamageSchool, ImpactEffect),
         events: &mut Vec<Event>,
     ) {
+        self.apply_damage_with_origin(
+            DamageSpec {
+                src,
+                team,
+                target_idx: i,
+                amount: n,
+                school,
+                effect,
+                origin: item_actives::DamageOrigin::Ability,
+            },
+            events,
+        );
+    }
+    fn apply_damage_with_origin(&mut self, spec: DamageSpec, events: &mut Vec<Event>) {
+        let DamageSpec {
+            src,
+            team,
+            target_idx: i,
+            amount: n,
+            school,
+            effect,
+            origin,
+        } = spec;
         let t = &self.entities[i];
         if t.hp <= 0. || n <= 0. || self.solo_structure_protected(t) {
             return;
         }
+        let passive_rules = self.state.shop.effect_rules.passive;
+        let mut ctx = item_actives::DamageContext {
+            src,
+            target_idx: i,
+            amount: n,
+            hp_loss: 0.,
+            school,
+            origin,
+        };
+        let Some(n) = item_passives::filter_incoming_damage(
+            &mut self.entities,
+            ctx,
+            self.state.tick,
+            &passive_rules,
+        ) else {
+            return;
+        };
+        if n <= 0. {
+            return;
+        }
+        ctx.amount = n;
+        let t = &self.entities[i];
         let is_outer_tower = self.is_outer_tower(t);
         let t = &mut self.entities[i];
         let absorbed = if t.status.barrier_until > self.state.tick {
@@ -150,13 +285,15 @@ impl Room<'_> {
         } else {
             remaining
         };
-        let mut amount = remaining.min(t.hp);
-        if let Some(channel) = t.cast.as_mut().and_then(|c| c.verse.as_mut()) {
+        let amount = if let Some(channel) = t.cast.as_mut().and_then(|c| c.verse.as_mut()) {
             let saved = channel.fortified.min(remaining * 0.5);
             channel.fortified -= saved;
-            amount = (remaining - saved).min(t.hp);
-        }
+            (remaining - saved).min(t.hp)
+        } else {
+            item_passives::apply_slumbering_fortify(t, remaining, self.state.tick).min(t.hp)
+        };
         if amount <= 0. {
+            item_passives::on_damage_landed(self, ctx, events);
             return;
         }
         let t = &self.entities[i];
@@ -203,16 +340,23 @@ impl Room<'_> {
             amount,
             hp: t.hp,
         });
-        if t.hp > 0. {
+        ctx.hp_loss = amount;
+        item_passives::on_damage_landed(self, ctx, events);
+        if self.entities[i].hp > 0. {
+            let t = &mut self.entities[i];
             if t.kind == Kind::Neutral && team < 2 && t.order == Command::Stop {
                 t.order = Command::Attack(src);
             }
             return;
         }
-        if matches!(self.state.layout, Layout::Aral { .. })
-            && reboot::on_lethal(t, src, self.state.tick, &mut self.state.next_id, events)
-        {
+        let aral = matches!(self.state.layout, Layout::Aral { .. });
+        let tick = self.state.tick;
+        let t = &mut self.entities[i];
+        if aral && reboot::on_lethal(t, src, tick, &mut self.state.next_id, events) {
             return;
+        }
+        if t.kind == Kind::Hero {
+            item_actives::clear_ephemeral_on_death(t);
         }
         let pos = t.position;
         let kind = t.kind;

@@ -4,7 +4,7 @@ use super::*;
 pub(super) struct Active {
     pub until: u64,
     pub barrier: f32,
-    effect: u32,
+    pub(super) effect: u32,
 }
 
 #[derive(Clone, Copy, PartialEq, Serialize)]
@@ -40,7 +40,7 @@ impl Rule {
 
 impl Status {
     pub(super) fn blocks_debuffs(&self, tick: u64) -> bool {
-        self.reflex.is_some_and(|block| tick < block.until)
+        self.spell_shield_up || self.reflex.is_some_and(|block| tick < block.until)
     }
 }
 
@@ -86,7 +86,7 @@ pub(super) fn advance(hero: &mut Entity, tick: u64, events: &mut Vec<Event>) {
         && (hero.hp <= 0. || tick >= block.until)
     {
         hero.status.reflex = None;
-        if hero.hp > 0. {
+        if hero.hp > 0. && block.effect != 0 {
             events.push(Event::ReflexExpired {
                 actor: hero.id,
                 effect: block.effect,

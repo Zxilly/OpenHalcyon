@@ -167,6 +167,8 @@ pub(super) struct Status {
     pub(super) agent_burn_bonus: f32,
     pub(super) agent_source: u32,
     pub(super) agent_crystal_until: Option<u64>,
+    #[serde(skip_serializing_if = "core::ops::Not::not")]
+    pub(super) spell_shield_up: bool,
     pub(super) channel: u64,
     pub(super) channel_until: u64,
 }
@@ -740,11 +742,18 @@ impl Room<'_> {
         e.order = Command::Stop;
         e.status.channel = 0;
         e.status.channel_until = 0;
+        item_actives::cancel_teleport_channel(e);
         // Verse grants protection immediately. A cancelled channel has already used its cast.
         if fortification.is_some() {
             e.energy -= rules.cost;
             e.cooldown[slot.idx()] = self.state.tick
                 + (rules.cooldown as f32 / (1. + e.item_stats.cooldown)).ceil() as u64;
+            item_passives::on_ability_cast(
+                e,
+                self.state.tick,
+                &self.state.shop.effect_rules.active,
+                &self.state.shop.effect_rules.passive,
+            );
         }
         e.cast = Some(Cast {
             verse: fortification.map(|v| verse::Channel {
@@ -797,6 +806,12 @@ impl Room<'_> {
         }
         e.cooldown[c.slot.idx()] =
             self.state.tick + (rule.cooldown as f32 / (1. + e.item_stats.cooldown)).ceil() as u64;
+        item_passives::on_ability_cast(
+            e,
+            self.state.tick,
+            &self.state.shop.effect_rules.active,
+            &self.state.shop.effect_rules.passive,
+        );
         let src = e.id;
         let team = e.team;
         let origin = e.position;
@@ -1221,6 +1236,7 @@ impl Room<'_> {
 enum Area {
     Kick(super::amael::Flight),
     BasicTarget(u32, DamageSchool),
+    ItemTarget(u32, DamageSchool),
     Target(u32, DamageSchool),
     NpcWindup(u32),
     Hellfire(u32, f32, bool),
@@ -1268,6 +1284,18 @@ impl SpellEffect {
     ) -> Self {
         let mut result = Self::impact(due, src, team, id, damage, school);
         result.area = Area::BasicTarget(id, school);
+        result
+    }
+    pub(super) fn item_impact(
+        due: u64,
+        src: u32,
+        team: u8,
+        id: u32,
+        damage: f32,
+        school: DamageSchool,
+    ) -> Self {
+        let mut result = Self::impact(due, src, team, id, damage, school);
+        result.area = Area::ItemTarget(id, school);
         result
     }
 
@@ -1415,9 +1443,22 @@ impl crate::persistent_spells::TimedSpell for SpellEffect {
             }
             return false;
         }
+        if let Area::ItemTarget(id, school) = self.area {
+            if let Some(i) = world.index(id) {
+                world.hurt_item(self.src, self.team, i, self.damage, school, events);
+            }
+            return false;
+        }
         if let Area::Target(id, school) = self.area {
             if let Some(i) = world.index(id) {
-                world.hurt(self.src, self.team, i, self.damage, school, events)
+                let is_hero = world
+                    .index(self.src)
+                    .is_some_and(|si| world.entities[si].kind == Kind::Hero);
+                if is_hero {
+                    world.hurt(self.src, self.team, i, self.damage, school, events);
+                } else {
+                    world.hurt_basic(self.src, self.team, i, self.damage, school, events);
+                }
             }
             return false;
         }
@@ -1447,6 +1488,7 @@ impl crate::persistent_spells::TimedSpell for SpellEffect {
                 Area::Line(a, b, r) => line_distance(e.position, a, b) <= r,
                 Area::Kick(_)
                 | Area::BasicTarget(..)
+                | Area::ItemTarget(..)
                 | Area::Target(..)
                 | Area::NpcWindup(_)
                 | Area::Hellfire(..) => unreachable!(),

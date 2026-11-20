@@ -8,7 +8,7 @@ fn action(world: &World, event: &Event) -> Option<(u32, Batch)> {
         Event::VisionDeployed { device, instance } => {
             let point = [device.point.x.to_bits(), device.point.y.to_bits()];
             let (request, mode, coordinates) = match device.kind {
-                halcyon_sim::VisionDeviceKind::ScoutCam => (
+                halcyon_sim::VisionDeviceKind::ScoutCam | halcyon_sim::VisionDeviceKind::Flare => (
                     ItemAction::VectorRequest {
                         vector_bits: [point[0], 0, point[1]],
                         argument: instance,
@@ -187,6 +187,73 @@ fn action(world: &World, event: &Event) -> Option<(u32, Batch)> {
             }
             Some((actor, batch))
         }
+        Event::ItemActivated {
+            actor,
+            instance,
+            kind,
+            target,
+            ..
+        } if !matches!(
+            kind,
+            BasicItem::Aegis
+                | BasicItem::Flare
+                | BasicItem::FlareLoader
+                | BasicItem::Flaregun
+                | BasicItem::ScoutTuff
+                | BasicItem::SuperScout2000
+                | BasicItem::Contraption
+        ) =>
+        {
+            let wire_actor = u32::from(wire_id(actor));
+            let (request, mode, target_word, coordinate_bits) = match target {
+                halcyon_sim::ItemTarget::SelfCast => (
+                    ItemAction::Activate {
+                        instance,
+                        suffix: &[],
+                    },
+                    ItemActivationMode::Untargeted,
+                    u32::MAX,
+                    [0, 0],
+                ),
+                halcyon_sim::ItemTarget::Entity(tgt) => {
+                    let wire_tgt = u32::from(wire_id(tgt));
+                    (
+                        ItemAction::TargetRequest {
+                            arguments: [wire_tgt, instance],
+                            suffix: &[],
+                        },
+                        ItemActivationMode::Target,
+                        wire_tgt,
+                        [0, 0],
+                    )
+                }
+                halcyon_sim::ItemTarget::Point(point) => {
+                    let coords = [point.x.to_bits(), point.y.to_bits()];
+                    (
+                        ItemAction::VectorRequest {
+                            vector_bits: [coords[0], 0, coords[1]],
+                            argument: instance,
+                            suffix: &[],
+                        },
+                        ItemActivationMode::Position,
+                        u32::MAX,
+                        coords,
+                    )
+                }
+            };
+            let activation = ItemAction::Activation {
+                actor: wire_actor,
+                instance,
+                target_word,
+                coordinate_bits,
+                mode,
+                suffix: &[],
+            };
+            Some((
+                actor,
+                vec![request.to_message().ok()?, activation.to_message().ok()?],
+            ))
+        }
         Event::ItemSold(sale)
             if matches!(
                 sale.sold.kind,
@@ -336,10 +403,39 @@ fn witnessed(view: &mut tower_aggro::View, event: &Event) -> bool {
 }
 impl Room {
     pub(super) fn publish_aral_items(&mut self, events: &[Event]) {
-        if !self.legacy_aral() {
-            return;
-        }
         for event in events {
+            if let Event::ItemCooldownUpdated {
+                actor,
+                key,
+                remaining_seconds,
+            } = *event
+            {
+                let msg = Message::cooldown_adjustment(
+                    u32::from(wire_id(actor)),
+                    key,
+                    remaining_seconds,
+                    halcyon_protocol::CooldownMode::Set,
+                );
+                for (seat, viewer) in self.seats.iter().zip(&self.world.entities) {
+                    if viewer.id == actor
+                        && seat.world_actor_written
+                        && seat.preamble.confirmed()
+                        && let Some(peer) = seat.gameplay_peer()
+                    {
+                        peer.send(transport::Delivery::Private(vec![msg.clone()]));
+                    }
+                }
+                continue;
+            }
+            let active_broadcast = matches!(event, Event::ItemActivated { .. })
+                || matches!(
+                    event,
+                    Event::VisionDeployed { device, .. }
+                        if device.kind == halcyon_sim::VisionDeviceKind::Flare
+                );
+            if !self.legacy_aral() && !(self.solo_scene() && active_broadcast) {
+                continue;
+            }
             let Some((id, batch)) = action(&self.world, event) else {
                 continue;
             };
@@ -360,6 +456,7 @@ impl Room {
                                 | Event::InfusionApplied { .. }
                                 | Event::InfusionReplaced { .. }
                                 | Event::InfusionLevel { .. }
+                                | Event::ItemActivated { .. }
                         ))
                     || !seat.world_actor_written
                     || !seat.preamble.confirmed()
@@ -374,7 +471,11 @@ impl Room {
                 {
                     // The initiating client already sent its button press.
                     let start = usize::from(
-                        viewer.id == id && matches!(event, Event::ReflexActivated { .. }),
+                        viewer.id == id
+                            && matches!(
+                                event,
+                                Event::ReflexActivated { .. } | Event::ItemActivated { .. }
+                            ),
                     );
                     peer.send(transport::Delivery::Private(batch[start..].to_vec()));
                 }
@@ -519,5 +620,72 @@ mod tests {
         let mut unexpected = sale[0].clone();
         unexpected.body[..4].copy_from_slice(&4000u32.to_be_bytes());
         assert!(!recordable(&unexpected));
+    }
+
+    #[test]
+    fn active_item_events_encode_0x0448_0x0449_0x044a_0x044c_and_cooldown_0x0428() {
+        let world = World::new(7, 6);
+        let (_, self_cast) = action(
+            &world,
+            &Event::ItemActivated {
+                actor: 1,
+                instance: 40001,
+                kind: BasicItem::Crucible,
+                target: halcyon_sim::ItemTarget::SelfCast,
+                cooldown_ticks: 1500,
+            },
+        )
+        .unwrap();
+        assert_eq!(self_cast[0].opcode, Opcode::RequestActivateItemSelf as u16);
+        assert_eq!(self_cast[1].opcode, Opcode::ItemActivated as u16);
+
+        let (_, target_cast) = action(
+            &world,
+            &Event::ItemActivated {
+                actor: 1,
+                instance: 40002,
+                kind: BasicItem::TeleportBoots,
+                target: halcyon_sim::ItemTarget::Entity(3),
+                cooldown_ticks: 3000,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            target_cast[0].opcode,
+            Opcode::RequestActivateItemTarget as u16
+        );
+        assert_eq!(target_cast[1].opcode, Opcode::ItemActivated as u16);
+
+        let (_, point_cast) = action(
+            &world,
+            &Event::ItemActivated {
+                actor: 1,
+                instance: 40003,
+                kind: BasicItem::WarTreads,
+                target: halcyon_sim::ItemTarget::Point(halcyon_sim::Position { x: 10., y: 20. }),
+                cooldown_ticks: 1200,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            point_cast[0].opcode,
+            Opcode::RequestActivateItemPoint as u16
+        );
+        assert_eq!(point_cast[1].opcode, Opcode::ItemActivated as u16);
+
+        let flask_cd = Message::cooldown_adjustment(
+            u32::from(wire_id(1)),
+            0x1b18_4adf,
+            120.0,
+            halcyon_protocol::CooldownMode::Set,
+        );
+        assert_eq!(flask_cd.opcode, Opcode::ModifyCooldown as u16);
+        let storm_cd = Message::cooldown_adjustment(
+            u32::from(wire_id(1)),
+            0xdb16_1949,
+            6.0,
+            halcyon_protocol::CooldownMode::Set,
+        );
+        assert_eq!(storm_cd.opcode, Opcode::ModifyCooldown as u16);
     }
 }

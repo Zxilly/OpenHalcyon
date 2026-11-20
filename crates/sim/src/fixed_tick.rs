@@ -152,10 +152,13 @@ fn advance(ecs: &mut Ecs) {
         }
         room.spawn_tick_waves(events);
         room.team_upkeep(events);
+        crate::item_actives::advance_active_effects(room, events);
+        crate::item_passives::advance_passives(room, events);
         match diagnostics {
             Some(d) => room.resolve_actor_turns::<true>(events, Some(d)),
             None => room.resolve_actor_turns::<false>(events, None),
         }
+        events.append(&mut room.state.pending_item_events);
         true
     });
     ecs.resource_mut::<Frame>().after_effects = contested;
