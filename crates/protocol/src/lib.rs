@@ -36,6 +36,8 @@ pub use mutations::{AttributeChange, ResourceChange};
 pub use projectile::{ProjectileAction, ProjectileFire};
 mod metadata;
 mod opcode;
+mod outbound;
+pub use outbound::{OUTBOUND_LAYOUTS, OutboundAction, OutboundLayout, OutboundOperands};
 mod skin;
 mod static_actions;
 pub use metadata::{AndroidLayout, READ_SIZES};
@@ -511,6 +513,7 @@ impl Message {
                 }
             }
             _ => live::fields(self.opcode, b)
+                .or_else(|| outbound::fields(self.opcode, b))
                 .or_else(|| static_actions::fields(self.opcode, b))
                 .unwrap_or(Fields::Opaque(b)),
         })
@@ -576,6 +579,7 @@ impl LaneMinionSpawn {
 pub enum Fields<'a> {
     Live(LiveFields<'a>),
     StaticAction(StaticAction<'a>),
+    Outbound(OutboundAction<'a>),
     HeaderOnly {
         remaining: &'a [u8],
     },
