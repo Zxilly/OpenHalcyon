@@ -2,6 +2,7 @@
 mod difficulty;
 mod entity_template;
 mod extra;
+mod skins;
 pub use difficulty::BotDifficulty;
 pub use entity_template::EntityTemplate;
 pub use extra::{AbilityParameter, ExtraData};
@@ -289,8 +290,6 @@ impl GameData {
         let mut hash = Sha256::new();
         let (hero_names, skin_names) = read_catalog(dir, &mut hash)?;
         Ok(Self {
-            hero_names,
-            skin_names,
             units: read(dir, "units.json", &mut hash)?,
             items: read(dir, "items.json", &mut hash)?,
             manifest: read(dir, "entity_manifest.json", &mut hash)?,
@@ -299,9 +298,11 @@ impl GameData {
             abilities: read(dir, "ability_raw.json", &mut hash)?,
             combat_constants: read(dir, "combat_constants.json", &mut hash)?,
             extra: match extra {
-                Some(dir) => ExtraData::load(dir, &mut hash)?,
+                Some(dir) => ExtraData::load(dir, &mut hash, &hero_names, &skin_names)?,
                 None => ExtraData::default(),
             },
+            hero_names,
+            skin_names,
             content_digest: format!("{:x}", hash.finalize()),
         })
     }

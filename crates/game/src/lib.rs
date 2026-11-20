@@ -639,7 +639,12 @@ impl Rooms {
             }
             picks.push(Pick {
                 name: name.into(),
-                skin: halcyon_protocol::skin_hash(&format!("{name}_DefaultSkin")),
+                skin: self
+                    .0
+                    .data
+                    .as_ref()
+                    .and_then(|data| data.indexed_skin(name, None))
+                    .unwrap_or_else(|| halcyon_protocol::skin_hash(&format!("{name}_DefaultSkin"))),
                 selected: bot,
                 locked: bot,
             });
@@ -1055,6 +1060,13 @@ impl Room {
         roster
     }
     fn validated_skin(&self, hero: &str, requested: u32) -> u32 {
+        if let Some(skin) = self
+            .data
+            .as_ref()
+            .and_then(|data| data.indexed_skin(hero, Some(requested)))
+        {
+            return skin;
+        }
         let default = halcyon_protocol::skin_hash(&format!("{hero}_DefaultSkin"));
         if requested == default {
             return default;
