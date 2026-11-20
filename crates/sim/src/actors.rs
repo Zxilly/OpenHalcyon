@@ -34,7 +34,7 @@ pub(super) struct ActorMetadata {
     order: Vec<Handle>,
     gameplay_ids: Vec<u32>,
     scan: Option<(usize, bevy_ecs::query::QueryState<&'static Entity>)>,
-    pub(super) spells: super::persistent_spells::Spells,
+    pub(super) spell_jobs: Vec<Handle>,
 }
 impl Default for Actors<'static> {
     fn default() -> Self {
@@ -44,7 +44,7 @@ impl Default for Actors<'static> {
                 order: Vec::with_capacity(50),
                 gameplay_ids: Vec::with_capacity(50),
                 scan: None,
-                spells: Default::default(),
+                spell_jobs: Vec::new(),
             })),
         }
     }
@@ -208,14 +208,8 @@ impl Actors<'_> {
         let i = self.iter().position(predicate)?;
         self.get_mut(i)
     }
-    pub fn last(&self) -> Option<&Entity> {
-        self.get(self.len().checked_sub(1)?)
-    }
     pub fn last_mut(&mut self) -> Option<&mut Entity> {
         self.get_mut(self.len().checked_sub(1)?)
-    }
-    pub fn first(&self) -> Option<&Entity> {
-        self.get(0)
     }
     pub fn push(&mut self, e: Entity) {
         self.meta.gameplay_ids.push(e.id);

@@ -26,10 +26,6 @@ pub(super) trait TimedSpell: Component<Mutability = Mutable> {
 }
 
 type Agenda = Vec<Entity>;
-#[derive(Default)]
-pub(super) struct Spells {
-    scratch: Agenda,
-}
 impl super::Actors<'_> {
     pub(super) fn spells<T: TimedSpell>(&self) -> impl Iterator<Item = &T> {
         self.ecs
@@ -124,14 +120,14 @@ impl Room<'_> {
         {
             return;
         }
-        let mut jobs = std::mem::take(&mut self.entities.meta.spells.scratch);
+        let mut jobs = std::mem::take(&mut self.entities.meta.spell_jobs);
         self.resolve_spells::<T>(&mut jobs, events);
         self.entities
             .ecs
             .resource_scope(|ecs, mut order: bevy_ecs::prelude::Mut<CastOrder<T>>| {
                 order.handles.retain(|id| ecs.get::<T>(*id).is_some());
             });
-        self.entities.meta.spells.scratch = jobs;
+        self.entities.meta.spell_jobs = jobs;
     }
     pub(super) fn advance_persistent_spells(&mut self, events: &mut Vec<Event>) {
         self.advance_spell_family::<Field>(events);
