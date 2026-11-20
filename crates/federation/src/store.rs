@@ -33,17 +33,50 @@ fn maperr(e: anyhow::Error, verb: ErrorVerb) -> E {
         std::io::Error::other(e.to_string()),
     )
 }
-fn get<T: DeserializeOwned>(c: &mut SqliteConnection, k: &str) -> anyhow::Result<Option<T>> {
+#[derive(Clone, Copy)]
+enum MetadataKey {
+    Identity,
+    Vote,
+    Commit,
+    Purged,
+    StateVersion,
+    LegacyMachine,
+    LegacySnapshot,
+    LegacyPoolRevision,
+}
+
+impl MetadataKey {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Identity => "identity",
+            Self::Vote => "vote",
+            Self::Commit => "commit",
+            Self::Purged => "purged",
+            Self::StateVersion => "sm_version",
+            Self::LegacyMachine => "machine",
+            Self::LegacySnapshot => "snapshot",
+            Self::LegacyPoolRevision => "pool_revision",
+        }
+    }
+}
+
+fn get<T: DeserializeOwned>(
+    c: &mut SqliteConnection,
+    key: MetadataKey,
+) -> anyhow::Result<Option<T>> {
     let b = metadata::table
-        .find(k)
+        .find(key.as_str())
         .select(metadata::data)
         .first::<Vec<u8>>(c)
         .optional()?;
     b.map(|b| decode(&b)).transpose()
 }
-fn put(c: &mut SqliteConnection, k: &str, v: &impl Serialize) -> anyhow::Result<()> {
+fn put(c: &mut SqliteConnection, key: MetadataKey, v: &impl Serialize) -> anyhow::Result<()> {
     diesel::replace_into(metadata::table)
-        .values((metadata::key.eq(k), metadata::data.eq(encode(v)?)))
+        .values((
+            metadata::key.eq(key.as_str()),
+            metadata::data.eq(encode(v)?),
+        ))
         .execute(c)?;
     Ok(())
 }
@@ -58,12 +91,12 @@ impl Store {
         let machine = c.immediate_transaction::<_, anyhow::Error, _>(|tx| {
             tx.run_pending_migrations(MIGRATIONS)
                 .map_err(anyhow::Error::from_boxed)?;
-            match get::<(Uuid, Uuid)>(tx, "identity")? {
+            match get::<(Uuid, Uuid)>(tx, MetadataKey::Identity)? {
                 Some(id) => anyhow::ensure!(
                     id == (pool, node),
                     "database belongs to another pool or node"
                 ),
-                None => put(tx, "identity", &(pool, node))?,
+                None => put(tx, MetadataKey::Identity, &(pool, node))?,
             }
             state::initialize(tx)?;
             state::restore(tx)
@@ -136,20 +169,20 @@ impl RaftStorage<Types> for Store {
     type LogReader = Self;
     type SnapshotBuilder = Self;
     async fn save_vote(&mut self, v: &Vote<Uuid>) -> Result<(), E> {
-        self.write(|c| put(c, "vote", v))
+        self.write(|c| put(c, MetadataKey::Vote, v))
     }
     async fn read_vote(&mut self) -> Result<Option<Vote<Uuid>>, E> {
-        self.read(|c| get(c, "vote"))
+        self.read(|c| get(c, MetadataKey::Vote))
     }
     async fn save_committed(&mut self, v: Option<LogId<Uuid>>) -> Result<(), E> {
-        self.write(|c| put(c, "commit", &v))
+        self.write(|c| put(c, MetadataKey::Commit, &v))
     }
     async fn read_committed(&mut self) -> Result<Option<LogId<Uuid>>, E> {
-        self.read(|c| Ok(get(c, "commit")?.flatten()))
+        self.read(|c| Ok(get(c, MetadataKey::Commit)?.flatten()))
     }
     async fn get_log_state(&mut self) -> Result<LogState<Types>, E> {
         self.read(|c| {
-            let purged = get(c, "purged")?;
+            let purged = get(c, MetadataKey::Purged)?;
             let last = log::table
                 .order(log::idx.desc())
                 .select(log::data)
@@ -194,7 +227,7 @@ impl RaftStorage<Types> for Store {
     async fn purge_logs_upto(&mut self, id: LogId<Uuid>) -> Result<(), E> {
         self.write(|c| {
             diesel::delete(log::table.filter(log::idx.le(i64::try_from(id.index)?))).execute(c)?;
-            put(c, "purged", &id)
+            put(c, MetadataKey::Purged, &id)
         })
     }
     async fn last_applied_state(

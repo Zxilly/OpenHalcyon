@@ -3,9 +3,11 @@
 use super::*;
 use schema::{sm_applied, sm_checkpoint};
 
+const JOURNAL_SCHEMA_VERSION: u32 = 2;
+
 pub(super) fn initialize(tx: &mut SqliteConnection) -> anyhow::Result<()> {
-    match get::<u32>(tx, "sm_version")? {
-        Some(2) => return Ok(()),
+    match get::<u32>(tx, MetadataKey::StateVersion)? {
+        Some(JOURNAL_SCHEMA_VERSION) => return Ok(()),
         Some(_) => anyhow::bail!("unknown federation state machine storage version"),
         None => {}
     }
@@ -13,7 +15,7 @@ pub(super) fn initialize(tx: &mut SqliteConnection) -> anyhow::Result<()> {
     // the last published snapshot. Keep the older snapshot available until a
     // new snapshot at least as recent as the migration checkpoint is published.
     let image = metadata::table
-        .find("machine")
+        .find(MetadataKey::LegacyMachine.as_str())
         .select(metadata::data)
         .first::<Vec<u8>>(tx)
         .optional()?;
@@ -22,9 +24,9 @@ pub(super) fn initialize(tx: &mut SqliteConnection) -> anyhow::Result<()> {
             .values((sm_checkpoint::id.eq(1), sm_checkpoint::image.eq(image)))
             .execute(tx)?;
     }
-    put(tx, "sm_version", &2u32)?;
+    put(tx, MetadataKey::StateVersion, &JOURNAL_SCHEMA_VERSION)?;
     // An older binary would otherwise silently start from an obsolete state.
-    put(tx, "machine", &2u32)?;
+    put(tx, MetadataKey::LegacyMachine, &JOURNAL_SCHEMA_VERSION)?;
     Ok(())
 }
 
@@ -157,8 +159,10 @@ pub(super) fn checkpoint(
         diesel::delete(sm_applied::table.filter(sm_applied::idx.le(i64::try_from(last.index)?)))
             .execute(tx)?;
     }
-    diesel::delete(metadata::table.filter(metadata::key.eq_any(["snapshot", "pool_revision"])))
-        .execute(tx)?;
+    diesel::delete(metadata::table.filter(metadata::key.eq_any(
+        [MetadataKey::LegacySnapshot, MetadataKey::LegacyPoolRevision].map(MetadataKey::as_str),
+    )))
+    .execute(tx)?;
     Ok(())
 }
 pub(super) fn build(store: &Store) -> anyhow::Result<Snapshot<Types>> {
@@ -202,7 +206,7 @@ pub(super) fn snapshot(db: &mut SqliteConnection) -> anyhow::Result<Option<Snaps
         .optional()?;
     let pair = match saved {
         Some((m, b)) => Some((decode::<Meta>(&m)?, b)),
-        None => get::<(Meta, Vec<u8>)>(db, "snapshot")?,
+        None => get::<(Meta, Vec<u8>)>(db, MetadataKey::LegacySnapshot)?,
     };
     Ok(pair.map(|(meta, b)| Snapshot {
         meta,
