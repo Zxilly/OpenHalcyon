@@ -28,7 +28,17 @@ pub enum ObserverReply {
 type Handler = dyn Fn(Uuid, ObserverRequest) -> anyhow::Result<ObserverReply> + Send + Sync;
 
 #[derive(Clone, Default)]
-pub(crate) struct Observers(Arc<Mutex<Option<Arc<Handler>>>>);
+pub(crate) struct Observers {
+    manage: Arc<Mutex<Option<Arc<Handler>>>>,
+    exited: Arc<Mutex<Option<Arc<ExitQuery>>>>,
+}
+pub const OBSERVER_EXIT_BATCH: usize = 128;
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct ObserverExitCandidate {
+    pub binding: ObserverRequest,
+    pub grant: Uuid,
+}
+type ExitQuery = dyn Fn(Uuid, &[ObserverExitCandidate]) -> anyhow::Result<Vec<Uuid>> + Send + Sync;
 
 impl Federation {
     /// Attach the room server without changing it when the reconciliation worker restarts.
@@ -36,7 +46,11 @@ impl Federation {
         &self,
         handler: impl Fn(Uuid, ObserverRequest) -> anyhow::Result<ObserverReply> + Send + Sync + 'static,
     ) {
-        let mut current = self.observers.0.lock().expect("observer handler register");
+        let mut current = self
+            .observers
+            .manage
+            .lock()
+            .expect("observer handler register");
         if current.is_none() {
             *current = Some(Arc::new(handler));
         }
@@ -58,6 +72,66 @@ impl Federation {
         self.net
             .post(host, "/internal/observe", &request, Duration::from_secs(9))
             .await
+    }
+
+    pub fn attach_observer_exit_query(
+        &self,
+        query: impl Fn(Uuid, &[ObserverExitCandidate]) -> anyhow::Result<Vec<Uuid>>
+        + Send
+        + Sync
+        + 'static,
+    ) {
+        let mut current = self
+            .observers
+            .exited
+            .lock()
+            .expect("observer exit query register");
+        if current.is_none() {
+            *current = Some(Arc::new(query));
+        }
+    }
+
+    /// Read the host's explicit native-exit tombstone. Older peers return an
+    /// unsupported route, which the home retries without changing the claim.
+    pub async fn observer_exited(
+        &self,
+        host: Uuid,
+        candidates: &[ObserverExitCandidate],
+    ) -> anyhow::Result<Vec<Uuid>> {
+        ensure!(
+            candidates.len() <= OBSERVER_EXIT_BATCH,
+            "too many spectator claims"
+        );
+        if host == self.net.cfg.node_id {
+            return self.observer_exit_here(host, candidates);
+        }
+        self.net
+            .post(
+                host,
+                "/internal/observe/exited",
+                &candidates,
+                Duration::from_secs(2),
+            )
+            .await
+    }
+
+    pub(crate) fn observer_exit_here(
+        &self,
+        home: Uuid,
+        candidates: &[ObserverExitCandidate],
+    ) -> anyhow::Result<Vec<Uuid>> {
+        ensure!(
+            candidates.len() <= OBSERVER_EXIT_BATCH,
+            "too many spectator claims"
+        );
+        let handler = self
+            .observers
+            .exited
+            .lock()
+            .map_err(|_| anyhow::anyhow!("observer exit query unavailable"))?
+            .clone()
+            .context("observation unsupported")?;
+        handler(home, candidates)
     }
 
     pub(crate) async fn observer_here(
@@ -103,7 +177,7 @@ impl Federation {
         }
         let handler = self
             .observers
-            .0
+            .manage
             .lock()
             .map_err(|_| anyhow::anyhow!("observer handler unavailable"))?
             .clone()

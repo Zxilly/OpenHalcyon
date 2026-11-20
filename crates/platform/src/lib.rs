@@ -65,6 +65,9 @@ pub struct HostedMatch {
     pub address: String,
 }
 
+/// Persist a native request to close this exact spectator grant.
+pub type SpectatorExit = Arc<dyn Fn(Uuid) -> Result<()> + Send + Sync>;
+
 /// Implementations must make repeated reservations for the same match id idempotent.
 pub trait MatchHost: Send + Sync + 'static {
     fn reserve(&self, reservation: Reservation) -> Result<HostedMatch>;
@@ -72,6 +75,15 @@ pub trait MatchHost: Send + Sync + 'static {
     /// Issue or refresh an isolated read-only credential for this viewer.
     fn spectate(&self, _match_id: Uuid, _viewer: Uuid) -> Result<HostedSpectator> {
         Err(PlatformError::HostUnavailable)
+    }
+
+    fn spectate_with_exit(
+        &self,
+        room: Uuid,
+        viewer: Uuid,
+        _exit: SpectatorExit,
+    ) -> Result<HostedSpectator> {
+        self.spectate(room, viewer)
     }
 
     /// Revoke the credential and close its connections. Repeated calls are harmless.

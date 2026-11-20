@@ -11,7 +11,7 @@ mod chat;
 mod net;
 pub use chat::MatchChat;
 mod observation;
-pub use observation::{ObserverReply, ObserverRequest};
+pub use observation::{OBSERVER_EXIT_BATCH, ObserverExitCandidate, ObserverReply, ObserverRequest};
 mod genesis;
 mod rtt;
 mod service;

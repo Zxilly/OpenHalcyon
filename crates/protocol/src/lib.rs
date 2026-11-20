@@ -118,6 +118,10 @@ impl Message {
         body[12] = mode;
         Self::new(Opcode::ModifyAbilityCharges as u16, body)
     }
+    /// The Android spectator-exit wrapper writes one zero operand before block padding.
+    pub fn is_spectator_exit(&self) -> bool {
+        self.opcode == 0x0474 && (self.body == [0] || self.body == [0; 6])
+    }
     pub fn clock(time: f32) -> Self {
         Self::new(0, time.to_be_bytes())
     }
@@ -1038,6 +1042,18 @@ impl<R: Read> ReplayReader<R> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn spectator_exit_accepts_only_the_wrapped_zero_and_zero_alignment() {
+        for (bytes, ok) in [
+            (&[0][..], true),
+            (&[0; 6][..], true),
+            (&[][..], false),
+            (&[1][..], false),
+            (&[0, 0, 0, 0, 0, 1][..], false),
+        ] {
+            assert_eq!(Message::new(0x0474, bytes).is_spectator_exit(), ok);
+        }
+    }
     #[test]
     fn relocation_retains_all_coordinates_flag_and_padding() {
         let mut m = Message::actor_relocation(1503, [79.66, 1.5, -0.91], 1);

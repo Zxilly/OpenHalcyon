@@ -34,3 +34,5 @@ decoders in place and adds diagnostic views only. No game dispatch or replay
 emission is attached to these views. The [tests](../crates/protocol/tests/outbound.rs)
 compare every tag against the inbound ignore inventory and exercise encrypted
 round trips for every known outbound width.
+
+On an authenticated spectator socket the host accepts `0474` with the Android wrapper's one zero byte and zero alignment padding. The seven archived ARAL sessions contain no live example of this request or a reply. The host closes that grant and its stream. Clock traffic, ordinary disconnect/reconnect grace and final match delivery keep their existing handling. The home publishes one `spectator_left` transition. For a pooled match the existing observation worker sends bounded batches of up to 128 published grants to each issuing host over mutually authenticated transport. Up to eight hosts can progress concurrently. Pending revocations take priority at each host. The check binds each grant to its home, room, request, viewer and target. An unavailable host leaves the claim pending for retry. Players and other grants continue independently.

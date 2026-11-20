@@ -28,6 +28,7 @@ pub struct PooledSpectator {
     pub room: Uuid,
     pub request: Uuid,
     pub cancelled: bool,
+    pub spectator_id: Option<Uuid>,
 }
 
 fn decode(row: &Row<'_>) -> rusqlite::Result<PooledSpectator> {
@@ -49,12 +50,17 @@ fn decode(row: &Row<'_>) -> rusqlite::Result<PooledSpectator> {
         room: id(4)?,
         request: id(5)?,
         cancelled: row.get(6)?,
+        spectator_id: if row.get_ref(7)?.data_type() == rusqlite::types::Type::Null {
+            None
+        } else {
+            Some(id(7)?)
+        },
     })
 }
 
 fn current(db: &Connection, viewer: &str) -> Result<Option<PooledSpectator>> {
     db.query_row(
-        "SELECT player,friend,pool,host,match_id,request,cancelled FROM pooled_spectators WHERE player=?",
+        "SELECT player,friend,pool,host,match_id,request,cancelled,spectator_id FROM pooled_spectators WHERE player=?",
         [viewer],decode,
     ).optional().map_err(Into::into)
 }
@@ -137,7 +143,7 @@ impl AppState {
                 "INSERT INTO pooled_spectators(player,friend,pool,host,match_id,mode,request) VALUES(?,?,?,?,?,?,?)",
                 params![id,friend.to_string(),pool.to_string(),host.to_string(),room_text,mode,request.to_string()],
             )?;
-            Ok(PooledSpectator {viewer:parse_id(&id)?,friend,pool,host,room,request,cancelled:false})
+            Ok(PooledSpectator {viewer:parse_id(&id)?,friend,pool,host,room,request,cancelled:false,spectator_id:None})
         })).await
     }
 
@@ -198,7 +204,7 @@ impl AppState {
         self.run(move |state| {
             let db=state.db.lock().map_err(|_|PlatformError::WorkerUnavailable)?;
             let mut stmt=db.prepare(
-                "SELECT player,friend,pool,host,match_id,request,cancelled FROM pooled_spectators WHERE pool=?",
+                "SELECT player,friend,pool,host,match_id,request,cancelled,spectator_id FROM pooled_spectators WHERE pool=?",
             )?;
             let mut claims = stmt.query_map([pool.to_string()],decode)?
                 .collect::<rusqlite::Result<Vec<_>>>()?;

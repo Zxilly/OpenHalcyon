@@ -41,6 +41,44 @@ pub(super) fn close_match(tx: &Transaction<'_>, match_id: &str) -> Result<()> {
 }
 
 impl AppState {
+    fn spectator_exit_handler(
+        &self,
+        player: Uuid,
+        room: Uuid,
+        request: String,
+    ) -> super::SpectatorExit {
+        // The host retains this callback for reconnects; do not retain the host through AppState.
+        let db = std::sync::Arc::downgrade(&self.db);
+        let changes = self.changes.clone();
+        std::sync::Arc::new(move |grant| {
+            let db = db.upgrade().ok_or(PlatformError::WorkerUnavailable)?;
+            let mut db = db.lock().map_err(|_| PlatformError::WorkerUnavailable)?;
+            let tx = db.transaction()?;
+            let removed = tx.execute(
+                "DELETE FROM spectator_sessions WHERE match_id=? AND player=?
+                 AND (spectator_id=? OR (spectator_id IS NULL AND request=?))",
+                params![
+                    room.to_string(),
+                    player.to_string(),
+                    grant.to_string(),
+                    request
+                ],
+            )?;
+            if removed > 0 {
+                event(
+                    &tx,
+                    &player.to_string(),
+                    json!({"type":"spectator_left","matchId":room}),
+                )?;
+            }
+            tx.commit()?;
+            if removed > 0 {
+                changes.send_replace(());
+            }
+            Ok(())
+        })
+    }
+
     pub async fn start_spectating(&self, token: &str, friend: Uuid) -> Result<()> {
         let key = digest(token);
         let friend = friend.to_string();
@@ -64,7 +102,7 @@ impl AppState {
                     let prior = prior.filter(|_| current == room)
                         .ok_or(PlatformError::Conflict("a spectator session is already in use"))?;
                     tx.execute(
-                        "UPDATE spectator_sessions SET request=?, spectator_id=NULL, address=NULL, cancelled=0 WHERE player=?",
+                        "UPDATE spectator_sessions SET request=?, cancelled=0 WHERE player=?",
                         params![request, actor],
                     )?;
                     return Ok((parse_id(&actor)?, parse_id(&room)?, Some(parse_id(&prior)?)));
@@ -85,7 +123,8 @@ impl AppState {
                 Ok((parse_id(&actor)?, parse_id(&room)?, None))
             })?;
             let (player, match_id, previous) = begin;
-            match state.host.spectate(match_id, player) {
+            let exit = state.spectator_exit_handler(player, match_id, request.clone());
+            match state.host.spectate_with_exit(match_id, player, exit) {
                 Ok(hosted) => {
                     let published = state.transaction(|tx| {
                         if hosted.address.trim().is_empty() || hosted.spectator_id.is_nil() {

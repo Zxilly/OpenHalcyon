@@ -390,6 +390,10 @@ impl Federation {
         if path == "/federation/v1/membership" && parts.method == Method::GET {
             return Ok(axum::Json(self.members().await?).into_response());
         }
+        if path == "/internal/observe/exited" && parts.method == Method::POST {
+            let candidates: Vec<crate::ObserverExitCandidate> = decode(&body)?;
+            return cbor(&self.observer_exit_here(peer, &candidates)?);
+        }
         if path == "/internal/observe" && parts.method == Method::POST {
             return cbor(&self.observer_here(peer, decode(&body)?).await?);
         }

@@ -76,6 +76,15 @@ async fn login(addr: &str, id: Uuid, c: &MatchCipher) -> TcpStream {
         .unwrap();
     s
 }
+
+fn spectator_exit_count(db: &Path, viewer: Uuid) -> i64 {
+    let db = rusqlite::Connection::open(db).unwrap();
+    db.query_row(
+        "SELECT COUNT(*) FROM events WHERE player=? AND json_extract(body,'$.type')='spectator_left'",
+        [viewer.to_string()], |r|r.get(0)
+    ).unwrap()
+}
+
 async fn until(s: &mut TcpStream, c: &MatchCipher, op: u16) -> Message {
     timeout(Duration::from_secs(4), async {
         loop {
@@ -734,6 +743,32 @@ async fn party_game_survives_two_home_elections_and_replays_result_once() {
         observation["port"]
     );
     assert_ne!(observer_address, addr);
+    let home = node(&cluster, homes[0]);
+    let claim = home
+        .app
+        .pooled_spectators(home.peer_config.pool_id)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|c| c.viewer == viewer_id)
+        .unwrap();
+    let candidate = halcyon_federation::ObserverExitCandidate {
+        binding: ObserverRequest {
+            room: id,
+            request: claim.request,
+            viewer: viewer_id,
+            target: players[0],
+            revoke: false,
+        },
+        grant: grant_id,
+    };
+    assert!(
+        home.raft
+            .observer_exited(host_id, &[candidate])
+            .await
+            .unwrap()
+            .is_empty()
+    );
     let mut viewing = login(&observer_address, grant_id, &cipher).await;
     until(&mut viewing, &cipher, 0x459).await;
     let occupied = rpc_result(
@@ -746,7 +781,10 @@ async fn party_game_survives_two_home_elections_and_replays_result_once() {
         occupied["code"], 0,
         "an active observer holds an exclusive home claim"
     );
-    rpc(viewer_home, "spectatorExitMatch", json!([viewer_token])).await;
+    viewing
+        .write_all(&cipher.encode(&Message::new(0x0474, [0])).unwrap())
+        .await
+        .unwrap();
     state(viewer_home, viewer_token, "menus").await;
     timeout(Duration::from_secs(3), async {
         let mut bytes = [0; 4096];
@@ -754,6 +792,36 @@ async fn party_game_survives_two_home_elections_and_replays_result_once() {
     })
     .await
     .expect("remote host did not revoke the observer stream");
+    assert_eq!(
+        spectator_exit_count(&node(&cluster, homes[0]).path, viewer_id),
+        1
+    );
+    let wrong_grant = halcyon_federation::ObserverExitCandidate {
+        grant: Uuid::new_v4(),
+        ..candidate
+    };
+    let wrong_request = halcyon_federation::ObserverExitCandidate {
+        binding: ObserverRequest {
+            request: Uuid::new_v4(),
+            ..candidate.binding
+        },
+        ..candidate
+    };
+    assert_eq!(
+        home.raft
+            .observer_exited(host_id, &[wrong_request, wrong_grant, candidate])
+            .await
+            .unwrap(),
+        [claim.request]
+    );
+    assert!(
+        node(&cluster, 2)
+            .raft
+            .observer_exited(host_id, &[candidate])
+            .await
+            .unwrap()
+            .is_empty()
+    );
     let renewed = rpc(
         viewer_home,
         "spectateFriend",
@@ -1220,6 +1288,28 @@ async fn local_friend_spectates_read_only_and_revokes_on_exit() {
         serde_json::from_slice(&to_bytes(poll.into_body(), 1 << 20).await.unwrap()).unwrap();
     assert_eq!(notification["text"]["states"]["state"], "spectating");
     assert!(notification["text"]["states"].get("spectatorId").is_none());
+    let other = halcyon_platform::MatchHost::spectate(&rooms, id, Uuid::new_v4()).unwrap();
+    let mut other_stream = login(&other.address, other.spectator_id, &cipher).await;
+    until(&mut other_stream, &cipher, 0x459).await;
+    // An invalid payload closes only its socket; its grant retains reconnect grace.
+    viewing
+        .write_all(&cipher.encode(&Message::new(0x0474, [1])).unwrap())
+        .await
+        .unwrap();
+    let mut drained = [0; 4096];
+    timeout(Duration::from_secs(3), async {
+        while viewing.read(&mut drained).await.unwrap_or(0) != 0 {}
+    })
+    .await
+    .unwrap();
+    state(&rpc_router, watcher, "spectating").await;
+    let mut viewing = login(&spectator_addr, credential, &cipher).await;
+    until(&mut viewing, &cipher, 0x459).await;
+    viewing
+        .write_all(&cipher.encode(&Message::new(0x0474, [0])).unwrap())
+        .await
+        .unwrap();
+    state(&rpc_router, watcher, "menus").await;
     let exited = rpc(&rpc_router, "spectatorExitMatch", json!([watcher])).await;
     assert_eq!(exited["returnValue"]["handle"], "Watcher");
     state(&rpc_router, watcher, "menus").await;
@@ -1229,6 +1319,18 @@ async fn local_friend_spectates_read_only_and_revokes_on_exit() {
     })
     .await
     .unwrap();
+    assert_eq!(spectator_exit_count(&path, watcher_id), 1);
+    let next = rpc(&rpc_router, "spectateFriend", json!([watcher, player_id])).await;
+    // This old credential fails at the other observer's still-live endpoint.
+    let mut old = login(&other.address, credential, &cipher).await;
+    assert!(
+        timeout(Duration::from_secs(2), old.read_u16())
+            .await
+            .unwrap()
+            .is_err()
+    );
+    until(&mut other_stream, &cipher, 0x459).await;
+    assert_ne!(next["returnValue"]["spectatorId"], credential.to_string());
     assert_eq!(rooms.detail(id).unwrap()["phase"], "running");
 }
 

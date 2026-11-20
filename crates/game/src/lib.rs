@@ -418,6 +418,18 @@ impl MatchHost for Rooms {
             spectator_id,
         })
     }
+    fn spectate_with_exit(
+        &self,
+        room: Uuid,
+        viewer: Uuid,
+        exit: halcyon_platform::SpectatorExit,
+    ) -> Result<halcyon_platform::HostedSpectator, PlatformError> {
+        let (address, spectator_id) = self.observe_with_exit(room, viewer, Some(exit))?;
+        Ok(halcyon_platform::HostedSpectator {
+            address,
+            spectator_id,
+        })
+    }
     fn stop_spectating(&self, match_id: Uuid, spectator_id: Uuid) -> Result<(), PlatformError> {
         self.revoke_observer(match_id, spectator_id)
     }

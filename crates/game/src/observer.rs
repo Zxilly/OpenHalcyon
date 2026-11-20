@@ -10,6 +10,7 @@ use tokio::{
 pub(super) struct Observer {
     view: tower_aggro::View,
     scene: Option<tower_aggro::ObserverScene>,
+    exit: Option<halcyon_platform::SpectatorExit>,
     viewer: Uuid,
     address: String,
     stop: watch::Sender<bool>,
@@ -18,12 +19,23 @@ pub(super) struct Observer {
 }
 impl Rooms {
     pub(super) fn observe(&self, id: Uuid, viewer: Uuid) -> Result<(String, Uuid), PlatformError> {
+        self.observe_with_exit(id, viewer, None)
+    }
+    pub(crate) fn observe_with_exit(
+        &self,
+        id: Uuid,
+        viewer: Uuid,
+        exit: Option<halcyon_platform::SpectatorExit>,
+    ) -> Result<(String, Uuid), PlatformError> {
         let room = self.room(id).ok_or(PlatformError::HostUnavailable)?;
         let mut r = room.lock().unwrap();
         if r.phase != "running" || r.players.contains(&viewer) {
             return Err(PlatformError::Conflict("room unavailable for spectating"));
         }
-        if let Some((grant, observer)) = r.observers.iter().find(|(_, o)| o.viewer == viewer) {
+        if let Some((grant, observer)) = r.observers.iter_mut().find(|(_, o)| o.viewer == viewer) {
+            if exit.is_some() {
+                observer.exit = exit;
+            }
             return Ok((observer.address.clone(), *grant));
         }
         if r.observers.len() >= 16 {
@@ -54,6 +66,7 @@ impl Rooms {
             Observer {
                 view: Default::default(),
                 scene: None,
+                exit,
                 viewer,
                 address: address.clone(),
                 stop,
@@ -192,6 +205,28 @@ async fn client(
             }
 
             let m = cipher.decode_owned(transport::frame(&mut rd).await?)?;
+            if m.is_spectator_exit() {
+                // Handshake already bound this socket to this grant. Keep the room
+                // lock out of the home transaction. A transient write error retains
+                // the grant and ordinary reconnect grace.
+                let exit = room
+                    .lock()
+                    .unwrap()
+                    .observers
+                    .get(&grant)
+                    .and_then(|o| o.exit.clone());
+                if let Some(exit) = exit {
+                    tokio::task::spawn_blocking(move || exit(grant))
+                        .await
+                        .map_err(io::Error::other)?
+                        .map_err(io::Error::other)?;
+                }
+                let id = room.lock().unwrap().id;
+                manager
+                    .revoke_observer(id, grant)
+                    .map_err(io::Error::other)?;
+                return Ok(());
+            }
             // No route from this socket to Room::receive or World::command.
             if !matches!(m.fields()?, Fields::Clock(_) | Fields::Heartbeat) {
                 return Err(io::ErrorKind::PermissionDenied.into());
