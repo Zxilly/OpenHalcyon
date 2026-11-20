@@ -749,3 +749,410 @@ async fn content_catalog_queries_the_complete_operator_supplement() {
             .contains_key("sample_hex")
     );
 }
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ProblemContract {
+    title: String,
+    status: u16,
+    code: String,
+    request_id: Uuid,
+    detail: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PlayerContract {
+    id: Uuid,
+    display_name: String,
+    online: bool,
+    platform_state: String,
+    current_match_id: Option<Uuid>,
+    current_match_host_id: Option<Uuid>,
+    last_seen_at: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PageContract<T> {
+    items: Vec<T>,
+    next_cursor: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct MatchContract {
+    id: Uuid,
+    queue: String,
+    difficulty: Option<String>,
+    phase: String,
+    created_at: String,
+    phase_since: String,
+    ended_at: Option<String>,
+    end_reason: Option<String>,
+    human_players: usize,
+    bot_players: usize,
+    pool_id: Option<Uuid>,
+    tick_latency: TickLatencyContract,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct TickLatencyContract {
+    count: u64,
+    total_us: u64,
+    max_us: u64,
+    missed_deadlines: u64,
+    over40ms: u64,
+    recent_sample_count: usize,
+    p99_us: Option<u64>,
+    stages: TickStagesContract,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct TickStagesContract {
+    wake_delay: TickStageContract,
+    lock_wait: TickStageContract,
+    room_work: TickStageContract,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct TickStageContract {
+    total_us: u64,
+    max_us: u64,
+    over40ms: u64,
+    dominant_over40ms: u64,
+}
+
+async fn get_contract<T: serde::de::DeserializeOwned>(
+    app: &Router,
+    path: &str,
+    session: Option<&str>,
+) -> (StatusCode, Value, T) {
+    let (status, headers, raw) = request(app, "GET", path, None, session, Value::Null).await;
+    assert_eq!(headers[header::CACHE_CONTROL], "no-store");
+    let typed = serde_json::from_value::<T>(raw.clone()).unwrap();
+    (status, raw, typed)
+}
+
+#[tokio::test]
+async fn player_detail_contract_and_problem_responses() {
+    let (app, platform) = service();
+    let (_, _, unauth) =
+        get_contract::<ProblemContract>(&app, &format!("/players/{}", Uuid::new_v4()), None).await;
+    assert_eq!(unauth.status, 401);
+    assert_eq!(unauth.code, "unauthorized");
+
+    let session = content_admin_cookie(&app).await;
+    let session = Some(session.as_str());
+
+    // Unknown UUID yields 404 application/problem+json with code=not_found.
+    let (missing_status, _, missing) =
+        get_contract::<ProblemContract>(&app, &format!("/players/{}", Uuid::new_v4()), session)
+            .await;
+    assert_eq!(missing_status, StatusCode::NOT_FOUND);
+    assert_eq!(missing.status, 404);
+    assert_eq!(missing.code, "not_found");
+    assert_eq!(missing.title, "Resource not found");
+    assert!(missing.detail.is_none());
+    assert_ne!(missing.request_id, Uuid::nil());
+
+    // Malformed UUID yields 400 application/problem+json with code=invalid_request.
+    let (bad_id_status, _, bad_id) =
+        get_contract::<ProblemContract>(&app, "/players/not-a-uuid", session).await;
+    assert_eq!(bad_id_status, StatusCode::BAD_REQUEST);
+    assert_eq!(bad_id.status, 400);
+    assert_eq!(bad_id.code, "invalid_request");
+
+    // Online player in menus: nullable match fields are explicitly null.
+    let alpha = platform.create_guest("Alpha".into()).await.unwrap();
+    let (status, raw_menus, menus) =
+        get_contract::<PlayerContract>(&app, &format!("/players/{}", alpha.player_id), session)
+            .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(menus.id, alpha.player_id);
+    assert_eq!(menus.display_name, "Alpha");
+    assert!(menus.online);
+    assert_eq!(menus.platform_state, "menus");
+    assert!(menus.current_match_id.is_none());
+    assert!(menus.current_match_host_id.is_none());
+    assert!(menus.last_seen_at.is_some());
+    assert_eq!(
+        raw_menus.as_object().unwrap().get("currentMatchId"),
+        Some(&Value::Null)
+    );
+    assert_eq!(
+        raw_menus.as_object().unwrap().get("currentMatchHostId"),
+        Some(&Value::Null)
+    );
+
+    // Enqueue and transition through match_pending -> playing.
+    platform
+        .join(&alpha.session_token, "solo".into())
+        .await
+        .unwrap();
+    let match_id = platform
+        .profile(&alpha.session_token)
+        .await
+        .unwrap()
+        .lobby
+        .unwrap()
+        .match_id
+        .unwrap();
+    let (_, raw_offered, offered) =
+        get_contract::<PlayerContract>(&app, &format!("/players/{}", alpha.player_id), session)
+            .await;
+    assert_eq!(offered.platform_state, "match_pending");
+    assert_eq!(offered.current_match_id, Some(match_id));
+    assert!(offered.current_match_host_id.is_none());
+    assert_eq!(
+        raw_offered.as_object().unwrap().get("currentMatchHostId"),
+        Some(&Value::Null)
+    );
+
+    platform
+        .accept(&alpha.session_token, match_id)
+        .await
+        .unwrap();
+    let (_, _, playing) =
+        get_contract::<PlayerContract>(&app, &format!("/players/{}", alpha.player_id), session)
+            .await;
+    assert_eq!(playing.platform_state, "playing");
+    assert_eq!(playing.current_match_id, Some(match_id));
+    assert!(playing.current_match_host_id.is_some());
+
+    // Ended session reports offline while retaining lastSeenAt.
+    platform.end_session(&alpha.session_token).await.unwrap();
+    let (_, _, offline) =
+        get_contract::<PlayerContract>(&app, &format!("/players/{}", alpha.player_id), session)
+            .await;
+    assert!(!offline.online);
+    assert_eq!(offline.platform_state, "offline");
+    assert!(offline.last_seen_at.is_some());
+}
+
+#[tokio::test]
+async fn matches_list_phase_filter_cursor_pagination_and_contract() {
+    let (app, platform) = service();
+    let session = content_admin_cookie(&app).await;
+    let session_ref = Some(session.as_str());
+
+    let (empty_status, _, empty_page) =
+        get_contract::<PageContract<MatchContract>>(&app, "/matches", session_ref).await;
+    assert_eq!(empty_status, StatusCode::OK);
+    assert!(empty_page.items.is_empty());
+    assert!(empty_page.next_cursor.is_none());
+
+    // Create three local matches: two active accepted solo matches and one offered/allocated match.
+    let bravo = platform.create_guest("Bravo".into()).await.unwrap();
+    platform
+        .join_with_difficulty(
+            &bravo.session_token,
+            "solo".into(),
+            1,
+            Some(halcyon_data::BotDifficulty::Hard),
+        )
+        .await
+        .unwrap();
+    let match_one = platform
+        .profile(&bravo.session_token)
+        .await
+        .unwrap()
+        .lobby
+        .unwrap()
+        .match_id
+        .unwrap();
+    platform
+        .accept(&bravo.session_token, match_one)
+        .await
+        .unwrap();
+
+    let charlie = platform.create_guest("Charlie".into()).await.unwrap();
+    platform
+        .join(&charlie.session_token, "solo".into())
+        .await
+        .unwrap();
+    let match_two = platform
+        .profile(&charlie.session_token)
+        .await
+        .unwrap()
+        .lobby
+        .unwrap()
+        .match_id
+        .unwrap();
+    platform
+        .accept(&charlie.session_token, match_two)
+        .await
+        .unwrap();
+
+    let delta = platform.create_guest("Delta".into()).await.unwrap();
+    platform
+        .join(&delta.session_token, "solo".into())
+        .await
+        .unwrap();
+    let match_three = platform
+        .profile(&delta.session_token)
+        .await
+        .unwrap()
+        .lobby
+        .unwrap()
+        .match_id
+        .unwrap();
+    platform
+        .accept(&delta.session_token, match_three)
+        .await
+        .unwrap();
+    // Terminate match_one so /matches covers both ended and active phases across three rooms.
+    let termination_body = serde_json::to_value(OperatorReason {
+        reason: "contract test termination",
+    })
+    .unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let response = request(
+                &app,
+                "PUT",
+                &format!("/matches/{match_one}/termination"),
+                Some(ORIGIN),
+                session_ref,
+                termination_body.clone(),
+            )
+            .await;
+            if response.0 == StatusCode::OK {
+                break;
+            }
+            assert_eq!(response.0, StatusCode::ACCEPTED);
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+
+    // Unfiltered pagination over all 3 rooms with limit=2 -> 2 items + cursor -> 1 item + null.
+    let (p1_status, p1_raw, p1) =
+        get_contract::<PageContract<MatchContract>>(&app, "/matches?limit=2", session_ref).await;
+    assert_eq!(p1_status, StatusCode::OK);
+    assert_eq!(p1.items.len(), 2);
+    let cursor = p1.next_cursor.as_deref().unwrap();
+    let (p2_status, p2_raw, p2) = get_contract::<PageContract<MatchContract>>(
+        &app,
+        &format!("/matches?limit=2&cursor={cursor}"),
+        session_ref,
+    )
+    .await;
+    assert_eq!(p2_status, StatusCode::OK);
+    assert_eq!(p2.items.len(), 1);
+    assert!(p2.next_cursor.is_none());
+    assert_eq!(
+        p2_raw.as_object().unwrap().get("nextCursor"),
+        Some(&Value::Null)
+    );
+
+    let all_items: Vec<_> = p1.items.iter().chain(p2.items.iter()).collect();
+    let all_raw: Vec<_> = p1_raw["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .chain(p2_raw["items"].as_array().unwrap().iter())
+        .collect();
+    let ids: std::collections::BTreeSet<Uuid> = all_items.iter().map(|m| m.id).collect();
+    assert_eq!(
+        ids,
+        [match_one, match_two, match_three].into_iter().collect()
+    );
+
+    for (item, raw) in all_items.iter().zip(all_raw.iter()) {
+        let obj = raw.as_object().unwrap();
+        assert!(!obj.contains_key("participants"));
+        assert_eq!(item.queue, "solo");
+        assert!(!item.created_at.is_empty());
+        assert!(!item.phase_since.is_empty());
+        assert_eq!(item.human_players, 1);
+        assert!(item.bot_players <= 9);
+        assert_eq!(obj.get("poolId"), Some(&Value::Null));
+        assert!(item.pool_id.is_none());
+        if item.id == match_one {
+            assert_eq!(item.difficulty.as_deref(), Some("hard"));
+            assert_eq!(item.phase, "ended");
+            assert_eq!(item.end_reason.as_deref(), Some("admin_terminated"));
+            assert!(item.ended_at.is_some());
+        } else {
+            assert!(!obj.contains_key("difficulty"));
+            assert_eq!(obj.get("endedAt"), Some(&Value::Null));
+            assert_eq!(obj.get("endReason"), Some(&Value::Null));
+        }
+        assert!(item.tick_latency.recent_sample_count <= 1024);
+        assert!(item.tick_latency.max_us <= item.tick_latency.total_us);
+        assert!(item.tick_latency.over40ms <= item.tick_latency.count);
+        assert!(item.tick_latency.missed_deadlines <= item.tick_latency.count);
+        assert_eq!(
+            item.tick_latency.p99_us.is_some(),
+            item.tick_latency.recent_sample_count > 0
+        );
+        for stage in [
+            &item.tick_latency.stages.wake_delay,
+            &item.tick_latency.stages.lock_wait,
+            &item.tick_latency.stages.room_work,
+        ] {
+            assert!(stage.max_us <= stage.total_us);
+            assert!(stage.dominant_over40ms <= stage.over40ms);
+        }
+    }
+
+    // Filter by ended phase -> only terminated match_one.
+    let (ended_status, _, ended_page) =
+        get_contract::<PageContract<MatchContract>>(&app, "/matches?phase=ended", session_ref)
+            .await;
+    assert_eq!(ended_status, StatusCode::OK);
+    assert_eq!(ended_page.items.len(), 1);
+    assert_eq!(ended_page.items[0].id, match_one);
+    assert!(ended_page.next_cursor.is_none());
+
+    // Check active phase filtering (hero_select or allocated, whatever match_two/three hold).
+    let active_phase = &all_items.iter().find(|m| m.id == match_two).unwrap().phase;
+    let (_, _, active_page) = get_contract::<PageContract<MatchContract>>(
+        &app,
+        &format!("/matches?phase={active_phase}&limit=1"),
+        session_ref,
+    )
+    .await;
+    assert_eq!(active_page.items.len(), 1);
+    assert_eq!(active_page.items[0].phase, *active_phase);
+    if let Some(filtered_cursor) = active_page.next_cursor.as_deref() {
+        // Mismatched filter or unfiltered endpoint must reject filtered cursor with 400 invalid_request.
+        for bad_path in [
+            format!("/matches?cursor={filtered_cursor}"),
+            format!("/matches?phase=ended&cursor={filtered_cursor}"),
+        ] {
+            let (st, _, err) = get_contract::<ProblemContract>(&app, &bad_path, session_ref).await;
+            assert_eq!(st, StatusCode::BAD_REQUEST);
+            assert_eq!(err.code, "invalid_request");
+        }
+    }
+
+    // Cross-resource player cursor, tampered cursor, invalid phase, and invalid limit -> 400 invalid_request.
+    let (_, _, player_page) =
+        get_contract::<PageContract<PlayerContract>>(&app, "/players?limit=1", session_ref).await;
+    let player_cursor = player_page.next_cursor.unwrap();
+    let mut tampered = cursor.to_owned();
+    let replacement = if tampered.ends_with('A') { 'B' } else { 'A' };
+    tampered.pop();
+    tampered.push(replacement);
+
+    for bad_path in [
+        format!("/matches?cursor={player_cursor}"),
+        format!("/matches?cursor={tampered}"),
+        "/matches?cursor=not-a-valid-cursor".to_owned(),
+        "/matches?phase=invalid_phase".to_owned(),
+        "/matches?limit=0".to_owned(),
+        "/matches?limit=101".to_owned(),
+    ] {
+        let (status, _, problem) =
+            get_contract::<ProblemContract>(&app, &bad_path, session_ref).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{bad_path}");
+        assert_eq!(problem.status, 400, "{bad_path}");
+        assert_eq!(problem.code, "invalid_request", "{bad_path}");
+    }
+}
