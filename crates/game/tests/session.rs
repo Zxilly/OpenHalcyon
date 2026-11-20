@@ -260,23 +260,26 @@ async fn reservation_and_two_authenticated_sockets() {
     // Finishing the room deliberately does not wait for the independent disk writer.
     let (recorded, ops) = timeout(Duration::from_secs(4), async {
         loop {
-            let file = std::fs::read_dir(replay_root.join(id.to_string()))
-                .ok()
-                .and_then(|mut d| d.next())
-                .and_then(Result::ok)
-                .map(|d| d.path().join("00000000.vgr.partial"));
-            if let Some(bytes) = file.and_then(|p| std::fs::read(p).ok()) {
+            let Ok(attempts) = std::fs::read_dir(replay_root.join(id.to_string())) else {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+                continue;
+            };
+            for attempt in attempts {
+                let attempt = attempt.unwrap();
+                let path = attempt.path().join("00000000.vgr.partial");
+                let Ok(bytes) = std::fs::read(path) else {
+                    continue;
+                };
                 let mut reader = halcyon_protocol::ReplayReader::new(bytes.as_slice());
                 let mut ops = Vec::new();
-                let complete = loop {
+                loop {
                     match reader.next_record() {
-                        Ok(Some(r)) => ops.push(r.message.opcode),
-                        Ok(None) => break true,
-                        Err(_) => break false,
+                        Ok(Some(record)) => ops.push(record.message.opcode),
+                        Ok(None) if ops.contains(&halcyon_protocol::wire_opcode::Position) => {
+                            return (bytes, ops);
+                        }
+                        _ => break,
                     }
-                };
-                if complete && ops.contains(&halcyon_protocol::wire_opcode::Position) {
-                    break (bytes, ops);
                 }
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
