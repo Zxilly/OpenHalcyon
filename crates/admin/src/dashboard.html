@@ -110,9 +110,9 @@
         </div>
         <p id="content-status" class="muted" aria-live="polite"></p>
         <form id="content-filter" hidden>
-          <label>Collection <select name="collection" required></select></label>
+          <label><span id="collection-label">Collection</span> <select name="collection" aria-labelledby="collection-label" required></select></label>
           <label>Search <input name="q" type="search" maxlength="128"></label>
-          <label>Message language <select name="language"><option value="en">English</option><option value="zh_CN">简体中文</option></select></label>
+          <label><span id="message-language-label">Message language</span> <select name="language" aria-labelledby="message-language-label"><option value="en">English</option><option value="zh_CN">简体中文</option></select></label>
           <button type="submit">Search</button>
         </form>
         <div id="content-rows"></div>
