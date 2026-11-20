@@ -15,7 +15,8 @@ fn effect_phase_cost() {
         w.select_hero(i, name, &data).unwrap();
     }
     w.use_aral_lane().unwrap();
-    for (i, a) in w.entities.iter_mut().take(6).enumerate() {
+    for i in 0..w.entities.len().min(6) {
+        let a = &mut w.entities[i];
         a.position = Position {
             x: i as f32 * 0.6,
             y: 0.,
@@ -31,7 +32,8 @@ fn effect_phase_cost() {
         for index in 0..1200 {
             w.tick += 1;
             if index % 100 == 0 {
-                for a in w.entities.iter_mut().take(6) {
+                for idx in 0..w.entities.len().min(6) {
+                    let a = &mut w.entities[idx];
                     a.hp = 2000.;
                 }
                 w.gift_of_fire(1, 1, 0, &mut events);

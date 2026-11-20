@@ -180,7 +180,8 @@ impl World {
             hero_starts: starts,
         };
         self.entities.retain(|e| e.kind == Kind::Hero);
-        for e in &mut self.entities {
+        for idx in 0..self.entities.len() {
+            let e = &mut self.entities[idx];
             e.solo_side = lanes[(e.id - 1) as usize];
             e.gold = 600;
             self.scores[(e.id - 1) as usize]

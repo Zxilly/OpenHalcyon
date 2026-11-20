@@ -993,7 +993,8 @@ mod tests {
             {
                 let mut room = room.lock().unwrap();
                 let far = room.world.entities[1].position;
-                for e in room.world.entities.iter_mut().take(SEATS) {
+                for idx in 0..room.world.entities.len().min(SEATS) {
+                    let e = &mut room.world.entities[idx];
                     e.position = if e.team == 0 {
                         original_home
                     } else {
@@ -1432,8 +1433,7 @@ mod tests {
             let crystal = room
                 .world
                 .entities
-                .iter_mut()
-                .find(|e| e.kind == Kind::Crystal && e.team == 1)
+                .find_mut(|e| e.kind == Kind::Crystal && e.team == 1)
                 .unwrap();
             let (target, position) = (crystal.id, crystal.position);
             crystal.hp = 0.1;

@@ -157,8 +157,7 @@ mod tests {
         let (tid, pos, team) = (tower.id, tower.position, tower.team);
         let hero = world
             .entities
-            .iter_mut()
-            .find(|e| e.kind == Kind::Hero && e.team != team)
+            .find_mut(|e| e.kind == Kind::Hero && e.team != team)
             .unwrap();
         let hid = hero.id;
         hero.position = halcyon_sim::Position {

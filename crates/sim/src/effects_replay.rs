@@ -18,7 +18,8 @@ fn overlapping_bulwark_and_fire_match_baseline() {
         world.select_hero(seat, name, &data).unwrap();
     }
     world.use_aral_lane().unwrap();
-    for (seat, actor) in world.entities.iter_mut().take(6).enumerate() {
+    for seat in 0..world.entities.len().min(6) {
+        let actor = &mut world.entities[seat];
         actor.position = Position {
             x: seat as f32 * 0.6,
             y: 0.,

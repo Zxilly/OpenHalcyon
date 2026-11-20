@@ -277,8 +277,7 @@ mod tests {
         let (tid, pos) = (tower.id, tower.position);
         let hero = world
             .entities
-            .iter_mut()
-            .find(|a| a.kind == Kind::Hero && a.team == 1)
+            .find_mut(|a| a.kind == Kind::Hero && a.team == 1)
             .unwrap();
         let hid = hero.id;
         hero.position = Position {
@@ -404,8 +403,7 @@ mod tests {
         let m = world.entities.iter().find(|e| e.id == id).unwrap().position;
         let enemy = world
             .entities
-            .iter_mut()
-            .find(|e| e.team == 1 && e.kind == Kind::Hero)
+            .find_mut(|e| e.team == 1 && e.kind == Kind::Hero)
             .unwrap();
         let hero = enemy.id;
         enemy.position = Position {

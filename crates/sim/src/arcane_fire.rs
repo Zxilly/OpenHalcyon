@@ -71,8 +71,8 @@ impl World {
             })
     }
     pub(super) fn has_arcane_fire(&self, target: u32, caster: u32) -> bool {
-        self.spells
-            .iter::<Pulse>()
+        self.entities
+            .spells::<Pulse>()
             .any(|p| !p.heal && p.target == target && p.src == caster && self.tick < p.end)
     }
     pub(super) fn gift_of_fire(&mut self, i: usize, j: usize, r: usize, events: &mut Vec<Event>) {
@@ -111,8 +111,9 @@ impl World {
         let slow_end = self.tick + (a.slow_time[r] * TICK_HZ as f32).round() as u64;
         self.entities[i].next_attack = self.tick;
         self.heal(src, j, burst, events);
-        self.spells.refresh_fire(heal);
-        for t in &mut self.entities {
+        self.entities.refresh_fire(heal);
+        for idx in 0..self.entities.len() {
+            let t = &mut self.entities[idx];
             if t.hp <= 0.
                 || t.team == team
                 || !matches!(t.kind, Kind::Hero | Kind::Minion | Kind::Neutral)
@@ -125,10 +126,8 @@ impl World {
                 t.status.slow_factor = slow;
                 t.status.slow_until = slow_end;
             }
-            self.spells.refresh_fire(Pulse {
-                target: t.id,
-                ..burn
-            });
+            let target = t.id;
+            self.entities.refresh_fire(Pulse { target, ..burn });
         }
     }
 }
@@ -180,9 +179,9 @@ mod tests {
             next: 2,
             end: 4,
         };
-        world.spells.refresh_fire(pulse);
-        world.spells.refresh_fire(Pulse { src: 3, ..pulse });
-        world.spells.refresh_fire(Pulse {
+        world.entities.refresh_fire(pulse);
+        world.entities.refresh_fire(Pulse { src: 3, ..pulse });
+        world.entities.refresh_fire(Pulse {
             amount: 4.,
             ..pulse
         });
@@ -205,8 +204,8 @@ mod tests {
                 .collect();
             assert_eq!(impacts, [(3, 2.), (1, 4.)]);
         }
-        assert!(world.spells.iter::<Pulse>().next().is_none());
-        world.spells.refresh_fire(Pulse {
+        assert!(world.entities.spells::<Pulse>().next().is_none());
+        world.entities.refresh_fire(Pulse {
             next: 6,
             end: 8,
             ..pulse
@@ -216,7 +215,7 @@ mod tests {
         let mut events = Vec::new();
         world.advance_persistent_spells(&mut events);
         assert!(events.is_empty());
-        assert!(world.spells.iter::<Pulse>().next().is_none());
+        assert!(world.entities.spells::<Pulse>().next().is_none());
     }
 
     #[test]
@@ -233,7 +232,8 @@ mod tests {
         w.use_six_human_roster().unwrap();
         w.select_hero(0, "Adagio", &d).unwrap();
         w.use_aral_lane().unwrap();
-        for (idx, e) in w.entities.iter_mut().take(6).enumerate() {
+        for idx in 0..w.entities.len().min(6) {
+            let e = &mut w.entities[idx];
             e.position = Position {
                 x: idx as f32 * 2.,
                 y: 0.,

@@ -260,7 +260,7 @@ impl World {
             }
             let mut ordinal = [0; 2];
             let mut starts = [Position::default(); 6];
-            for e in &self.entities[..6] {
+            for e in self.entities.iter().take(6) {
                 let team = usize::from(e.team);
                 starts[(e.id - 1) as usize] = pads[team][ordinal[team]];
                 ordinal[team] += 1;
@@ -298,7 +298,8 @@ impl World {
             self.layout = Layout::Aral {
                 hero_starts: starts,
             };
-            for e in &mut self.entities[..6] {
+            for idx in 0..6 {
+                let e = &mut self.entities[idx];
                 e.position = self.layout.home(e);
             }
         } else {
@@ -349,7 +350,8 @@ mod tests {
         world.use_six_human_roster().unwrap();
         world.use_aral_lane().unwrap();
         world.install_map_data(&data).unwrap();
-        for e in &mut world.entities[2..] {
+        for idx in 2..world.entities.len() {
+            let e = &mut world.entities[idx];
             e.hp = 0.;
         }
         let hidden = Position {

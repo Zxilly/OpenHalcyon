@@ -638,8 +638,7 @@ mod tests {
                     let mut room = shared.lock().unwrap();
                     room.world
                         .entities
-                        .iter_mut()
-                        .find(|e| e.id == 2060 - 1499)
+                        .find_mut(|e| e.id == 2060 - 1499)
                         .unwrap()
                         .hp = 3800.;
                 }

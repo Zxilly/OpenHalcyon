@@ -77,8 +77,7 @@ mod tests {
             assert!(crystal_end("casual_aral", &w).is_none());
             let crystal = w
                 .entities
-                .iter_mut()
-                .find(|e| e.kind == Kind::Crystal && e.team == 1 - winner)
+                .find_mut(|e| e.kind == Kind::Crystal && e.team == 1 - winner)
                 .unwrap();
             crystal.hp = 0.;
             assert!(crystal_end("5v5_bots_solo", &w).is_some());

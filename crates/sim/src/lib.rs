@@ -1,9 +1,11 @@
 //! Deterministic straight-lane validation map. Coordinates are project world units.
 //! Vision, spawn offsets, windup, attack cadence, retreat and respawn are project rules.
 use halcyon_data::EntityTemplate;
+mod actors;
 mod ai;
 mod aral;
 mod arcane_fire;
+pub use actors::Actors;
 mod persistent_spells;
 mod vision_devices;
 pub use vision_devices::{VisionDevice, VisionDeviceKind};
@@ -380,7 +382,7 @@ impl Stats {
         }
     }
 }
-#[derive(Debug, Clone, Serialize)]
+#[derive(bevy_ecs::component::Component, Debug, Clone, Serialize)]
 pub struct Entity {
     mobile_bulwark_bonus: Option<f32>,
     long_shot: Option<native_combat::LongShot>,
@@ -438,7 +440,7 @@ pub struct Entity {
 pub struct World {
     pub tick: u64,
     pub winner: Option<u8>,
-    pub entities: Vec<Entity>,
+    pub entities: Actors<'static>,
     stats: [Stats; 8],
     layout: Layout,
     aral_units: aral::Units,
@@ -460,7 +462,6 @@ pub struct World {
     chakrams: Vec<chakram::Chakram>,
     sigils: Vec<sigil::Field>,
     twisters: Vec<twister::Dash>,
-    spells: persistent_spells::Spells,
     water: Vec<lorelai::Water>,
     nav_budget: u8,
     native_navigation: Option<Box<native_navigation::NativeNavigation>>,
@@ -526,8 +527,8 @@ impl World {
                     &self.water,
                     &self.sigils,
                     &self.twisters,
-                    self.spells.snapshot::<arcane_fire::Pulse>(),
-                    self.spells.snapshot::<bulwark::Field>(),
+                    self.entities.spell_snapshot::<arcane_fire::Pulse>(),
+                    self.entities.spell_snapshot::<bulwark::Field>(),
                 ),
             ),
         )
@@ -662,7 +663,8 @@ impl World {
             *team = selected;
             counts[selected as usize] += 1;
         }
-        for (e, team) in self.entities.iter_mut().take(heroes).zip(teams) {
+        for (idx, team) in teams.into_iter().take(heroes).enumerate() {
+            let e = &mut self.entities[idx];
             e.team = team;
             e.position.x = base(team).x;
         }
@@ -704,7 +706,7 @@ impl World {
         let mut w = Self {
             tick: 0,
             winner: None,
-            entities: Vec::with_capacity(50),
+            entities: Actors::default(),
             next_id: 1,
             layout: Layout::default(),
             aral_units: rules.aral_units,
@@ -726,7 +728,6 @@ impl World {
             chakrams: Vec::new(),
             sigils: Vec::new(),
             twisters: Vec::new(),
-            spells: Default::default(),
             water: Vec::new(),
             nav_budget: 0,
             native_navigation: None,

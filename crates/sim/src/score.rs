@@ -438,7 +438,7 @@ mod native_income_tests {
             assert!(events.is_empty());
             world.tick += TICK_HZ;
             world.native_passive_income(&mut events);
-            for hero in &world.entities[..count] {
+            for hero in world.entities.iter().take(count) {
                 assert_eq!(hero.gold, starting_gold + amount);
                 assert_eq!(hero.xp, xp);
                 assert!(events.iter().any(

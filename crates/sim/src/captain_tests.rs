@@ -33,7 +33,8 @@ fn room(hero: &str) -> World {
     w.use_six_human_roster().unwrap();
     w.select_hero(0, hero, &data).unwrap();
     w.use_aral_lane().unwrap();
-    for (i, e) in w.entities.iter_mut().take(6).enumerate() {
+    for i in 0..w.entities.len().min(6) {
+        let e = &mut w.entities[i];
         e.position = Position {
             x: i as f32 * 2.,
             y: 0.,

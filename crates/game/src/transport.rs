@@ -529,12 +529,7 @@ mod tests {
         let revoked_view = identified(&withdrawn.address, withdrawn.spectator_id, &cipher).await;
         {
             let mut r = room.lock().unwrap();
-            r.world
-                .entities
-                .iter_mut()
-                .find(|e| e.id == target)
-                .unwrap()
-                .hp = 0.1;
+            r.world.entities.find_mut(|e| e.id == target).unwrap().hp = 0.1;
             r.world.tick = 15;
             r.world
                 .command(1, halcyon_sim::Command::Attack(target))
@@ -703,7 +698,8 @@ mod tests {
         let mut room = shared.lock().unwrap();
         room.phase(crate::RoomPhase::Running);
         room.world.tick = 1;
-        for entity in &mut room.world.entities {
+        for idx in 0..room.world.entities.len() {
+            let entity = &mut room.world.entities[idx];
             entity.position = Position {
                 x: if entity.team == 0 { -80. } else { 80. },
                 y: 0.,

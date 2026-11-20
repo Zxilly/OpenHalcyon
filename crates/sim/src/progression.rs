@@ -301,7 +301,8 @@ impl World {
         }
         let mut allies = [0usize; 10];
         let mut count = 0;
-        for (j, a) in self.entities.iter_mut().take(10).enumerate() {
+        for j in 0..self.entities.len().min(10) {
+            let a = &mut self.entities[j];
             if a.team != team || a.kind != Kind::Hero {
                 continue;
             }
@@ -363,7 +364,8 @@ mod tests {
             }
             let pos = Position::default();
             // Keep exactly one allied recipient within sharing distance.
-            for e in &mut w.entities[..10] {
+            for idx in 0..10 {
+                let e = &mut w.entities[idx];
                 e.position.x = 50.;
             }
             w.entities[0].position = pos;
@@ -391,8 +393,10 @@ mod tests {
                 );
             }
             if solo {
-                let ally = w.entities[..10]
+                let ally = w
+                    .entities
                     .iter()
+                    .take(10)
                     .position(|a| a.team == team && a.id != killer)
                     .unwrap();
                 w.entities[ally].position = pos;
@@ -588,8 +592,11 @@ mod tests {
         assert!(w.assign_teams(&[1; 6]).is_err());
         assert_eq!(w.entities[0].team, 0);
         w.assign_teams(&[1, 1, 1, 1, 1, 0]).unwrap();
-        assert_eq!(w.entities[..10].iter().filter(|h| h.team == 1).count(), 5);
-        for h in &w.entities[..10] {
+        assert_eq!(
+            w.entities.iter().take(10).filter(|h| h.team == 1).count(),
+            5
+        );
+        for h in w.entities.iter().take(10) {
             assert_eq!(h.position.x, base(h.team).x)
         }
         w.step();
