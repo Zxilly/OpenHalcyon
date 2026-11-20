@@ -10,6 +10,10 @@ mod chakram_motion;
 mod chill_winds;
 mod projectile;
 pub(super) use projectile::recordable as recordable_spell_projectile;
+mod skedaddle;
+pub(super) fn recordable_skedaddle(m: &Message) -> bool {
+    skedaddle::recordable(m)
+}
 pub(super) fn recordable_chill_winds(m: &Message) -> bool {
     chill_winds::recordable_pfx(m)
 }
@@ -299,6 +303,7 @@ pub(super) fn publish_before_impacts(room: &mut Room, events: &[Event]) {
         {
             chill_winds::publish(room, source, position, heading);
         }
+        skedaddle::publish(room, event);
     }
 }
 

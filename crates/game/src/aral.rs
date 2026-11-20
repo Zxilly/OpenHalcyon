@@ -52,6 +52,19 @@ pub(super) fn talent_response(
         let _ = room.world.set_named_talent(actor, talent, data);
     }
     let hero = &room.world.entities[seat];
+    if hero.type_id == halcyon_data::EntityTemplate::Gwen.as_raw()
+        && let Some(data) = room.data.as_deref()
+    {
+        let talent = (selection == TalentSelection::Slot0 && level == 1).then(|| {
+            (
+                halcyon_data::ModeledTalent::SpeedLoader.as_str(),
+                std::num::NonZeroU8::MIN,
+            )
+        });
+        let actor = hero.id;
+        let _ = room.world.set_named_talent(actor, talent, data);
+    }
+    let hero = &room.world.entities[seat];
     let equipped = EquippedTalent {
         actor: u32::from(messages::wire_id(hero.id)),
         selection,

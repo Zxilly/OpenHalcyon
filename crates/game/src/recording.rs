@@ -164,6 +164,11 @@ fn sanitize(m: &mut Message) -> bool {
         Some(crate::Opcode::FireProjectile) if super::npc_projectile::recordable(m) => {}
         Some(crate::Opcode::EntityData | crate::Opcode::DecrementBuffStack)
             if super::aral_guard::recordable(m) => {}
+        Some(
+            crate::Opcode::EntityProp
+            | crate::Opcode::ShowFlyoutText
+            | crate::Opcode::CooldownValue,
+        ) if super::native_abilities::recordable_skedaddle(m) => {}
         Some(crate::Opcode::EntityData | crate::Opcode::EntityProp)
             if super::structure_effects::recordable(m) => {}
         Some(crate::Opcode::EntityProp)
