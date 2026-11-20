@@ -1533,8 +1533,7 @@ impl Room {
             scene::initial_structures(self);
         }
         let events = self.world.step();
-        self.solo_structure_snapshot
-            .advance(self.world.tick, &events);
+        self.solo_structure_snapshot.observe(&events);
         if legacy {
             aral_death::flush(self, self.world.tick);
             aral_death::schedule(self, &events);

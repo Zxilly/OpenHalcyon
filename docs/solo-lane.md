@@ -63,10 +63,13 @@ first instance of each definition: 6574/6575 on home and 6568/6569 on away
 
 The host restores this state after actual structure declarations on native Solo
 reconnect, visibility entry and authorized observer attachment. It reuses the
-original room instances. The verified projection ends at the first structure
-death, including a node that later rebuilds, or after tick 2498 (the last
-sample at 130.021 s minus the 5.116 s start marker). The archive supplies
-neither post-destruction stacks nor a post-destruction cancellation.
+original room instances. The final recorded snapshot is 124.905 simulated seconds after start.
+The host keeps the instances across elapsed time. A structure death retires that
+structure's opening instances, including those on a node that later rebuilds.
+The other living structures retain their self-sourced instances. Following any
+structure loss the host omits map-sourced 205 and 180 from subsequent snapshots:
+the capture does not establish their dependency on either side's structures or
+the surviving stack counts. No cancellation is synthesized.
 
 ### Mid-lane waves
 

@@ -130,35 +130,32 @@ pub(super) fn append_crystal_start(batch: &mut Batch, declared: &[Opening]) {
     }
 }
 
-/// The last complete three-stack snapshot was 124.905 simulated seconds after start.
-const LAST_INTACT_SAMPLE_TICK: u64 = 2498;
-
 #[derive(Default, Clone, Copy)]
 pub(super) struct SoloSnapshot {
-    intact: bool,
+    started: bool,
+    // Fixed slots survive fog and are reused when a VainNode rebuilds.
+    lost_slots: u64,
 }
 
 impl SoloSnapshot {
     pub fn start(&mut self) {
-        self.intact = true;
+        self.started = true;
     }
 
-    pub fn advance(&mut self, tick: u64, events: &[halcyon_sim::Event]) {
-        if !self.intact {
-            return;
+    pub fn observe(&mut self, events: &[halcyon_sim::Event]) {
+        if self.started {
+            for event in events {
+                if let halcyon_sim::Event::Death { id, .. } = event
+                    && let Some(structure) = id.checked_add(1499).and_then(SoloStructure::at_actor)
+                {
+                    self.lost_slots |= 1_u64 << structure.slot();
+                }
+            }
         }
-        let structure_died = |event: &halcyon_sim::Event| match *event {
-            halcyon_sim::Event::Death { id, .. } => id
-                .checked_add(1499)
-                .and_then(SoloStructure::at_actor)
-                .is_some(),
-            _ => false,
-        };
-        self.intact = tick <= LAST_INTACT_SAMPLE_TICK && !events.iter().any(structure_died);
     }
 
     pub fn append(self, batch: &mut Batch) {
-        if !self.intact {
+        if !self.started {
             return;
         }
         let mut groups = Vec::new();
@@ -171,16 +168,21 @@ impl SoloSnapshot {
             let Some(profile) = slot.copied().and_then(SoloStructure::at_slot) else {
                 continue;
             };
-            if message.body[8..12] == profile.actor().to_be_bytes()
+            if self.lost_slots & (1_u64 << profile.slot()) == 0
+                && message.body[8..12] == profile.actor().to_be_bytes()
                 && message.body[..4] == u32::from(profile.template()).to_be_bytes()
             {
                 groups.push(Opening::solo(profile.slot()).expect("known Solo structure"));
             }
         }
         groups.sort_unstable_by_key(|g| g.first_instance);
-        for group in groups {
+        for mut group in groups {
+            if self.lost_slots != 0 {
+                // No archive shows which map-owned instances survive a structure loss.
+                group.map_instance = None;
+            }
             batch.extend(group.messages());
-            if matches!(group.actor, 2006 | 2007) {
+            if self.lost_slots == 0 && matches!(group.actor, 2006 | 2007) {
                 for prefix in crystal_start_prefixes()
                     .filter(|p| p.target == group.actor)
                     .take(2)
@@ -261,10 +263,7 @@ mod tests {
         current.append(&mut b);
         assert_eq!(b, declarations);
         current.start();
-        current.advance(
-            LAST_INTACT_SAMPLE_TICK,
-            &[halcyon_sim::Event::Death { id: 1, killer: 2 }],
-        );
+        current.observe(&[halcyon_sim::Event::Death { id: 1, killer: 2 }]);
         current.append(&mut b);
         let effects = &b[declarations.len()..];
         assert_eq!(effects.len(), 98);
@@ -277,22 +276,25 @@ mod tests {
             format!("{:x}", digest.finalize()),
             "4760604432928414b12617ade328441d2631620326f06d4adfb5359cac0603e3"
         );
-        for (tick, events) in [
-            (
-                2,
-                vec![halcyon_sim::Event::Death {
-                    id: 2005 - 1499,
-                    killer: 1,
-                }],
-            ),
-            (LAST_INTACT_SAMPLE_TICK + 1, vec![]),
-        ] {
-            let mut invalid = current;
-            invalid.advance(tick, &events);
-            invalid.advance(tick + 1, &[]);
+        for actor in [2005_u32, 2008] {
+            let mut after_loss = current;
+            after_loss.observe(&[halcyon_sim::Event::Death {
+                id: actor - 1499,
+                killer: 1,
+            }]);
+            after_loss.observe(&[]);
+            // Even a later declaration for a rebuilt node cannot revive its old instances.
             let mut b = declarations.clone();
-            invalid.append(&mut b);
-            assert_eq!(b, declarations);
+            after_loss.append(&mut b);
+            let effects = &b[declarations.len()..];
+            assert_eq!(effects.len(), 73);
+            for effect in effects {
+                let Fields::BuffApplication(effect) = effect.fields().unwrap() else {
+                    panic!()
+                };
+                assert_eq!(effect.prefix.target, effect.prefix.source);
+                assert_ne!(effect.prefix.target, actor);
+            }
         }
     }
 
