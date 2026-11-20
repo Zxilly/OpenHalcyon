@@ -100,11 +100,11 @@ pub(super) fn refresh(hero: &mut Entity, shop: &Shop) {
                 equipped.current = true;
                 equipped.alternate = prev.alternate;
             }
-            BookOfEulogies | BarbedNeedle | SerpentMask => {
+            BookOfEulogies | BarbedNeedle | SerpentMask | PoisonedShiv => {
                 equipped.book = true;
                 equipped.vamp = equipped.vamp.max(match item.kind {
                     BookOfEulogies => rules.book,
-                    BarbedNeedle => rules.needle,
+                    BarbedNeedle | PoisonedShiv => rules.needle,
                     _ => rules.mask,
                 });
             }
@@ -166,21 +166,33 @@ impl Room<'_> {
         }
         let hp = victim.hp;
         let kind = victim.kind;
+        let living_mob_or_hero = matches!(kind, Kind::Hero | Kind::Neutral | Kind::Minion);
         let owner = self.index(source).filter(|&i| {
             self.entities[i].kind == Kind::Hero
                 && self.entities[i].hp > 0.
-                && matches!(kind, Kind::Hero | Kind::Neutral | Kind::Minion)
+                && matches!(
+                    kind,
+                    Kind::Hero
+                        | Kind::Neutral
+                        | Kind::Minion
+                        | Kind::Tower
+                        | Kind::Armory
+                        | Kind::Crystal
+                )
         });
         let Some(i) = owner else {
-            self.hurt(source, team, target, damage, school, events);
+            self.hurt_basic(source, team, target, damage, school, events);
             return;
         };
-        let armor = victim.stats.armor;
+        let armor = item_actives::armor_with_shred(victim, self.state.tick);
         let shield = victim.stats.shield;
         let hero = &mut self.entities[i];
         let r = self.state.shop.attacks;
         let passive = &mut hero.item_stats.attack_passives;
-        let bonus_weapon = if passive.bow && r.interval > 0 && self.state.tick >= passive.bow_ready
+        let bonus_weapon = if living_mob_or_hero
+            && passive.bow
+            && r.interval > 0
+            && self.state.tick >= passive.bow_ready
         {
             passive.bow_ready = self.state.tick + r.interval;
             mitigated(
@@ -191,7 +203,7 @@ impl Room<'_> {
         } else {
             0.
         };
-        let crystal = if passive.current {
+        let crystal = if living_mob_or_hero && passive.current {
             passive.alternate = !passive.alternate;
             if passive.alternate {
                 0.
@@ -215,15 +227,18 @@ impl Room<'_> {
         } else {
             0.
         };
-        self.hurt(source, team, target, damage, school, events);
-        let mut weapon_loss = if matches!(school, DamageSchool::Weapon) {
-            hp - self.entities[target].hp
+        self.hurt_basic(source, team, target, damage, school, events);
+        let primary_weapon_loss = if matches!(school, DamageSchool::Weapon) {
+            (hp - self.entities[target].hp).max(0.)
         } else {
             0.
         };
+        let serpent_extra =
+            item_passives::on_basic_hit(self, i, target, primary_weapon_loss, events);
+        let mut weapon_loss = primary_weapon_loss;
         if bonus_weapon > 0. && self.entities[target].hp > 0. {
             let before = self.entities[target].hp;
-            self.hurt(
+            self.hurt_item(
                 source,
                 team,
                 target,
@@ -231,20 +246,25 @@ impl Room<'_> {
                 DamageSchool::Weapon,
                 events,
             );
-            weapon_loss += before - self.entities[target].hp;
+            weapon_loss += (before - self.entities[target].hp).max(0.);
         }
         if crystal > 0. && self.entities[target].hp > 0. {
-            self.hurt(source, team, target, crystal, DamageSchool::Crystal, events);
+            self.hurt_item(source, team, target, crystal, DamageSchool::Crystal, events);
         }
         if self.entities[target].hp <= 0. && kind == Kind::Minion {
             self.retarget_idris_after_last_hit(i, target, events);
         }
-        let restoration = weapon_loss * vamp
-            + if self.entities[target].hp <= 0. {
-                heal
-            } else {
-                0.
-            };
+        let restoration = if living_mob_or_hero {
+            weapon_loss * vamp
+                + serpent_extra
+                + if self.entities[target].hp <= 0. {
+                    heal
+                } else {
+                    0.
+                }
+        } else {
+            0.
+        };
         if restoration > 0. {
             self.heal(source, i, restoration, events);
         }

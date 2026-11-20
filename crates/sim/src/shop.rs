@@ -786,8 +786,10 @@ pub(super) struct Shop {
     sprint: Option<SprintRule>,
     #[serde(skip_serializing_if = "reflex::Rule::is_native")]
     pub(super) reflex: Option<reflex::Rule>,
+    #[serde(skip)]
+    pub(super) effect_rules: std::sync::Arc<item_actives::ItemEffectRules>,
     offers: std::sync::Arc<[Offer]>,
-    permitted: Vec<bool>,
+    pub(super) permitted: Vec<bool>,
 }
 impl Default for Shop {
     fn default() -> Self {
@@ -798,6 +800,7 @@ impl Default for Shop {
             flask: Some(FlaskRule::ARAL_STARTER),
             sprint: None,
             reflex: Some(reflex::Rule::NATIVE),
+            effect_rules: std::sync::Arc::new(item_actives::ItemEffectRules::default()),
             permitted: OFFERS
                 .iter()
                 .map(|d| d.kind.catalog_store_allows(None).unwrap_or(true))
@@ -895,6 +898,19 @@ impl Shop {
     pub(super) fn shares_offers_with(&self, other: &Self) -> bool {
         std::sync::Arc::ptr_eq(&self.offers, &other.offers)
     }
+    #[cfg(test)]
+    pub(super) fn all_kinds() -> impl Iterator<Item = BasicItem> {
+        OFFERS.iter().map(|d| d.kind)
+    }
+    #[cfg(test)]
+    pub(super) fn enable_all_store_for_test(&mut self) {
+        self.permitted.fill(true);
+        for offer in std::sync::Arc::make_mut(&mut self.offers).iter_mut() {
+            if offer.refund.is_none() {
+                offer.refund = Some(offer.combine / 2 + 100);
+            }
+        }
+    }
 
     pub(super) fn bot_item(
         &self,
@@ -921,10 +937,23 @@ impl Shop {
     fn boot_speed(&self, inventory: &[HeldItem]) -> f32 {
         inventory
             .iter()
-            .map(|i| self.offers[i.kind as usize].boot_move)
+            .map(|i| {
+                let loaded = self.offers[i.kind as usize].boot_move;
+                if loaded > 0. {
+                    loaded
+                } else {
+                    match i.kind {
+                        TravelBoots => 0.3,
+                        JourneyBoots | HalcyonChargers | WarTreads | TeleportBoots => 0.5,
+                        _ => 0.,
+                    }
+                }
+            })
             .fold(0., f32::max)
     }
     pub fn load(data: &GameData) -> Result<Self, String> {
+        let effect_rules =
+            std::sync::Arc::new(item_actives::ItemEffectRules::load(data.item_catalog())?);
         let mut shop = Self {
             vision: vision_devices::Rules::load(data.item_catalog())?,
             attacks: attack_items::Rules::load(data.item_catalog()),
@@ -946,6 +975,7 @@ impl Shop {
                         None
                     }
                 }),
+            effect_rules,
             ..Self::default()
         };
         if let Some(names) = data.standard_5v5_items() {
@@ -1204,6 +1234,12 @@ impl Room<'_> {
         h.inventory.push(granted);
         attack_items::refresh(h, &self.state.shop);
         h.item_stats.boot_speed = self.state.shop.boot_speed(&h.inventory);
+        item_passives::sync_after_inventory_change(
+            h,
+            Some(item),
+            self.state.tick,
+            &self.state.shop.effect_rules.passive,
+        );
         Ok(Some(Purchase {
             actor: h.id,
             paid: price as u32,
@@ -1280,6 +1316,11 @@ impl Room<'_> {
         h.status.flask_energy_per_tick = h.max_energy * rule.energy_fraction / rule.duration as f32;
         self.pending_item_events
             .push(Event::FlaskActivated { actor, instance });
+        self.pending_item_events.push(Event::ItemCooldownUpdated {
+            actor,
+            key: item_actives::HEALING_FLASK_COOLDOWN_KEY,
+            remaining_seconds: rule.cooldown as f32 / TICK_HZ as f32,
+        });
         Ok(())
     }
     pub fn activate_sprint_boots(&mut self, actor: u32, instance: u32) -> Result<(), &'static str> {
@@ -1343,6 +1384,12 @@ impl Room<'_> {
         h.inventory.remove(offset);
         attack_items::refresh(h, &self.state.shop);
         h.item_stats.boot_speed = self.state.shop.boot_speed(&h.inventory);
+        item_passives::sync_after_inventory_change(
+            h,
+            None,
+            self.state.tick,
+            &self.state.shop.effect_rules.passive,
+        );
         h.gold = balance;
         apply_item_delta(h, delta);
         let sale = ItemSale {

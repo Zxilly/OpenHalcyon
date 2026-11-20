@@ -95,11 +95,24 @@ impl Rooms {
         if r.sequence != room.seats[seat].action_receipts.next() {
             return ActionReply::Decision(ActionDecision::Stale);
         }
-        use halcyon_sim::{Command, Position};
+        use halcyon_sim::{Command, ItemTarget, Position};
         let command = match r.action {
             PlayerAction::ActivateReflexBlock { instance } => {
                 Command::ActivateReflexBlock { instance }
             }
+            PlayerAction::ActivateItem {
+                instance,
+                target_actor,
+                x,
+                z,
+            } => Command::ActivateItem {
+                instance,
+                target: match (target_actor, x, z) {
+                    (Some(target_id), _, _) => ItemTarget::Entity(target_id),
+                    (None, Some(px), Some(pz)) => ItemTarget::Point(Position { x: px, y: pz }),
+                    _ => ItemTarget::SelfCast,
+                },
+            },
             PlayerAction::ConsumeInfusion { instance } => Command::ConsumeInfusion { instance },
             PlayerAction::DeployScoutTrap { instance } => Command::DeployScoutTrap { instance },
             PlayerAction::DeployVisionTotem { instance, x, z } => Command::DeployVisionTotem {
@@ -300,7 +313,137 @@ mod tests {
             );
         }
         assert_eq!(execute(sale), ActionDecision::Stale);
+        {
+            let mut state = shared.lock().unwrap();
+            state.world.entities[0].gold = 20_000;
+            state.world.entities[0].position = pos;
+        }
+        let crucible = shared
+            .lock()
+            .unwrap()
+            .world
+            .purchase(1, halcyon_sim::BasicItem::Crucible)
+            .unwrap()
+            .granted;
+        let next_seq = inspect(caller).next_sequence;
+        assert_eq!(
+            execute(ActionRequest {
+                sequence: next_seq,
+                action: PlayerAction::ActivateItem {
+                    instance: crucible.instance,
+                    target_actor: None,
+                    x: None,
+                    z: None,
+                },
+                ..sale
+            }),
+            ActionDecision::Applied
+        );
         shared.lock().unwrap().phase(RoomPhase::Ended);
         assert_eq!(execute(cam), ActionDecision::Unavailable);
+    }
+
+    #[tokio::test]
+    async fn wire_active_item_requests_0x0448_0x0449_0x044a_drive_sim_room() {
+        let rooms = Rooms::new("127.0.0.1".parse().unwrap(), "127.0.0.1".into(), 1, None);
+        let id = Uuid::new_v4();
+        let players: Vec<_> = (0..6).map(|_| Uuid::new_v4()).collect();
+        rooms
+            .reserve(Reservation {
+                match_id: id,
+                mode: "casual_aral".into(),
+                players: players.clone(),
+                teams: vec![0, 1, 0, 1, 0, 1],
+                difficulty: None,
+                talent_levels: Vec::new(),
+            })
+            .unwrap();
+        let shared = rooms.room(id).unwrap();
+        let (crucible, tp, flare_loader, tower_wire, pos) = {
+            let mut state = shared.lock().unwrap();
+            state.phase(RoomPhase::Running);
+            state
+                .world
+                .use_catalog_store(halcyon_data::items::StoreSettings::Five);
+            state.world.entities[0].gold = 50_000;
+            let p0 = state.world.entities[0].position;
+            let crucible = state
+                .world
+                .purchase(1, halcyon_sim::BasicItem::Crucible)
+                .unwrap()
+                .granted;
+            let tp = state
+                .world
+                .purchase(1, halcyon_sim::BasicItem::TeleportBoots)
+                .unwrap()
+                .granted;
+            let flare_loader = state
+                .world
+                .purchase(1, halcyon_sim::BasicItem::FlareLoader)
+                .unwrap()
+                .granted;
+            let tower_id = state
+                .world
+                .entities
+                .iter()
+                .find(|e| e.team == 0 && e.kind == halcyon_sim::Kind::Tower)
+                .unwrap()
+                .id;
+            (
+                crucible.instance,
+                tp.instance,
+                flare_loader.instance,
+                u32::from(wire_id(tower_id)),
+                p0,
+            )
+        };
+        let req_self = halcyon_protocol::ItemAction::Activate {
+            instance: crucible,
+            suffix: &[],
+        }
+        .to_message()
+        .unwrap();
+        let req_target = halcyon_protocol::ItemAction::TargetRequest {
+            arguments: [tower_wire, tp],
+            suffix: &[],
+        }
+        .to_message()
+        .unwrap();
+        let req_point = halcyon_protocol::ItemAction::VectorRequest {
+            vector_bits: [(pos.x + 6.).to_bits(), 0, pos.y.to_bits()],
+            argument: flare_loader,
+            suffix: &[],
+        }
+        .to_message()
+        .unwrap();
+        {
+            let mut state = shared.lock().unwrap();
+            state.receive(0, 1, req_self).unwrap();
+            state.receive(0, 1, req_point).unwrap();
+            assert!(
+                state
+                    .world
+                    .vision_devices()
+                    .any(|v| v.kind == halcyon_sim::VisionDeviceKind::Flare)
+            );
+            state.receive(0, 1, req_target).unwrap();
+            let evs = state.world.step();
+            assert!(evs.iter().any(|e| matches!(
+                e,
+                halcyon_sim::Event::ItemActivated {
+                    actor: 1,
+                    kind: halcyon_sim::BasicItem::Crucible,
+                    ..
+                }
+            )));
+            assert!(evs.iter().any(|e| matches!(
+                e,
+                halcyon_sim::Event::ItemActivated {
+                    actor: 1,
+                    kind: halcyon_sim::BasicItem::TeleportBoots,
+                    ..
+                }
+            )));
+        }
     }
 }

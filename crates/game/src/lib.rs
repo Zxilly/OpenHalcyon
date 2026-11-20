@@ -1430,22 +1430,76 @@ impl Room {
             )) => aral_inventory::reorder(self, i, ch, actor, slots),
             Fields::Live(halcyon_protocol::LiveFields::Item(
                 halcyon_protocol::ItemAction::Activate { instance, suffix },
-            )) if game && legacy && suffix.iter().all(|&byte| byte == 0) => {
-                use halcyon_sim::BasicItem;
+            )) if game && suffix.iter().all(|&byte| byte == 0) => {
+                use halcyon_sim::{AralStarter, BasicItem, ItemTarget};
                 let hero = &self.world.entities[i];
-                let command = match hero
-                    .inventory
-                    .iter()
-                    .find(|h| h.instance == instance)
-                    .map(|h| h.kind)
-                {
-                    Some(BasicItem::WeaponInfusion | BasicItem::CrystalInfusion) => {
-                        Command::ConsumeInfusion { instance }
+                let command = if instance == AralStarter::HealingFlask.grant().instance {
+                    Command::ActivateHealingFlask { instance }
+                } else {
+                    match hero
+                        .inventory
+                        .iter()
+                        .find(|h| h.instance == instance)
+                        .map(|h| h.kind)
+                    {
+                        Some(BasicItem::WeaponInfusion | BasicItem::CrystalInfusion) => {
+                            Command::ConsumeInfusion { instance }
+                        }
+                        Some(BasicItem::ReflexBlock) => Command::ActivateReflexBlock { instance },
+                        Some(BasicItem::SprintBoots) => Command::ActivateSprintBoots { instance },
+                        Some(BasicItem::ScoutTrap) => Command::DeployScoutTrap { instance },
+                        Some(_) => Command::ActivateItem {
+                            instance,
+                            target: ItemTarget::SelfCast,
+                        },
+                        None => return Ok(out),
                     }
-                    Some(BasicItem::ReflexBlock) => Command::ActivateReflexBlock { instance },
-                    _ => return Ok(out),
                 };
                 let _ = self.world.command(hero.id, command);
+            }
+            Fields::Live(halcyon_protocol::LiveFields::Item(
+                halcyon_protocol::ItemAction::TargetRequest {
+                    arguments: [target_wire, instance],
+                    suffix,
+                },
+            )) if game && suffix.iter().all(|&byte| byte == 0) => {
+                let hero_id = self.world.entities[i].id;
+                let target = if target_wire == u32::MAX {
+                    halcyon_sim::ItemTarget::SelfCast
+                } else if let Some(actor_id) = target_wire
+                    .checked_sub(u32::from(wire_id(0)))
+                    .filter(|&id| id != 0)
+                {
+                    halcyon_sim::ItemTarget::Entity(actor_id)
+                } else {
+                    return Ok(out);
+                };
+                let _ = self
+                    .world
+                    .command(hero_id, Command::ActivateItem { instance, target });
+            }
+            Fields::Live(halcyon_protocol::LiveFields::Item(
+                halcyon_protocol::ItemAction::VectorRequest {
+                    vector_bits: [x_bits, _, z_bits],
+                    argument: instance,
+                    suffix,
+                },
+            )) if game && suffix.iter().all(|&byte| byte == 0) => {
+                let (x, y) = (f32::from_bits(x_bits), f32::from_bits(z_bits));
+                if x.is_finite() && y.is_finite() {
+                    let hero_id = self.world.entities[i].id;
+                    let point = Position { x, y };
+                    let cmd = if instance == halcyon_sim::AralStarter::VisionTotem.grant().instance
+                    {
+                        Command::DeployVisionTotem { instance, point }
+                    } else {
+                        Command::ActivateItem {
+                            instance,
+                            target: halcyon_sim::ItemTarget::Point(point),
+                        }
+                    };
+                    let _ = self.world.command(hero_id, cmd);
+                }
             }
             Fields::Live(halcyon_protocol::LiveFields::TalentSelection(selection)) => {
                 out = aral::talent_response(self, i, ch, selection);

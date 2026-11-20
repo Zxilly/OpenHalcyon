@@ -8,6 +8,9 @@ pub use amael::KickKind;
 mod aral;
 mod arcane_fire;
 mod fixed_tick;
+mod item_actives;
+pub use item_actives::ItemTarget;
+mod item_passives;
 mod verse;
 pub use actors::Actors;
 mod persistent_spells;
@@ -26,6 +29,8 @@ mod chakram;
 mod combat;
 #[cfg(test)]
 mod effects_replay;
+#[cfg(test)]
+mod item_effects_tests;
 mod layout;
 pub use layout::SOLO_CRYSTAL_START_INSTANCES;
 mod lorelai;
@@ -139,6 +144,10 @@ pub enum Command {
     },
     ActivateSprintBoots {
         instance: u32,
+    },
+    ActivateItem {
+        instance: u32,
+        target: ItemTarget,
     },
     Stop,
 }
@@ -284,6 +293,18 @@ pub enum Event {
     FlaskActivated {
         actor: u32,
         instance: u32,
+    },
+    ItemActivated {
+        actor: u32,
+        instance: u32,
+        kind: BasicItem,
+        target: ItemTarget,
+        cooldown_ticks: u64,
+    },
+    ItemCooldownUpdated {
+        actor: u32,
+        key: u32,
+        remaining_seconds: f32,
     },
     GoldAward {
         id: u32,
@@ -522,6 +543,8 @@ pub struct Entity {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub aral_inventory: Option<Box<AralInventory>>,
     pub item_stats: ItemStats,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    item_runtime: Option<Box<item_actives::ItemRuntimeState>>,
     #[serde(skip)]
     bonus_hp: f32,
     pub ability_ranks: [u8; 3],
@@ -727,7 +750,9 @@ impl Room<'_> {
                 p.attack_speed + f32::from(e.level.saturating_sub(1)) * p.attack_speed_growth
             });
         let interval = (if haste && twirl.is_none() { 10.0 } else { 17.0 })
-            / (speed + e.item_stats.attack_speed + twirl.map_or(0., |(b, r)| b.attack_speed[r]));
+            / ((speed + e.item_stats.attack_speed + twirl.map_or(0., |(b, r)| b.attack_speed[r]))
+                * item_actives::atlas_attack_speed_multiplier(e, self.tick))
+            .max(0.05);
         interval.ceil() as u64
     }
     fn decision_interval(&self, entity: &Entity) -> u64 {
@@ -828,6 +853,8 @@ impl Room<'_> {
         hero.long_shot = None;
         hero.speed_loader = None;
         hero.reboot = None;
+        hero.item_runtime = None;
+        hero.status.spell_shield_up = false;
         hero.stats = Stats::load(id, unit, data);
         hero.energy = unit.energy;
         hero.max_energy = unit.energy;
@@ -927,6 +954,7 @@ impl Room<'_> {
             inventory: Vec::new(),
             aral_inventory: None,
             item_stats: ItemStats::default(),
+            item_runtime: None,
             bonus_hp: 0.,
             level: 1,
             xp: 0.,
@@ -1036,6 +1064,9 @@ impl Room<'_> {
             Command::ActivateSprintBoots { instance } => {
                 return self.activate_sprint_boots(self.entities[i].id, instance);
             }
+            Command::ActivateItem { instance, target } => {
+                return self.activate_item(i, instance, target);
+            }
             Command::Learn(slot) => return self.learn(i, slot),
             Command::Cast { slot, target } => return self.begin_cast(i, slot, target),
             Command::Attack(id) => {
@@ -1052,6 +1083,7 @@ impl Room<'_> {
         self.entities[i].cast = None;
         self.entities[i].status.channel = 0;
         self.entities[i].status.channel_until = 0;
+        item_actives::cancel_teleport_channel(&mut self.entities[i]);
         if self.entities[i].order != cmd {
             self.entities[i].winding = None;
         }
@@ -1155,6 +1187,7 @@ impl Room<'_> {
                     * e.status.sigil_speed_until.saturating_sub(state.tick) as f32
                     / e.status.sigil_speed_duration.max(1) as f32
                 + e.item_stats.boot_speed
+                + item_actives::extra_move_speed(e, &state.shop, state.tick)
                 + if state.tick < e.item_stats.sprint_until {
                     e.item_stats.sprint_speed
                 } else {
@@ -1292,6 +1325,7 @@ impl Room<'_> {
                     e.hp = e.max_hp;
                     e.energy = e.max_energy;
                     e.status = Default::default();
+                    item_actives::clear_ephemeral_on_death(e);
                     e.path = Default::default();
                     e.position = self.state.layout.home(e);
                     if let Some(map) = &mut self.state.native_navigation {
@@ -1495,6 +1529,7 @@ impl Room<'_> {
                 | Command::ActivateReflexBlock { .. }
                 | Command::ActivateHealingFlask { .. }
                 | Command::ActivateSprintBoots { .. }
+                | Command::ActivateItem { .. }
                 | Command::Learn(_)
                 | Command::Cast { .. } => {}
                 Command::MoveTo(p) => {
@@ -1563,6 +1598,7 @@ impl Room<'_> {
                         DamageSchool::Weapon
                     };
                     let double_down = e.status.double_down;
+                    let mut consume_minions_foot = false;
                     let damage = if e.type_id == lorelai::HERO {
                         shop::mitigated(
                             10. + e.stats.weapon + bonus,
@@ -1577,6 +1613,11 @@ impl Room<'_> {
                         {
                             if double_down.is_some() {
                                 1.5 + e.item_stats.crit_damage
+                            } else if t.kind == Kind::Hero
+                                && e.rt().is_some_and(|rt| rt.minions_foot_ready)
+                            {
+                                consume_minions_foot = true;
+                                1.5 + e.item_stats.crit_damage
                             } else {
                                 shop::weapon_multiplier(&mut self.state.crit_rng, e.item_stats)
                             }
@@ -1585,7 +1626,7 @@ impl Room<'_> {
                         };
                         shop::mitigated(
                             e.stats.weapon * multiplier + bonus,
-                            t.stats.armor,
+                            item_actives::armor_with_shred(t, self.tick),
                             e.item_stats.armor_pierce,
                         )
                     };
@@ -1631,12 +1672,19 @@ impl Room<'_> {
                         } else {
                             0.
                         };
-                    let item_attack = e.kind == Kind::Hero && e.item_stats.has_attack_passives();
+                    let item_attack = e.kind == Kind::Hero
+                        && (e.item_stats.has_attack_passives() || e.item_runtime.is_some());
+                    let impact_basic = item_attack || t.item_runtime.is_some();
                     let npc_launch = self.npc_launch_delay(e, t);
                     let ranged = e.kind == Kind::Hero && e.stats.range >= 4.;
                     let travel = (e.position.dist(t.position) * TICK_HZ as f32 / 18.).ceil() as u64;
                     let interval = self.basic_attack_interval(e);
                     self.entities[i].winding = None;
+                    if consume_minions_foot
+                        && let Some(rt) = self.entities[i].item_runtime.as_deref_mut()
+                    {
+                        rt.minions_foot_ready = false;
+                    }
                     self.entities[i].next_attack = self.tick + interval;
                     self.entities[i].status.empowered =
                         self.entities[i].status.empowered.saturating_sub(1);
@@ -1666,7 +1714,7 @@ impl Room<'_> {
                             damage,
                         ));
                     } else if ranged {
-                        let impact = if item_attack {
+                        let impact = if impact_basic {
                             SpellEffect::basic_impact
                         } else {
                             SpellEffect::impact
@@ -1679,17 +1727,22 @@ impl Room<'_> {
                             damage,
                             school,
                         ));
-                    } else if item_attack {
+                    } else if impact_basic {
                         self.basic_hit(source, team, j, damage, school, events);
                     } else {
-                        self.hurt(source, team, j, damage, school, events);
+                        self.hurt_basic(source, team, j, damage, school, events);
                     }
                     if let Some(p) = pursuit {
                         self.pursuit_impact(i, j, p, events);
                     }
                     if bonus_crystal > 0. {
                         if ranged {
-                            self.entities.spawn_spell(SpellEffect::impact(
+                            let fx = if impact_basic {
+                                SpellEffect::item_impact
+                            } else {
+                                SpellEffect::impact
+                            };
+                            self.entities.spawn_spell(fx(
                                 self.tick + travel,
                                 source,
                                 team,
@@ -1698,7 +1751,7 @@ impl Room<'_> {
                                 DamageSchool::Crystal,
                             ));
                         } else {
-                            self.hurt(
+                            self.hurt_item(
                                 source,
                                 team,
                                 j,
