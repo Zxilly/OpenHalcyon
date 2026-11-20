@@ -271,7 +271,7 @@ pub(super) struct OtherSpells {
     pub karas: Damage<5>,
 }
 impl<const N: usize> Damage<N> {
-    fn variable(a: &Ability, key: AbilityParameter) -> Result<Self, String> {
+    pub(super) fn variable(a: &Ability, key: AbilityParameter) -> Result<Self, String> {
         let ranks = ranks(a, key)?;
         let v = a.variable(key.as_str()).expect("rank table already found");
         Ok(Self {

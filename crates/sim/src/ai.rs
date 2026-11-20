@@ -31,6 +31,11 @@ impl World {
         } else {
             self.layout.objective(1 - e.team)
         };
+        if e.type_id == EntityTemplate::Adagio.as_raw()
+            && let Some(heal) = self.adagio_heal_order(i)
+        {
+            return heal;
+        }
         if e.kind == Kind::Hero && e.hp < e.max_hp * 0.23 {
             return Command::MoveTo(home);
         }
@@ -97,6 +102,20 @@ impl World {
                 return Command::MoveTo(p);
             }
             if e.kind == Kind::Hero && t.kind == Kind::Hero {
+                if e.type_id == EntityTemplate::Lyra.as_raw()
+                    && let Some(cmd) = self.sigil_order(i, t)
+                {
+                    return cmd;
+                }
+                if e.type_id == EntityTemplate::Karas.as_raw()
+                    && self.abilities.twister.is_some()
+                    && self.can_cast(i, AbilitySlot::B, CastTarget::Point(t.position))
+                {
+                    return Command::Cast {
+                        slot: AbilitySlot::B,
+                        target: CastTarget::Point(t.position),
+                    };
+                }
                 if e.type_id == EntityTemplate::Lyra.as_raw()
                     && self.bulwark_reaches(i, t.position)
                     && self.can_cast(i, AbilitySlot::B, CastTarget::SelfCast)

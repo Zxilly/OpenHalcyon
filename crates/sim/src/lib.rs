@@ -3,6 +3,7 @@
 use halcyon_data::EntityTemplate;
 mod ai;
 mod aral;
+mod arcane_fire;
 mod vision_devices;
 pub use vision_devices::{VisionDevice, VisionDeviceKind};
 mod aral_inventory;
@@ -33,6 +34,8 @@ mod solo_route;
 mod solo_side;
 mod world_rules;
 pub use world_rules::WorldRules;
+mod sigil;
+mod twister;
 mod yates;
 use combat::{AbilityBook, Cast, SpellEffect, Status};
 pub use combat::{AbilitySlot, CastTarget};
@@ -452,6 +455,9 @@ pub struct World {
     shop: shop::Shop,
     effects: Vec<SpellEffect>,
     chakrams: Vec<chakram::Chakram>,
+    sigils: Vec<sigil::Field>,
+    twisters: Vec<twister::Dash>,
+    arcane_fire: Vec<arcane_fire::Pulse>,
     bulwarks: Vec<bulwark::Field>,
     water: Vec<lorelai::Water>,
     nav_budget: u8,
@@ -512,7 +518,15 @@ impl World {
                 (&self.scores, &self.team_scores),
                 self.rally,
                 self.nav_budget,
-                (&self.effects, &self.chakrams, &self.water, &self.bulwarks),
+                (
+                    &self.effects,
+                    &self.chakrams,
+                    &self.water,
+                    &self.sigils,
+                    &self.twisters,
+                    &self.arcane_fire,
+                    &self.bulwarks,
+                ),
             ),
         )
         .expect("finite simulation state");
@@ -708,6 +722,9 @@ impl World {
             pending_item_events: Vec::new(),
             effects: Vec::new(),
             chakrams: Vec::new(),
+            sigils: Vec::new(),
+            twisters: Vec::new(),
+            arcane_fire: Vec::new(),
             bulwarks: Vec::new(),
             water: Vec::new(),
             nav_budget: 0,
@@ -801,7 +818,7 @@ impl World {
         self.entities.binary_search_by_key(&id, |e| e.id).ok()
     }
     pub fn sees_position(&self, team: u8, p: Position) -> bool {
-        self.device_sight(team, p)
+        (self.device_sight(team, p) || self.sigil_sight(team, p))
             || self.entities.iter().any(|e| {
                 e.team == team
                     && e.hp > 0.
@@ -815,7 +832,8 @@ impl World {
     }
     pub fn visible(&self, team: u8, e: &Entity) -> bool {
         e.team == team
-            || (e.hp > 0. && self.device_sight(team, e.position))
+            || (e.hp > 0.
+                && (self.device_sight(team, e.position) || self.sigil_sight(team, e.position)))
             || (e.hp > 0. && e.status.reveal_until > self.tick)
             || (e.hp > 0.
                 && self.entities.iter().any(|a| {
@@ -990,6 +1008,9 @@ impl World {
                     .filter(|p| self.tick < p.speed_until)
                     .map_or(0., |p| p.speed)
                 + twirl.map_or(0., |(b, r)| b.move_speed[r])
+                + e.status.sigil_speed
+                    * e.status.sigil_speed_until.saturating_sub(self.tick) as f32
+                    / e.status.sigil_speed_duration.max(1) as f32
                 + e.item_stats.boot_speed
                 + if self.tick < e.item_stats.sprint_until {
                     e.item_stats.sprint_speed
@@ -1082,6 +1103,9 @@ impl World {
         self.advance_chakrams(events);
         self.advance_water(events);
         self.advance_bulwarks(events);
+        self.advance_arcane_fire(events);
+        self.advance_twisters(events);
+        self.advance_sigils(events);
         if self.winner.is_some() {
             return;
         }
@@ -1207,7 +1231,9 @@ impl World {
                 self.advance_overwhelm(i, events);
             }
             let hero = &self.entities[i];
-            if hero.status.stun_until > self.tick {
+            if hero.status.stun_until > self.tick
+                || self.twisters.iter().any(|d| d.source == hero.id)
+            {
                 continue;
             }
             if hero.bot
@@ -1440,7 +1466,12 @@ impl World {
                                 .is_some_and(|until| until > self.tick)
                         {
                             shop::mitigated(
-                                e.status.empower_damage,
+                                e.status.empower_damage
+                                    + if self.has_arcane_fire(t.id, e.status.agent_source) {
+                                        e.status.agent_burn_bonus
+                                    } else {
+                                        0.
+                                    },
                                 t.stats.shield,
                                 e.item_stats.shield_pierce,
                             )

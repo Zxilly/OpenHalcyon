@@ -81,6 +81,9 @@ pub(super) struct Cast {
 }
 #[derive(Clone, Copy, Default, Debug, Serialize)]
 pub(super) struct Status {
+    pub(super) sigil_speed: f32,
+    pub(super) sigil_speed_until: u64,
+    pub(super) sigil_speed_duration: u64,
     pub(super) bulwark_slow_until: u64,
     pub(super) bulwark_slow_factor: f32,
     pub(super) silence_until: u64,
@@ -111,6 +114,8 @@ pub(super) struct Status {
     pub(super) twirl_rank: Option<usize>,
     pub empowered: u8,
     pub empower_damage: f32,
+    pub(super) agent_burn_bonus: f32,
+    pub(super) agent_source: u32,
     pub(super) agent_crystal_until: Option<u64>,
     pub(super) channel: u64,
     pub(super) channel_until: u64,
@@ -193,6 +198,9 @@ impl ExtraCast {
 #[derive(Clone, Debug, Serialize)]
 pub(super) struct AbilityBook {
     extra_casts: [ExtraCast; Skill::Waterwall as usize + 1],
+    pub(super) sigil: Option<super::sigil::Rules>,
+    pub(super) twister: Option<super::twister::Rules>,
+    pub(super) fire: Option<super::arcane_fire::Rules>,
     pub(super) bulwark: Option<super::bulwark::Rules>,
     pub(super) stormguard: Option<super::catherine::Stormguard>,
     pub(super) tremor: Option<super::catherine::Tremor>,
@@ -229,6 +237,9 @@ impl Default for AbilityBook {
     fn default() -> Self {
         Self {
             extra_casts: Default::default(),
+            sigil: None,
+            twister: None,
+            fire: None,
             bulwark: None,
             stormguard: None,
             tremor: None,
@@ -338,6 +349,9 @@ impl AbilityBook {
         }
         Ok(Self {
             extra_casts,
+            sigil: super::sigil::Rules::load(data)?,
+            twister: super::twister::Rules::load(data)?,
+            fire: super::arcane_fire::Rules::load(data)?,
             bulwark: super::bulwark::Rules::load(data)?,
             stormguard: super::catherine::Stormguard::load(data)?,
             tremor: super::catherine::Tremor::load(data)?,
@@ -432,6 +446,12 @@ impl World {
             Skill::Hellfire => self.abilities.hellfire.at(rank, 22),
             Skill::Gift => (7., 26., 4, self.abilities.gift_cd[rank]),
             Skill::Agent => (7., 24., 3, 10.),
+            Skill::Sigil if self.abilities.sigil.is_some() => (
+                0.,
+                0.,
+                self.abilities.sigil.as_ref().unwrap().startup(rank),
+                0.,
+            ),
             Skill::Sigil => (8., 30., 5, self.abilities.sigil_cd[rank]),
             Skill::Suppress => (8., 30., 6, self.abilities.suppress_cd[rank]),
             Skill::Wind => (7., 24., 5, 8.),
@@ -511,6 +531,21 @@ impl World {
         let rank = e.ability_ranks[slot.idx()]
             .checked_sub(1)
             .ok_or("ability not learned")? as usize;
+        if s == Skill::Sigil && self.sigils.iter().any(|f| f.source == e.id) {
+            if target != CastTarget::SelfCast {
+                return Err("a sigil is already active");
+            }
+            return Ok((
+                s,
+                rank,
+                Rules {
+                    range: 0.,
+                    cost: 0.,
+                    windup: 1,
+                    cooldown: 0,
+                },
+            ));
+        }
         let mut r = self.rules(s, rank);
         if s == Skill::Achilles
             && let Some(t) = e.long_shot
@@ -545,7 +580,7 @@ impl World {
                 let t = &self.entities[self.index(id).ok_or("unknown target")?];
                 let ally = matches!(s, Skill::Gift | Skill::Agent | Skill::Waterwall);
                 if t.hp <= 0.
-                    || (s == Skill::Waterwall && t.kind != Kind::Hero)
+                    || (matches!(s, Skill::Waterwall | Skill::Agent) && t.kind != Kind::Hero)
                     || (t.team == e.team) != ally
                     || !matches!(t.kind, Kind::Hero | Kind::Minion)
                     || !self.visible(e.team, t)
@@ -577,7 +612,9 @@ impl World {
             }
             _ => return Err("invalid cast target"),
         };
-        if s == Skill::IronMandate && self.bulwark_blocks_leap(i, point) {
+        if (s == Skill::IronMandate || (s == Skill::Wind && self.abilities.twister.is_some()))
+            && self.bulwark_blocks_leap(i, point)
+        {
             return Err("bulwark blocks leap");
         }
         if (matches!(s, Skill::BlastTremor | Skill::WolfMaw | Skill::Chakram)
@@ -621,6 +658,10 @@ impl World {
         let Ok((s, r, rule)) = self.castable(i, c.slot, c.target) else {
             return;
         };
+        if s == Skill::Sigil && c.target == CastTarget::SelfCast {
+            self.detonate_sigil(i, events);
+            return;
+        }
         let e = &mut self.entities[i];
         if s == Skill::Chakram {
             e.status.stamina_spent = 100. - chakram::stamina(e, self.tick) + rule.cost;
@@ -846,6 +887,9 @@ impl World {
                     ));
                 }
             }
+            Skill::Gift if self.abilities.fire.is_some() => {
+                self.gift_of_fire(i, aimed.unwrap(), r, events)
+            }
             Skill::Gift => {
                 let j = aimed.unwrap();
                 self.heal(
@@ -860,6 +904,12 @@ impl World {
                 );
             }
             Skill::Agent => {
+                if let Some(f) = &self.abilities.fire {
+                    self.entities[i].next_attack = self.tick;
+                    let s = &mut self.entities[aimed.unwrap()].status;
+                    s.agent_source = src;
+                    s.agent_burn_bonus = f.agent.at(r, cp, 0.);
+                }
                 let t = &mut self.entities[aimed.unwrap()];
                 t.status.empowered = self.abilities.empower[r] as u8;
                 if let Some(o) = &self.abilities.other {
@@ -875,6 +925,7 @@ impl World {
                     t.status.empower_damage = 25. + r as f32 * 10.;
                 }
             }
+            Skill::Sigil if self.abilities.sigil.is_some() => self.start_sigil(i, r, point),
             Skill::Sigil => {
                 let bonus = bonus_hp;
                 let heal = self.abilities.sigil_heal[r] + bonus * self.abilities.sigil_hp;
@@ -944,6 +995,7 @@ impl World {
                     });
                 }
             }
+            Skill::Wind if self.abilities.twister.is_some() => self.begin_twister(i, r, point),
             Skill::Wind => {
                 self.effects.push(SpellEffect {
                     due: self.tick + 1,

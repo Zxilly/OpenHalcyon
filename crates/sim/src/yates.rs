@@ -68,12 +68,12 @@ impl Leap {
     }
 }
 impl World {
-    fn spell_motion_clear(&self, a: Position, b: Position) -> bool {
+    pub(super) fn spell_motion_clear(&self, a: Position, b: Position) -> bool {
         self.native_navigation
             .as_ref()
             .map_or_else(|| self.layout.clear(a, b), |m| m.ground_segment(a, b))
     }
-    fn place_spell_actor(&mut self, i: usize, point: Position, events: &mut Vec<Event>) {
+    pub(super) fn place_spell_actor(&mut self, i: usize, point: Position, events: &mut Vec<Event>) {
         let e = &mut self.entities[i];
         if e.position == point {
             return;
