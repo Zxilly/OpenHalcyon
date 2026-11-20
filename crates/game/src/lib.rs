@@ -11,6 +11,7 @@ mod compact;
 mod hero_progress;
 mod messages;
 mod native_abilities;
+mod npc_attack;
 mod observer;
 mod point_move;
 mod recording;
@@ -1460,7 +1461,17 @@ impl Room {
                     }
                 }
             }
+            let mut has_attack_release = false;
             for ev in events {
+                if control_stream
+                    && let Some(m) = npc_attack::release(&self.world, ev, |id| {
+                        current.contains(&id) || fallen.contains(&id) && previous.contains(&id)
+                    })
+                {
+                    out.push(m);
+                    has_attack_release = true;
+                    continue;
+                }
                 result_frames::append_postgame(&mut out, ev, postgame);
                 if hero_progress::append(&self.world, &mut out, ev, |id| {
                     previous.contains(&id) && (current.contains(&id) || fallen.contains(&id))
@@ -1545,7 +1556,9 @@ impl Room {
             if out.is_empty() {
                 continue;
             }
-            if peers.peek().is_none() {
+            if has_attack_release {
+                npc_attack::deliver(out, &self.seats, &self.world, &self.scene_views, team);
+            } else if peers.peek().is_none() {
                 first.send(transport::Delivery::Private(out));
             } else {
                 let batch = transport::TeamBatch::new(out);

@@ -23,6 +23,10 @@ struct LanePath {
 }
 
 impl View {
+    pub fn knows(&self, actor: u32) -> bool {
+        self.actors.contains_key(&actor)
+    }
+
     pub fn registered(&self, actor: u32, slot: u8) -> bool {
         self.actors.get(&actor) == Some(&slot)
     }

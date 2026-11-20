@@ -243,7 +243,12 @@ impl Room {
                 .iter()
                 .any(|e| matches!(e,Event::Spawn{id} if *id==actor))
         };
+        let native = aral || self.solo_scene() && self.seats[0].control_world;
         for ev in events {
+            if native && let Some(m) = super::npc_attack::release(&self.world, ev, |_| true) {
+                out.push(m);
+                continue;
+            }
             crate::result_frames::append_postgame(&mut out, ev, postgame);
             if super::hero_progress::append(&self.world, &mut out, ev, |id| !spawned(id)) {
                 continue;
@@ -301,6 +306,10 @@ impl Room {
                     true,
                 );
             }
+            batch.retain(|m| {
+                super::npc_attack::actors(m).is_none()
+                    || o.scene.is_some() && super::npc_attack::registered(&o.view, m)
+            });
             if !batch.is_empty() && tx.try_send(batch).is_err() {
                 o.stop.send_replace(true);
                 return false;

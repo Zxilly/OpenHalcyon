@@ -282,3 +282,38 @@ were within that window of a death involving the actor, and 33/60 of a
 same-actor gold change. No rendered text or second simultaneous player
 perspective establishes the label or recipients. The host reads these flyouts.
 All 14 Solo VGR chunks (43,160 records) contained zero `0435` and `0440`.
+
+### Directed lane-minion and tower attacks
+
+Each row counts selector-zero `0415(source, target)` records on the seven ARAL
+streams or the 14 chunks of the single Solo replay. For each source's latest
+release, the second count requires a subsequent `040D` within 0.9 seconds
+whose first two slot bytes equal that source's slot and third equals the
+target's. The last count requires a negative `041E` on the same target from
+that source within 1.5 seconds. Both comparisons stop at a new release from
+the source. Each release contributes at most once to a column.
+
+| Mode | Source template | Directed releases | Matching tracked projectile | Matching damage |
+|---|---:|---:|---:|---:|
+| ARAL | 287 | 684 | 646 | 501 |
+| ARAL | 288 | 593 | 564 | 455 |
+| ARAL | 289 | 553 | 0 | 470 |
+| ARAL | 300 | 288 | 265 | 214 |
+| ARAL | 301 | 83 | 77 | 53 |
+| Solo | 335 | 208 | 204 | 174 |
+| Solo | 336 | 102 | 0 | 89 |
+| Solo | 337 | 115 | 112 | 96 |
+| Solo | 338 | 15 | 12 | 10 |
+| Solo | 340 | 71 | 71 | 66 |
+
+The host sends one selector-zero release for a matching authoritative basic
+attack, before damage in the event stream. Both actors must be visible and
+registered on that native player's connection. An authorized observer needs
+both declarations in its own scene. The optional recorder accepts the emitted
+numeric actor pair. First sight and reconnect register actors without replaying
+old attacks. The host uses the measured selector-zero variant consistently.
+The recordings also contain other selectors but do not establish how the client
+or server chooses among the minion animations. Tower selectors 2 and 3 target
+the tower itself in all 232 pairs in ARAL and 42 in Solo. No matching basic
+release was observed from template 339. Hero basic-attack selectors and
+native projectile generation remain separate evidence gaps.
