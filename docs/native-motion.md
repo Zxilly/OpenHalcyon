@@ -12,6 +12,16 @@ At each record in the seven played ARAL captures and in the Android Solo VGR, th
 
 The `03F9` final byte was 1 and the `03FB` final byte was 0 throughout both corpora. Their meanings and the server's selection among these actions remain unverified. The live corpus contains these opcodes only in the server direction. [Capture inventory](live-captures.md)
 
+In the Android Solo recording, all 24 `03F9` records resolve to seven bot
+heroes. Six share a timestamp with a `03F8` for the same slot. In all six,
+the horizontal position differs from the ordered destination. None of the
+24 shares a timestamp with a same-actor `0415`, `0416`, `03FA`, `03FB`,
+`0430` or `0431`. Idris accounts for eight records. Six arrived within
+0.470 seconds, during which X moved from 13.4 to 11.7. His preceding
+targeted plays used selectors 14 and 15 and occurred 0.819–1.289 seconds
+before the position updates. The host still needs a way to distinguish
+this series from ordinary movement before it can emit it.
+
 ## Solo stop timing
 
 All 34 Solo stop records are immediately followed by an ability play for the same actor at the same replay timestamp. There are 33 entity-targeted plays (`0415`) and one point play (`0416`). Seven bot heroes account for every stop. The human actor 1500 has no stops in this recording.
