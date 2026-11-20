@@ -9,16 +9,7 @@ fn effect_phase_cost() {
         Some(Path::new(&std::env::var_os("HALCYON_DATA_EXTRA").unwrap())),
     )
     .unwrap();
-    let mut w = World::from_data(23, 6, &data).unwrap();
-    // Preserve the original A/B-only content in the pre-migration replay checkpoint.
-    std::sync::Arc::make_mut(&mut w.abilities).verse = None;
-    w.use_six_human_roster().unwrap();
-    for (i, name) in [(0, "Lyra"), (1, "Adagio"), (2, "Lyra"), (3, "Adagio")] {
-        w.select_hero(i, name, &data).unwrap();
-    }
-    w.use_aral_lane().unwrap();
-    // This pre-migration fixture predates native tower attachment allocation.
-    w.next_id = 517;
+    let mut w = super::effects_replay::field_replay_world(&data);
     for i in 0..w.entities.len().min(6) {
         let a = &mut w.entities[i];
         a.position = Position {

@@ -1,6 +1,23 @@
 use super::*;
 use sha2::{Digest, Sha256};
 
+pub(super) fn field_replay_world(data: &GameData) -> World {
+    let mut world = World::from_data(23, 6, data).unwrap();
+    // These rules were added after the recorded checkpoint. Both heroes' later
+    // skills are outside this fixture, but the digest includes the whole book.
+    let book = std::sync::Arc::make_mut(&mut world.abilities);
+    book.verse = None;
+    book.skedaddle = None;
+    world.use_six_human_roster().unwrap();
+    for (seat, name) in [(0, "Lyra"), (1, "Adagio"), (2, "Lyra"), (3, "Adagio")] {
+        world.select_hero(seat, name, data).unwrap();
+    }
+    world.use_aral_lane().unwrap();
+    // This pre-migration fixture predates native tower attachment allocation.
+    world.next_id = 517;
+    world
+}
+
 /// Replays simultaneous casts and their overlapping field, heal and burn ticks.
 #[test]
 #[ignore = "requires original delivery and supplemental combat data"]
@@ -12,16 +29,7 @@ fn overlapping_bulwark_and_fire_match_baseline() {
         )),
     )
     .unwrap();
-    let mut world = World::from_data(23, 6, &data).unwrap();
-    // Preserve the original A/B-only content in the pre-migration replay checkpoint.
-    std::sync::Arc::make_mut(&mut world.abilities).verse = None;
-    world.use_six_human_roster().unwrap();
-    for (seat, name) in [(0, "Lyra"), (1, "Adagio"), (2, "Lyra"), (3, "Adagio")] {
-        world.select_hero(seat, name, &data).unwrap();
-    }
-    world.use_aral_lane().unwrap();
-    // This pre-migration fixture predates native tower attachment allocation.
-    world.next_id = 517;
+    let mut world = field_replay_world(&data);
     for seat in 0..world.entities.len().min(6) {
         let actor = &mut world.entities[seat];
         actor.position = Position {
