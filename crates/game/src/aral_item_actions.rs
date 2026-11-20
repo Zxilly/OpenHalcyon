@@ -379,7 +379,7 @@ impl Room {
                     peer.send(transport::Delivery::Private(batch[start..].to_vec()));
                 }
             }
-            self.publish_item_observers(id, &batch, |view| witnessed(view, event));
+            self.publish_observer_actor_if(id, &batch, |view| witnessed(view, event));
         }
     }
 }

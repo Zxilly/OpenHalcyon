@@ -166,7 +166,7 @@ pub(super) fn publish(room: &mut Room, event: &Event) {
             peer.send(Delivery::Private(records));
         }
     }
-    room.publish_item_observers(source, &batch, eligible);
+    room.publish_observer_actor_if(source, &batch, eligible);
     if heading.is_none() {
         room.aral_slots.destroy_sent(anchor, audience);
     }

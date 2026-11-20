@@ -46,7 +46,7 @@ pub(super) fn spire(room: &mut Room, source: u32, id: u32, point: Position) {
             }
         }
     }
-    room.publish_observer_spell_projectile(|view| spire_message(view, source, id, point));
+    room.project_observer_scenes(|view| spire_message(view, source, id, point).map(|m| vec![m]));
 }
 
 pub(crate) fn recordable(m: &Message) -> bool {
@@ -171,7 +171,7 @@ pub(super) fn chakram(room: &mut Room, source: u32, shot: Chakram) {
             peer.send(Delivery::Private(vec![m]));
         }
     }
-    room.publish_observer_spell_projectile(|view| shot.message(view, source));
+    room.project_observer_scenes(|view| shot.message(view, source).map(|m| vec![m]));
 }
 
 #[cfg(test)]

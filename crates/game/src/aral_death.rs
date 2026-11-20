@@ -101,7 +101,7 @@ pub(super) fn publish_approaches(room: &mut Room, events: &[Event]) {
             Message::actor_relocation(u32::from(actor), [home.x, height, home.y], 1),
             Message::position(actor, home.x, home.y),
         ];
-        room.publish_observer_approach(id, &out);
+        room.publish_observer_actor(id, &out);
         let batch = transport::TeamBatch::new(out);
         let enemy_visible = room.world.sees_position(1 - team, home);
         for (i, seat) in room.seats.iter().enumerate() {

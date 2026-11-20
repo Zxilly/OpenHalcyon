@@ -384,18 +384,17 @@ impl Room {
             true
         });
     }
-    pub(super) fn publish_item_observers(
+    /// Project a native batch against each connected observer's own active scene.
+    /// Projectors may update registration state only after those checks succeed.
+    pub(super) fn project_observer_scenes(
         &mut self,
-        id: u32,
-        batch: &Batch,
-        eligible: impl Fn(&mut tower_aggro::View) -> bool,
+        project: impl Fn(&mut tower_aggro::View) -> Option<Batch>,
     ) {
         self.observers.retain(|_, observer| {
             if let Some(tx) = &observer.live
                 && observer.scene.is_some()
-                && observer.view.knows(id)
-                && eligible(&mut observer.view)
-                && tx.try_send(batch.clone()).is_err()
+                && let Some(batch) = project(&mut observer.view)
+                && tx.try_send(batch).is_err()
             {
                 observer.stop.send_replace(true);
                 return false;
@@ -403,33 +402,25 @@ impl Room {
             true
         });
     }
-    pub(super) fn publish_observer_actor(&mut self, actor: u32, batch: &Batch) {
+    pub(super) fn publish_observer_actor_if(
+        &mut self,
+        actor: u32,
+        batch: &[Message],
+        eligible: impl Fn(&mut tower_aggro::View) -> bool,
+    ) {
+        self.project_observer_scenes(|view| {
+            (view.knows(actor) && eligible(view)).then(|| batch.to_vec())
+        });
+    }
+    pub(super) fn publish_observer_actor(&mut self, actor: u32, batch: &[Message]) {
         self.publish_observer_actors(&[actor], batch);
     }
     pub(super) fn publish_observer_actors(&mut self, actors: &[u32], batch: &[Message]) {
-        self.observers.retain(|_, o| {
-            let Some(tx) = &o.live else { return true };
-            if o.scene.is_some()
-                && actors.iter().all(|&actor| o.view.knows(actor))
-                && tx.try_send(batch.to_vec()).is_err()
-            {
-                o.stop.send_replace(true);
-                return false;
-            }
-            true
-        });
-    }
-    pub(super) fn publish_observer_approach(&mut self, id: u32, out: &Batch) {
-        self.observers.retain(|_, o| {
-            if o.scene.is_some()
-                && o.view.knows(id)
-                && let Some(tx) = &o.live
-                && tx.try_send(out.clone()).is_err()
-            {
-                o.stop.send_replace(true);
-                return false;
-            }
-            true
+        self.project_observer_scenes(|view| {
+            actors
+                .iter()
+                .all(|&actor| view.knows(actor))
+                .then(|| batch.to_vec())
         });
     }
     pub(super) fn death_observers(&self) -> Vec<mpsc::WeakSender<Batch>> {
@@ -460,36 +451,10 @@ impl Room {
             true
         });
     }
-    pub(super) fn publish_observer_spell_projectile(
-        &mut self,
-        message: impl Fn(&mut crate::tower_aggro::View) -> Option<Message>,
-    ) {
-        self.observers.retain(|_, o| {
-            if let Some(tx) = &o.live
-                && o.scene.is_some()
-                && let Some(m) = message(&mut o.view)
-                && tx.try_send(vec![m]).is_err()
-            {
-                o.stop.send_replace(true);
-                return false;
-            }
-            true
-        });
-    }
     pub(super) fn publish_observer_projectiles(&mut self, shots: &[super::npc_projectile::Shot]) {
-        self.observers.retain(|_, observer| {
-            let Some(tx) = &observer.live else {
-                return true;
-            };
-            if observer.scene.is_none() {
-                return true;
-            }
-            let out = super::npc_projectile::batch(shots, &observer.view, |_| true);
-            if !out.is_empty() && tx.try_send(out).is_err() {
-                observer.stop.send_replace(true);
-                return false;
-            }
-            true
+        self.project_observer_scenes(|view| {
+            let batch = super::npc_projectile::batch(shots, view, |_| true);
+            (!batch.is_empty()).then_some(batch)
         });
     }
     pub(super) fn publish_observers(&mut self, out: &[Message]) {
