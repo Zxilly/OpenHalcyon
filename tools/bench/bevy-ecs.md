@@ -2,15 +2,17 @@
 
 ## Authoritative room migration
 
-The original [vector-based run](https://github.com/Zxilly/OpenHalcyon/tree/321e354) and the [production Bevy room](https://github.com/Zxilly/OpenHalcyon/tree/ba98acb) used the same benchmark sources, release profile, Rust 1.97.1, installed data and seed. On a Windows Ryzen 9 9950X3D, both builds ran on logical processor 16. Seven pairs alternated which build ran first. Other processes were active on the host.
+Seven rounds on logical processor 16 of a Windows Ryzen 9 9950X3D used Rust 1.97.1 release builds with identical benchmark source, data, seed and roster. Builds rotated within each workload. Other processes were active on the host. The [original room](https://github.com/Zxilly/OpenHalcyon/tree/321e354), [initial Bevy migration](https://github.com/Zxilly/OpenHalcyon/tree/ba98acb) and [optimized room](https://github.com/Zxilly/OpenHalcyon/tree/913ad9a) ran all three scenarios.
 
-| Scenario | Original median | Bevy median | Median change within pairs |
+| Scenario, median elapsed | Original | Initial Bevy | Optimized Bevy |
 |---|---:|---:|---:|
-| Complete native Solo Bot match | 1.979 s | 2.793 s | +37% |
-| Complete native Solo Bot match with Lyra and Adagio | 2.891 s | 4.332 s | +48% |
-| Two-team visibility across twelve frozen rooms | 311 ms | 640 ms | +98% |
+| Complete native Solo Bot match | 1.403 s | 2.782 s | 2.260 s |
+| Complete native Solo Bot match with Lyra and Adagio | 2.306 s | 3.810 s | 3.166 s |
+| Two-team visibility across twelve frozen rooms | 244 ms | 469 ms | 519 ms |
 
-Every ordinary match ended at tick 35,445 with team 1 winning. Every Lyra/Adagio match ended at tick 52,648 with team 0 winning, 95 Gifts of Fire and 56 Bright Bulwarks. The checkpoint traces and final state digests matched for each pair, and each visibility run returned 13,840,000 positives. The extra ECS work increased elapsed simulation time per match on this machine. For timings and dispersion, see the [42 individual runs](bevy-authoritative-room.csv).
+Every ordinary match ended at tick 35,445 with team 1 winning. Every Lyra/Adagio match ended at tick 52,648 with team 0 winning, 95 Gifts of Fire and 56 Bright Bulwarks. Checkpoint traces and final state digests agreed in every run. Every visibility run returned 13,840,000 positives.
+
+Both complete matches ran faster in all seven rounds after adding the actor ID index and using a scheduled query to remove defeated units. An additional [index-only build](https://github.com/Zxilly/OpenHalcyon/tree/8b2bf13) took 3.024 s in the Lyra/Adagio scenario. Adding the removal query brought that to 3.166 s and took longer in five of the seven rounds. The query places despawning and index maintenance together in the fixed schedule. The isolated visibility scan also took longer in the optimized build. The [70 individual measurements](bevy-authoritative-room.csv) include process CPU time for the whole invocation. The CSV labels the builds `orig`, `full`, `id` and `combined` respectively for the original, initial Bevy, index-only and optimized variants.
 
 Build the unchanged `native_nav_bench` and `visibility_bench` examples in each checkout with `cargo build --locked --release -p halcyon-sim --examples`. Run `native_nav_bench DELIVERY EXTRA room`, `native_nav_bench DELIVERY EXTRA room-effects` and `visibility_bench` once per build in each pair. The native room timers exclude pack loading.
 
