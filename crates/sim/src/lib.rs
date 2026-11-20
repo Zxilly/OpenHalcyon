@@ -148,6 +148,10 @@ pub enum ImpactEffect {
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Event {
+    BasicTargetChanged {
+        actor: u32,
+        target: u32,
+    },
     VisionDeployed {
         device: VisionDevice,
         instance: u32,

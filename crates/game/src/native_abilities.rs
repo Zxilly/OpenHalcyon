@@ -372,6 +372,23 @@ pub(super) fn publish(room: &mut Room, events: &[Event]) {
     }
     let aral = room.legacy_aral();
     for (event_index, event) in events.iter().enumerate() {
+        if aral && let Event::BasicTargetChanged { actor, target } = *event {
+            if let Some(i) = actor.checked_sub(1).map(|n| n as usize)
+                && let Some(seat) = room.seats.get(i)
+                && seat.world_actor_written
+                && seat.preamble.confirmed()
+                && room.world.entities[i].attack_target() == Some(target)
+                && room.visible[usize::from(room.world.entities[i].team)].contains(&target)
+                && room.scene_views[i].knows(target)
+                && let Some(peer) = seat.gameplay_peer()
+            {
+                peer.send(Delivery::Private(vec![Message::known(
+                    crate::Opcode::ModifyBasicAttackTarget,
+                    u32::from(wire_id(target)).to_be_bytes(),
+                )]));
+            }
+            continue;
+        }
         if aral
             && let Event::ChakramCatch {
                 source,
@@ -767,6 +784,31 @@ mod tests {
             room.tick();
         }
         assert!(drain(&mut recipients[0]).is_empty());
+
+        let point = room.world.entities[0].position;
+        room.world.entities[1].position = point;
+        room.world.command(1, Command::Attack(2)).unwrap();
+        let change = [Event::BasicTargetChanged {
+            actor: 1,
+            target: 2,
+        }];
+        room.visible[0].remove(&2);
+        publish(&mut room, &change);
+        assert!(drain(&mut recipients[0]).is_empty());
+        let mut target = super::super::messages::spawn(&room.world.entities[1], &[], None);
+        target.body[745] = 17;
+        room.scene_views[0].declarations(&[target]);
+        room.visible[0].insert(2);
+        publish(&mut room, &change);
+        assert_eq!(
+            drain(&mut recipients[0]),
+            [Message::known(
+                crate::Opcode::ModifyBasicAttackTarget,
+                1501u32.to_be_bytes()
+            )]
+        );
+        assert!(drain(&mut recipients[1]).is_empty());
+        assert!(drain(&mut recipients[2]).is_empty());
     }
 
     #[tokio::test]
@@ -1255,7 +1297,8 @@ mod tests {
             replies.extend(records.into_iter().filter(|m| {
                 matches!(
                     m.opcode,
-                    crate::wire_opcode::StopActor
+                    crate::wire_opcode::ModifyBasicAttackTarget
+                        | crate::wire_opcode::StopActor
                         | crate::wire_opcode::PlayPointAbility
                         | crate::wire_opcode::EntityProp
                 ) || (release_batch && m.is(crate::Opcode::Position))

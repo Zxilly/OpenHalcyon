@@ -116,6 +116,41 @@ pub(super) fn refresh(hero: &mut Entity, shop: &Shop) {
 }
 
 impl Room<'_> {
+    fn retarget_idris_after_last_hit(&mut self, i: usize, victim: usize, events: &mut Vec<Event>) {
+        let hero = &self.entities[i];
+        if !matches!(self.layout, Layout::Aral { .. })
+            || hero.bot
+            || hero.type_id != EntityTemplate::Idris.as_raw()
+            || hero.attack_target() != Some(self.entities[victim].id)
+            || !EntityTemplate::from_raw(self.entities[victim].type_id)
+                .is_some_and(EntityTemplate::is_aral_lane_minion)
+        {
+            return;
+        }
+        // The original priority between competing targets is unknown.
+        let mut candidates = self.entities.iter().filter(|other| {
+            other.hp > 0.
+                && other.team != hero.team
+                && hero.position.dist(other.position) <= hero.stats.range
+                && self.visible(hero.team, other)
+                && self.combat_clear(hero, other)
+        });
+        let Some(next) = candidates.next() else {
+            return;
+        };
+        if candidates.next().is_some()
+            || !(next.kind == Kind::Hero
+                || EntityTemplate::from_raw(next.type_id)
+                    .is_some_and(EntityTemplate::is_aral_lane_minion))
+        {
+            return;
+        }
+        let (actor, target) = (hero.id, next.id);
+        self.entities[i].order = Command::Attack(target);
+        self.entities[i].winding = None;
+        events.push(Event::BasicTargetChanged { actor, target });
+    }
+
     pub(crate) fn basic_hit(
         &mut self,
         source: u32,
@@ -201,6 +236,9 @@ impl Room<'_> {
         if crystal > 0. && self.entities[target].hp > 0. {
             self.hurt(source, team, target, crystal, DamageSchool::Crystal, events);
         }
+        if self.entities[target].hp <= 0. && kind == Kind::Minion {
+            self.retarget_idris_after_last_hit(i, target, events);
+        }
         let restoration = weapon_loss * vamp
             + if self.entities[target].hp <= 0. {
                 heal
@@ -226,6 +264,48 @@ mod tests {
         w.entities[1].stats.shield = 0.;
         w
     }
+    #[test]
+    fn idris_basic_last_hit_transfers_only_an_unambiguous_current_lock() {
+        for (extra, current, expected) in [
+            (false, true, true),
+            (true, true, false),
+            (false, false, false),
+        ] {
+            let mut world = World::new(11, 6);
+            world.use_six_human_roster().unwrap();
+            world.use_aral_lane().unwrap();
+            world.tick = 15 * TICK_HZ;
+            world.spawn_aral_wave(&mut Vec::new());
+            let victim = world
+                .entities
+                .iter()
+                .position(|e| e.kind == Kind::Minion && e.team == 1)
+                .unwrap();
+            let id = world.entities[victim].id;
+            let point = world.entities[0].position;
+            world.entities[0].type_id = EntityTemplate::Idris.as_raw();
+            world.entities[victim].position = point;
+            world.entities[1].position = point;
+            if extra {
+                world.entities[3].position = point;
+            }
+            if current {
+                world.command(1, Command::Attack(id)).unwrap();
+            }
+            let mut events = Vec::new();
+            world.basic_hit(1, 0, victim, 100000., DamageSchool::Weapon, &mut events);
+            assert!(world.entities[victim].hp <= 0.);
+            assert_eq!(
+                events.contains(&Event::BasicTargetChanged {
+                    actor: 1,
+                    target: 2
+                }),
+                expected
+            );
+            assert_eq!(world.entities[0].attack_target() == Some(2), expected);
+        }
+    }
+
     #[test]
     fn bow_current_and_vamp_follow_landed_damage_and_ownership() {
         let mut w = encounter();
