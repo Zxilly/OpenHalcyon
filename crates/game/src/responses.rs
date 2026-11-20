@@ -149,6 +149,7 @@ impl From<u16> for EventOpcode {
         }
     }
 }
+
 #[derive(Debug, Clone, Copy, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub(super) enum Channel {
@@ -220,4 +221,32 @@ pub(super) struct PlayerResult<'a> {
     pub item_templates: Vec<u32>,
     pub level: u8,
     pub xp: f32,
+}
+
+#[cfg(test)]
+mod opcode_tests {
+    use super::*;
+
+    #[test]
+    fn room_events_keep_hex_ids_and_publish_registered_names() {
+        let action = |raw| {
+            value(EventDetail::Action {
+                player_id: Uuid::nil(),
+                opcode: EventOpcode::from(raw),
+            })
+        };
+        let event = action(Opcode::CooldownValue.raw());
+        assert_eq!(event["opcode"], "0x0428");
+        assert_eq!(event["opcodeName"], "ActionModifyCooldown");
+        let extension = action(u16::MAX);
+        assert_eq!(extension["opcode"], "0xFFFF");
+        assert!(extension.get("opcodeName").is_none());
+        let connection = value(EventDetail::Connection {
+            player_id: Uuid::nil(),
+            channel: Channel::Control,
+            generation: None,
+            opcode: None,
+        });
+        assert!(connection.get("opcode").is_none() && connection.get("opcodeName").is_none());
+    }
 }

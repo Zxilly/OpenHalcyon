@@ -7,6 +7,69 @@ pub(super) struct Presence {
     afk: bool,
 }
 
+impl Seat {
+    fn presence_peer(&self) -> Option<&super::Peer> {
+        (0..2).rev().find_map(|ch| {
+            self.peers[ch]
+                .as_ref()
+                .filter(|_| self.presence.world_channels[ch])
+        })
+    }
+}
+
+impl Room {
+    fn presence_message(&self, seat: usize, change: ActorFlagChange) -> Message {
+        ActorFlags::new(wire_id(self.world.entities[seat].id).into(), change).to_message()
+    }
+
+    pub(super) fn absent_players(&self) -> Batch {
+        self.seats
+            .iter()
+            .enumerate()
+            .filter(|(_, seat)| seat.presence.afk)
+            .map(|(i, _)| self.presence_message(i, ActorFlagChange::Afk))
+            .collect()
+    }
+
+    /// The scoreboard addresses roster seats, including dead or out-of-sight heroes.
+    fn announce_presence(&mut self, seat: usize, change: ActorFlagChange) {
+        let message = self.presence_message(seat, change);
+        for (i, recipient) in self.seats.iter().enumerate() {
+            if i != seat
+                && let Some(peer) = recipient.presence_peer()
+            {
+                peer.send(Delivery::Private(vec![message.clone()]));
+            }
+        }
+        self.publish_observers(std::slice::from_ref(&message));
+    }
+
+    pub(super) fn world_connected(&mut self, seat: usize, channel: usize) {
+        let presence = &mut self.seats[seat].presence;
+        presence.world_channels[channel] = true;
+        if std::mem::take(&mut presence.afk) && self.phase == RoomPhase::Running {
+            self.announce_presence(seat, ActorFlagChange::Reconnected);
+        }
+        let snapshot = self.absent_players();
+        if !snapshot.is_empty()
+            && let Some(peer) = &self.seats[seat].peers[channel]
+        {
+            peer.send(Delivery::Private(snapshot));
+        }
+    }
+
+    pub(super) fn world_disconnected(&mut self, seat: usize, channel: usize) {
+        let presence = &mut self.seats[seat].presence;
+        if std::mem::take(&mut presence.world_channels[channel])
+            && self.phase == RoomPhase::Running
+            && !presence.world_channels.contains(&true)
+        {
+            presence.afk = true;
+            self.announce_presence(seat, ActorFlagChange::Afk);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -73,68 +136,5 @@ mod tests {
         assert!(room.absent_players().is_empty());
         room.world_connected(0, 0);
         assert!(witness.try_recv().is_err());
-    }
-}
-
-impl Seat {
-    fn presence_peer(&self) -> Option<&super::Peer> {
-        (0..2).rev().find_map(|ch| {
-            self.peers[ch]
-                .as_ref()
-                .filter(|_| self.presence.world_channels[ch])
-        })
-    }
-}
-
-impl Room {
-    fn presence_message(&self, seat: usize, change: ActorFlagChange) -> Message {
-        ActorFlags::new(wire_id(self.world.entities[seat].id).into(), change).to_message()
-    }
-
-    pub(super) fn absent_players(&self) -> Batch {
-        self.seats
-            .iter()
-            .enumerate()
-            .filter(|(_, seat)| seat.presence.afk)
-            .map(|(i, _)| self.presence_message(i, ActorFlagChange::Afk))
-            .collect()
-    }
-
-    /// The scoreboard addresses roster seats, including dead or out-of-sight heroes.
-    fn announce_presence(&mut self, seat: usize, change: ActorFlagChange) {
-        let message = self.presence_message(seat, change);
-        for (i, recipient) in self.seats.iter().enumerate() {
-            if i != seat
-                && let Some(peer) = recipient.presence_peer()
-            {
-                peer.send(Delivery::Private(vec![message.clone()]));
-            }
-        }
-        self.publish_observers(std::slice::from_ref(&message));
-    }
-
-    pub(super) fn world_connected(&mut self, seat: usize, channel: usize) {
-        let presence = &mut self.seats[seat].presence;
-        presence.world_channels[channel] = true;
-        if std::mem::take(&mut presence.afk) && self.phase == RoomPhase::Running {
-            self.announce_presence(seat, ActorFlagChange::Reconnected);
-        }
-        let snapshot = self.absent_players();
-        if !snapshot.is_empty()
-            && let Some(peer) = &self.seats[seat].peers[channel]
-        {
-            peer.send(Delivery::Private(snapshot));
-        }
-    }
-
-    pub(super) fn world_disconnected(&mut self, seat: usize, channel: usize) {
-        let presence = &mut self.seats[seat].presence;
-        if std::mem::take(&mut presence.world_channels[channel])
-            && self.phase == RoomPhase::Running
-            && !presence.world_channels.contains(&true)
-        {
-            presence.afk = true;
-            self.announce_presence(seat, ActorFlagChange::Afk);
-        }
     }
 }
