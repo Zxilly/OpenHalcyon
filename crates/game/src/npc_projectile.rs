@@ -1,4 +1,5 @@
 //! Tracked fire actions for measured native tower and minion profiles.
+use halcyon_data::EntityTemplate;
 use halcyon_protocol::{ProjectileAction, ProjectileFire};
 use halcyon_sim::{Entity, Event, Kind, World};
 
@@ -17,31 +18,61 @@ pub(super) struct Shot {
 }
 
 fn profile(source: &Entity, target: &Entity) -> Option<(u32, f32, u16)> {
+    let shooter = EntityTemplate::from_raw(source.type_id)?;
+    let victim = EntityTemplate::from_raw(target.type_id);
     if source.kind == Kind::Tower
-        && source.type_id == 340
+        && shooter == EntityTemplate::OuterTurret5v5
         && matches!(super::compact::structure_slot(source), Some(9 | 11 | 13))
         && target.kind == Kind::Minion
-        && matches!(target.type_id, 335..=337)
+        && matches!(
+            victim,
+            Some(
+                EntityTemplate::MinionRange5v5
+                    | EntityTemplate::MinionMelee5v5
+                    | EntityTemplate::MinionSiege5v5
+            )
+        )
     {
         return Some((TOWER_PROFILE, 0., 113));
     }
-    let aral_minion = target.kind == Kind::Minion && matches!(target.type_id, 287..=289);
+    let aral_minion =
+        target.kind == Kind::Minion && victim.is_some_and(EntityTemplate::is_aral_lane_minion);
     if source.kind == Kind::Tower
-        && matches!(source.type_id, 300 | 301)
+        && matches!(shooter, EntityTemplate::Turret | EntityTemplate::VainTurret)
         && (target.kind == Kind::Hero || aral_minion)
     {
         return Some((TOWER_PROFILE, 0., 112));
     }
-    if source.kind != Kind::Minion || !matches!(source.type_id, 287 | 288) || source.level != 2 {
+    if source.kind != Kind::Minion
+        || !matches!(
+            shooter,
+            EntityTemplate::RangedMinion | EntityTemplate::LeadMinion
+        )
+        || source.level != 2
+    {
         return None;
     }
     let scalar = if target.kind == Kind::Hero {
-        if source.type_id == 287 { 14. } else { 47. }
+        if shooter == EntityTemplate::RangedMinion {
+            14.
+        } else {
+            47.
+        }
     } else if aral_minion {
-        if source.type_id == 287 { 46.5 } else { 62. }
+        if shooter == EntityTemplate::RangedMinion {
+            46.5
+        } else {
+            62.
+        }
     } else if matches!(
-        (target.kind, target.type_id),
-        (Kind::Tower, 300 | 301) | (Kind::Crystal, 292 | 293)
+        (target.kind, victim),
+        (
+            Kind::Tower,
+            Some(EntityTemplate::Turret | EntityTemplate::VainTurret)
+        ) | (
+            Kind::Crystal,
+            Some(EntityTemplate::VainCrystalHome3v3 | EntityTemplate::VainCrystalAway3v3)
+        )
     ) {
         100.
     } else {

@@ -1323,7 +1323,7 @@ impl Room {
             Fields::HeroSelection { template, skin }
                 if ch == 0 && !legacy && !self.seats[i].locked =>
             {
-                let name = if template == 243 {
+                let name = if template == u32::from(halcyon_data::EntityTemplate::Ringo.as_raw()) {
                     Some("Ringo".to_owned())
                 } else {
                     self.data.as_ref().and_then(|d| {

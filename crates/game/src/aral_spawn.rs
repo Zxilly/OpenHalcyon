@@ -1,3 +1,4 @@
+use halcyon_data::EntityTemplate;
 use halcyon_protocol::Message;
 use halcyon_sim::{Entity, Kind, World};
 
@@ -9,23 +10,30 @@ const MINION_SKIN: u32 = 0xeb39ce55;
 /// One actual ARAL tower or crystal, registered at its observed map slot.
 pub(super) fn structure(world: &World, entity: &Entity) -> Option<Message> {
     let slot = world.aral_structure_slot(entity.id)?;
-    let (height, forward, profile_word84) = match (entity.kind, entity.type_id, slot) {
-        (Kind::Crystal, 292, 1) => (0.0, [0.0, 0.0, 1.0], 12.0),
-        (Kind::Crystal, 293, 9) => (0.1, [0.104_528_464, 0.0, 0.994_521_9], 12.0),
-        (Kind::Tower, 300, 5) => (0.0, [0.965_925_8, 0.0, 0.258_819_07], 1.0),
-        (Kind::Tower, 300, 13) => (0.0, [-0.965_925_8, 0.0, 0.258_819_07], 1.0),
-        (Kind::Tower, 300, 6 | 7) => (0.0, [1.0, 0.0, 0.0], 1.0),
-        (Kind::Tower, 300, 14 | 15) => (0.0, [-1.0, 0.0, 0.0], 1.0),
-        (Kind::Tower, 301, 3 | 4 | 11 | 12) => {
-            let x = if entity.team == 0 {
-                0.766_044_44
-            } else {
-                -0.766_044_44
-            };
-            (0.0, [x, 0.0, -0.642_787_64], 1.0)
-        }
-        _ => return None,
-    };
+    let (height, forward, profile_word84) =
+        match (entity.kind, EntityTemplate::from_raw(entity.type_id)?, slot) {
+            (Kind::Crystal, EntityTemplate::VainCrystalHome3v3, 1) => (0.0, [0.0, 0.0, 1.0], 12.0),
+            (Kind::Crystal, EntityTemplate::VainCrystalAway3v3, 9) => {
+                (0.1, [0.104_528_464, 0.0, 0.994_521_9], 12.0)
+            }
+            (Kind::Tower, EntityTemplate::Turret, 5) => {
+                (0.0, [0.965_925_8, 0.0, 0.258_819_07], 1.0)
+            }
+            (Kind::Tower, EntityTemplate::Turret, 13) => {
+                (0.0, [-0.965_925_8, 0.0, 0.258_819_07], 1.0)
+            }
+            (Kind::Tower, EntityTemplate::Turret, 6 | 7) => (0.0, [1.0, 0.0, 0.0], 1.0),
+            (Kind::Tower, EntityTemplate::Turret, 14 | 15) => (0.0, [-1.0, 0.0, 0.0], 1.0),
+            (Kind::Tower, EntityTemplate::VainTurret, 3 | 4 | 11 | 12) => {
+                let x = if entity.team == 0 {
+                    0.766_044_44
+                } else {
+                    -0.766_044_44
+                };
+                (0.0, [x, 0.0, -0.642_787_64], 1.0)
+            }
+            _ => return None,
+        };
     if !sane(entity) {
         return None;
     }
@@ -59,15 +67,25 @@ pub(super) fn scenery() -> impl Iterator<Item = Message> {
 fn scenery_body(slot: u8) -> Option<[u8; 122]> {
     let (template, position, direction, hp) = match slot {
         0 => (
-            314u32,
+            EntityTemplate::NeutralJungleMinionStore,
             [-88.5, 0.89, 2.0],
             [0.766_044_44, 0.0, -0.642_787_64],
             868.0,
         ),
-        8 => (314, [88.565, 1.8, 0.51], [0.0, 0.0, 1.0], 868.0),
-        2 => (298, [-76.12, 0.0, 19.9], [0.0, 0.0, 1.0], 9999.0),
+        8 => (
+            EntityTemplate::NeutralJungleMinionStore,
+            [88.565, 1.8, 0.51],
+            [0.0, 0.0, 1.0],
+            868.0,
+        ),
+        2 => (
+            EntityTemplate::VisionBeacon,
+            [-76.12, 0.0, 19.9],
+            [0.0, 0.0, 1.0],
+            9999.0,
+        ),
         10 => (
-            298,
+            EntityTemplate::VisionBeacon,
             [76.12, 0.1, 19.9],
             [0.104_528_464, -0.0, 0.994_521_9],
             9999.0,
@@ -76,7 +94,7 @@ fn scenery_body(slot: u8) -> Option<[u8; 122]> {
     };
     let team = slot / 8;
     let mut body = [0; 122];
-    body[..4].copy_from_slice(&template.to_be_bytes());
+    body[..4].copy_from_slice(&u32::from(template.as_raw()).to_be_bytes());
     body[4..8].copy_from_slice(&STRUCTURE_SKIN.to_be_bytes());
     body[8..12].copy_from_slice(&(2000 + u32::from(slot)).to_be_bytes());
     floats(&mut body, 12, position);
@@ -84,7 +102,7 @@ fn scenery_body(slot: u8) -> Option<[u8; 122]> {
     floats(&mut body, 36, [hp, hp]);
     floats(&mut body, 84, [12.0]);
     body[88..96].fill(1);
-    if template == 314 {
+    if template == EntityTemplate::NeutralJungleMinionStore {
         floats(&mut body, 52, [2.5]);
         floats(&mut body, 64, [1.0]);
         body[96..104].fill(3);
@@ -156,21 +174,21 @@ impl WaveSlots {
         });
         actor.exposed |= 1 << team;
         let slot = (FIRST_WAVE_SLOT + index) as u8;
-        match (
-            fresh_wave,
-            entity.type_id,
-            entity.level,
-            entity.hp == entity.max_hp,
-        ) {
-            (true, 287..=289, 2..=4, true) => Some(pristine_minion(entity, slot)),
-            _ => {
-                let mut full = messages::spawn(entity, picks, data);
-                if matches!(entity.type_id, 287..=289) {
-                    full.body[4..8].copy_from_slice(&MINION_SKIN.to_be_bytes());
-                }
-                full.body[745] = slot;
-                Some(full)
+        let native_minion = EntityTemplate::from_raw(entity.type_id)
+            .is_some_and(EntityTemplate::is_aral_lane_minion);
+        if fresh_wave
+            && native_minion
+            && (2..=4).contains(&entity.level)
+            && entity.hp == entity.max_hp
+        {
+            Some(pristine_minion(entity, slot))
+        } else {
+            let mut full = messages::spawn(entity, picks, data);
+            if native_minion {
+                full.body[4..8].copy_from_slice(&MINION_SKIN.to_be_bytes());
             }
+            full.body[745] = slot;
+            Some(full)
         }
     }
 
@@ -254,18 +272,29 @@ pub(super) fn recordable(body: &[u8]) -> bool {
         return false;
     }
     let template = u32::from_be_bytes(body[..4].try_into().unwrap());
-    if matches!(template, 298 | 314) {
+    let Some(template) = u16::try_from(template)
+        .ok()
+        .and_then(EntityTemplate::from_raw)
+    else {
+        return false;
+    };
+    if matches!(
+        template,
+        EntityTemplate::VisionBeacon | EntityTemplate::NeutralJungleMinionStore
+    ) {
         return scenery_body(body[116]).is_some_and(|scenery| body == scenery);
     }
     match (template, &body[116..122]) {
-        (292, [1, 0, 0, 1, 255, 1])
-        | (293, [9, 0, 0, 1, 255, 2])
-        | (300, [5..=7, 0, 0, 1, 255, 1] | [13..=15, 0, 0, 1, 255, 2])
-        | (301, [3..=4, 0, 0, 1, 255, 1] | [11..=12, 0, 0, 1, 255, 2]) => {
+        (EntityTemplate::VainCrystalHome3v3, [1, 0, 0, 1, 255, 1])
+        | (EntityTemplate::VainCrystalAway3v3, [9, 0, 0, 1, 255, 2])
+        | (EntityTemplate::Turret, [5..=7, 0, 0, 1, 255, 1] | [13..=15, 0, 0, 1, 255, 2])
+        | (EntityTemplate::VainTurret, [3..=4, 0, 0, 1, 255, 1] | [11..=12, 0, 0, 1, 255, 2]) => {
             body[4..8] == STRUCTURE_SKIN.to_be_bytes()
                 && body[8..12] == (2000 + u32::from(body[116])).to_be_bytes()
         }
-        (287..=289, [22..=199, 1, 0, 2..=4, 0, 1] | [22..=199, 1, 0, 2..=4, 1, 2]) => {
+        (kind, [22..=199, 1, 0, 2..=4, 0, 1] | [22..=199, 1, 0, 2..=4, 1, 2])
+            if kind.is_aral_lane_minion() =>
+        {
             body[4..8] == MINION_SKIN.to_be_bytes() && body[36..88] == [0; 52]
         }
         _ => false,
@@ -371,6 +400,9 @@ mod tests {
             assert!(rows.iter().all(|m| m.body[4] != 6 && m.body[4] != 3 - team));
             assert!(rows.iter().any(|m| m.body[4..8] == [team, 1, 15, 0]));
 
+            let mut wide_template = fresh.body.clone();
+            wide_template[0] = 1;
+            assert!(!recordable(&wide_template));
             let mut malformed = fresh.body.clone();
             malformed[120] ^= 1;
             assert!(!recordable(&malformed));
@@ -392,6 +424,13 @@ mod tests {
         assert_eq!(restored.body[42..46], damaged.hp.to_be_bytes());
         assert_eq!(restored.body[46..50], damaged.max_hp.to_be_bytes());
 
+        let mut custom = first.clone();
+        custom.type_id = u16::MAX;
+        let custom_actor = slots
+            .declaration(&world, &custom, &[], None, 0, true)
+            .unwrap();
+        assert!(custom_actor.is(crate::Opcode::EntitySpawn));
+        assert_eq!(&custom_actor.body[2..4], &custom.type_id.to_be_bytes());
         slots.destroy_sent(first.id, 0);
         let mut later = first.clone();
         later.id += 100;

@@ -1,4 +1,5 @@
 use super::{Batch, Message, Seat, messages::wire_id, tower_aggro::View, transport};
+use halcyon_data::EntityTemplate;
 use halcyon_sim::{Event, Kind, World};
 
 /// Native releases refer to actor IDs. The projectile record has a separate slot namespace.
@@ -17,9 +18,16 @@ pub(super) fn release(
         .entities
         .binary_search_by_key(&source, |e| e.id)
         .ok()?];
-    if !matches!((actor.kind, actor.type_id),
-        (Kind::Tower, 300 | 301 | 340) | (Kind::Minion, 287..=289 | 335..=338))
-    {
+    let template = EntityTemplate::from_raw(actor.type_id)?;
+    let supported = match actor.kind {
+        Kind::Tower => matches!(
+            template,
+            EntityTemplate::Turret | EntityTemplate::VainTurret | EntityTemplate::OuterTurret5v5
+        ),
+        Kind::Minion => template.is_aral_lane_minion() || template.is_solo_lane_minion(),
+        _ => false,
+    };
+    if !supported {
         return None;
     }
     let (a, b) = (wire_id(source), wire_id(target));

@@ -1,4 +1,5 @@
 use super::{Batch, Message};
+use halcyon_data::EntityTemplate;
 use halcyon_sim::{Entity, Kind};
 
 /// FNV-1a over the exact internal ability definition name.
@@ -30,9 +31,9 @@ pub(super) fn opening(batch: &mut Batch, actor: &Entity, aral: bool) {
     if actor.kind != Kind::Hero {
         return;
     }
-    let abilities: &[u32] = match actor.type_id {
-        273 => &[IDRIS_B],
-        409 if aral => &[LORELAI_C, LORELAI_B, LORELAI_A],
+    let abilities: &[u32] = match EntityTemplate::from_raw(actor.type_id) {
+        Some(EntityTemplate::Idris) => &[IDRIS_B],
+        Some(EntityTemplate::Lorelai) if aral => &[LORELAI_C, LORELAI_B, LORELAI_A],
         _ => return,
     };
     for ability in abilities {

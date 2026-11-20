@@ -1,3 +1,4 @@
+use halcyon_data::EntityTemplate;
 use halcyon_sim::{
     AbilitySlot, CastTarget, Command, Event, Kind, Position, native_learn_operand,
     native_learn_request,
@@ -8,8 +9,8 @@ use super::{Batch, Message, Room, messages::wire_id, transport::Delivery};
 mod chakram_motion;
 pub(super) use chakram_motion::recordable_stop;
 
-const IDRIS: u16 = 273;
-const LORELAI: u16 = 409;
+const IDRIS: u16 = EntityTemplate::Idris.as_raw();
+const LORELAI: u16 = EntityTemplate::Lorelai.as_raw();
 
 #[derive(Default)]
 pub(super) struct NativeAbilities {

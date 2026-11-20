@@ -1,5 +1,6 @@
 //! First-human data-channel recording. The socket writer offers bounded batches after a successful write.
 use super::*;
+use halcyon_data::EntityTemplate;
 use halcyon_protocol::ReplayWriter;
 use std::{
     io,
@@ -119,13 +120,14 @@ fn sanitize(m: &mut Message) -> bool {
             if m.body.len() == 122
                 && (super::compact::recordable_mid_structure(&m.body)
                     || super::compact::recordable_minion_birth(&m.body)
-                    || (matches!(
-                        u32::from_be_bytes(m.body[..4].try_into().unwrap()),
-                        335..=338
-                    ) && matches!(
-                        m.body[116..122],
-                        [52..=199, 0, 0, 1, 1, 1] | [52..=199, 0, 0, 1, 4, 2]
-                    ))
+                    || (u16::try_from(u32::from_be_bytes(m.body[..4].try_into().unwrap()))
+                        .ok()
+                        .and_then(EntityTemplate::from_raw)
+                        .is_some_and(EntityTemplate::is_solo_lane_minion)
+                        && matches!(
+                            m.body[116..122],
+                            [52..=199, 0, 0, 1, 1, 1] | [52..=199, 0, 0, 1, 4, 2]
+                        ))
                     || super::aral_spawn::recordable(&m.body)) => {}
         Some(crate::Opcode::EntityState)
             if matches!(

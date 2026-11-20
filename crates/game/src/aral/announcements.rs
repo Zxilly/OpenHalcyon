@@ -1,4 +1,5 @@
 use super::super::{Room, messages::wire_id, transport};
+use halcyon_data::EntityTemplate;
 use halcyon_protocol::Message;
 use halcyon_sim::{Event, Kind, World};
 
@@ -18,11 +19,11 @@ impl Announcements {
         for event in events {
             match *event {
                 Event::Spawn { id } if !self.wave_started => {
-                    if world
-                        .entities
-                        .iter()
-                        .any(|e| e.id == id && e.kind == Kind::Minion && e.type_id == 289)
-                    {
+                    if world.entities.iter().any(|e| {
+                        e.id == id
+                            && e.kind == Kind::Minion
+                            && e.type_id == EntityTemplate::TankMinion.as_raw()
+                    }) {
                         self.wave_started = true;
                         append(&mut out, FIRST_WAVE, None);
                     }

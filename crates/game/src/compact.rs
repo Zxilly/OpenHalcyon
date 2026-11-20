@@ -1,3 +1,4 @@
+use halcyon_data::EntityTemplate;
 use halcyon_protocol::Message;
 use halcyon_sim::{Entity, Kind};
 
@@ -6,33 +7,33 @@ use super::messages::wire_id;
 const BODY_LEN: usize = 122;
 /// Fixed native Solo structure slots. Towers on different lanes share templates.
 pub(super) fn structure_slot(e: &Entity) -> Option<u8> {
-    match (e.kind, e.type_id, e.team) {
-        (Kind::Tower, 340, 0) if e.id == 2008 - 1499 => Some(8),
-        (Kind::Tower, 340, 0) if e.id == 2010 - 1499 => Some(10),
-        (Kind::Tower, 340, 1) if e.id == 2011 - 1499 => Some(11),
-        (Kind::Tower, 340, 1) if e.id == 2013 - 1499 => Some(13),
-        (Kind::Tower, 339, 0) if e.id == 2046 - 1499 => Some(24),
-        (Kind::Tower, 341, 0) if e.id == 2051 - 1499 => Some(25),
-        (Kind::Tower, 339, 0) if e.id == 2074 - 1499 => Some(28),
-        (Kind::Tower, 341, 0) if e.id == 2079 - 1499 => Some(29),
-        (Kind::Tower, 339, 1) if e.id == 2088 - 1499 => Some(30),
-        (Kind::Tower, 341, 1) if e.id == 2093 - 1499 => Some(31),
-        (Kind::Tower, 339, 1) if e.id == 2116 - 1499 => Some(34),
-        (Kind::Tower, 341, 1) if e.id == 2121 - 1499 => Some(35),
+    match (e.kind, EntityTemplate::from_raw(e.type_id)?, e.team) {
+        (Kind::Tower, EntityTemplate::OuterTurret5v5, 0) if e.id == 2008 - 1499 => Some(8),
+        (Kind::Tower, EntityTemplate::OuterTurret5v5, 0) if e.id == 2010 - 1499 => Some(10),
+        (Kind::Tower, EntityTemplate::OuterTurret5v5, 1) if e.id == 2011 - 1499 => Some(11),
+        (Kind::Tower, EntityTemplate::OuterTurret5v5, 1) if e.id == 2013 - 1499 => Some(13),
+        (Kind::Tower, EntityTemplate::Turret5v5, 0) if e.id == 2046 - 1499 => Some(24),
+        (Kind::Tower, EntityTemplate::ArmoryTurret5v5, 0) if e.id == 2051 - 1499 => Some(25),
+        (Kind::Tower, EntityTemplate::Turret5v5, 0) if e.id == 2074 - 1499 => Some(28),
+        (Kind::Tower, EntityTemplate::ArmoryTurret5v5, 0) if e.id == 2079 - 1499 => Some(29),
+        (Kind::Tower, EntityTemplate::Turret5v5, 1) if e.id == 2088 - 1499 => Some(30),
+        (Kind::Tower, EntityTemplate::ArmoryTurret5v5, 1) if e.id == 2093 - 1499 => Some(31),
+        (Kind::Tower, EntityTemplate::Turret5v5, 1) if e.id == 2116 - 1499 => Some(34),
+        (Kind::Tower, EntityTemplate::ArmoryTurret5v5, 1) if e.id == 2121 - 1499 => Some(35),
 
-        (Kind::Armory, 297, team)
+        (Kind::Armory, EntityTemplate::VainNode, team)
             if (501..=506).contains(&e.id) && u32::from(team) == (e.id - 501) / 3 =>
         {
             Some((e.id - 501) as u8)
         }
-        (Kind::Crystal, 295, 0) => Some(6),
-        (Kind::Crystal, 296, 1) => Some(7),
-        (Kind::Tower, 340, 0) => Some(9),
-        (Kind::Tower, 340, 1) => Some(12),
-        (Kind::Tower, 339, 0) => Some(26),
-        (Kind::Tower, 341, 0) => Some(27),
-        (Kind::Tower, 339, 1) => Some(32),
-        (Kind::Tower, 341, 1) => Some(33),
+        (Kind::Crystal, EntityTemplate::VainCrystalHome5v5, 0) => Some(6),
+        (Kind::Crystal, EntityTemplate::VainCrystalAway5v5, 1) => Some(7),
+        (Kind::Tower, EntityTemplate::OuterTurret5v5, 0) => Some(9),
+        (Kind::Tower, EntityTemplate::OuterTurret5v5, 1) => Some(12),
+        (Kind::Tower, EntityTemplate::Turret5v5, 0) => Some(26),
+        (Kind::Tower, EntityTemplate::ArmoryTurret5v5, 0) => Some(27),
+        (Kind::Tower, EntityTemplate::Turret5v5, 1) => Some(32),
+        (Kind::Tower, EntityTemplate::ArmoryTurret5v5, 1) => Some(33),
         _ => None,
     }
 }
@@ -133,7 +134,10 @@ pub(super) fn recordable_minion_birth(b: &[u8]) -> bool {
     let actor = u32::from_be_bytes(b[8..12].try_into().unwrap());
     let side = i16::from(b[120]) - 3 * i16::from(b[121] - 1) - 1;
     (-1..=1).contains(&side)
-        && matches!(template, 335..=338)
+        && u16::try_from(template)
+            .ok()
+            .and_then(EntityTemplate::from_raw)
+            .is_some_and(EntityTemplate::is_solo_lane_minion)
         && (2122..65535).contains(&actor)
         && pristine_minion(template, actor, b[116], b[121] - 1, side as i8).body == b
 }
@@ -141,7 +145,6 @@ pub(super) fn recordable_minion_birth(b: &[u8]) -> bool {
 /// Subsequent visibility entries and reconnects carry current numeric state.
 pub(super) fn minion(entity: &Entity, slot: u8, fresh: bool) -> Option<Message> {
     if entity.kind != Kind::Minion
-        || !matches!(entity.type_id, 335..=338)
         || entity.team > 1
         || !(52..200).contains(&slot)
         || !(1..=u32::from(u16::MAX) - 1500).contains(&entity.id)
@@ -154,7 +157,13 @@ pub(super) fn minion(entity: &Entity, slot: u8, fresh: bool) -> Option<Message> 
     {
         return None;
     }
-    let default_hp = [475., 575., 880., 950.][usize::from(entity.type_id - 335)];
+    let default_hp = match EntityTemplate::from_raw(entity.type_id)? {
+        EntityTemplate::MinionRange5v5 => 475.,
+        EntityTemplate::MinionMelee5v5 => 575.,
+        EntityTemplate::MinionSiege5v5 => 880.,
+        EntityTemplate::MinionCaptain5v5 => 950.,
+        _ => return None,
+    };
     if fresh && entity.level == 1 && entity.hp == default_hp && entity.max_hp == default_hp {
         return Some(pristine_minion(
             u32::from(entity.type_id),

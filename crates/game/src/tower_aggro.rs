@@ -1,4 +1,5 @@
 //! Each receiver can refer only to slots declared on its own native scene.
+use halcyon_data::EntityTemplate;
 use std::collections::HashMap;
 
 use halcyon_protocol::{Message, TowerAggro};
@@ -50,9 +51,11 @@ impl View {
             // template-297 armory has a verified real registration there.
             if slot == 0
                 && !(wire == 2000
-                    && (m.is(crate::Opcode::Snapshot) && m.body[..4] == 297u32.to_be_bytes()
+                    && (m.is(crate::Opcode::Snapshot)
+                        && m.body[..4]
+                            == u32::from(EntityTemplate::VainNode.as_raw()).to_be_bytes()
                         || m.is(crate::Opcode::EntitySpawn)
-                            && m.body[2..4] == 297u16.to_be_bytes()))
+                            && m.body[2..4] == EntityTemplate::VainNode.as_raw().to_be_bytes()))
             {
                 continue;
             }
@@ -125,12 +128,24 @@ impl View {
 
     pub fn append(&mut self, world: &World, visible: impl Fn(u32) -> bool, out: &mut Batch) {
         for actor in &world.entities {
-            if actor.kind == Kind::Minion && matches!(actor.type_id, 287..=289 | 335..=338) {
+            if actor.kind == Kind::Minion
+                && EntityTemplate::from_raw(actor.type_id)
+                    .is_some_and(|t| t.is_aral_lane_minion() || t.is_solo_lane_minion())
+            {
                 self.append_lane_path(world.tick, actor, &visible, out);
                 continue;
             }
             let tower = actor;
-            if tower.kind != Kind::Tower || !matches!(tower.type_id, 300 | 301 | 340) {
+            if tower.kind != Kind::Tower
+                || !matches!(
+                    EntityTemplate::from_raw(tower.type_id),
+                    Some(
+                        EntityTemplate::Turret
+                            | EntityTemplate::VainTurret
+                            | EntityTemplate::OuterTurret5v5
+                    )
+                )
+            {
                 continue;
             }
             let Some(&slot) = self.actors.get(&tower.id) else {
