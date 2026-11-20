@@ -138,11 +138,17 @@ impl Pulse {
     }
 }
 impl crate::persistent_spells::TimedSpell for Pulse {
+    fn expired_before_step(&self, tick: u64) -> bool {
+        tick > self.end
+    }
+    fn begin_impact(&mut self) -> Self {
+        *self
+    }
     fn advance(&mut self, world: &mut World, events: &mut Vec<Event>) -> bool {
         let Some(j) = world.index(self.target) else {
             return false;
         };
-        if world.entities[j].hp <= 0. || world.tick > self.end {
+        if world.entities[j].hp <= 0. {
             return false;
         }
         if world.tick >= self.next {

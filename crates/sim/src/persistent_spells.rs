@@ -1,113 +1,179 @@
-//! Private spell entities are delivered in cast order, independent of Bevy's archetype order.
+//! Bevy owns persistent spell components. An ordinal orders impacts and checkpoints
+//! independently of archetype moves and handle reuse. One room-local scratch list
+//! is reused by both systems and contains only the current phase's scheduled work.
 use super::{Event, World, arcane_fire::Pulse, bulwark::Field};
 use bevy_ecs::component::Mutable;
-use bevy_ecs::prelude::{
-    Commands, Component, Entity, InMut, Mut, Query, ResMut, Resource, World as EffectWorld,
-};
-use std::marker::PhantomData;
+use bevy_ecs::prelude::{Commands, Component, Entity, In, InMut, Query, World as EffectWorld};
+
+#[derive(Component)]
+struct CastOrder(u64);
 
 pub(super) trait TimedSpell: Component<Mutability = Mutable> {
+    fn expired_before_step(&self, tick: u64) -> bool;
+    fn begin_impact(&mut self) -> Self;
     fn advance(&mut self, world: &mut World, events: &mut Vec<Event>) -> bool;
 }
-#[derive(Resource)]
-struct CastOrder<T: TimedSpell> {
-    entities: Vec<Entity>,
-    kind: PhantomData<T>,
-}
-impl<T: TimedSpell> Default for CastOrder<T> {
-    fn default() -> Self {
-        Self {
-            entities: Vec::new(),
-            kind: PhantomData,
-        }
-    }
+
+type Agenda = Vec<(u64, Entity)>;
+#[derive(Default)]
+struct Arena {
+    ecs: EffectWorld,
+    order: u64,
+    active: bool,
+    scratch: Agenda,
 }
 #[derive(Default)]
-pub(super) struct Spells(Option<Box<EffectWorld>>);
-/// Writes the same sequence as the pre-ECS checkpoint without materializing a second list.
-struct Snapshot<'a, T>(&'a Spells, PhantomData<T>);
-impl<T: TimedSpell + serde::Serialize> serde::Serialize for Snapshot<'_, T> {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.collect_seq(self.0.iter::<T>())
-    }
-}
+pub(super) struct Spells(Option<Box<Arena>>);
 
 impl Spells {
-    pub fn snapshot<T: TimedSpell + serde::Serialize>(&self) -> impl serde::Serialize + '_ {
-        Snapshot::<T>(self, PhantomData)
+    fn arena_mut(&mut self) -> &mut Arena {
+        self.0.get_or_insert_with(Box::default)
     }
 
     pub fn iter<T: TimedSpell>(&self) -> impl Iterator<Item = &T> {
-        self.0.iter().flat_map(|ecs| {
-            ecs.resource::<CastOrder<T>>()
-                .entities
-                .iter()
-                .map(|id| ecs.get::<T>(*id).expect("live spell in cast order"))
-        })
+        self.0
+            .iter()
+            .filter(|a| a.active)
+            .flat_map(|a| a.ecs.iter_entities().filter_map(|e| e.get::<T>()))
     }
-    fn storage(&mut self) -> &mut EffectWorld {
-        self.0.get_or_insert_with(|| {
-            let mut ecs = EffectWorld::new();
-            ecs.init_resource::<CastOrder<Field>>();
-            ecs.init_resource::<CastOrder<Pulse>>();
-            Box::new(ecs)
-        })
+    pub fn snapshot<T: TimedSpell>(&self) -> Vec<&T> {
+        let mut rows: Vec<_> = self
+            .0
+            .iter()
+            .filter(|a| a.active)
+            .flat_map(|a| {
+                a.ecs
+                    .iter_entities()
+                    .filter_map(|e| Some((e.get::<CastOrder>()?.0, e.get::<T>()?)))
+            })
+            .collect();
+        rows.sort_unstable_by_key(|r| r.0);
+        rows.into_iter().map(|(_, spell)| spell).collect()
     }
     pub fn spawn<T: TimedSpell>(&mut self, spell: T) {
-        let ecs = self.storage();
-        let id = ecs.spawn(spell).id();
-        ecs.resource_mut::<CastOrder<T>>().entities.push(id);
+        let arena = self.arena_mut();
+        arena.ecs.spawn((CastOrder(arena.order), spell));
+        arena.order += 1;
+        arena.active = true;
     }
     pub fn refresh_fire(&mut self, spell: Pulse) {
-        let ecs = self.storage();
-        ecs.resource_scope(|ecs, mut order: Mut<CastOrder<Pulse>>| {
-            order.entities.retain(|id| {
-                if ecs
-                    .get::<Pulse>(*id)
-                    .expect("live pulse")
-                    .same_application(&spell)
-                {
-                    ecs.despawn(*id);
-                    false
-                } else {
-                    true
-                }
-            });
-        });
+        if let Some(arena) = &mut self.0 {
+            let previous = arena
+                .ecs
+                .iter_entities()
+                .find(|e| e.get::<Pulse>().is_some_and(|p| p.same_application(&spell)))
+                .map(|e| e.id());
+            if let Some(id) = previous {
+                arena.ecs.despawn(id);
+            }
+        }
         self.spawn(spell);
     }
 }
-fn advance<T: TimedSpell>(
-    (InMut(world), InMut(events)): (InMut<World>, InMut<Vec<Event>>),
-    mut order: ResMut<CastOrder<T>>,
-    mut spells: Query<&mut T>,
+
+fn schedule<T: TimedSpell>(
+    (In(tick), InMut(jobs)): (In<u64>, InMut<Agenda>),
+    spells: Query<(Entity, &CastOrder, &T)>,
     mut commands: Commands,
 ) {
-    order.entities.retain(|id| {
-        let keep = spells
-            .get_mut(*id)
-            .expect("live spell in cast order")
-            .advance(world, events);
-        if !keep {
-            commands.entity(*id).despawn();
+    jobs.clear();
+    for (id, order, spell) in &spells {
+        if spell.expired_before_step(tick) {
+            commands.entity(id).despawn();
+        } else {
+            jobs.push((order.0, id));
         }
-        keep
-    });
+    }
+    jobs.sort_unstable_by_key(|(order, _)| *order);
 }
 impl World {
+    fn resolve_spells<T: TimedSpell>(
+        &mut self,
+        jobs: &mut Agenda,
+        events: &mut Vec<Event>,
+    ) -> bool {
+        self.spells
+            .arena_mut()
+            .ecs
+            .run_system_cached_with(schedule::<T>, (self.tick, &mut *jobs))
+            .expect("registered spell scheduling system");
+        let mut active = false;
+        for &(_, id) in jobs.iter() {
+            let Some(mut spell) = self
+                .spells
+                .arena_mut()
+                .ecs
+                .get_mut::<T>(id)
+                .map(|mut component| component.begin_impact())
+            else {
+                continue;
+            };
+            // Combat callbacks can read other spells and refresh or remove the
+            // original. Write back only if this exact generational handle survives.
+            let keep = spell.advance(self, events);
+            let ecs = &mut self.spells.arena_mut().ecs;
+            if keep {
+                if let Some(mut original) = ecs.get_mut::<T>(id) {
+                    *original = spell;
+                    active = true;
+                }
+            } else {
+                // A replacement may already have removed this generation.
+                let _ = ecs.try_despawn(id);
+            }
+        }
+        active
+    }
     pub(super) fn advance_persistent_spells(&mut self, events: &mut Vec<Event>) {
-        let Some(mut ecs) = self.spells.0.take() else {
+        let Some(arena) = self.spells.0.as_mut().filter(|a| a.active) else {
             return;
         };
-        // Complete contact damage and deaths before healing or burning on this tick.
-        if !ecs.resource::<CastOrder<Field>>().entities.is_empty() {
-            ecs.run_system_cached_with(advance::<Field>, (&mut *self, &mut *events))
-                .expect("bulwark system");
+        let start_order = arena.order;
+        let mut jobs = std::mem::take(&mut arena.scratch);
+        let fields = self.resolve_spells::<Field>(&mut jobs, events);
+        let fire = self.resolve_spells::<Pulse>(&mut jobs, events);
+        let arena = self.spells.arena_mut();
+        arena.active = fields || fire || arena.order != start_order;
+        arena.scratch = jobs;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(Component, Clone, Copy)]
+    struct ReplacementProbe(u8);
+    impl TimedSpell for ReplacementProbe {
+        fn expired_before_step(&self, _: u64) -> bool {
+            false
         }
-        if !ecs.resource::<CastOrder<Pulse>>().entities.is_empty() {
-            ecs.run_system_cached_with(advance::<Pulse>, (&mut *self, events))
-                .expect("fire system");
+        fn begin_impact(&mut self) -> Self {
+            *self
         }
-        self.spells.0 = Some(ecs);
+        fn advance(&mut self, world: &mut World, _: &mut Vec<Event>) -> bool {
+            assert_eq!(world.spells.iter::<Self>().count(), 1);
+            if self.0 == 0 {
+                let ecs = &mut world.spells.arena_mut().ecs;
+                let id = ecs
+                    .iter_entities()
+                    .find(|e| e.contains::<Self>())
+                    .unwrap()
+                    .id();
+                ecs.despawn(id);
+                world.spells.spawn(Self(1));
+            }
+            false
+        }
+    }
+    #[test]
+    fn impact_can_see_and_replace_itself_without_overwriting_the_new_generation() {
+        let mut w = World::new(7, 10);
+        w.spells.spawn(ReplacementProbe(0));
+        let mut jobs = Agenda::new();
+        w.resolve_spells::<ReplacementProbe>(&mut jobs, &mut Vec::new());
+        assert_eq!(w.spells.iter::<ReplacementProbe>().next().unwrap().0, 1);
+        w.resolve_spells::<ReplacementProbe>(&mut jobs, &mut Vec::new());
+        assert!(w.spells.iter::<ReplacementProbe>().next().is_none());
     }
 }

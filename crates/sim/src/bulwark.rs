@@ -13,7 +13,7 @@ pub(super) struct Rules {
     linger: [f32; 5],
     immunity: [f32; 5],
 }
-#[derive(bevy_ecs::prelude::Component, Debug, Serialize)]
+#[derive(bevy_ecs::prelude::Component, Clone, Debug, Serialize)]
 pub(super) struct Field {
     origin: Position,
     mobile: bool,
@@ -28,7 +28,7 @@ pub(super) struct Field {
     immunity: u64,
     targets: BTreeMap<u32, Contact>,
 }
-#[derive(Default, Debug, Serialize)]
+#[derive(Default, Clone, Debug, Serialize)]
 struct Contact {
     inside: bool,
     ready: u64,
@@ -104,11 +104,23 @@ impl Field {
     }
 }
 impl crate::persistent_spells::TimedSpell for Field {
+    fn expired_before_step(&self, tick: u64) -> bool {
+        tick >= self.end
+    }
+    fn begin_impact(&mut self) -> Self {
+        // Geometry remains visible to leap queries. Contact history is private to
+        // the boundary sampler and transfers in O(1), even for large waves.
+        let targets = std::mem::take(&mut self.targets);
+        Self {
+            targets,
+            ..self.clone()
+        }
+    }
     fn advance(&mut self, w: &mut World, events: &mut Vec<Event>) -> bool {
         let Some(i) = w.index(self.source) else {
             return false;
         };
-        if w.tick >= self.end || w.entities[i].hp <= 0. {
+        if w.entities[i].hp <= 0. {
             return false;
         }
         let center = if self.mobile {

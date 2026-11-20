@@ -1761,3 +1761,6 @@ mod tests {
 }
 #[cfg(test)]
 mod effects_replay;
+
+#[cfg(test)]
+mod phase_cost;
