@@ -1,5 +1,5 @@
 use super::{AppState, PlatformError, Result};
-use halcyon_data::{LEGACY_ARAL_QUEUE, TalentLevels};
+use halcyon_data::{KnownQueue, TalentLevels};
 use rusqlite::Transaction;
 use std::sync::Arc;
 use uuid::Uuid;
@@ -50,7 +50,7 @@ impl AppState {
         mode: &str,
         players: &[Uuid],
     ) -> Result<Vec<TalentLevels>> {
-        if mode != LEGACY_ARAL_QUEUE {
+        if KnownQueue::parse(mode) != Some(KnownQueue::CasualAral) {
             return Ok(Vec::new());
         }
         let resolver = self

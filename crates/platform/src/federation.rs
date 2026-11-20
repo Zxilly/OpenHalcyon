@@ -39,6 +39,13 @@ pub struct FederatedIntent {
     pub pre_freeze: bool,
 }
 
+impl FederatedIntent {
+    /// Unknown persisted phases remain available in `phase` and do not authorize seat actions.
+    pub fn phase_kind(&self) -> Option<LobbyPhase> {
+        LobbyPhase::parse(&self.phase)
+    }
+}
+
 const FIELDS: &str =
     "f.ticket, f.player, f.pool, f.mode, f.seats, f.accepted_match, f.cancel, f.phase,
      f.match_id, f.address, f.result,
@@ -236,7 +243,7 @@ impl AppState {
                 ).optional()?;
                 if existing.player.to_string() == id && existing.pool == pool
                     && existing.mode == mode && existing.seats == seats && existing.difficulty == difficulty
-                    && matches!(existing.phase.as_str(), "pending" | "queued") && !existing.cancel
+                    && matches!(existing.phase_kind(), Some(LobbyPhase::Pending | LobbyPhase::Queued)) && !existing.cancel
                     && claimed_party == roster.party
                     && existing.players.iter().map(Uuid::to_string).eq(roster.players.iter().cloned())
                 {
@@ -377,9 +384,9 @@ impl AppState {
                 else {
                     return Ok(None);
                 };
-                match intent.phase.as_str() {
-                    "closed" => Ok(None),
-                    "finished" => {
+                match intent.phase_kind() {
+                    Some(LobbyPhase::Closed) => Ok(None),
+                    Some(LobbyPhase::Finished) => {
                         acknowledge(tx, &intent, &id)?;
                         Ok(None)
                     }
@@ -551,7 +558,7 @@ impl AppState {
                 let Some(intent) = intent_for_player(tx, &id)? else {
                     return Ok(());
                 };
-                if intent.ticket != ticket || intent.phase != "finished" {
+                if intent.ticket != ticket || intent.phase_kind() != Some(LobbyPhase::Finished) {
                     return Err(PlatformError::Conflict("federated ticket is still active"));
                 }
                 acknowledge(tx, &intent, &id)
@@ -568,13 +575,13 @@ impl AppState {
                 let Some(intent) = intent_by_ticket(tx, &ticket)? else {
                     return Ok(());
                 };
-                match intent.phase.as_str() {
-                    "closed" => {
+                match intent.phase_kind() {
+                    Some(LobbyPhase::Closed) => {
                         community_queue::release(tx, &ticket).map_err(community_error)?;
                         tx.execute("DELETE FROM federated_queue WHERE ticket=?", [&ticket])?;
                         Ok(())
                     }
-                    "finished" if intent.players.len() == 1 => {
+                    Some(LobbyPhase::Finished) if intent.players.len() == 1 => {
                         acknowledge(tx, &intent, &intent.player.to_string())
                     }
                     _ => Err(PlatformError::Conflict(
@@ -599,7 +606,10 @@ fn apply_action(
         if cancel
             || intent.cancel
             || intent.match_id != Some(match_id)
-            || !matches!(intent.phase.as_str(), "offered" | "playing")
+            || !matches!(
+                intent.phase_kind(),
+                Some(LobbyPhase::Offered | LobbyPhase::Playing)
+            )
         {
             return Err(PlatformError::Conflict("no federated offer for this match"));
         }
@@ -615,7 +625,10 @@ fn apply_action(
             params![id, ticket],
         )?;
     } else if cancel {
-        if !matches!(intent.phase.as_str(), "pending" | "queued" | "offered") {
+        if !matches!(
+            intent.phase_kind(),
+            Some(LobbyPhase::Pending | LobbyPhase::Queued | LobbyPhase::Offered)
+        ) {
             return Err(PlatformError::Conflict(
                 "federated match has already started",
             ));

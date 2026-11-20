@@ -5,7 +5,7 @@ use halcyon_matchmaking::{
     Allocation, Command, Endpoint, Phase, Queue, Ticket, TicketPhase, TicketRef, WorkingSet,
     result_digest,
 };
-use halcyon_platform::{AbortReason, LobbyPhase};
+use halcyon_platform::{AbortReason, KnownQueue, LobbyPhase};
 use halcyon_platform::{
     AppState, BotDifficulty, FederatedIntent, PlatformError, Reservation, plan_teams_for_mode,
 };
@@ -239,7 +239,12 @@ impl PeerPlay {
 
     pub async fn accept(&self, token: &str, room: Uuid) -> halcyon_platform::Result<()> {
         let i = self.intent(token).await?;
-        if i.match_id != Some(room) || !matches!(i.phase.as_str(), "offered" | "playing") {
+        if i.match_id != Some(room)
+            || !matches!(
+                i.phase_kind(),
+                Some(LobbyPhase::Offered | LobbyPhase::Playing)
+            )
+        {
             return Err(PlatformError::Conflict("no offer for this match"));
         }
         let bound_room = || async {
@@ -278,7 +283,7 @@ impl PeerPlay {
             .platform
             .federated_accept_in_window(token, i.ticket, room, deadline)
             .await?;
-        if i.accepted_match != Some(room) || i.phase == "playing" {
+        if i.accepted_match != Some(room) || i.phase_kind() == Some(LobbyPhase::Playing) {
             return Ok(());
         }
         self.inner.accept(&i, room).await.map_err(|error| {
@@ -344,7 +349,7 @@ impl PeerPlay {
         })?;
         self.inner
             .platform
-            .federated_project(i.ticket, "closed", None, None, None)
+            .federated_project(i.ticket, LobbyPhase::Closed.as_str(), None, None, None)
             .await?;
         self.inner.platform.federated_release(i.ticket).await
     }
@@ -364,7 +369,7 @@ impl Inner {
     fn difficulty_for_queue(&self, queue: &Queue) -> anyhow::Result<Option<BotDifficulty>> {
         if queue.build == 147219 {
             if queue.rules_digest == self.cfg.rules_digest
-                || (queue.name == halcyon_platform::LEGACY_ARAL_QUEUE
+                || (KnownQueue::parse(&queue.name) == Some(KnownQueue::CasualAral)
                     && queue.rules_digest == self.aral_talent_rules())
             {
                 return Ok(None);
@@ -447,7 +452,7 @@ impl Inner {
             .platform
             .pooled_talent_levels(self.cfg.pool_id, i.ticket)
             .await?;
-        let rules_digest = if i.mode == halcyon_platform::LEGACY_ARAL_QUEUE {
+        let rules_digest = if KnownQueue::parse(&i.mode) == Some(KnownQueue::CasualAral) {
             self.aral_talent_rules()
         } else {
             i.difficulty.map_or_else(
@@ -537,7 +542,7 @@ impl Inner {
         let Some(entry) = p.tickets.get(&i.ticket) else {
             return self.enqueue(i, Some(p)).await;
         };
-        if i.phase == "finished" {
+        if i.phase_kind() == Some(LobbyPhase::Finished) {
             return Ok(());
         }
         match &entry.phase {

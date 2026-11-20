@@ -110,7 +110,13 @@ mod tests {
                 .await
                 .unwrap();
             state
-                .federated_project(intent.ticket, "offered", Some(room), None, None)
+                .federated_project(
+                    intent.ticket,
+                    crate::LobbyPhase::Offered.as_str(),
+                    Some(room),
+                    None,
+                    None,
+                )
                 .await
                 .unwrap();
             tokens.push(guest.session_token);

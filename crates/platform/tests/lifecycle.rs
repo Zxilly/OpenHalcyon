@@ -1065,3 +1065,62 @@ fn rest_request_wire_forms_preserve_spelling_and_optional_difficulty() {
         );
     }
 }
+#[tokio::test]
+async fn unrecognized_federated_phase_roundtrips_without_authorizing_seat_changes() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("platform.sqlite");
+    let state = AppState::open(
+        PlatformConfig {
+            database_path: path.clone(),
+            public_address: "localhost:8000".into(),
+            seats_per_match: 2,
+        },
+        Arc::new(Host::default()),
+    )
+    .unwrap();
+    assert_eq!(state.seats_for_mode("community_example"), 2);
+    let guest = state.create_guest("Local".into()).await.unwrap();
+    let key = &guest.session_token;
+    let intent = state
+        .federated_join(key, Uuid::new_v4(), "community_example".into(), 2)
+        .await
+        .unwrap();
+    assert_eq!(
+        intent.phase_kind(),
+        Some(halcyon_platform::LobbyPhase::Pending)
+    );
+    let room = Uuid::new_v4();
+    let db = rusqlite::Connection::open(path).unwrap();
+    db.execute(
+        "UPDATE federated_queue SET phase=?,match_id=? WHERE ticket=?",
+        [
+            "future_phase",
+            &room.to_string(),
+            &intent.ticket.to_string(),
+        ],
+    )
+    .unwrap();
+    let saved = state.federated_intent(key).await.unwrap().unwrap();
+    assert_eq!(saved.phase, "future_phase");
+    assert_eq!(saved.phase_kind(), None);
+    assert_eq!(
+        state
+            .profile(key)
+            .await
+            .unwrap()
+            .lobby
+            .unwrap()
+            .phase_kind(),
+        None
+    );
+    for (accept, cancel) in [(Some(room), false), (None, true)] {
+        assert!(matches!(
+            state.federated_action(intent.ticket, accept, cancel).await,
+            Err(PlatformError::Conflict(_))
+        ));
+    }
+    let after = state.federated_intent(key).await.unwrap().unwrap();
+    assert_eq!(after.phase, saved.phase);
+    assert!(!after.cancel);
+    assert!(after.accepted_match.is_none());
+}

@@ -1,6 +1,6 @@
 pub use halcyon_data::{
-    ARAL_TALENT_HEROES, ARAL_TALENT_RULES_PREFIX, BotDifficulty, LEGACY_ARAL_QUEUE,
-    LEGACY_ARAL_SEATS, TalentLevels,
+    ARAL_TALENT_HEROES, ARAL_TALENT_RULES_PREFIX, BotDifficulty, KnownQueue, LEGACY_ARAL_QUEUE,
+    LEGACY_ARAL_SEATS, NativeMode, TalentLevels,
 };
 mod accounts;
 mod chat;
@@ -209,9 +209,9 @@ impl AppState {
     }
 
     pub fn seats_for_mode(&self, mode: &str) -> usize {
-        match mode {
-            "5v5_bots_solo" | "solo" => 1,
-            mode if halcyon_data::three_per_side(mode) => halcyon_data::THREE_PER_SIDE_SEATS,
+        match KnownQueue::parse(mode) {
+            Some(queue) if queue.mode() == NativeMode::SoloBots => 1,
+            Some(KnownQueue::CasualAral | KnownQueue::Ranked) => halcyon_data::THREE_PER_SIDE_SEATS,
             _ => self.seats_per_match(),
         }
     }
@@ -392,9 +392,9 @@ impl AppState {
                     row.get(0)
                 })
                 .optional()?;
-            match phase.as_deref() {
-                Some("playing") => abort(tx, &match_id, AbortReason::HostStopped),
-                Some("aborted") => Ok(()),
+            match phase.as_deref().and_then(LobbyPhase::parse) {
+                Some(LobbyPhase::Playing) => abort(tx, &match_id, AbortReason::HostStopped),
+                Some(LobbyPhase::Aborted) => Ok(()),
                 _ => Err(PlatformError::Conflict("match is not playing")),
             }
         })
@@ -430,14 +430,14 @@ impl AppState {
                     |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
                 )
                 .optional()?;
-            match row {
-                Some((phase, stored)) if phase == "finished" => {
+            match row.map(|(phase, result)| (LobbyPhase::parse(&phase), result)) {
+                Some((Some(LobbyPhase::Finished), stored)) => {
                     if stored.as_deref() == Some(result.to_string().as_str()) {
                         return Ok(());
                     }
                     return Err(PlatformError::Conflict("match has a different result"));
                 }
-                Some((phase, _)) if phase == "playing" => {}
+                Some((Some(LobbyPhase::Playing), _)) => {}
                 _ => return Err(PlatformError::Conflict("match is not playing")),
             }
             tx.execute(
@@ -828,7 +828,7 @@ fn read_profile(row: &rusqlite::Row<'_>) -> rusqlite::Result<PlayerProfile> {
                 .transpose()?,
             phase: row
                 .get::<_, Option<String>>(4)?
-                .unwrap_or_else(|| "queued".into()),
+                .unwrap_or_else(|| LobbyPhase::Queued.as_str().into()),
             address: row.get(5)?,
             settled_at_ms: row.get(8)?,
             queued_at_ms: row.get(9)?,
@@ -934,9 +934,9 @@ impl AppState {
             [&id], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
         ).optional()?;
                 if let Some((match_id, phase)) = lobby {
-                    match phase.as_str() {
-                        "offered" => abort(tx, &match_id, AbortReason::PlayerLeft)?,
-                        "finished" => {
+                    match LobbyPhase::parse(&phase) {
+                        Some(LobbyPhase::Offered) => abort(tx, &match_id, AbortReason::PlayerLeft)?,
+                        Some(LobbyPhase::Finished) => {
                             tx.execute("DELETE FROM tickets WHERE player=?", [&id])?;
                             event(
                                 tx,
@@ -992,9 +992,9 @@ impl AppState {
                 "SELECT m.mode, m.phase, m.difficulty FROM tickets t JOIN matches m ON m.id=t.match_id WHERE t.player=? AND m.id=? AND (m.phase<>'offered' OR m.offered_at > unixepoch() - 30)",
                 params![id, match_id], |row| Ok((row.get(0)?, row.get(1)?, queue::read_difficulty(row, 2)?)),
             ).optional()?.ok_or(PlatformError::Conflict("no offer for this match"))?;
-            match phase.as_str() {
-                "playing" | "reserving" => return Ok(None),
-                "offered" => {},
+            match LobbyPhase::parse(&phase) {
+                Some(LobbyPhase::Playing | LobbyPhase::Reserving) => return Ok(None),
+                Some(LobbyPhase::Offered) => {},
                 _ => return Err(PlatformError::Conflict("match is already starting")),
             }
             tx.execute("UPDATE tickets SET accepted=1 WHERE player=?", [&id])?;

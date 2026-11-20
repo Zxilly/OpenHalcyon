@@ -1,6 +1,6 @@
 use super::{Inner, PeerPlay};
 use halcyon_federation::{Federation, MatchChat};
-use halcyon_platform::{AppState, PlatformError, Result};
+use halcyon_platform::{AppState, LobbyPhase, PlatformError, Result};
 use std::time::Duration;
 use tokio::sync::watch;
 use uuid::Uuid;
@@ -26,7 +26,11 @@ impl PeerPlay {
         let s = &self.inner;
         let profile = s.platform.profile(token).await?;
         if !profile.lobby.is_some_and(|l| {
-            l.match_id == Some(room) && matches!(l.phase.as_str(), "offered" | "playing")
+            l.match_id == Some(room)
+                && matches!(
+                    l.phase_kind(),
+                    Some(LobbyPhase::Offered | LobbyPhase::Playing)
+                )
         }) {
             return Err(PlatformError::Conflict("no active seat in this match"));
         }
