@@ -155,7 +155,7 @@ pub(super) fn initial_structures(room: &mut Room) {
         }
     }
     if !batch.is_empty() {
-        room.tower_views[0].declarations(&batch);
+        room.scene_views[0].declarations(&batch);
         peer.send(super::transport::Delivery::Private(batch));
     }
 }
