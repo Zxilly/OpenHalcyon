@@ -62,7 +62,7 @@ pub(super) struct Cast {
 }
 #[derive(Clone, Copy, Default, Debug, Serialize)]
 pub(super) struct Status {
-    pub(super) double_down: bool,
+    pub(super) double_down: Option<u32>,
     pub(super) stamina_spent: f32,
     pub(super) stamina_spent_at: u64,
     pub(super) stun_until: u64,

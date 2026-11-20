@@ -1621,7 +1621,7 @@ impl Room {
                 continue;
             }
             if has_attack_release {
-                npc_attack::deliver(out, &self.seats, &self.world, &self.scene_views, team);
+                npc_attack::deliver(out, &self.seats, &self.world, &mut self.scene_views, team);
             } else if peers.peek().is_none() {
                 first.send(transport::Delivery::Private(out));
             } else {

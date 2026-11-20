@@ -207,12 +207,15 @@ impl World {
             && killer.kind == Kind::Hero
             && killer.type_id == 243
             && killer.hp > 0.
-            && !killer.status.double_down
+            && killer.status.double_down.is_none()
             && killer.team == team
         {
-            killer.status.double_down = true;
+            let instance = self.next_id;
+            self.next_id += 1;
+            killer.status.double_down = Some(instance);
             events.push(Event::DoubleDown {
                 source: src,
+                instance,
                 attack_target: None,
             });
         }
@@ -480,7 +483,7 @@ mod double_down_tests {
             let index = world.index(id).unwrap();
             world.hurt(1, team, index, 100000., DamageSchool::True, &mut events);
             if target_team == team {
-                assert!(!world.entities[0].status.double_down);
+                assert!(world.entities[0].status.double_down.is_none());
             }
         }
         assert_eq!(
@@ -514,20 +517,21 @@ mod double_down_tests {
         world.step();
         world.command(1, Command::Stop).unwrap();
         world.step();
-        assert!(world.entities[0].status.double_down);
+        assert!(world.entities[0].status.double_down.is_some());
         world.command(1, Command::Attack(target)).unwrap();
+        let armed = world.entities[0].status.double_down.unwrap();
         let mut releases = 0;
         for _ in 0..20 {
             let events = world.step();
             if events.iter().any(
-                |e| matches!(e,Event::DoubleDown{source:1,attack_target:Some(t)} if *t==target),
+                |e| matches!(e,Event::DoubleDown{source:1,attack_target:Some(t),instance} if *t==target && *instance==armed),
             ) {
                 releases += 1;
                 world.command(1, Command::Stop).unwrap();
             }
         }
         assert_eq!(releases, 1);
-        assert!(!world.entities[0].status.double_down);
+        assert!(world.entities[0].status.double_down.is_none());
         assert!((original_hp - world.entities[index].hp - weapon * 1.75).abs() < 0.01);
     }
 }

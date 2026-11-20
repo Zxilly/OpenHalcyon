@@ -157,7 +157,7 @@ fn sanitize(m: &mut Message) -> bool {
                                  effect.prefix.source == effect.prefix.target),
                                  (954, 0x4400, false) | (820, 0x4066, true))
                     && effect.suffix == [0; 6]) => {}
-        0x415 | 0x41a | 0x41b if super::ringo::references(m).is_some() => {}
+        0x43e | 0x445 | 0x415 | 0x41a | 0x41b if super::ringo::references(m).is_some() => {}
         0x415 if super::npc_attack::actors(m).is_some() => {}
         0x415
             if matches!(
@@ -305,6 +305,27 @@ async fn save(dir: PathBuf, first_tick: u64, mut rx: mpsc::Receiver<Sample>) -> 
 mod tests {
     use super::*;
     use halcyon_protocol::ReplayReader;
+    #[test]
+    fn records_the_authored_double_down_instance_and_rejects_surplus_bytes() {
+        let mut out = Batch::new();
+        for attack_target in [None, Some(2)] {
+            super::super::ringo::append(
+                &mut out,
+                &halcyon_sim::Event::DoubleDown {
+                    source: 1,
+                    instance: 100,
+                    attack_target,
+                },
+                |_| true,
+            );
+        }
+        for opcode in [0x43e, 0x445] {
+            let mut message = out.iter().find(|m| m.opcode == opcode).unwrap().clone();
+            assert!(sanitize(&mut message));
+            *message.body.last_mut().unwrap() = 1;
+            assert!(!sanitize(&mut message));
+        }
+    }
     #[test]
     fn relocation_recording_requires_a_real_aral_seat_pad_and_flag() {
         let mut m = Message::actor_relocation(1503, [79.66, 1.5, -0.91], 1);

@@ -46,7 +46,40 @@ pub(super) fn registered(view: &View, message: &Message) -> bool {
 }
 
 /// Each admitted connection may be at a different point in scene registration.
-pub(super) fn deliver(mut out: Batch, seats: &[Seat], world: &World, views: &[View], team: usize) {
+pub(super) fn deliver(
+    mut out: Batch,
+    seats: &[Seat],
+    world: &World,
+    views: &mut [View],
+    team: usize,
+) {
+    if out
+        .iter()
+        .any(|m| matches!(m.opcode, 0x43e | 0x445) && super::ringo::references(m).is_some())
+    {
+        for ((seat, actor), view) in seats
+            .iter()
+            .zip(&world.entities)
+            .zip(views.iter_mut())
+            .filter(|((_, actor), _)| usize::from(actor.team) == team)
+        {
+            let Some(peer) = seat.gameplay_peer() else {
+                continue;
+            };
+            let ready =
+                seat.world_actor_written && seat.preamble.confirmed() && seat.peers[1].is_none();
+            let batch: Batch = out
+                .iter()
+                .filter(|m| can_receive(m, ready, view, actor.id) && super::ringo::track(view, m))
+                .cloned()
+                .collect();
+            if !batch.is_empty() {
+                peer.send(transport::Delivery::Private(batch));
+            }
+        }
+        return;
+    }
+
     let mut recipients = seats
         .iter()
         .zip(&world.entities)
