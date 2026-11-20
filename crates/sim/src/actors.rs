@@ -32,6 +32,7 @@ impl<T> std::ops::DerefMut for Storage<'_, T> {
 #[derive(Default, bevy_ecs::resource::Resource)]
 pub(super) struct ActorMetadata {
     order: Vec<Handle>,
+    scan: Option<(usize, bevy_ecs::query::QueryState<&'static Entity>)>,
     pub(super) spells: super::persistent_spells::Spells,
 }
 impl Default for Actors<'static> {
@@ -40,6 +41,7 @@ impl Default for Actors<'static> {
             ecs: Storage::Owned(Box::default()),
             meta: Storage::Owned(Box::new(ActorMetadata {
                 order: Vec::with_capacity(50),
+                scan: None,
                 spells: Default::default(),
             })),
         }
@@ -66,10 +68,12 @@ impl Actors<'_> {
     pub(crate) fn scope<R>(ecs: &mut World, f: impl FnOnce(Actors<'_>) -> R) -> R {
         ecs.resource_scope(
             |ecs, mut meta: bevy_ecs::change_detection::Mut<ActorMetadata>| {
-                f(Actors {
+                let mut actors = Actors {
                     ecs: Storage::Scoped(ecs),
                     meta: Storage::Scoped(&mut meta),
-                })
+                };
+                actors.refresh_scan();
+                f(actors)
             },
         )
     }
@@ -157,6 +161,27 @@ impl IndexMut<usize> for Actors<'_> {
     }
 }
 impl Actors<'_> {
+    /// Only order-independent consumers may traverse Bevy tables directly.
+    /// A new archetype with actors can appear during an exclusive system. Until
+    /// the query has observed that generation the ordered handles remain exact.
+    pub(super) fn any_unordered<'w>(&'w self, predicate: impl FnMut(&'w Entity) -> bool) -> bool {
+        if let Some((seen, query)) = &self.meta.scan
+            && *seen == self.ecs.archetypes().len()
+        {
+            query.iter_manual(&self.ecs).any(predicate)
+        } else {
+            self.iter().any(predicate)
+        }
+    }
+    pub(super) fn for_each_unordered<'w>(&'w self, visit: impl FnMut(&'w Entity)) {
+        if let Some((seen, query)) = &self.meta.scan
+            && *seen == self.ecs.archetypes().len()
+        {
+            query.iter_manual(&self.ecs).for_each(visit);
+        } else {
+            self.iter().for_each(visit);
+        }
+    }
     pub fn iter(&self) -> ActorIter<'_> {
         ActorIter {
             ecs: &self.ecs,
@@ -192,6 +217,18 @@ impl Actors<'_> {
     }
     pub fn push(&mut self, e: Entity) {
         self.meta.order.push(self.ecs.spawn(e).id());
+        self.refresh_scan();
+    }
+    fn refresh_scan(&mut self) {
+        let generation = self.ecs.archetypes().len();
+        match &mut self.meta.scan {
+            Some((seen, query)) if *seen != generation => {
+                query.update_archetypes(&self.ecs);
+                *seen = generation;
+            }
+            None => self.meta.scan = Some((generation, self.ecs.query::<&Entity>())),
+            _ => {}
+        }
     }
     pub fn binary_search_by_key<B: Ord>(
         &self,
@@ -232,6 +269,34 @@ mod tests {
 
     #[derive(Component)]
     struct Marker;
+    #[test]
+    fn unordered_scan_observes_archetype_changes_and_current_actor_values() {
+        let mut room = crate::World::new(7, 4);
+        let handle = room.entities.meta.order[1];
+        let actor_id = room.entities[1].id;
+        fn compare(actors: &Actors<'_>) {
+            let mut actual = Vec::new();
+            actors.any_unordered(|a| {
+                actual.push((a.id, a.hp.to_bits()));
+                false
+            });
+            actual.sort_unstable_by_key(|a| a.0);
+            let mut expected: Vec<_> = actors.iter().map(|a| (a.id, a.hp.to_bits())).collect();
+            expected.sort_unstable_by_key(|a| a.0);
+            assert_eq!(actual, expected);
+        }
+        compare(&room.entities);
+        room.entities.ecs.entity_mut(handle).insert(Marker);
+        room.entities[1].hp = 37.;
+        compare(&room.entities);
+        let mut next = room.entities[1].clone();
+        next.id = u32::MAX;
+        room.entities.push(next);
+        room.entities[1].hp = 0.;
+        compare(&room.entities);
+        room.entities.retain(|e| e.id != actor_id);
+        compare(&room.entities);
+    }
     #[test]
     fn scoped_schedule_updates_authoritative_actor_and_preserves_external_order() {
         let mut room = crate::World::new(7, 4);

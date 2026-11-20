@@ -833,7 +833,7 @@ impl Room<'_> {
     }
     pub fn sees_position(&self, team: u8, p: Position) -> bool {
         (self.device_sight(team, p) || self.sigil_sight(team, p))
-            || self.entities.iter().any(|e| {
+            || self.entities.any_unordered(|e| {
                 e.team == team
                     && e.hp > 0.
                     && e.position.dist(p) <= e.stats.sight()
@@ -850,7 +850,7 @@ impl Room<'_> {
                 && (self.device_sight(team, e.position) || self.sigil_sight(team, e.position)))
             || (e.hp > 0. && e.status.reveal_until > self.tick)
             || (e.hp > 0.
-                && self.entities.iter().any(|a| {
+                && self.entities.any_unordered(|a| {
                     a.team == team
                         && a.hp > 0.
                         && (a.position.x - e.position.x).abs() <= a.stats.sight()
