@@ -23,7 +23,7 @@ mod aral;
 pub use aral::AralRoster;
 mod abilities;
 mod buff_actions;
-pub use buff_actions::{BuffApplication, BuffExtras, BuffPrefix};
+pub use buff_actions::{BuffApplication, BuffChange, BuffExtras, BuffMutation, BuffPrefix};
 mod hud;
 pub use hud::{HudQuickMessage, MapPing};
 mod gold;
@@ -236,23 +236,17 @@ impl Message {
                     },
                 }
             }
-            0x441 | 0x445 | 0x446
-                if b.len() == 14 || b.len() == if self.opcode == 0x441 { 12 } else { 8 } =>
-            {
-                Fields::BuffAction {
-                    actor: number(0)?,
-                    key: number(4)?,
-                    duration: if self.opcode == 0x441 {
-                        Some(float(8)?)
-                    } else {
-                        None
-                    },
-                    remaining: if self.opcode == 0x441 {
-                        &b[12..]
-                    } else {
-                        &b[8..]
-                    },
-                }
+            0x441 | 0x445 | 0x446 => {
+                self.buff_mutation()
+                    .map_or(Fields::Opaque(b), |action| Fields::BuffAction {
+                        actor: action.target,
+                        key: action.instance,
+                        duration: match action.change {
+                            BuffChange::Duration(seconds) => Some(seconds),
+                            BuffChange::Cancel | BuffChange::Timeout => None,
+                        },
+                        remaining: action.padding,
+                    })
             }
             0x42c if b.len() == 6 => Fields::CampVisibility {
                 actor: number(0)?,
@@ -1184,7 +1178,7 @@ mod tests {
                 }
             );
         }
-        for (op, duration, n) in [(0x441, Some(2.), 12), (0x445, None, 8)] {
+        for (op, duration, n) in [(0x441, Some(2.), 12), (0x445, None, 8), (0x446, None, 8)] {
             assert_eq!(
                 Message::new(op, b).fields().unwrap(),
                 Fields::BuffAction {

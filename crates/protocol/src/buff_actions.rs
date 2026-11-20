@@ -85,6 +85,72 @@ impl<'a> BuffApplication<'a> {
     }
 }
 
+/// Recorded mutations address the active application by its target and instance.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum BuffChange {
+    Duration(f32),
+    Cancel,
+    Timeout,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BuffMutation<'a> {
+    pub target: u32,
+    pub instance: u32,
+    pub change: BuffChange,
+    pub padding: &'a [u8],
+}
+
+impl Message {
+    /// Distinguishes a duration update, explicit cancellation and timeout.
+    pub fn buff_mutation(&self) -> Option<BuffMutation<'_>> {
+        BuffMutation::decode(self.opcode, &self.body)
+    }
+}
+
+impl<'a> BuffMutation<'a> {
+    fn decode(op: u16, body: &'a [u8]) -> Option<Self> {
+        let size = match op {
+            0x441 => 12,
+            0x445 | 0x446 => 8,
+            _ => return None,
+        };
+        if body.len() != size && body.len() != 14 {
+            return None;
+        }
+        let change = match op {
+            0x441 => BuffChange::Duration(f32::from_be_bytes(body[8..12].try_into().unwrap())),
+            0x445 => BuffChange::Cancel,
+            _ => BuffChange::Timeout,
+        };
+        Some(Self {
+            target: u32::from_be_bytes(body[..4].try_into().unwrap()),
+            instance: u32::from_be_bytes(body[4..8].try_into().unwrap()),
+            change,
+            padding: &body[size..],
+        })
+    }
+
+    pub fn to_message(self) -> io::Result<Message> {
+        let (op, size) = match self.change {
+            BuffChange::Duration(_) => (0x441, 12),
+            BuffChange::Cancel => (0x445, 8),
+            BuffChange::Timeout => (0x446, 8),
+        };
+        if !self.padding.is_empty() && self.padding.len() != 14 - size {
+            return Err(invalid("unsupported buff mutation padding length"));
+        }
+        let mut body = Vec::with_capacity(size + self.padding.len());
+        body.extend(self.target.to_be_bytes());
+        body.extend(self.instance.to_be_bytes());
+        if let BuffChange::Duration(seconds) = self.change {
+            body.extend(seconds.to_be_bytes());
+        }
+        body.extend(self.padding);
+        Ok(Message::new(op, body))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -166,18 +232,24 @@ mod tests {
             for size in [prefix, 14] {
                 body.resize(size, 0xab);
                 let message = Message::new(opcode, body.clone());
-                let Fields::BuffAction {
-                    actor,
-                    key,
-                    duration,
-                    remaining,
-                } = message.fields().unwrap()
-                else {
-                    panic!()
+                let action = message.buff_mutation().unwrap();
+                assert_eq!((action.target, action.instance), (1500, 0x12345678));
+                let expected = match opcode {
+                    0x441 => BuffChange::Duration(8.),
+                    0x445 => BuffChange::Cancel,
+                    _ => BuffChange::Timeout,
                 };
-                assert_eq!((actor, key), (1500, 0x12345678));
-                assert_eq!(duration, (opcode == 0x441).then_some(8.0));
-                assert_eq!(remaining, &body[prefix..]);
+                assert_eq!(action.change, expected);
+                assert_eq!(action.padding, &body[prefix..]);
+                assert_eq!(action.to_message().unwrap(), message);
+                assert!(
+                    BuffMutation {
+                        padding: &[7],
+                        ..action
+                    }
+                    .to_message()
+                    .is_err()
+                );
             }
         }
     }

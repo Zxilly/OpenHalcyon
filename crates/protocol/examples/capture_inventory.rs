@@ -114,6 +114,23 @@ impl Stream {
                         }
                         e.typed += 1;
                     }
+                    Ok(Fields::BuffAction { .. }) => {
+                        let action = m
+                            .buff_mutation()
+                            .ok_or_else(|| invalid("missing buff mutation"))?;
+                        if action.to_message()? != m {
+                            return Err(invalid("buff mutation fields did not reproduce original"));
+                        }
+                        e.typed += 1;
+                    }
+                    Ok(Fields::BuffApplication(action)) => {
+                        if action.to_message()? != m {
+                            return Err(invalid(
+                                "buff application fields did not reproduce original",
+                            ));
+                        }
+                        e.typed += 1;
+                    }
                     Ok(Fields::Projectile(action)) => {
                         if action.message().as_ref() != Some(&m) {
                             return Err(invalid("projectile fields did not reproduce original"));
