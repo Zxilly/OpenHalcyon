@@ -210,6 +210,9 @@ async fn admin_auth_origin_rotation_players_and_termination() {
         .await
         .2;
     assert_eq!(detail["participants"][0]["displayName"], "Harbor");
+    assert!(detail["poolId"].is_null());
+    assert!(detail["participants"][0]["homeInstanceId"].is_string());
+    assert!(detail["participants"][1]["homeInstanceId"].is_null());
     let endpoint = format!("{endpoint}/termination");
     let reason = json!({"reason":"admin integration test"});
     assert_eq!(

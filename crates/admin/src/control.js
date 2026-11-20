@@ -172,11 +172,14 @@ async function refreshMatch() {
     await Promise.all([overview(), navigate("matches")]);
   }
   select("#detail").hidden = false;
-  select("#match-identity").textContent = `${match.id} · ${title(match.phase)}${match.endReason ? " · " + title(match.endReason) : ""}`;
+  const identity = [match.id, title(match.phase)];
+  if (match.poolId) identity.push(`Pool ${match.poolId}`);
+  if (match.endReason) identity.push(title(match.endReason));
+  select("#match-identity").textContent = identity.join(" · ");
   select("#termination").hidden = ["ending", "ended"].includes(match.phase);
   rows("#participants", match.participants.map((player) => [
-    player.slot, player.displayName, player.hero, yes(player.locked), yes(player.controlConnected), yes(player.gameConnected),
-  ]), 6, "No participants.");
+    player.slot, player.displayName, player.homeInstanceId, player.hero, yes(player.locked), yes(player.controlConnected), yes(player.gameConnected),
+  ]), 7, "No participants.");
   for (const event of events.items) {
     const item = document.createElement("li");
     item.textContent = `${date(event.at)} · ${event.message}`;

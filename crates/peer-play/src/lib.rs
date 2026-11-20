@@ -662,11 +662,13 @@ impl Worker {
             Phase::Preparing => {
                 let mut players = Vec::new();
                 let mut sizes = Vec::new();
+                let mut homes = Vec::new();
                 let mut talent_levels = Vec::new();
                 let mut queue = None;
                 for key in &a.tickets {
                     let t = &p.tickets[&key.id].ticket;
                     players.extend_from_slice(&t.players);
+                    homes.extend(std::iter::repeat_n(t.home, t.players.len()));
                     sizes.push(t.players.len());
                     if t.talent_levels.is_empty() {
                         talent_levels.resize_with(players.len(), Default::default);
@@ -688,14 +690,18 @@ impl Worker {
                 {
                     talent_levels.clear();
                 }
-                let prepared = s.rooms.prepare(Reservation {
-                    talent_levels,
-                    match_id: a.id,
-                    players,
-                    teams: plan_teams_for_mode(&queue.name, &sizes),
-                    mode: queue.name.clone(),
-                    difficulty,
-                });
+                let prepared = s.rooms.prepare_federated(
+                    Reservation {
+                        talent_levels,
+                        match_id: a.id,
+                        players,
+                        teams: plan_teams_for_mode(&queue.name, &sizes),
+                        mode: queue.name.clone(),
+                        difficulty,
+                    },
+                    s.cfg.pool_id,
+                    homes,
+                );
                 let Ok(hosted) = prepared else {
                     return s
                         .commit(a.id, "no-capacity", Command::Abort { id: a.id })

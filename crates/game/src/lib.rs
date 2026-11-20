@@ -144,7 +144,14 @@ struct Combat {
     damage: f64,
     healing: f64,
 }
+#[derive(PartialEq, Eq)]
+struct FederationOrigin {
+    pool: Uuid,
+    homes: Vec<Uuid>,
+}
+
 struct Room {
+    federation: Option<FederationOrigin>,
     scene_views: Vec<tower_aggro::View>,
     solo_slots: actor_slots::ActorSlots,
     aral_slots: aral_spawn::WaveSlots,
@@ -416,13 +423,26 @@ impl MatchHost for Rooms {
     }
 
     fn reserve(&self, req: Reservation) -> Result<HostedMatch, PlatformError> {
-        self.allocate(req, true)
+        self.allocate(req, true, None)
     }
 }
 impl Rooms {
     pub fn prepare(&self, req: Reservation) -> Result<HostedMatch, PlatformError> {
-        self.allocate(req, false)
+        self.allocate(req, false, None)
     }
+    /// Prepare a room from the committed allocation and its ordered ticket roster.
+    pub fn prepare_federated(
+        &self,
+        req: Reservation,
+        pool: Uuid,
+        homes: Vec<Uuid>,
+    ) -> Result<HostedMatch, PlatformError> {
+        if homes.len() != req.players.len() {
+            return Err(PlatformError::Invalid("invalid home roster"));
+        }
+        self.allocate(req, false, Some(FederationOrigin { pool, homes }))
+    }
+
     pub fn activate(&self, id: Uuid) -> Result<(), PlatformError> {
         let rooms = self.0.rooms.lock().unwrap();
         let mut room = rooms
@@ -449,7 +469,12 @@ impl Rooms {
         rooms.remove(&id);
         Ok(())
     }
-    fn allocate(&self, req: Reservation, admitted: bool) -> Result<HostedMatch, PlatformError> {
+    fn allocate(
+        &self,
+        req: Reservation,
+        admitted: bool,
+        federation: Option<FederationOrigin>,
+    ) -> Result<HostedMatch, PlatformError> {
         if !halcyon_data::valid_talent_levels(&req.mode, req.players.len(), &req.talent_levels) {
             return Err(PlatformError::Invalid("invalid talent grants for roster"));
         }
@@ -468,7 +493,8 @@ impl Rooms {
         });
         if let Some(r) = rooms.get(&req.match_id) {
             let r = r.lock().unwrap();
-            if r.requested_teams != req.teams
+            if r.federation != federation
+                || r.requested_teams != req.teams
                 || r.talent_levels != talent_levels
                 || r.queue != req.mode
                 || r.difficulty != req.difficulty
@@ -577,6 +603,7 @@ impl Rooms {
         let (stop, stopped) = watch::channel(false);
         let t = Utc::now();
         let mut room = Room {
+            federation,
             scene_views: (0..req.players.len()).map(|_| Default::default()).collect(),
             solo_slots: actor_slots::ActorSlots::from_roster(&world.entities),
             aral_slots: Default::default(),
@@ -646,14 +673,14 @@ impl Room {
     }
     fn view(&self, detail: bool) -> Value {
         let mut v = json!({"id":self.id,"queue":self.queue,"phase":self.phase,"createdAt":self.created.to_rfc3339(),"phaseSince":self.since.to_rfc3339(),
-        "endedAt":self.ended.map(|x|x.to_rfc3339()),"endReason":self.reason,"humanPlayers":self.players.len(),"botPlayers":self.picks.len()-self.players.len(),"poolId":null});
+        "endedAt":self.ended.map(|x|x.to_rfc3339()),"endReason":self.reason,"humanPlayers":self.players.len(),"botPlayers":self.picks.len()-self.players.len(),"poolId":self.federation.as_ref().map(|f|f.pool)});
         v["tickLatency"] = self.latency.report();
         if let Some(difficulty) = self.difficulty {
             v["difficulty"] = json!(difficulty);
         }
         if detail {
             v["participants"]=Value::Array((0..self.picks.len()).map(|i|{let s=self.seats.get(i);
-            json!({"slot":i,"team":self.world.entities[i].team,"playerId":self.players.get(i),"homeInstanceId":null,"botProfile":if s.is_none(){Some("lane-v1")}else{None},"displayName":if s.is_some(){"Guest".into()}else{format!("{} Bot",self.picks[i].name)},"hero":self.picks[i].name,"locked":s.is_none_or(|s|s.locked),"controlConnected":s.is_some_and(|s|s.peers[0].is_some()),"gameConnected":(!self.legacy_aral() || self.phase=="running") && s.is_some_and(|s|s.gameplay_peer().is_some()),"lastEventAt":s.and_then(|s|s.last).map(|x|x.to_rfc3339())})
+            json!({"slot":i,"team":self.world.entities[i].team,"playerId":self.players.get(i),"homeInstanceId":self.federation.as_ref().and_then(|f|f.homes.get(i)),"botProfile":if s.is_none(){Some("lane-v1")}else{None},"displayName":if s.is_some(){"Guest".into()}else{format!("{} Bot",self.picks[i].name)},"hero":self.picks[i].name,"locked":s.is_none_or(|s|s.locked),"controlConnected":s.is_some_and(|s|s.peers[0].is_some()),"gameConnected":(!self.legacy_aral() || self.phase=="running") && s.is_some_and(|s|s.gameplay_peer().is_some()),"lastEventAt":s.and_then(|s|s.last).map(|x|x.to_rfc3339())})
         }).collect());
         }
         v

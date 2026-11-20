@@ -104,7 +104,7 @@ paths:
         A valid queue identifier uses 1–32 ASCII letters, digits, underscores
         or hyphens. An explicit difficulty is accepted only on 5v5_bots_solo,
         solo, 5v5_bots_coop, 5v5_coop or 5v5_private_bots. The solo queues
-        always use one human seat. The casual_aral queue uses six seats.
+        always use one human seat. The casual_aral and ranked queues use six human seats.
         Other queues use the configured seat count. Queue entry follows the
         same party rules as CE. The REST request has no client ping-site report.
       requestBody:
@@ -147,7 +147,8 @@ paths:
       summary: Accept a match offer
       description: |
         The player must have a matching ticket. Standalone offers expire
-        after 30 seconds. Acceptance lets host reservation proceed once
+        after 30 seconds. Federated offers have a 35-second window committed
+        by the pool. Acceptance lets host reservation proceed once
         all seats confirm. Read events or the profile for the game address.
       responses:
         '204': {description: Acceptance processed}

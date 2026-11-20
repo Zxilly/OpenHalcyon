@@ -1365,6 +1365,31 @@ async fn public_and_ce_players_share_a_pool_and_cross_home_match_chat() {
             .count(),
         1
     );
+    rest(
+        a,
+        "POST",
+        "/api/v1/queue",
+        Some(token(0)),
+        json!({"mode":"ranked"}),
+        StatusCode::NO_CONTENT,
+    )
+    .await;
+    let ranked = node(&cluster, 0)
+        .app
+        .federated_intent(token(0))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(ranked.seats, 6);
+    rest(
+        a,
+        "DELETE",
+        "/api/v1/queue",
+        Some(token(0)),
+        Value::Null,
+        StatusCode::NO_CONTENT,
+    )
+    .await;
     let ce_guest = rpc(
         b,
         "createGuestPlayer",
@@ -1540,6 +1565,106 @@ async fn public_and_ce_players_share_a_pool_and_cross_home_match_chat() {
         StatusCode::CONFLICT,
     )
     .await;
+    let hosted_room = node(&cluster, 2);
+    let operator = |index| {
+        use argon2::{Argon2, PasswordHasher, password_hash::SaltString};
+
+        let member = node(&cluster, index);
+        let salt = SaltString::encode_b64(b"fixture salt").unwrap();
+        let hash = Argon2::default()
+            .hash_password(b"test-only password", &salt)
+            .unwrap();
+        halcyon_admin::router(
+            halcyon_admin::AdminConfig {
+                origin: "https://admin.example.test".into(),
+                username: "owner".into(),
+                password_hash: hash.to_string(),
+                instance_id: member.peer_config.node_id,
+                started_at: chrono::Utc::now(),
+                client_build: 147219,
+            },
+            member.app.clone(),
+            member.rooms.clone(),
+            Arc::new(Vec::new),
+        )
+        .unwrap()
+    };
+    let admin_match = |app: Router| {
+        let path = format!("/api/admin/v1/matches/{id}");
+        async move {
+            let session = app
+                .clone()
+                .oneshot(
+                    Request::post("/api/admin/v1/session")
+                        .header("Origin", "https://admin.example.test")
+                        .header("Content-Type", "application/json")
+                        .body(Body::from(
+                            json!({"username":"owner","password":"test-only password"}).to_string(),
+                        ))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(session.status(), StatusCode::OK);
+            let cookie = session.headers()["Set-Cookie"]
+                .to_str()
+                .unwrap()
+                .split(';')
+                .next()
+                .unwrap();
+            let response = app
+                .oneshot(
+                    Request::get(path)
+                        .header("Cookie", cookie)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let status = response.status();
+            (
+                status,
+                serde_json::from_slice::<Value>(
+                    &to_bytes(response.into_body(), 1 << 20).await.unwrap(),
+                )
+                .unwrap(),
+            )
+        }
+    };
+    let (status, room) = admin_match(operator(2)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(room["poolId"], hosted_room.peer_config.pool_id.to_string());
+    let participants = room["participants"].as_array().unwrap();
+    let expected = [
+        (
+            guests[0]["playerId"].clone(),
+            node(&cluster, 0).peer_config.node_id,
+        ),
+        (
+            guests[1]["playerId"].clone(),
+            node(&cluster, 1).peer_config.node_id,
+        ),
+        (
+            ce["returnValue"]["playerUUID"].clone(),
+            node(&cluster, 1).peer_config.node_id,
+        ),
+    ];
+    for (seat, row) in first.seats.iter().zip(participants) {
+        let (player, home) = expected
+            .iter()
+            .find(|(player, _)| *player == seat.player.to_string())
+            .unwrap();
+        assert_eq!(&row["playerId"], player);
+        assert_eq!(row["homeInstanceId"], home.to_string());
+    }
+    assert_eq!(participants.len(), 10);
+    assert!(
+        participants[3..]
+            .iter()
+            .all(|row| row["playerId"].is_null() && row["homeInstanceId"].is_null())
+    );
+    assert_eq!(admin_match(operator(0)).await.0, StatusCode::NOT_FOUND);
+
     let chat = format!("/api/v1/matches/{id}/chat");
     rest(
         a,

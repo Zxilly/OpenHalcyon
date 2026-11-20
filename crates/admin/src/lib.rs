@@ -518,7 +518,9 @@ async fn match_detail(
                 && let Some(activity) = state.platform.player_activity(id).await?
             {
                 participant["displayName"] = json!(activity.profile.name);
-                participant["homeInstanceId"] = json!(state.config.instance_id);
+                if participant["homeInstanceId"].is_null() {
+                    participant["homeInstanceId"] = json!(state.config.instance_id);
+                }
             }
         }
     }
