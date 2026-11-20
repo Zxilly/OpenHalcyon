@@ -111,3 +111,30 @@ native_labels! {
         DamageModifier => "DAMAGE_MODIFIER",
     }
 }
+
+/// Talents with a modeled authoritative effect. The content catalog also accepts
+/// arbitrary IDs, including talents whose effects have not been implemented.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ModeledTalent {
+    LongShot,
+    MobileBulwark,
+}
+impl ModeledTalent {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::LongShot => "Talent_Ringo_LongShot",
+            Self::MobileBulwark => "Talent_Lyra_MobileBulwark",
+        }
+    }
+    pub fn parse(id: &str) -> Option<Self> {
+        [Self::LongShot, Self::MobileBulwark]
+            .into_iter()
+            .find(|t| t.as_str() == id)
+    }
+    pub const fn hero(self) -> crate::EntityTemplate {
+        match self {
+            Self::LongShot => crate::EntityTemplate::Ringo,
+            Self::MobileBulwark => crate::EntityTemplate::Lyra,
+        }
+    }
+}

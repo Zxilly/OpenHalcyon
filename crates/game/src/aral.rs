@@ -45,7 +45,7 @@ pub(super) fn talent_response(
         let actor = hero.id;
         let talent = (selection == TalentSelection::Slot1 && level == 10).then(|| {
             (
-                "Talent_Lyra_MobileBulwark",
+                halcyon_data::ModeledTalent::MobileBulwark.as_str(),
                 std::num::NonZeroU8::new(10).unwrap(),
             )
         });

@@ -1,6 +1,7 @@
 //! Rank parameters for modeled releases whose damage block has a single verified role.
 use halcyon_data::{
-    AbilityParameter, DamageOperand, GameData, TalentParameter, combat_content::Ability,
+    AbilityParameter, DamageOperand, GameData, ModeledTalent, TalentParameter,
+    combat_content::Ability,
 };
 use serde::Serialize;
 
@@ -105,21 +106,10 @@ impl super::World {
             return Ok(());
         };
         let talent = data.talent_definition(id).ok_or("unknown talent")?;
-        if id == "Talent_Lyra_MobileBulwark"
-            && talent.hero.as_deref() == Some("Lyra")
-            && e.type_id == super::EntityTemplate::Lyra.as_raw()
-        {
-            let bonus = talent
-                .modifier(TalentParameter::BonusDuration.as_str())
-                .and_then(|m| m.value_at(level, e.item_stats.crystal, e.stats.weapon))
-                .filter(|v| *v >= 0.)
-                .ok_or("unsupported talent duration")?;
-            e.mobile_bulwark_bonus = Some(bonus);
-            return Ok(());
-        }
-        if id != "Talent_Ringo_LongShot"
-            || talent.hero.as_deref() != Some("Ringo")
-            || e.type_id != super::EntityTemplate::Ringo.as_raw()
+        let modeled = ModeledTalent::parse(id).ok_or("unsupported talent for hero")?;
+        let template = modeled.hero().as_raw();
+        if template != e.type_id
+            || talent.hero.as_deref().and_then(|name| data.type_id(name)) != Some(template)
         {
             return Err("unsupported talent for hero");
         }
@@ -129,11 +119,24 @@ impl super::World {
                 .and_then(|m| m.value_at(level, e.item_stats.crystal, e.stats.weapon))
                 .ok_or("unsupported talent modifier")
         };
-        e.long_shot = Some(LongShot {
-            range: value(TalentParameter::BonusRange)?,
-            damage: value(TalentParameter::DamageModifier)?,
-            cooldown: value(TalentParameter::CooldownModifier)?,
-        });
+        match modeled {
+            ModeledTalent::LongShot => {
+                e.long_shot = Some(LongShot {
+                    range: value(TalentParameter::BonusRange)?,
+                    damage: value(TalentParameter::DamageModifier)?,
+                    cooldown: value(TalentParameter::CooldownModifier)?,
+                });
+                e.mobile_bulwark_bonus = None;
+            }
+            ModeledTalent::MobileBulwark => {
+                let bonus = value(TalentParameter::BonusDuration)?;
+                if bonus < 0. {
+                    return Err("unsupported talent duration");
+                }
+                e.mobile_bulwark_bonus = Some(bonus);
+                e.long_shot = None;
+            }
+        }
         Ok(())
     }
 }
@@ -379,6 +382,38 @@ mod tests {
         w.entities[1].position = Position { x: 10., y: 0. };
         w
     }
+    #[test]
+    #[ignore = "requires original delivery and supplemental combat data"]
+    fn named_talents_follow_the_selected_hero_and_clear_without_leaking_modifiers() {
+        let d = original();
+        let mut w = room(&d, "Ringo");
+        let level = NonZeroU8::new(1).unwrap();
+        let shot = Some((ModeledTalent::LongShot.as_str(), level));
+        let mobile = Some((ModeledTalent::MobileBulwark.as_str(), level));
+        w.set_named_talent(1, shot, &d).unwrap();
+        assert!(w.set_named_talent(1, mobile, &d).is_err());
+        assert!(
+            w.set_named_talent(1, Some(("extension/unknown", level)), &d)
+                .is_err()
+        );
+        assert!(w.entities[0].long_shot.is_some());
+        assert!(w.entities[0].mobile_bulwark_bonus.is_none());
+        w.select_hero(0, "Lyra", &d).unwrap();
+        assert!(w.entities[0].long_shot.is_none());
+        w.set_named_talent(1, mobile, &d).unwrap();
+        assert!(w.set_named_talent(1, shot, &d).is_err());
+        assert_eq!(w.entities[0].mobile_bulwark_bonus, Some(1.4));
+        w.set_named_talent(1, None, &d).unwrap();
+        assert!(w.entities[0].mobile_bulwark_bonus.is_none());
+        w.set_named_talent(1, mobile, &d).unwrap();
+        w.select_hero(0, "Ringo", &d).unwrap();
+        assert!(w.entities[0].mobile_bulwark_bonus.is_none());
+        assert!(w.entities[0].long_shot.is_none());
+        w.set_named_talent(1, shot, &d).unwrap();
+        w.set_named_talent(1, None, &d).unwrap();
+        assert!(w.entities[0].long_shot.is_none());
+    }
+
     #[test]
     #[ignore = "requires original delivery and supplemental combat data"]
     fn catherine_pursuit_resets_the_basic_and_empowers_exactly_one_melee_hit() {

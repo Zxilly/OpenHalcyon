@@ -1,6 +1,6 @@
 //! Read the separately supplied 4.13.4 delivery. Unknown fields retain their original names and values.
 mod ability_parameter;
-pub use ability_parameter::{AbilityParameter, DamageOperand, TalentParameter};
+pub use ability_parameter::{AbilityParameter, DamageOperand, ModeledTalent, TalentParameter};
 pub mod combat_content;
 mod difficulty;
 mod entity_template;
