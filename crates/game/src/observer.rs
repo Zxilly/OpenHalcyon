@@ -205,11 +205,19 @@ async fn client(
                 return Err(io::ErrorKind::InvalidData.into());
             }
 
-            let Some(raw) = frames.next(&mut rd).await? else {
+            let Some(mut raw) = frames.next(&mut rd).await? else {
                 return Ok(());
             };
-            let m = cipher.decode_owned(raw.into())?;
-            if m.is_spectator_exit() {
+            let (opcode, body) = cipher.decrypt_in_place(&mut raw)?;
+            // Every valid encrypted frame contains at least six body bytes, enough for
+            // the clock float. Neither a heartbeat nor a clock changes observer state.
+            if matches!(
+                Opcode::try_from(opcode),
+                Ok(Opcode::ClockSync | Opcode::Heartbeat)
+            ) {
+                continue;
+            }
+            if Message::is_spectator_exit_frame(opcode, body) {
                 // Handshake already bound this socket to this grant. Keep the room
                 // lock out of the home transaction. A transient write error retains
                 // the grant and ordinary reconnect grace.
@@ -232,9 +240,7 @@ async fn client(
                 return Ok(());
             }
             // No route from this socket to Room::receive or World::command.
-            if !matches!(m.fields()?, Fields::Clock(_) | Fields::Heartbeat) {
-                return Err(io::ErrorKind::PermissionDenied.into());
-            }
+            return Err(io::ErrorKind::PermissionDenied.into());
         }
     };
     tokio::pin!(outgoing);

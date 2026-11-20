@@ -109,22 +109,20 @@ enum HeroCounter {
 }
 
 impl Stats {
-    fn received(&self, wire_len: usize, msg: &Message) {
+    fn received(&self, wire_len: usize, opcode: u16, body: &[u8]) {
         self.frames.fetch_add(1, Ordering::Relaxed);
         self.bytes.fetch_add(wire_len as u64, Ordering::Relaxed);
-        let counter = match msg.known_opcode() {
+        let counter = match Opcode::try_from(opcode).ok() {
             Some(Opcode::Position) => &self.positions,
             Some(Opcode::ActorDeath) => &self.death_frames,
-            Some(Opcode::StatModifier) if msg.body.get(12) == Some(&(HeroCounter::Kills as u8)) => {
+            Some(Opcode::StatModifier) if body.get(12) == Some(&(HeroCounter::Kills as u8)) => {
                 &self.hero_kill_increments
             }
-            Some(Opcode::StatModifier)
-                if msg.body.get(12) == Some(&(HeroCounter::Deaths as u8)) =>
-            {
+            Some(Opcode::StatModifier) if body.get(12) == Some(&(HeroCounter::Deaths as u8)) => {
                 &self.hero_death_increments
             }
-            Some(Opcode::HealthImpact) if msg.body.len() >= 12 => {
-                let delta = f32::from_be_bytes(msg.body[8..12].try_into().unwrap());
+            Some(Opcode::HealthImpact) if body.len() >= 12 => {
+                let delta = f32::from_be_bytes(body[8..12].try_into().unwrap());
                 if delta < 0. {
                     &self.damage_frames
                 } else if delta > 0. {
@@ -284,7 +282,7 @@ impl Socket {
         let bytes = self.frames.required(&mut self.stream).await?;
         let len = bytes.len();
         let msg = self.cipher.decode_owned(bytes.into())?;
-        self.stats.received(len + 2, &msg);
+        self.stats.received(len + 2, msg.opcode, &msg.body);
         Ok(msg)
     }
     async fn until(&mut self, op: Opcode) -> Result<Message> {
@@ -321,12 +319,12 @@ impl Socket {
         let reader = async {
             let mut last_clock = 0u32;
             loop {
-                let bytes = frames.required(&mut rd).await?;
+                let mut bytes = frames.required(&mut rd).await?;
                 let n = bytes.len();
-                let m = cipher.decode_owned(bytes.into())?;
-                stats.received(n + 2, &m);
-                if m.is(Opcode::ClockSync) && m.body.len() >= 4 {
-                    let time = f32::from_be_bytes(m.body[..4].try_into().unwrap());
+                let (opcode, body) = cipher.decrypt_in_place(&mut bytes)?;
+                stats.received(n + 2, opcode, body);
+                if opcode == Opcode::ClockSync.raw() && body.len() >= 4 {
+                    let time = f32::from_be_bytes(body[..4].try_into().unwrap());
                     let index = (time / 0.4).round() as u32;
                     let stride = if game { 5 } else { 1 };
                     if index != last_clock + stride {
@@ -338,9 +336,7 @@ impl Socket {
                 if !delay.is_zero() {
                     sleep(delay).await;
                 }
-                if m.is(Opcode::TickSyncC)
-                    && matches!(m.body.as_slice(), [0, 0, 0, 1 | 2, 0 | 2, 0])
-                {
+                if opcode == Opcode::TickSyncC.raw() && matches!(body, [0, 0, 0, 1 | 2, 0 | 2, 0]) {
                     stats.end_frames.fetch_add(1, Ordering::Relaxed);
                     return Ok(true);
                 }

@@ -144,8 +144,11 @@ impl Message {
     }
     /// The Android spectator-exit wrapper writes one zero operand before block padding.
     pub fn is_spectator_exit(&self) -> bool {
-        self.is(crate::Opcode::SpectatorExitMatchRequest)
-            && (self.body == [0] || self.body == [0; 6])
+        Self::is_spectator_exit_frame(self.opcode, &self.body)
+    }
+
+    pub fn is_spectator_exit_frame(opcode: u16, body: &[u8]) -> bool {
+        opcode == Opcode::SpectatorExitMatchRequest.raw() && (body == [0] || body == [0; 6])
     }
     pub fn clock(time: f32) -> Self {
         Self::known(crate::Opcode::ClockSync, time.to_be_bytes())
@@ -1062,15 +1065,22 @@ impl MatchCipher {
         self.decode_owned(payload.to_vec())
     }
 
-    /// Reuse the transport's received allocation for the decrypted body.
-    pub fn decode_owned(&self, mut plain: Vec<u8>) -> io::Result<Message> {
+    /// Decrypt a single frame payload (excluding its two-byte length) in place.
+    /// The raw opcode is preserved, and the borrowed body includes alignment bytes.
+    /// Invalid lengths return an error before modifying the input.
+    pub fn decrypt_in_place<'a>(&self, plain: &'a mut [u8]) -> io::Result<(u16, &'a [u8])> {
         if plain.is_empty() || plain.len() > MAX_PAYLOAD || !plain.len().is_multiple_of(8) {
             return Err(invalid("invalid encrypted frame length"));
         }
         for block in plain.as_chunks_mut::<8>().0 {
             self.0.decrypt_block(block.into());
         }
-        let opcode = u16::from_be_bytes([plain[0], plain[1]]);
+        Ok((u16::from_be_bytes([plain[0], plain[1]]), &plain[2..]))
+    }
+
+    /// Reuse the transport's received allocation for the decrypted body.
+    pub fn decode_owned(&self, mut plain: Vec<u8>) -> io::Result<Message> {
+        let (opcode, _) = self.decrypt_in_place(&mut plain)?;
         plain.copy_within(2.., 0);
         plain.truncate(plain.len() - 2);
         Ok(Message::new(opcode, plain))
