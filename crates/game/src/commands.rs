@@ -22,7 +22,7 @@ pub(super) fn from_live(request: LiveFields<'_>) -> Option<Command> {
 fn build_path(actor: u32, value: u8) -> super::Message {
     let mut body = u32::from(wire_id(actor)).to_be_bytes().to_vec();
     body.push(value);
-    super::Message::new(0x0488, body)
+    super::Message::known(crate::Opcode::SetRecommendedBuildPath, body)
 }
 
 impl super::Room {
@@ -38,7 +38,10 @@ impl super::Room {
     pub(super) fn set_recommended_path(&mut self, i: usize, value: u8) -> super::Batch {
         let actor = &self.world.entities[i];
         let applied = build_path(actor.id, value);
-        let response = vec![super::Message::new(0x0485, [value]), applied];
+        let response = vec![
+            super::Message::known(crate::Opcode::RequestRecommendedBuildPath, [value]),
+            applied,
+        ];
         if self.seats[i].recommended_path.replace(value) != Some(value) {
             for (j, seat) in self.seats.iter().enumerate() {
                 if j != i
@@ -65,11 +68,14 @@ mod tests {
     fn attack(target: u32, flag: u8) -> Message {
         let mut body = target.to_be_bytes().to_vec();
         body.push(flag);
-        Message::new(0x0424, body)
+        Message::known(crate::Opcode::RequestModifyBasicAttackTarget, body)
     }
 
     fn point(x: f32, y: f32) -> Message {
-        Message::new(0x03f5, [x.to_be_bytes(), y.to_be_bytes()].concat())
+        Message::known(
+            crate::Opcode::StateUpdA,
+            [x.to_be_bytes(), y.to_be_bytes()].concat(),
+        )
     }
 
     #[test]
@@ -136,11 +142,16 @@ mod tests {
                 let ch = usize::from(!aral);
                 if aral {
                     let actor = u32::from(wire_id(seat as u32 + 1));
-                    slot.preamble.observe(&Message::new(0x46e, [0; 6]), actor);
+                    slot.preamble
+                        .observe(&Message::known(crate::Opcode::RequestScene, [0; 6]), actor);
                     let mut ready = actor.to_be_bytes().to_vec();
                     ready.extend([1, 0]);
-                    slot.preamble.observe(&Message::new(0x471, ready), actor);
-                    slot.preamble.observe(&Message::new(0x46d, [0; 6]), actor);
+                    slot.preamble
+                        .observe(&Message::known(crate::Opcode::SceneOwner, ready), actor);
+                    slot.preamble.observe(
+                        &Message::known(crate::Opcode::SceneConfirmed, [0; 6]),
+                        actor,
+                    );
                 }
                 slot.peers[ch] = Some(crate::Peer {
                     generation: seat as u64,
@@ -149,10 +160,14 @@ mod tests {
                 });
                 readers.push(rx);
             }
-            room.phase("running");
+            room.phase(crate::RoomPhase::Running);
             for value in [0xfe, 1] {
                 let out = room
-                    .receive(2, usize::from(!aral), Message::new(0x485, [value]))
+                    .receive(
+                        2,
+                        usize::from(!aral),
+                        Message::known(crate::Opcode::RequestRecommendedBuildPath, [value]),
+                    )
                     .unwrap();
                 assert_eq!(out[1].body, [0, 0, 5, 222, value]);
                 for (seat, rx) in readers.iter_mut().enumerate() {
@@ -169,14 +184,14 @@ mod tests {
                 assert_eq!(
                     room.spawn_view(Some(1))
                         .iter()
-                        .filter(|m| m.opcode == 0x488)
+                        .filter(|m| m.is(crate::Opcode::SetRecommendedBuildPath))
                         .count(),
                     1
                 );
                 assert_eq!(
                     room.spawn_view(Some(0))
                         .iter()
-                        .filter(|m| m.opcode == 0x488)
+                        .filter(|m| m.is(crate::Opcode::SetRecommendedBuildPath))
                         .count(),
                     usize::from(aral)
                 );
@@ -201,7 +216,7 @@ mod tests {
         let shared = rooms.room(id).unwrap();
         let mut room = shared.lock().unwrap();
         let hero_start = room.world.entities[0].position;
-        room.phase("running");
+        room.phase(crate::RoomPhase::Running);
 
         let before = room.world.state_digest();
         for (socket, msg) in [
@@ -210,8 +225,14 @@ mod tests {
             (1, attack(1501, 0)),  // Hidden enemy.
             (1, attack(1500, 0)),  // Own actor.
             (1, attack(64999, 0)), // Missing actor.
-            (1, Message::new(0x0411, [0, 0, 5, 221, 2])),
-            (1, Message::new(0x0412, [0; 13])),
+            (
+                1,
+                Message::known(crate::Opcode::RequestTargetAbility, [0, 0, 5, 221, 2]),
+            ),
+            (
+                1,
+                Message::known(crate::Opcode::RequestPointAbility, [0; 13]),
+            ),
         ] {
             assert!(room.receive(0, socket, msg).unwrap().is_empty());
             assert_eq!(room.world.state_digest(), before);

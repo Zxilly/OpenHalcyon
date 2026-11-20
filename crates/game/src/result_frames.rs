@@ -28,7 +28,7 @@ pub(super) fn append_postgame(
     if let halcyon_sim::Event::Death { id, .. } = ev
         && Some(*id) == crystal
     {
-        out.push(Message::new(0x0452, []));
+        out.push(Message::known(crate::Opcode::EnterPostgame, []));
     }
 }
 
@@ -62,7 +62,7 @@ pub(super) fn crystal_end(queue: &str, world: &World) -> Option<Message> {
     }
     let mut body = [0; 6];
     body[..4].copy_from_slice(&(u32::from(winner) + 1).to_be_bytes());
-    Some(Message::new(0x3f1, body))
+    Some(Message::known(crate::Opcode::TickSyncC, body))
 }
 
 #[cfg(test)]

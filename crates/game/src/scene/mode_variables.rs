@@ -27,7 +27,7 @@ impl Opening {
             if key == MODE_KEY {
                 body[4..8].copy_from_slice(&mode_word.to_be_bytes());
             }
-            Message::new(0x041f, body)
+            Message::known(crate::Opcode::ModifyGameModeVar, body)
         })
     }
 }

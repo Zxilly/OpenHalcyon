@@ -70,7 +70,7 @@ impl Delivery {
 
     fn declares_actor(&self, actor: u16, slot: u8) -> bool {
         self.messages().iter().any(|message| {
-            message.opcode == 0x03f3
+            message.is(crate::Opcode::EntitySpawn)
                 && message.body.get(10..12) == Some(actor.to_be_bytes().as_slice())
                 && message.body.get(745) == Some(&slot)
         })
@@ -247,7 +247,7 @@ async fn connection(mut sock: TcpStream, room: Shared, manager: Rooms) -> io::Re
                     }
                 }
             }
-            if waiting_for_scene && batch.contains(0x046f) {
+            if waiting_for_scene && batch.contains(crate::wire_opcode::ModeName) {
                 let mut state = room.lock().unwrap();
                 let seat = &mut state.seats[seat];
                 if seat.peers[ch]
@@ -277,7 +277,7 @@ async fn connection(mut sock: TcpStream, room: Shared, manager: Rooms) -> io::Re
             }
             // A shared control connection becomes a world stream at the scene header.
             // Skip the private draft, including controls that later yield to a second socket.
-            if replay_root.is_some() && (ch == 1 || batch.contains(0x046f)) {
+            if replay_root.is_some() && (ch == 1 || batch.contains(crate::wire_opcode::ModeName)) {
                 let state = room.lock().unwrap();
                 recording = replay_root.take().map(|root| {
                     recording::Recorder::start(
@@ -321,16 +321,16 @@ async fn connection(mut sock: TcpStream, room: Shared, manager: Rooms) -> io::Re
             let out = match state.phase {
                 // ARAL keeps its authenticated connections open between the
                 // crystal defeat or surrender and the final statistics report.
-                "ending"
+                crate::RoomPhase::Ending
                     if state.reason == Some("completed")
                         && !*state.stop.borrow()
-                        && m.opcode == 0
+                        && m.is(crate::Opcode::ClockSync)
                         && m.body.len() == 6
                         && matches!(m.fields(), Ok(Fields::Clock(t)) if t.is_finite() && t >= 0.) =>
                 {
                     vec![m]
                 }
-                "ending" | "ended" => continue,
+                crate::RoomPhase::Ending | crate::RoomPhase::Ended => continue,
                 _ => state.receive(seat, ch, m)?,
             };
             if !out.is_empty() {
@@ -405,7 +405,10 @@ mod tests {
         assert_eq!(ack, ACK_FRAME);
         sock.write_all(
             &cipher
-                .encode(&Message::new(0x3e8, identity.to_string().as_bytes()))
+                .encode(&Message::known(
+                    crate::Opcode::PlayerUuid,
+                    identity.to_string().as_bytes(),
+                ))
                 .unwrap(),
         )
         .await
@@ -483,7 +486,7 @@ mod tests {
             let (id, pos) = (crystal.id, crystal.position);
             r.world.entities[0].position = pos;
             r.seats[0].locked = true;
-            r.phase("running");
+            r.phase(crate::RoomPhase::Running);
             id
         };
         let data = identified(&hosted.address, player, &cipher).await;
@@ -517,17 +520,24 @@ mod tests {
         let (player, observer) =
             tokio::join!(final_frames(data, &cipher), final_frames(view, &cipher));
         let revoked = final_frames(revoked_view, &cipher).await;
-        assert!(
-            !revoked
-                .iter()
-                .any(|m| matches!(m.opcode, 0x430 | 0x48d | 0x3f1))
-        );
+        assert!(!revoked.iter().any(|m| matches!(
+            m.opcode,
+            crate::wire_opcode::ActorDeath
+                | crate::wire_opcode::StatisticsReport
+                | crate::wire_opcode::TickSyncC
+        )));
         for stream in [&player, &observer] {
             let opcodes: Vec<_> = stream.iter().map(|m| m.opcode).collect();
-            let death = opcodes.iter().position(|&op| op == 0x430).unwrap();
-            assert!(opcodes[..death].contains(&0x41e));
-            assert!(opcodes[death + 1..].contains(&0x459));
-            assert!(opcodes.ends_with(&[0x048d, 0x03f1]));
+            let death = opcodes
+                .iter()
+                .position(|&op| op == crate::wire_opcode::ActorDeath)
+                .unwrap();
+            assert!(opcodes[..death].contains(&crate::wire_opcode::HealthImpact));
+            assert!(opcodes[death + 1..].contains(&crate::wire_opcode::Snapshot5V5));
+            assert!(opcodes.ends_with(&[
+                crate::wire_opcode::StatisticsReport,
+                crate::wire_opcode::TickSyncC
+            ]));
         }
         let player_report = &player[player.len() - 2];
         assert_eq!(player_report, &observer[observer.len() - 2]);
@@ -558,7 +568,7 @@ mod tests {
             .unwrap();
         let shared = rooms.room(id).unwrap();
         let mut r = shared.lock().unwrap();
-        r.phase("running");
+        r.phase(crate::RoomPhase::Running);
         r.world.tick = 1;
         for s in &mut r.seats {
             s.locked = true;
@@ -596,7 +606,11 @@ mod tests {
         let batch = ally.try_recv().unwrap().into_records();
         assert_eq!(
             batch.iter().map(|m| m.opcode).collect::<Vec<_>>(),
-            [0x41d, 0x43d, 0x41c]
+            [
+                crate::wire_opcode::EntityStat,
+                crate::wire_opcode::ItemGrant,
+                crate::wire_opcode::StatModifier
+            ]
         );
         assert_eq!(grants(&batch), [first.granted.instance]);
         assert!(enemy.try_recv().is_err());
@@ -627,7 +641,10 @@ mod tests {
         r.detach(0, 1, generation);
         let (_, reconnect) = attach(&mut r, players[0]);
         assert_eq!(grants(&reconnect), expected);
-        let spawn = batch.iter().find(|m| m.opcode == 0x3f3).unwrap();
+        let spawn = batch
+            .iter()
+            .find(|m| m.is(crate::Opcode::EntitySpawn))
+            .unwrap();
         assert_eq!(
             f32::from_be_bytes(spawn.body[190..194].try_into().unwrap()),
             r.world.entities[i].armor()
@@ -651,7 +668,7 @@ mod tests {
             .unwrap();
         let shared = rooms.room(id).unwrap();
         let mut room = shared.lock().unwrap();
-        room.phase("running");
+        room.phase(crate::RoomPhase::Running);
         room.world.tick = 1;
         for entity in &mut room.world.entities {
             entity.position = Position {

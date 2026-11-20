@@ -88,7 +88,7 @@ mod tests {
                 world.use_solo_mid_lane().unwrap();
             }
             let hero = &world.entities[0];
-            let mut message = Message::new(0x03f3, [0; 750]);
+            let mut message = Message::known(crate::Opcode::EntitySpawn, [0; 750]);
             set_spawn(&world, &mut message, hero);
             for (offset, value) in [
                 (294, if aral { 4.0_f32 } else { 1.0 }),
@@ -139,15 +139,17 @@ mod tests {
         };
         let declared = out
             .iter()
-            .find(|m| m.opcode == 0x03f3 && word(&m.body, 8) == 1500)
+            .find(|m| m.is(crate::Opcode::EntitySpawn) && word(&m.body, 8) == 1500)
             .unwrap();
         assert_eq!(word(&declared.body, 294), 2f32.to_bits());
         assert_eq!(word(&declared.body, 318), 0.18f32.to_bits());
         assert_eq!(word(&declared.body, 322), 84f32.to_bits());
-        assert!(
-            !out.iter()
-                .any(|m| matches!(m.opcode, 0x041d | 0x0434 | 0x041c) && target(m))
-        );
+        assert!(!out.iter().any(|m| matches!(
+            m.opcode,
+            crate::wire_opcode::EntityStat
+                | crate::wire_opcode::LevelUp
+                | crate::wire_opcode::StatModifier
+        ) && target(m)));
 
         room.world.entities[0].level = 3;
         room.replicate(&[
@@ -159,11 +161,22 @@ mod tests {
         };
         let relevant: Vec<_> = out
             .into_iter()
-            .filter(|m| matches!(m.opcode, 0x041d | 0x0434 | 0x041c) && target(m))
+            .filter(|m| {
+                matches!(
+                    m.opcode,
+                    crate::wire_opcode::EntityStat
+                        | crate::wire_opcode::LevelUp
+                        | crate::wire_opcode::StatModifier
+                ) && target(m)
+            })
             .collect();
         assert_eq!(
             relevant.iter().map(|m| m.opcode).collect::<Vec<_>>(),
-            [0x041d, 0x0434, 0x041c]
+            [
+                crate::wire_opcode::EntityStat,
+                crate::wire_opcode::LevelUp,
+                crate::wire_opcode::StatModifier
+            ]
         );
         assert_eq!(word(&relevant[0].body, 4), 90f32.to_bits());
         assert_eq!(relevant[0].body[8], 8);

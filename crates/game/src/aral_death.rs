@@ -67,9 +67,9 @@ pub(super) fn flush(room: &mut Room, now: u64) {
         }
         let mut body = [0; 6];
         body[..4].copy_from_slice(&u32::from(wire_id(death.id)).to_be_bytes());
-        let mut out = vec![Message::new(0x0431, body)];
+        let mut out = vec![Message::known(crate::Opcode::ActorDead, body)];
         if death.minion {
-            out.push(Message::new(0x040b, body));
+            out.push(Message::known(crate::Opcode::DestroyEntity, body));
             for team in 0..2 {
                 if death.teams & (1 << team) != 0 {
                     room.aral_slots.destroy_sent(death.id, team);

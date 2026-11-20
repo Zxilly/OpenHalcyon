@@ -30,7 +30,7 @@ pub(super) fn release(
 }
 
 pub(super) fn actors(m: &Message) -> Option<(u32, u32)> {
-    if m.opcode != 0x415 || m.body.len() != 9 || m.body[8] != 0 {
+    if !m.is(crate::Opcode::PlayAbility) || m.body.len() != 9 || m.body[8] != 0 {
         return None;
     }
     let a = u32::from_be_bytes(m.body[..4].try_into().ok()?);
@@ -53,10 +53,12 @@ pub(super) fn deliver(
     views: &mut [View],
     team: usize,
 ) {
-    if out
-        .iter()
-        .any(|m| matches!(m.opcode, 0x43e | 0x445) && super::ringo::references(m).is_some())
-    {
+    if out.iter().any(|m| {
+        matches!(
+            m.opcode,
+            crate::wire_opcode::EntityProp | crate::wire_opcode::CancelBuff
+        ) && super::ringo::references(m).is_some()
+    }) {
         for ((seat, actor), view) in seats
             .iter()
             .zip(&world.entities)
@@ -169,11 +171,11 @@ mod tests {
                         let mut spawn = [0; 122];
                         spawn[8..12].copy_from_slice(&u32::from(wire_id(tid)).to_be_bytes());
                         spawn[116] = 7;
-                        view.declarations(&[Message::new(0x3f2, spawn)]);
+                        view.declarations(&[Message::known(crate::Opcode::Snapshot, spawn)]);
                         assert!(!registered(&view, &frame));
                         spawn[8..12].copy_from_slice(&u32::from(wire_id(hid)).to_be_bytes());
                         spawn[116] = 17;
-                        view.declarations(&[Message::new(0x3f2, spawn)]);
+                        view.declarations(&[Message::known(crate::Opcode::Snapshot, spawn)]);
                         assert!(registered(&view, &frame));
                         released += 1;
                     }

@@ -14,7 +14,7 @@ pub(super) struct ActorSlots {
 }
 
 fn set_full(message: &mut Message, slot: u8) {
-    debug_assert_eq!(message.opcode, 0x03f3);
+    debug_assert_eq!(message.opcode, crate::wire_opcode::EntitySpawn);
     message.body[FULL_SLOT_OFFSET] = slot;
 }
 
@@ -143,7 +143,7 @@ mod tests {
         let mut slots = ActorSlots::from_roster(&world.entities);
         for entity in &world.entities[..10] {
             let hero = slots.declaration(&world, entity, &[], None).unwrap();
-            assert_eq!(hero.opcode, 0x03f3);
+            assert_eq!(hero.opcode, crate::wire_opcode::EntitySpawn);
             let expected = [14, 19, 15, 20, 16, 21, 17, 22, 18, 23];
             assert_eq!(hero.body[745], expected[(entity.id - 1) as usize]);
         }
@@ -156,7 +156,10 @@ mod tests {
             .filter(|entity| entity.kind == Kind::Minion)
             .map(|entity| {
                 let spawn = slots.declaration(&world, entity, &[], None).unwrap();
-                assert_eq!((spawn.opcode, spawn.body.len()), (0x03f2, 122));
+                assert_eq!(
+                    (spawn.opcode, spawn.body.len()),
+                    (crate::wire_opcode::Snapshot, 122)
+                );
                 assert_eq!(spawn.body[117], 0);
                 assert_eq!(spawn.body[120], [1, 4][entity.team as usize]);
                 assert_eq!(spawn.body[121], entity.team + 1);
@@ -318,9 +321,9 @@ mod tests {
         assert!(
             batch
                 .iter()
-                .all(|m| m.opcode != 0x03f2 || m.body[116] < FIRST_MINION_SLOT)
+                .all(|m| !m.is(crate::Opcode::Snapshot) || m.body[116] < FIRST_MINION_SLOT)
         );
-        assert!(batch.iter().all(|m| m.opcode != 0x042e));
+        assert!(batch.iter().all(|m| !m.is(crate::Opcode::Position)));
         assert!(!room.visible[0].contains(&id));
         assert!(room.world.entities.iter().any(|e| e.id == id && e.hp > 0.0));
 
@@ -331,7 +334,7 @@ mod tests {
         };
         assert_eq!(
             batch.iter().map(|m| m.opcode).collect::<Vec<_>>(),
-            [0x03f2, 0x042e]
+            [crate::wire_opcode::Snapshot, crate::wire_opcode::Position]
         );
         assert_eq!(batch[0].body[116], FIRST_MINION_SLOT);
         assert_eq!(batch[0].body[8..12], u32::from(wire_id(id)).to_be_bytes());

@@ -29,7 +29,11 @@ use halcyon_platform::{HostedMatch, MatchHost, PlatformError, Reservation};
 use halcyon_protocol::{Fields, Message};
 use halcyon_sim::{Command, Event, Position, World};
 use messages::{setup, snapshot, spawn, wire_id, world_header};
-use serde_json::{Value, json};
+mod responses;
+pub(crate) use halcyon_protocol::{Opcode, wire_opcode};
+use responses::{Channel, EventDetail, EventKind};
+pub use responses::{RoomParticipant, RoomPhase, RoomSummary, TickLatencyReport};
+use serde_json::Value;
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     net::{IpAddr, TcpListener},
@@ -131,14 +135,22 @@ impl TickLatency {
         }
         self.recent.push_back(us);
     }
-    fn report(&self) -> Value {
+    fn report(&self) -> TickLatencyReport {
         let mut recent: Vec<_> = self.recent.iter().copied().collect();
         recent.sort_unstable();
         let index = (recent.len() * 99).div_ceil(100).saturating_sub(1);
-        json!({"count":self.count,"totalUs":self.total_us,"maxUs":self.max_us,"missedDeadlines":self.misses,"over40ms":self.over40,"recentSampleCount":recent.len(),"p99Us":recent.get(index)})
+        TickLatencyReport {
+            count: self.count,
+            total_us: self.total_us,
+            max_us: self.max_us,
+            missed_deadlines: self.misses,
+            over40ms: self.over40,
+            recent_sample_count: recent.len(),
+            p99_us: recent.get(index).copied(),
+        }
     }
 }
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Default, serde::Serialize)]
 struct Combat {
     kills: u32,
     deaths: u32,
@@ -179,13 +191,13 @@ struct Room {
     catalog: Arc<[[u8; 32]]>,
     seats: Vec<Seat>,
     world: World,
-    phase: &'static str,
+    phase: RoomPhase,
     created: DateTime<Utc>,
     since: DateTime<Utc>,
     ended: Option<DateTime<Utc>>,
     reason: Option<&'static str>,
     termination: Option<Value>,
-    events: Vec<Value>,
+    events: Vec<responses::RoomEvent>,
     stop: watch::Sender<bool>,
     generation: u64,
     last_active: Instant,
@@ -287,6 +299,9 @@ impl Rooms {
         self.0.bytes.load(Ordering::Relaxed)
     }
     pub fn list(&self) -> Vec<Value> {
+        self.list_typed().iter().map(responses::value).collect()
+    }
+    pub fn list_typed(&self) -> Vec<RoomSummary> {
         self.0
             .rooms
             .lock()
@@ -299,6 +314,9 @@ impl Rooms {
         self.0.rooms.lock().unwrap().get(&id).cloned()
     }
     pub fn detail(&self, id: Uuid) -> Option<Value> {
+        self.detail_typed(id).map(responses::value)
+    }
+    pub fn detail_typed(&self, id: Uuid) -> Option<RoomSummary> {
         Some(self.room(id)?.lock().unwrap().view(true))
     }
     pub fn contains(&self, id: Uuid) -> bool {
@@ -309,9 +327,11 @@ impl Rooms {
         let r = r.lock().unwrap();
         let start = (after as usize).min(r.events.len());
         let end = start.saturating_add(limit).min(r.events.len());
-        Some(
-            json!({"items":&r.events[start..end],"hasMore":end<r.events.len(),"nextAfter":if start==end {after}else{end as u64}}),
-        )
+        Some(responses::value(responses::EventPage {
+            items: &r.events[start..end],
+            has_more: end < r.events.len(),
+            next_after: if start == end { after } else { end as u64 },
+        }))
     }
     pub fn terminate(
         &self,
@@ -331,18 +351,25 @@ impl Rooms {
                 Err(TerminateError::Conflict)
             };
         }
-        if matches!(r.phase, "ending" | "ended") {
+        if matches!(r.phase, crate::RoomPhase::Ending | crate::RoomPhase::Ended) {
             return Err(TerminateError::Conflict);
         }
-        let v = json!({"matchId":id,"requestedAt":now(),"requestedBy":actor,"reason":reason});
+        let v = responses::value(responses::Termination {
+            match_id: id,
+            requested_at: now(),
+            requested_by: actor,
+            reason,
+        });
         r.termination = Some(v.clone());
         r.reason = Some("admin_terminated");
         r.event(
-            "admin_action",
+            EventKind::AdminAction,
             "Termination requested",
-            json!({"actor":actor}),
+            EventDetail::Admin {
+                actor: actor.to_owned(),
+            },
         );
-        r.phase("ending");
+        r.phase(crate::RoomPhase::Ending);
         r.stop.send_replace(true);
         Ok((false, v))
     }
@@ -353,11 +380,11 @@ impl Rooms {
             let end = r.reason.unwrap_or("error");
             r.reason = Some(end);
             r.ended = Some(Utc::now());
-            r.phase("ended");
+            r.phase(crate::RoomPhase::Ended);
             if !r.admitted {
                 return;
             }
-            let players: serde_json::Map<_, _> = r
+            let players = r
                 .players
                 .iter()
                 .enumerate()
@@ -365,38 +392,36 @@ impl Rooms {
                     let actor = &r.world.entities[seat];
                     let combat = &r.combat[(actor.id - 1) as usize];
                     let score = r.world.player_score(actor.id).expect("reserved hero actor");
-                    let mut row = json!(score);
-                    row.as_object_mut().unwrap().extend([
-                        ("team".into(), json!(actor.team)),
-                        (
-                            "victory".into(),
-                            json!(r.world.winner.map(|w| actor.team == w)),
-                        ),
-                        ("hero".into(), json!(r.picks[seat].name)),
-                        ("gold".into(), json!(actor.gold)),
-                        (
-                            "itemTemplates".into(),
-                            json!(
-                                actor
-                                    .inventory
-                                    .iter()
-                                    .map(|held| held.kind.template())
-                                    .collect::<Vec<_>>()
-                            ),
-                        ),
-                        ("level".into(), json!(actor.level)),
-                        ("xp".into(), json!(actor.xp)),
-                        ("kills".into(), json!(combat.kills)),
-                        ("deaths".into(), json!(combat.deaths)),
-                        ("damage".into(), json!(combat.damage)),
-                        ("healing".into(), json!(combat.healing)),
-                    ]);
-                    (id.to_string(), row)
+                    (
+                        *id,
+                        responses::PlayerResult {
+                            score,
+                            combat,
+                            team: actor.team,
+                            victory: r.world.winner.map(|w| actor.team == w),
+                            hero: &r.picks[seat].name,
+                            gold: actor.gold,
+                            item_templates: actor
+                                .inventory
+                                .iter()
+                                .map(|held| held.kind.template())
+                                .collect(),
+                            level: actor.level,
+                            xp: actor.xp,
+                        },
+                    )
                 })
                 .collect();
             (
                 r.id,
-                json!({"reason":end,"surrenderedTeam":r.surrender.iter().position(surrender::Ballot::passed),"winner":r.world.winner,"ticks":r.world.tick,"players":players,"teams":r.world.team_scores()}),
+                responses::value(responses::ResultReport {
+                    reason: end,
+                    surrendered_team: r.surrender.iter().position(surrender::Ballot::passed),
+                    winner: r.world.winner,
+                    ticks: r.world.tick,
+                    players,
+                    teams: r.world.team_scores(),
+                }),
             )
         };
         if let Some(f) = self.0.finish.lock().unwrap().clone() {
@@ -463,7 +488,10 @@ impl Rooms {
             .ok_or(PlatformError::HostUnavailable)?
             .lock()
             .unwrap();
-        if matches!(room.phase, "ending" | "ended") {
+        if matches!(
+            room.phase,
+            crate::RoomPhase::Ending | crate::RoomPhase::Ended
+        ) {
             return Err(PlatformError::Conflict("closed reservation"));
         }
         room.admitted = true;
@@ -643,7 +671,7 @@ impl Rooms {
             catalog: self.0.catalog.clone(),
             seats: (0..n).map(|_| Seat::default()).collect(),
             world,
-            phase: "allocated",
+            phase: crate::RoomPhase::Allocated,
             created: t,
             since: t,
             ended: None,
@@ -656,7 +684,11 @@ impl Rooms {
             phase_start: Instant::now(),
             last_roster: Instant::now(),
         };
-        room.event("phase_changed", "allocated", json!({}));
+        room.event(
+            EventKind::PhaseChanged,
+            RoomPhase::Allocated.as_str(),
+            EventDetail::Phase {},
+        );
         let room = Arc::new(Mutex::new(room));
         rooms.insert(req.match_id, room.clone());
         let manager = self.clone();
@@ -667,36 +699,87 @@ impl Rooms {
     }
 }
 impl Room {
-    fn event(&mut self, kind: &str, message: &str, mut extra: Value) {
-        tracing::debug!(room=%self.id,kind,message,opcode=extra["opcode"].as_str(),channel=extra["channel"].as_str(),generation=extra["generation"].as_u64(),"room event");
-        let o = extra.as_object_mut().unwrap();
-        o.insert("seq".into(), json!(self.events.len() + 1));
-        o.insert("kind".into(), json!(kind));
-        o.insert("message".into(), json!(message));
-        o.insert("at".into(), json!(now()));
-        self.events.push(extra);
+    fn event(&mut self, kind: EventKind, message: &str, detail: EventDetail) {
+        match &detail {
+            EventDetail::Connection {
+                channel,
+                generation,
+                opcode,
+                ..
+            } => {
+                tracing::debug!(room=%self.id,?kind,message,?channel,generation,opcode=opcode.as_deref(),"room event")
+            }
+            EventDetail::Action { opcode, .. } => {
+                tracing::debug!(room=%self.id,?kind,message,opcode,"room event")
+            }
+            _ => tracing::debug!(room=%self.id,?kind,message,"room event"),
+        }
+        self.events.push(responses::RoomEvent {
+            seq: self.events.len() + 1,
+            kind,
+            message: message.into(),
+            at: now(),
+            detail,
+        });
     }
-    fn phase(&mut self, phase: &'static str) {
+    fn phase(&mut self, phase: RoomPhase) {
         if self.phase != phase {
             self.phase = phase;
             self.phase_start = Instant::now();
             self.since = Utc::now();
-            self.event("phase_changed", phase, json!({}));
+            self.event(
+                EventKind::PhaseChanged,
+                phase.as_str(),
+                EventDetail::Phase {},
+            );
         }
     }
-    fn view(&self, detail: bool) -> Value {
-        let mut v = json!({"id":self.id,"queue":self.queue,"phase":self.phase,"createdAt":self.created.to_rfc3339(),"phaseSince":self.since.to_rfc3339(),
-        "endedAt":self.ended.map(|x|x.to_rfc3339()),"endReason":self.reason,"humanPlayers":self.players.len(),"botPlayers":self.picks.len()-self.players.len(),"poolId":self.federation.as_ref().map(|f|f.pool)});
-        v["tickLatency"] = self.latency.report();
-        if let Some(difficulty) = self.difficulty {
-            v["difficulty"] = json!(difficulty);
+    fn view(&self, detail: bool) -> RoomSummary {
+        let participants = detail.then(|| {
+            (0..self.picks.len())
+                .map(|slot| {
+                    let s = self.seats.get(slot);
+                    RoomParticipant {
+                        slot,
+                        team: self.world.entities[slot].team,
+                        player_id: self.players.get(slot).copied(),
+                        home_instance_id: self
+                            .federation
+                            .as_ref()
+                            .and_then(|f| f.homes.get(slot))
+                            .copied(),
+                        bot_profile: s.is_none().then_some("lane-v1"),
+                        display_name: if s.is_some() {
+                            "Guest".into()
+                        } else {
+                            format!("{} Bot", self.picks[slot].name)
+                        },
+                        hero: self.picks[slot].name.clone(),
+                        locked: s.is_none_or(|s| s.locked),
+                        control_connected: s.is_some_and(|s| s.peers[0].is_some()),
+                        game_connected: (!self.legacy_aral()
+                            || self.phase == crate::RoomPhase::Running)
+                            && s.is_some_and(|s| s.gameplay_peer().is_some()),
+                        last_event_at: s.and_then(|s| s.last).map(|x| x.to_rfc3339()),
+                    }
+                })
+                .collect()
+        });
+        RoomSummary {
+            id: self.id,
+            queue: self.queue.clone(),
+            phase: self.phase,
+            created_at: self.created.to_rfc3339(),
+            phase_since: self.since.to_rfc3339(),
+            ended_at: self.ended.map(|x| x.to_rfc3339()),
+            end_reason: self.reason,
+            human_players: self.players.len(),
+            bot_players: self.picks.len() - self.players.len(),
+            pool_id: self.federation.as_ref().map(|f| f.pool),
+            tick_latency: self.latency.report(),
+            difficulty: self.difficulty,
+            participants,
         }
-        if detail {
-            v["participants"]=Value::Array((0..self.picks.len()).map(|i|{let s=self.seats.get(i);
-            json!({"slot":i,"team":self.world.entities[i].team,"playerId":self.players.get(i),"homeInstanceId":self.federation.as_ref().and_then(|f|f.homes.get(i)),"botProfile":if s.is_none(){Some("lane-v1")}else{None},"displayName":if s.is_some(){"Guest".into()}else{format!("{} Bot",self.picks[i].name)},"hero":self.picks[i].name,"locked":s.is_none_or(|s|s.locked),"controlConnected":s.is_some_and(|s|s.peers[0].is_some()),"gameConnected":(!self.legacy_aral() || self.phase=="running") && s.is_some_and(|s|s.gameplay_peer().is_some()),"lastEventAt":s.and_then(|s|s.last).map(|x|x.to_rfc3339())})
-        }).collect());
-        }
-        v
     }
     fn legacy_aral(&self) -> bool {
         aral::legacy_queue(&self.queue)
@@ -707,7 +790,7 @@ impl Room {
     }
 
     fn solo_loading(&mut self) {
-        if self.phase != "loading"
+        if self.phase != crate::RoomPhase::Loading
             || self.phase_start.elapsed() < std::time::Duration::from_secs(7)
             || self.seats[0].loading_roster_sent
             || self.seats[0].peers[1].is_some()
@@ -724,7 +807,7 @@ impl Room {
     }
 
     fn start_control_world(&mut self) {
-        if self.phase != "loading"
+        if self.phase != crate::RoomPhase::Loading
             || !self
                 .seats
                 .iter()
@@ -740,12 +823,12 @@ impl Room {
             }));
         }
         let mut records = self.recommended_paths(None);
-        records.push(Message::new(0x03ef, []));
+        records.push(Message::known(crate::Opcode::TickSyncA, []));
         let marker = transport::TeamBatch::new(records);
         for peer in self.seats.iter().filter_map(Seat::gameplay_peer) {
             peer.send(transport::Delivery::Team(marker.clone()));
         }
-        self.phase("running");
+        self.phase(crate::RoomPhase::Running);
     }
 
     fn aral_progress(&mut self) {
@@ -753,7 +836,7 @@ impl Room {
             return;
         }
         match self.phase {
-            "hero_select" if self.aral_remaining() <= 0. => {
+            crate::RoomPhase::HeroSelect if self.aral_remaining() <= 0. => {
                 for (seat, pick) in self.seats.iter_mut().zip(&mut self.picks) {
                     seat.locked = true;
                     pick.selected = true;
@@ -765,9 +848,9 @@ impl Room {
                 for peer in self.seats.iter().filter_map(|seat| seat.peers[0].as_ref()) {
                     peer.send(transport::Delivery::Team(opening.clone()));
                 }
-                self.phase("loading");
+                self.phase(crate::RoomPhase::Loading);
             }
-            "loading" => self.start_control_world(),
+            crate::RoomPhase::Loading => self.start_control_world(),
             _ => {}
         }
     }
@@ -779,7 +862,11 @@ impl Room {
         stalled: watch::Sender<bool>,
     ) -> Option<(usize, usize, u64, Batch)> {
         let idx = self.players.iter().position(|p| *p == uuid)?;
-        if matches!(self.phase, "ending" | "ended") || self.events.len() >= 4096 {
+        if matches!(
+            self.phase,
+            crate::RoomPhase::Ending | crate::RoomPhase::Ended
+        ) || self.events.len() >= 4096
+        {
             return None;
         }
         // A locked seat can open its data connection while other humans are still selecting.
@@ -788,7 +875,7 @@ impl Room {
             && !self.seats[idx].control_world
             && self.seats[idx].locked
             && self.seats[idx].peers[1].is_none()
-            && (self.seats[idx].peers[0].is_some() || self.phase == "running");
+            && (self.seats[idx].peers[0].is_some() || self.phase == crate::RoomPhase::Running);
         let ch = usize::from(game);
         if self.seats[idx].peers[ch].is_some() {
             return None;
@@ -824,27 +911,32 @@ impl Room {
         });
         let first_registration = self.seats[idx].last.is_none();
         self.seats[idx].last = Some(Utc::now());
-        if self.phase == "allocated" {
-            self.phase("hero_select");
+        if self.phase == crate::RoomPhase::Allocated {
+            self.phase(crate::RoomPhase::HeroSelect);
         }
         self.event(
-            "connection",
+            EventKind::Connection,
             "Authenticated",
-            json!({"playerId":uuid,"channel":if game{"game"}else{"control"},"generation":self.generation}),
+            EventDetail::Connection {
+                player_id: uuid,
+                channel: Channel::for_game(game),
+                generation: Some(self.generation),
+                opcode: None,
+            },
         );
         let solo_rejoin = !game && self.solo_scene() && self.seats[idx].control_world;
         let mut batch = if solo_rejoin {
             // A fresh control stream has never received the seat and world mode.
             let mut records: Batch = scene::players(self).collect();
             records.push(messages::world_settings(idx, &self.queue));
-            records.push(Message::new(0x046c, [0]));
+            records.push(Message::known(crate::Opcode::BeginLoading, [0]));
             self.seats[idx].loading_roster_sent = true;
             records
         } else if legacy_aral {
             aral::setup(
                 self,
                 idx,
-                if self.phase == "running" {
+                if self.phase == crate::RoomPhase::Running {
                     0.
                 } else {
                     self.aral_remaining()
@@ -862,17 +954,23 @@ impl Room {
                 &self.picks,
             )
         };
-        if !game && legacy_aral && matches!(self.phase, "loading" | "running") {
+        if !game
+            && legacy_aral
+            && matches!(
+                self.phase,
+                crate::RoomPhase::Loading | crate::RoomPhase::Running
+            )
+        {
             self.seats[idx].loading_roster_sent = true;
             batch.extend(scene::begin_loading(self));
         }
         if game {
             batch.extend(self.spawn_view(Some(self.world.entities[idx].team)));
             if self.seats.iter().all(|s| s.peers[1].is_some()) {
-                self.phase("running");
+                self.phase(crate::RoomPhase::Running);
             }
         }
-        if legacy_aral && first_registration && self.phase == "hero_select" {
+        if legacy_aral && first_registration && self.phase == crate::RoomPhase::HeroSelect {
             scene::announce_aral_registration(self, idx);
         }
         Some((idx, ch, self.generation, batch))
@@ -907,9 +1005,14 @@ impl Room {
             }
             self.seats[i].last = Some(Utc::now());
             self.event(
-                "connection",
+                EventKind::Connection,
                 "Disconnected",
-                json!({"playerId":self.players[i],"channel":if ch==0{"control"}else{"game"},"generation":generation}),
+                EventDetail::Connection {
+                    player_id: self.players[i],
+                    channel: Channel::for_game(ch != 0),
+                    generation: Some(generation),
+                    opcode: None,
+                },
             );
         }
     }
@@ -920,14 +1023,14 @@ impl Room {
         } else {
             snapshot(&self.world, &self.players, &self.picks)
         };
-        if !legacy && self.phase == "hero_select" {
+        if !legacy && self.phase == crate::RoomPhase::HeroSelect {
             roster.body[..4].copy_from_slice(
                 &(300. - self.phase_start.elapsed().as_secs_f32())
                     .max(0.)
                     .to_be_bytes(),
             );
         }
-        if !legacy && self.phase == "loading" {
+        if !legacy && self.phase == crate::RoomPhase::Loading {
             roster.body[..4].copy_from_slice(
                 &(7. - self.phase_start.elapsed().as_secs_f32())
                     .max(0.)
@@ -966,14 +1069,14 @@ impl Room {
         let Ok(receipt) = self.world.try_purchase(actor_id, offer) else {
             return vec![];
         };
-        let mut ack = vec![Message::new(
-            0x439,
+        let mut ack = vec![Message::known(
+            crate::Opcode::ShopRequest,
             [actor.to_be_bytes(), item.to_be_bytes()].concat(),
         )];
         if let Some(receipt) = receipt {
             messages::append_purchase(&mut ack, &self.world, &receipt, true);
         } else if self.legacy_aral() && self.seats[i].world_actor_written {
-            ack.push(Message::new(0x048f, []));
+            ack.push(Message::known(crate::Opcode::RejectBuyItem, []));
         } else {
             return vec![];
         }
@@ -1003,7 +1106,10 @@ impl Room {
         let mut scene_confirmed = false;
         if (legacy || solo_scene)
             && ch == 0
-            && matches!(self.phase, "loading" | "running")
+            && matches!(
+                self.phase,
+                crate::RoomPhase::Loading | crate::RoomPhase::Running
+            )
             && !self.seats[i].preamble.confirmed()
         {
             let preamble = &mut self.seats[i].preamble;
@@ -1015,7 +1121,7 @@ impl Room {
                 self.seats[i].control_world = true;
             }
         }
-        let game = self.phase == "running"
+        let game = self.phase == crate::RoomPhase::Running
             && (ch == 1
                 || ((legacy || solo_scene) && ch == 0 && self.seats[i].preamble.confirmed()));
         let pending_world_input = solo_scene
@@ -1025,27 +1131,37 @@ impl Room {
             && !self.seats[i].preamble.confirmed();
         let mut accepted_world_input = false;
         let mut first_point_ack = None;
-        let sync_after_pick =
-            !legacy && ch == 0 && m.opcode == 0x45e && !self.seats[i].draft_sync_sent;
+        let sync_after_pick = !legacy
+            && ch == 0
+            && m.is(crate::Opcode::HeroSelection)
+            && !self.seats[i].draft_sync_sent;
         let seen = &mut self.seats[i].seen[ch];
-        if m.opcode != 0x455 && seen.len() < 32 && seen.insert(m.opcode) {
+        if !m.is(crate::Opcode::HeroLock) && seen.len() < 32 && seen.insert(m.opcode) {
             let generation = self.seats[i].peers[ch].as_ref().map(|peer| peer.generation);
             self.event(
-                "protocol",
+                EventKind::Protocol,
                 "First client message of this type",
-                json!({"playerId":self.players[i],"channel":if ch==0{"control"}else{"game"},"generation":generation,"opcode":format!("0x{:04X}",m.opcode)}),
+                EventDetail::Connection {
+                    player_id: self.players[i],
+                    channel: Channel::for_game(ch != 0),
+                    generation,
+                    opcode: Some(format!("0x{:04X}", m.opcode)),
+                },
             );
         }
         let mut out = vec![];
         match m.fields()? {
             Fields::ControlByte { value, remaining }
-                if m.opcode == 0x0485
+                if m.is(crate::Opcode::RequestRecommendedBuildPath)
                     && (game
                         || pending_world_input
                         || (legacy
                             && ch == 0
                             && self.seats[i].preamble.scene_requested()
-                            && matches!(self.phase, "loading" | "running")))
+                            && matches!(
+                                self.phase,
+                                crate::RoomPhase::Loading | crate::RoomPhase::Running
+                            )))
                     && matches!(value, 0 | 1 | 2 | 0xfe)
                     && remaining.iter().all(|v| *v == 0) =>
             {
@@ -1057,7 +1173,9 @@ impl Room {
                 if ch == 0
                     && self.seats[i].world_actor_written
                     && (legacy
-                        || m.opcode == 0x03f5 && solo_scene && self.seats[i].scene_written)
+                        || m.is(crate::Opcode::StateUpdA)
+                            && solo_scene
+                            && self.seats[i].scene_written)
                     && (game || pending_world_input) =>
             {
                 let actor = &self.world.entities[i];
@@ -1147,10 +1265,10 @@ impl Room {
                 out = self.buy(i, actor, item);
             }
             Fields::ControlByte { value: 0, .. }
-                if m.opcode == 0x0458
+                if m.is(crate::Opcode::SetupA)
                     && (legacy || self.solo_scene() || self.queue == "ranked")
                     && ch == 0
-                    && self.phase == "hero_select"
+                    && self.phase == crate::RoomPhase::HeroSelect
                     && self.seats[i].peers[0].is_some()
                     && m.body == [0; 6] =>
             {
@@ -1175,18 +1293,21 @@ impl Room {
                     self.picks[i].selected = true;
                     self.picks[i].locked = true;
                     self.event(
-                        "protocol",
+                        EventKind::Protocol,
                         "Hero locked",
-                        json!({"playerId":self.players[i],"opcode":format!("0x{op:04X}")}),
+                        EventDetail::Action {
+                            player_id: self.players[i],
+                            opcode: format!("0x{op:04X}"),
+                        },
                     );
                     let roster = self.roster_update(Some(i));
-                    if op == 0x0463 {
+                    if op == crate::wire_opcode::LockSelection {
                         out.insert(0, roster);
                     } else {
                         out.push(roster);
                     }
                     if self.seats.iter().all(|s| s.locked) {
-                        self.phase("loading");
+                        self.phase(crate::RoomPhase::Loading);
                     }
                 }
             }
@@ -1227,7 +1348,7 @@ impl Room {
             }
             Fields::SkinSelection(skin)
                 if ch == 0
-                    && (!legacy || self.phase == "hero_select")
+                    && (!legacy || self.phase == crate::RoomPhase::HeroSelect)
                     && !self.seats[i].loading_roster_sent =>
             {
                 self.picks[i].skin = self.validated_skin(&self.picks[i].name, skin);
@@ -1235,51 +1356,69 @@ impl Room {
                 out.push(m);
             }
             Fields::Clock(_) | Fields::Heartbeat => out.push(m),
-            _ if (legacy || solo_scene) && matches!(m.opcode, 0x046e | 0x0471 | 0x046d) => {
+            _ if (legacy || solo_scene)
+                && matches!(
+                    m.opcode,
+                    crate::wire_opcode::RequestScene
+                        | crate::wire_opcode::SceneOwner
+                        | crate::wire_opcode::SceneConfirmed
+                ) =>
+            {
                 let late = solo_scene && self.seats[i].preamble.take_late_confirmation(&m);
                 if scene_confirmed || late {
                     if solo_scene {
-                        out.push(Message::new(0x0470, [0]));
+                        out.push(Message::known(crate::Opcode::SceneTransition, [0]));
                     }
                     out.push(m);
                     if solo_scene {
-                        out.push(Message::new(0x0470, [0]));
+                        out.push(Message::known(crate::Opcode::SceneTransition, [0]));
                     }
                     if solo_scene && scene_confirmed {
-                        self.phase("running");
-                        out.push(Message::new(0x03ef, []));
-                    } else if !solo_scene && self.phase == "running" {
-                        out.push(Message::new(0x03ef, []));
+                        self.phase(crate::RoomPhase::Running);
+                        out.push(Message::known(crate::Opcode::TickSyncA, []));
+                    } else if !solo_scene && self.phase == crate::RoomPhase::Running {
+                        out.push(Message::known(crate::Opcode::TickSyncA, []));
                     }
                 } else if scene_requested {
-                    let team = (self.phase == "running").then_some(self.world.entities[i].team);
+                    let team = (self.phase == crate::RoomPhase::Running)
+                        .then_some(self.world.entities[i].team);
                     out = if solo_scene {
                         scene::solo_opening(self, i)?
                     } else {
                         scene::announce_aral_entry(self, i, &m);
                         aral::opening(self, team)
                     };
-                    out.push(Message::new(0x046e, [0; 6]));
+                    out.push(Message::known(crate::Opcode::RequestScene, [0; 6]));
                     out.push(m);
                     if solo_scene {
                         out.push(scene::solo_table(self));
                     }
                 }
             }
-            _ if [0x458, 0x45e, 0x46b, 0x45f, 0x46e, 0x471, 0x46d].contains(&m.opcode) => {
+            _ if [
+                crate::wire_opcode::SetupA,
+                crate::wire_opcode::HeroSelection,
+                crate::wire_opcode::SetupC,
+                crate::wire_opcode::SkinSelection,
+                crate::wire_opcode::RequestScene,
+                crate::wire_opcode::SceneOwner,
+                crate::wire_opcode::SceneConfirmed,
+            ]
+            .contains(&m.opcode) =>
+            {
                 out.push(m)
             }
             _ => {}
         }
         if accepted_world_input {
             self.seats[i].preamble.confirm_world_input();
-            self.phase("running");
-            out.push(Message::new(0x03ef, []));
+            self.phase(crate::RoomPhase::Running);
+            out.push(Message::known(crate::Opcode::TickSyncA, []));
             out.extend(first_point_ack);
         }
         if sync_after_pick {
             // Android's first 0x045E response precedes this one-time draft message.
-            out.push(Message::new(0x3f1, [0, 0, 0, 0, 8, 0]));
+            out.push(Message::known(crate::Opcode::TickSyncC, [0, 0, 0, 0, 8, 0]));
             self.seats[i].draft_sync_sent = true;
         }
         if ch == 0 && scene_requested {
@@ -1291,7 +1430,7 @@ impl Room {
         if !self.admitted {
             return;
         }
-        if self.phase == "ending" && self.reason == Some("completed") {
+        if self.phase == crate::RoomPhase::Ending && self.reason == Some("completed") {
             if !self.dead_actors.is_empty() {
                 let elapsed = self.phase_start.elapsed().as_millis()
                     * u128::from(halcyon_sim::TICK_HZ)
@@ -1315,7 +1454,7 @@ impl Room {
                 .all(|s| s.peers.iter().all(Option::is_none))
         {
             self.reason = Some("error");
-            self.phase("ending");
+            self.phase(crate::RoomPhase::Ending);
             self.stop.send_replace(true);
             return;
         }
@@ -1325,24 +1464,31 @@ impl Room {
         } else {
             std::time::Duration::from_secs(1)
         };
-        if self.solo_scene() && self.phase == "loading" {
+        if self.solo_scene() && self.phase == crate::RoomPhase::Loading {
             self.solo_loading();
         }
-        if (self.phase == "hero_select"
-            || !legacy && self.phase == "loading" && !self.seats[0].loading_roster_sent)
+        if (self.phase == crate::RoomPhase::HeroSelect
+            || !legacy
+                && self.phase == crate::RoomPhase::Loading
+                && !self.seats[0].loading_roster_sent)
             && self.last_roster.elapsed() >= roster_interval
         {
             self.last_roster = Instant::now();
             self.roster_update(None);
         }
 
-        if legacy && matches!(self.phase, "hero_select" | "loading") {
+        if legacy
+            && matches!(
+                self.phase,
+                crate::RoomPhase::HeroSelect | crate::RoomPhase::Loading
+            )
+        {
             self.aral_progress();
             return;
         }
 
         // The world advances once the selected transport has confirmed admission.
-        if self.phase != "running" {
+        if self.phase != crate::RoomPhase::Running {
             return;
         }
         if self.world.tick == 0 && self.solo_scene() && self.seats[0].control_world {
@@ -1407,7 +1553,7 @@ impl Room {
         }
         if self.world.winner.is_some() {
             self.reason = Some("completed");
-            self.phase("ending");
+            self.phase(crate::RoomPhase::Ending);
             if !matches!(self.queue.as_str(), "aral" | "aral_casual" | "casual_aral") {
                 self.finish_world();
             }
@@ -1658,13 +1804,19 @@ mod tests {
             let (seat, ch, generation, _) =
                 room.attach(player, tx, watch::channel(false).0).unwrap();
             for _ in 0..2 {
-                room.receive(seat, ch, Message::new(0x46e, [0; 6])).unwrap();
+                room.receive(
+                    seat,
+                    ch,
+                    Message::known(crate::Opcode::RequestScene, [0; 6]),
+                )
+                .unwrap();
             }
             room.detach(seat, ch, generation);
         }
         let events: Vec<_> = room
             .events
             .iter()
+            .map(responses::value)
             .filter(|event| event["opcode"] == "0x046E")
             .collect();
         assert_eq!(events.len(), 2);
@@ -1696,16 +1848,16 @@ mod tests {
             let (_, _, _, initial) = room
                 .attach(players[0], tx, watch::channel(false).0)
                 .unwrap();
-            assert_eq!(initial[0].opcode, 0x03e9);
-            assert_eq!(initial[1].opcode, 0x0454);
+            assert_eq!(initial[0].opcode, crate::wire_opcode::GameSetup);
+            assert_eq!(initial[1].opcode, crate::wire_opcode::GameMode);
             assert_eq!(&initial[1].body[4..4 + mode.len()], mode.as_bytes());
             for _ in 0..3 {
-                let request = Message::new(0x0458, [0; 6]);
+                let request = Message::known(crate::Opcode::SetupA, [0; 6]);
                 let result = room.receive(0, 0, request.clone()).unwrap();
                 assert_eq!(result.last(), Some(&request));
                 assert_eq!(result[..result.len() - 1], initial[1..]);
             }
-            let malformed = Message::new(0x0458, [0, 1, 0, 0, 0, 0]);
+            let malformed = Message::known(crate::Opcode::SetupA, [0, 1, 0, 0, 0, 0]);
             assert_eq!(room.receive(0, 0, malformed.clone()).unwrap(), [malformed]);
         }
     }
@@ -1784,7 +1936,7 @@ mod tests {
             assert_eq!(&opening[0].body[16..18], &[3, 3]);
             assert_eq!(opening[0].body[100], room.world.entities[seat].team + 1);
             let roster = opening.last().unwrap();
-            assert_eq!(roster.opcode, 0x459);
+            assert_eq!(roster.opcode, crate::wire_opcode::Snapshot5V5);
             for (i, row) in roster.body.as_chunks::<161>().0.iter().enumerate() {
                 assert_eq!(row[8], u8::from(i < 6));
                 if let Some(participant) = guests.get(i) {
@@ -1792,7 +1944,7 @@ mod tests {
                     assert_eq!(row[16], room.world.entities[i].team + 1);
                 }
             }
-            let req = Message::new(0x458, [0; 6]);
+            let req = Message::known(crate::Opcode::SetupA, [0; 6]);
             let repeat = room.receive(seat, 0, req).unwrap();
             assert_eq!(&repeat[..repeat.len() - 1], &opening[1..]);
         }
@@ -1845,17 +1997,26 @@ mod tests {
             .unwrap();
         let shared = rooms.room(id).unwrap();
         let mut room = shared.lock().unwrap();
-        room.phase("running");
+        room.phase(crate::RoomPhase::Running);
         room.world.entities[0].gold = 300;
-        let buy =
-            |actor: u32| Message::new(0x439, [actor.to_be_bytes(), 458u32.to_be_bytes()].concat());
+        let buy = |actor: u32| {
+            Message::known(
+                crate::Opcode::ShopRequest,
+                [actor.to_be_bytes(), 458u32.to_be_bytes()].concat(),
+            )
+        };
         assert!(room.receive(0, 1, buy(1501)).unwrap().is_empty());
         assert!(room.receive(0, 0, buy(1500)).unwrap().is_empty());
         assert_eq!(room.world.entities[0].gold, 300);
         let ack = room.receive(0, 1, buy(1500)).unwrap();
         assert_eq!(
             ack.iter().map(|m| m.opcode).collect::<Vec<_>>(),
-            [0x439, 0x41d, 0x43d, 0x41c]
+            [
+                crate::wire_opcode::ShopRequest,
+                crate::wire_opcode::EntityStat,
+                crate::wire_opcode::ItemGrant,
+                crate::wire_opcode::StatModifier
+            ]
         );
         assert_eq!(room.world.entities[0].gold, 0);
         assert!(matches!(
@@ -1876,14 +2037,21 @@ mod tests {
         ));
         assert!(room.receive(0, 1, buy(1500)).unwrap().is_empty());
         room.world.entities[0].gold = 850;
-        let upgrade = Message::new(
-            0x439,
+        let upgrade = Message::known(
+            crate::Opcode::ShopRequest,
             [1500u32.to_be_bytes(), 505u32.to_be_bytes()].concat(),
         );
         let upgraded = room.receive(0, 1, upgrade).unwrap();
         assert_eq!(
             upgraded.iter().map(|m| m.opcode).collect::<Vec<_>>(),
-            [0x439, 0x41d, 0x41c, 0x44b, 0x43d, 0x41c]
+            [
+                crate::wire_opcode::ShopRequest,
+                crate::wire_opcode::EntityStat,
+                crate::wire_opcode::StatModifier,
+                crate::wire_opcode::RemoveItem,
+                crate::wire_opcode::ItemGrant,
+                crate::wire_opcode::StatModifier
+            ]
         );
         assert_eq!(&upgraded[3].body[4..8], &ack[2].body[8..12]);
         assert_eq!(room.world.entities[0].inventory.len(), 1);

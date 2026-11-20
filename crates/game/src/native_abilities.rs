@@ -9,7 +9,6 @@ mod chakram_motion;
 pub(super) use chakram_motion::recordable_stop;
 
 const IDRIS: u16 = 273;
-const SELECTOR: u8 = 3;
 const LORELAI: u16 = 409;
 
 #[derive(Default)]
@@ -47,8 +46,10 @@ pub(super) fn receive(room: &mut Room, seat: usize, channel: usize, m: Message) 
     let position = actor.position;
     let aral = room.legacy_aral();
     let state = &mut room.seats[seat].native_abilities;
-    match m.opcode {
-        0x0436 if m.body.len() == 6 && m.body[1..] == [0; 5] => {
+    match m.known_opcode() {
+        Some(crate::Opcode::RequestUpgradeAbility)
+            if m.body.len() == 6 && m.body[1..] == [0; 5] =>
+        {
             let Some((slot, operand)) = native_learn_request(hero, m.body[0]) else {
                 return Vec::new();
             };
@@ -62,13 +63,12 @@ pub(super) fn receive(room: &mut Room, seat: usize, channel: usize, m: Message) 
             witness(room, id, None, &grant, None);
             vec![m, grant]
         }
-        0x0412 if m.body.len() == 14 && m.body[13] == 0 => {
+        Some(crate::Opcode::RequestPointAbility) if m.body.len() == 14 && m.body[13] == 0 => {
             let selector = m.body[12];
-            let slot = match (hero, selector) {
-                (IDRIS, SELECTOR) | (LORELAI, 1) => AbilitySlot::B,
-                (LORELAI, 0) => AbilitySlot::A,
-                _ => return Vec::new(),
+            let Some(cast) = NativeCast::point_input(hero, selector) else {
+                return Vec::new();
             };
+            let slot = cast.slot();
             let coordinates: [f32; 3] = std::array::from_fn(|i| {
                 f32::from_be_bytes(m.body[i * 4..i * 4 + 4].try_into().unwrap())
             });
@@ -100,7 +100,11 @@ pub(super) fn receive(room: &mut Room, seat: usize, channel: usize, m: Message) 
             }
             Vec::new()
         }
-        0x0411 if hero == LORELAI && m.body.len() == 6 && m.body[4..] == [2, 0] => {
+        Some(crate::Opcode::RequestTargetAbility)
+            if hero == LORELAI
+                && m.body.len() == 6
+                && m.body[4..] == [NativeCast::LorelaiC.selector(), 0] =>
+        {
             let wire_target = u32::from_be_bytes(m.body[..4].try_into().unwrap());
             let Some(target_id) = wire_target.checked_sub(1499) else {
                 return Vec::new();
@@ -125,7 +129,11 @@ pub(super) fn receive(room: &mut Room, seat: usize, channel: usize, m: Message) 
                     generation,
                     slot,
                     target,
-                    reply: Message::ability_target_used(u32::from(wire_id(id)), wire_target, 2),
+                    reply: Message::ability_target_used(
+                        u32::from(wire_id(id)),
+                        wire_target,
+                        NativeCast::LorelaiC.selector(),
+                    ),
                     interrupted_walk: None,
                 });
             }
@@ -135,13 +143,41 @@ pub(super) fn receive(room: &mut Room, seat: usize, channel: usize, m: Message) 
     }
 }
 
-fn cast_selector(hero: u16, slot: AbilitySlot) -> Option<u8> {
-    match (hero, slot) {
-        (IDRIS, AbilitySlot::B) => Some(SELECTOR),
-        (LORELAI, AbilitySlot::A) => Some(0),
-        (LORELAI, AbilitySlot::B) => Some(1),
-        (LORELAI, AbilitySlot::C) => Some(2),
-        _ => None,
+/// Selectors are local to an actor template. The action shape distinguishes
+/// a ground point from an allied-actor target.
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+enum NativeCast {
+    LorelaiA = 0,
+    LorelaiB = 1,
+    LorelaiC = 2,
+    IdrisB = 3,
+}
+impl NativeCast {
+    const fn selector(self) -> u8 {
+        self as u8
+    }
+    const fn slot(self) -> AbilitySlot {
+        match self {
+            Self::LorelaiA => AbilitySlot::A,
+            Self::LorelaiB | Self::IdrisB => AbilitySlot::B,
+            Self::LorelaiC => AbilitySlot::C,
+        }
+    }
+    fn for_slot(hero: u16, slot: AbilitySlot) -> Option<Self> {
+        match (hero, slot) {
+            (IDRIS, AbilitySlot::B) => Some(Self::IdrisB),
+            (LORELAI, AbilitySlot::A) => Some(Self::LorelaiA),
+            (LORELAI, AbilitySlot::B) => Some(Self::LorelaiB),
+            (LORELAI, AbilitySlot::C) => Some(Self::LorelaiC),
+            _ => None,
+        }
+    }
+    fn point_input(hero: u16, selector: u8) -> Option<Self> {
+        [AbilitySlot::A, AbilitySlot::B]
+            .into_iter()
+            .filter_map(|slot| Self::for_slot(hero, slot))
+            .find(|cast| cast.selector() == selector)
     }
 }
 
@@ -228,17 +264,19 @@ pub(super) fn publish(room: &mut Room, events: &[Event]) {
             }
             continue;
         };
-        let Some(selector) = cast_selector(hero, slot) else {
+        let Some(cast) = NativeCast::for_slot(hero, slot) else {
             continue;
         };
-        let (mut message, target_id) = match (actor.type_id, slot, target) {
-            (IDRIS, AbilitySlot::B, CastTarget::Point(p))
-            | (LORELAI, AbilitySlot::A | AbilitySlot::B, CastTarget::Point(p)) => (
-                Message::ability_point_used(actor_wire, [p.x, 0., p.y], selector),
+        let (mut message, target_id) = match (cast, target) {
+            (
+                NativeCast::IdrisB | NativeCast::LorelaiA | NativeCast::LorelaiB,
+                CastTarget::Point(p),
+            ) => (
+                Message::ability_point_used(actor_wire, [p.x, 0., p.y], cast.selector()),
                 None,
             ),
-            (LORELAI, AbilitySlot::C, CastTarget::Entity(id)) => (
-                Message::ability_target_used(actor_wire, u32::from(wire_id(id)), selector),
+            (NativeCast::LorelaiC, CastTarget::Entity(id)) => (
+                Message::ability_target_used(actor_wire, u32::from(wire_id(id)), cast.selector()),
                 Some(id),
             ),
             _ => continue,
@@ -374,26 +412,29 @@ mod tests {
                 stalled: watch::channel(false).0,
             });
             for (opcode, body) in [
-                (0x046e, [0; 6]),
-                (0x0471, [0, 0, 5, 220 + i as u8, 1, 0]),
-                (0x046d, [0; 6]),
+                (crate::wire_opcode::RequestScene, [0; 6]),
+                (
+                    crate::wire_opcode::SceneOwner,
+                    [0, 0, 5, 220 + i as u8, 1, 0],
+                ),
+                (crate::wire_opcode::SceneConfirmed, [0; 6]),
             ] {
                 seat.preamble
                     .observe(&Message::new(opcode, body), 1500 + i as u32);
             }
             recipients.push(rx);
         }
-        room.phase("running");
+        room.phase(crate::RoomPhase::Running);
         room.world.entities[0].type_id = IDRIS;
         room.world.entities[0].skill_points = 2;
         room.world.entities[0].position = Position { x: 8.0, y: 0.0 };
 
-        let learn = Message::new(0x0436, [1, 0, 0, 0, 0, 0]);
+        let learn = Message::known(crate::Opcode::RequestUpgradeAbility, [1, 0, 0, 0, 0, 0]);
         let mut body = [0; 14];
         body[..4].copy_from_slice(&12f32.to_be_bytes());
         body[4..8].copy_from_slice(&(-0.0_f32).to_be_bytes());
-        body[12] = SELECTOR;
-        let cast = Message::new(0x0412, body);
+        body[12] = NativeCast::IdrisB.selector();
+        let cast = Message::known(crate::Opcode::RequestPointAbility, body);
 
         assert!(room.receive(0, 0, learn.clone()).unwrap().is_empty());
         room.seats[0].world_actor_written = true;
@@ -517,15 +558,15 @@ mod tests {
             stalled: watch::channel(false).0,
         });
         for (op, body) in [
-            (0x046e, [0; 6]),
-            (0x0471, [0, 0, 5, 220, 1, 0]),
-            (0x046d, [0; 6]),
+            (crate::wire_opcode::RequestScene, [0; 6]),
+            (crate::wire_opcode::SceneOwner, [0, 0, 5, 220, 1, 0]),
+            (crate::wire_opcode::SceneConfirmed, [0; 6]),
         ] {
             room.seats[0]
                 .preamble
                 .observe(&Message::new(op, body), 1500);
         }
-        room.phase("running");
+        room.phase(crate::RoomPhase::Running);
         room.seats[0].world_actor_written = true;
         room.world.entities[0].type_id = LORELAI;
         room.world.entities[0].level = 10;
@@ -544,7 +585,10 @@ mod tests {
         room.world.entities[0].position = position;
         room.world.entities[(ally - 1) as usize].position = position;
         for selector in 0..3 {
-            let request = Message::new(0x0436, [selector, 0, 0, 0, 0, 0]);
+            let request = Message::known(
+                crate::Opcode::RequestUpgradeAbility,
+                [selector, 0, 0, 0, 0, 0],
+            );
             assert_eq!(
                 room.receive(0, 0, request.clone()).unwrap(),
                 [request, Message::ability_learned(1500, selector.into())]
@@ -554,12 +598,12 @@ mod tests {
                 let mut body = [0; 14];
                 body[..4].copy_from_slice(&position.x.to_be_bytes());
                 body[12] = selector;
-                Message::new(0x0412, body)
+                Message::known(crate::Opcode::RequestPointAbility, body)
             } else {
                 let mut body = [0; 6];
                 body[..4].copy_from_slice(&u32::from(wire_id(ally)).to_be_bytes());
                 body[4] = 2;
-                Message::new(0x0411, body)
+                Message::known(crate::Opcode::RequestTargetAbility, body)
             };
             if selector == 2 {
                 // The native report witnessed a base veil away from the earlier pools.
@@ -752,21 +796,25 @@ mod tests {
             });
             let actor = 1500 + index as u32;
             for (op, body) in [
-                (0x046e, [0; 6]),
-                (0x0471, [0, 0, 5, 220 + index as u8, 1, 0]),
-                (0x046d, [0; 6]),
+                (crate::wire_opcode::RequestScene, [0; 6]),
+                (
+                    crate::wire_opcode::SceneOwner,
+                    [0, 0, 5, 220 + index as u8, 1, 0],
+                ),
+                (crate::wire_opcode::SceneConfirmed, [0; 6]),
             ] {
                 seat.preamble.observe(&Message::new(op, body), actor);
             }
             seat.world_actor_written = true;
             witnesses.push(rx);
         }
-        room.phase("running");
+        room.phase(crate::RoomPhase::Running);
         room.world.entities[0].type_id = IDRIS;
         room.world.entities[0].level = 5;
         room.world.entities[0].skill_points = 2;
 
-        let learn = |index| Message::new(0x0436, [index, 0, 0, 0, 0, 0]);
+        let learn =
+            |index| Message::known(crate::Opcode::RequestUpgradeAbility, [index, 0, 0, 0, 0, 0]);
         assert!(room.receive(0, 0, learn(2)).unwrap().is_empty());
         assert_eq!(room.world.entities[0].skill_points, 2);
         room.world.tick += 1;
@@ -789,9 +837,13 @@ mod tests {
         let mut unsupported_cast = [0; 14];
         unsupported_cast[12] = 4;
         assert!(
-            room.receive(0, 0, Message::new(0x0412, unsupported_cast))
-                .unwrap()
-                .is_empty()
+            room.receive(
+                0,
+                0,
+                Message::known(crate::Opcode::RequestPointAbility, unsupported_cast)
+            )
+            .unwrap()
+            .is_empty()
         );
         room.world.tick += 1;
         room.visible[1].clear();
@@ -808,9 +860,14 @@ mod tests {
         let mut replies = vec![];
         while let Ok(batch) = receiver.try_recv() {
             let records = batch.into_records();
-            let stop_batch = records.iter().any(|m| m.opcode == 0x03fb);
+            let stop_batch = records.iter().any(|m| m.is(crate::Opcode::StopActor));
             replies.extend(records.into_iter().filter(|m| {
-                matches!(m.opcode, 0x03fb | 0x0416 | 0x043e) || (stop_batch && m.opcode == 0x042e)
+                matches!(
+                    m.opcode,
+                    crate::wire_opcode::StopActor
+                        | crate::wire_opcode::PlayPointAbility
+                        | crate::wire_opcode::EntityProp
+                ) || (stop_batch && m.is(crate::Opcode::Position))
             }));
         }
         replies

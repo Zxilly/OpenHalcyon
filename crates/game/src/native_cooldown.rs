@@ -40,7 +40,7 @@ pub(super) fn opening(batch: &mut Batch, actor: &Entity, aral: bool) {
         body[..4].copy_from_slice(&u32::from(super::messages::wire_id(actor.id)).to_be_bytes());
         body[4..8].copy_from_slice(&ability.to_be_bytes());
         body[16..].copy_from_slice(&initial_tail(*ability).expect("verified opening ability"));
-        batch.push(Message::new(0x48a, body));
+        batch.push(Message::known(crate::Opcode::CooldownSync, body));
     }
 }
 

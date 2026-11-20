@@ -37,9 +37,9 @@ impl View {
 
     pub fn declarations(&mut self, batch: &[Message]) {
         for m in batch {
-            let slot = match m.opcode {
-                0x03f2 => m.body.get(116),
-                0x03f3 => m.body.get(745),
+            let slot = match m.known_opcode() {
+                Some(crate::Opcode::Snapshot) => m.body.get(116),
+                Some(crate::Opcode::EntitySpawn) => m.body.get(745),
                 _ => continue,
             };
             let Some(&slot @ 0..=199) = slot else {
@@ -50,8 +50,9 @@ impl View {
             // template-297 armory has a verified real registration there.
             if slot == 0
                 && !(wire == 2000
-                    && (m.opcode == 0x3f2 && m.body[..4] == 297u32.to_be_bytes()
-                        || m.opcode == 0x3f3 && m.body[2..4] == 297u16.to_be_bytes()))
+                    && (m.is(crate::Opcode::Snapshot) && m.body[..4] == 297u32.to_be_bytes()
+                        || m.is(crate::Opcode::EntitySpawn)
+                            && m.body[2..4] == 297u16.to_be_bytes()))
             {
                 continue;
             }
@@ -195,7 +196,7 @@ impl ObserverScene {
         fresh_spawns: bool,
     ) {
         batch.retain_mut(|message| {
-            if message.opcode != 0x03f3 {
+            if !message.is(crate::Opcode::EntitySpawn) {
                 return true;
             }
             let wire = u32::from_be_bytes(message.body[8..12].try_into().unwrap());
@@ -226,7 +227,8 @@ impl ObserverScene {
         for message in batch {
             if !matches!(
                 (message.opcode, &*self),
-                (0x040b, Self::Aral(_)) | (0x0430, Self::Solo(_))
+                (crate::wire_opcode::DestroyEntity, Self::Aral(_))
+                    | (crate::wire_opcode::ActorDeath, Self::Solo(_))
             ) {
                 continue;
             }
@@ -288,7 +290,7 @@ mod tests {
         let mut body = vec![0; 122];
         body[8..12].copy_from_slice(&(id + 1499).to_be_bytes());
         body[116] = slot;
-        Message::new(0x03f2, body)
+        Message::known(crate::Opcode::Snapshot, body)
     }
     fn frames(view: &mut View, world: &World, visible: impl Fn(u32) -> bool) -> Vec<TowerAggro> {
         let mut out = Vec::new();

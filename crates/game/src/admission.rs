@@ -238,7 +238,7 @@ impl Rooms {
                         .into_iter()
                         .filter_map(|r| {
                             let r = r.lock().unwrap();
-                            if r.phase != "running" || r.latency.recent.len() < 20 {
+                            if r.phase != crate::RoomPhase::Running || r.latency.recent.len() < 20 {
                                 return None;
                             }
                             let mut tail: Vec<_> = r.latency.recent.iter().copied().collect();

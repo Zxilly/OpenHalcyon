@@ -33,7 +33,7 @@ pub(super) fn scene_mode(queue: &str, flag: u8) -> Message {
     let mut body = vec![0; 69];
     put_text(&mut body[..64], mode_name(queue));
     body[68] = flag;
-    Message::new(0x046f, body)
+    Message::known(crate::Opcode::ModeName, body)
 }
 fn settings(seat: usize, mode: &str, draft: bool) -> Message {
     let mut b = vec![0; 101];
@@ -46,7 +46,7 @@ fn settings(seat: usize, mode: &str, draft: bool) -> Message {
         b[16..18].fill(5);
         b[96..100].copy_from_slice(&1f32.to_be_bytes());
     }
-    Message::new(0x3e9, b)
+    Message::known(crate::Opcode::GameSetup, b)
 }
 pub(super) fn world_settings(seat: usize, queue: &str) -> Message {
     settings(seat, mode_name(queue), false)
@@ -99,8 +99,12 @@ pub(super) fn draft_catalog(
     let mut mode = vec![0; 68];
     put_text(&mut mode[4..], mode_name(queue));
     let mut out = Vec::with_capacity(catalog.len() + 2);
-    out.push(Message::new(0x454, mode));
-    out.extend(catalog.iter().map(|entry| Message::new(0x0453, *entry)));
+    out.push(Message::known(crate::Opcode::GameMode, mode));
+    out.extend(
+        catalog
+            .iter()
+            .map(|entry| Message::known(crate::Opcode::HeroCatalog, *entry)),
+    );
     out.push(snapshot(world, players, picks));
     out
 }
@@ -137,7 +141,7 @@ pub fn snapshot(world: &World, players: &[Uuid], picks: &[Pick]) -> Message {
             }
         }
     }
-    Message::new(0x459, body)
+    Message::known(crate::Opcode::Snapshot5V5, body)
 }
 pub fn spawn(e: &Entity, picks: &[Pick], data: Option<&halcyon_data::GameData>) -> Message {
     let mut b = vec![0; 750];
@@ -175,7 +179,7 @@ pub fn spawn(e: &Entity, picks: &[Pick], data: Option<&halcyon_data::GameData>) 
             b[offset..offset + 4].copy_from_slice(&value.to_be_bytes());
         }
     }
-    Message::new(0x3f3, b)
+    Message::known(crate::Opcode::EntitySpawn, b)
 }
 
 /// Android Solo full declarations keep these selectors for the hero's lifetime.
@@ -239,7 +243,7 @@ pub(super) fn info(
     b[210] = e.team + 1;
     b[212] = u8::from(bot);
     b[215] = u8::from(!bot);
-    Message::new(0x3ee, b)
+    Message::known(crate::Opcode::PlayerInfo, b)
 }
 
 /// Replay chunks contain both roster forms before the first world spawn.
@@ -254,17 +258,17 @@ pub(super) fn world_header(
         .map(|i| info(world, players, picks, i, false))
         .collect();
     out.push(world_settings(seat, mode));
-    out.push(Message::new(0x46c, [0]));
+    out.push(Message::known(crate::Opcode::BeginLoading, [0]));
     out.push(scene_mode(mode, 1));
-    out.push(Message::new(0x470, [0]));
+    out.push(Message::known(crate::Opcode::SceneTransition, [0]));
     out.extend((0..10).map(|i| info(world, players, picks, i, true)));
-    out.push(Message::new(0x451, [0; 4]));
+    out.push(Message::known(crate::Opcode::OpeningWorldClock, [0; 4]));
     out
 }
 
 pub(super) fn item_grant(actor: u32, item: u32, instance: u32) -> Message {
-    Message::new(
-        0x43d,
+    Message::known(
+        crate::Opcode::ItemGrant,
         [
             actor.to_be_bytes(),
             item.to_be_bytes(),
@@ -315,7 +319,7 @@ pub(super) fn append_purchase(
         }
         let mut body = [actor.to_be_bytes(), used.instance.to_be_bytes()].concat();
         body.extend(1u16.to_be_bytes());
-        out.push(Message::new(0x44b, body));
+        out.push(Message::known(crate::Opcode::RemoveItem, body));
     }
     let granted = receipt.granted;
     out.push(item_grant(actor, granted.kind.template(), granted.instance));
@@ -347,7 +351,7 @@ fn combat_event(event: &halcyon_sim::Event, visible: impl Fn(u32) -> bool) -> Op
         let mut body = [0; 14];
         body[..4].copy_from_slice(&u32::from(wire_id(id)).to_be_bytes());
         body[4..8].copy_from_slice(&1_u32.to_be_bytes());
-        return Some(Message::new(0x0434, body));
+        return Some(Message::known(crate::Opcode::LevelUp, body));
     }
     if let Event::Respawn { id, position } = *event {
         if !visible(id) {
@@ -358,7 +362,7 @@ fn combat_event(event: &halcyon_sim::Event, visible: impl Fn(u32) -> bool) -> Op
         body[4..8].copy_from_slice(&position.x.to_be_bytes());
         // OpenHalcyon's authoritative world is planar, with height zero.
         body[12..16].copy_from_slice(&position.y.to_be_bytes());
-        return Some(Message::new(0x0432, body));
+        return Some(Message::known(crate::Opcode::ActorRespawn, body));
     }
     let (target, source, operand) = match *event {
         Event::Damage {
@@ -495,7 +499,16 @@ mod combat_tests {
         assert_eq!(
             frames.iter().map(|m| m.opcode).collect::<Vec<_>>(),
             [
-                0x41d, 0x41c, 0x44b, 0x41c, 0x41c, 0x44b, 0x43d, 0x41c, 0x41c, 0x41c
+                crate::wire_opcode::EntityStat,
+                crate::wire_opcode::StatModifier,
+                crate::wire_opcode::RemoveItem,
+                crate::wire_opcode::StatModifier,
+                crate::wire_opcode::StatModifier,
+                crate::wire_opcode::RemoveItem,
+                crate::wire_opcode::ItemGrant,
+                crate::wire_opcode::StatModifier,
+                crate::wire_opcode::StatModifier,
+                crate::wire_opcode::StatModifier
             ]
         );
         let modifiers = |msgs: &[Message]| {
@@ -530,7 +543,7 @@ mod combat_tests {
         }
         assert_eq!(records.len(), 2);
         for message in records {
-            assert_eq!(message.opcode, 0x0434);
+            assert_eq!(message.opcode, crate::wire_opcode::LevelUp);
             assert!(matches!(
                 message.fields().unwrap(),
                 Fields::ProgressAction {
@@ -575,7 +588,11 @@ mod combat_tests {
         append_combat(&mut out, &hero, |_| true);
         assert_eq!(
             out.iter().map(|m| m.opcode).collect::<Vec<_>>(),
-            [0x430, 0x41c, 0x41c]
+            [
+                crate::wire_opcode::ActorDeath,
+                crate::wire_opcode::StatModifier,
+                crate::wire_opcode::StatModifier
+            ]
         );
         assert_eq!(
             (&out[1].body[12..15], &out[2].body[12..15]),

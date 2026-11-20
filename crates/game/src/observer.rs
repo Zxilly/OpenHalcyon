@@ -29,7 +29,7 @@ impl Rooms {
     ) -> Result<(String, Uuid), PlatformError> {
         let room = self.room(id).ok_or(PlatformError::HostUnavailable)?;
         let mut r = room.lock().unwrap();
-        if r.phase != "running" || r.players.contains(&viewer) {
+        if r.phase != crate::RoomPhase::Running || r.players.contains(&viewer) {
             return Err(PlatformError::Conflict("room unavailable for spectating"));
         }
         if let Some((grant, observer)) = r.observers.iter_mut().find(|(_, o)| o.viewer == viewer) {
@@ -145,7 +145,7 @@ async fn client(
     let (tx, mut rx) = mpsc::channel(16);
     let (initial, mut revoked) = {
         let mut r = room.lock().unwrap();
-        if r.phase != "running" {
+        if r.phase != crate::RoomPhase::Running {
             return Err(io::ErrorKind::NotConnected.into());
         }
         let o = r
@@ -445,7 +445,7 @@ mod tests {
             })
             .unwrap();
         let shared = rooms.room(id).unwrap();
-        shared.lock().unwrap().phase("running");
+        shared.lock().unwrap().phase(crate::RoomPhase::Running);
         let (_, grant) = rooms.observe(id, Uuid::new_v4()).unwrap();
         let (_, late) = rooms.observe(id, Uuid::new_v4()).unwrap();
         let mut room = shared.lock().unwrap();
@@ -498,7 +498,7 @@ mod tests {
         let field = |m: &Message| u32::from_be_bytes(m.body[..4].try_into().unwrap());
         let deaths = |b: &[Message]| {
             b.iter()
-                .filter(|m| m.opcode == 0x430)
+                .filter(|m| m.is(crate::Opcode::ActorDeath))
                 .map(field)
                 .collect::<Vec<_>>()
         };
@@ -524,10 +524,14 @@ mod tests {
             assert_eq!(m.iter().map(|p| p.opcode).collect::<Vec<_>>(), expected);
             assert!(m.iter().all(|p| field(p) == actor && p.body[4..] == [0; 2]));
         };
-        check(&watched.try_recv().unwrap(), &[0x431], 1501);
+        check(
+            &watched.try_recv().unwrap(),
+            &[crate::wire_opcode::ActorDead],
+            1501,
+        );
         check(
             &streams[0].try_recv().unwrap().into_records(),
-            &[0x431],
+            &[crate::wire_opcode::ActorDead],
             1501,
         );
         room.observers.remove(&grant);
@@ -536,7 +540,10 @@ mod tests {
         aral_death::flush(&mut room, now + 76);
         check(
             &streams[0].try_recv().unwrap().into_records(),
-            &[0x431, 0x40b],
+            &[
+                crate::wire_opcode::ActorDead,
+                crate::wire_opcode::DestroyEntity,
+            ],
             u32::from(wire_id(minion)),
         );
         assert!(room.dead_actors.is_empty());
@@ -561,7 +568,7 @@ mod tests {
             })
             .unwrap();
         let shared = rooms.room(id).unwrap();
-        shared.lock().unwrap().phase("running");
+        shared.lock().unwrap().phase(crate::RoomPhase::Running);
         let (_, grant) = rooms.observe(id, Uuid::new_v4()).unwrap();
         let (tx, mut rx) = mpsc::channel(4);
         let cast = Event::Cast {
@@ -604,7 +611,7 @@ mod tests {
             })
             .unwrap();
         let shared = rooms.room(match_id).unwrap();
-        shared.lock().unwrap().phase("running");
+        shared.lock().unwrap().phase(crate::RoomPhase::Running);
         let (_, grant) = rooms.observe(match_id, Uuid::new_v4()).unwrap();
         let mut room = shared.lock().unwrap();
         let (view, mut observer) = mpsc::channel(8);
@@ -643,13 +650,13 @@ mod tests {
         let visible_enemy = streams[0].try_recv().unwrap().into_records();
         let death_index = visible_enemy
             .iter()
-            .position(|m| m.opcode == 0x0430)
+            .position(|m| m.is(crate::Opcode::ActorDeath))
             .unwrap();
         let timer_index = visible_enemy.iter().position(|m| m == &expected).unwrap();
         assert!(death_index < timer_index);
         assert_eq!(visible_enemy.iter().filter(|m| **m == expected).count(), 1);
         let friendly = streams[1].try_recv().unwrap().into_records();
-        assert!(friendly.iter().all(|m| m.opcode != 0x0430));
+        assert!(friendly.iter().all(|m| !m.is(crate::Opcode::ActorDeath)));
         assert_eq!(friendly.iter().filter(|m| **m == expected).count(), 1);
 
         room.tick_observers(&events);
@@ -662,7 +669,12 @@ mod tests {
         room.visible[0].remove(&2);
         room.replicate(&events);
         while let Ok(batch) = streams[0].try_recv() {
-            assert!(batch.into_records().iter().all(|m| m.opcode != 0x0433));
+            assert!(
+                batch
+                    .into_records()
+                    .iter()
+                    .all(|m| !m.is(crate::Opcode::ActorRespawnTimer))
+            );
         }
 
         // Use the native, confirmed gameplay stream for the relocation presentation.
@@ -670,19 +682,24 @@ mod tests {
             seat.peers[0] = seat.peers[1].take();
             seat.world_actor_written = true;
             let actor = 1500 + i as u32;
-            seat.preamble.observe(&Message::new(0x46e, [0; 6]), actor);
+            seat.preamble
+                .observe(&Message::known(crate::Opcode::RequestScene, [0; 6]), actor);
             let mut request = [0; 6];
             request[..4].copy_from_slice(&actor.to_be_bytes());
             request[4] = 1;
-            seat.preamble.observe(&Message::new(0x471, request), actor);
-            seat.preamble.observe(&Message::new(0x46d, [0; 6]), actor);
+            seat.preamble
+                .observe(&Message::known(crate::Opcode::SceneOwner, request), actor);
+            seat.preamble.observe(
+                &Message::known(crate::Opcode::SceneConfirmed, [0; 6]),
+                actor,
+            );
         }
         // Advance the same dead hero through its normal countdown.
         let declaration = {
             let mut b = vec![0; 750];
             b[8..12].copy_from_slice(&1501u32.to_be_bytes());
             b[745] = 17;
-            Message::new(0x03f3, b)
+            Message::known(crate::Opcode::EntitySpawn, b)
         };
         for view in &mut room.scene_views[..2] {
             view.declarations(std::slice::from_ref(&declaration));
@@ -743,7 +760,7 @@ mod tests {
             })
             .unwrap();
         let shared = rooms.room(id).unwrap();
-        shared.lock().unwrap().phase("running");
+        shared.lock().unwrap().phase(crate::RoomPhase::Running);
         let (_, grant) = rooms.observe(id, Uuid::new_v4()).unwrap();
         let (tx, mut rx) = mpsc::channel(1);
         {
@@ -763,7 +780,12 @@ mod tests {
             let batch = rx.try_recv().unwrap();
             assert_eq!(
                 batch.iter().map(|m| m.opcode).collect::<Vec<_>>(),
-                [0x3f3, 0x43d, 0x41d, 0x41d]
+                [
+                    crate::wire_opcode::EntitySpawn,
+                    crate::wire_opcode::ItemGrant,
+                    crate::wire_opcode::EntityStat,
+                    crate::wire_opcode::EntityStat
+                ]
             );
             assert!(
                 matches!(batch[1].fields().unwrap(),Fields::ItemGrant{instance,..} if instance==receipt.granted.instance)

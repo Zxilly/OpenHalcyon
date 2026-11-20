@@ -54,7 +54,7 @@ fn append(out: &mut Vec<Message>, key: u32, killer: Option<u32>) {
         for word in words {
             body.extend_from_slice(&word.to_be_bytes());
         }
-        out.push(Message::new(0x435, body));
+        out.push(Message::known(crate::Opcode::MakeAnnouncement, body));
     }
 }
 
@@ -123,9 +123,9 @@ mod tests {
             let mut enter = actor.to_be_bytes().to_vec();
             enter.extend([1, 0]);
             for msg in [
-                Message::new(0x46e, [0; 6]),
-                Message::new(0x471, enter),
-                Message::new(0x46d, [0; 6]),
+                Message::known(crate::Opcode::RequestScene, [0; 6]),
+                Message::known(crate::Opcode::SceneOwner, enter),
+                Message::known(crate::Opcode::SceneConfirmed, [0; 6]),
             ] {
                 seat.preamble.observe(&msg, actor);
             }

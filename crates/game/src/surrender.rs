@@ -125,7 +125,7 @@ impl Room {
         if self.surrender[usize::from(team)].passed() {
             self.world.winner = Some(1 - team);
             self.reason = Some("completed");
-            self.phase("ending");
+            self.phase(crate::RoomPhase::Ending);
         }
     }
 

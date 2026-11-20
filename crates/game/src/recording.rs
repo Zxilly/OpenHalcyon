@@ -100,13 +100,13 @@ impl Recorder {
     }
 }
 fn sanitize(m: &mut Message) -> bool {
-    match m.opcode {
-        0x3ee if matches!(m.body.len(), 216 | 222) => {
+    match m.known_opcode() {
+        Some(crate::Opcode::PlayerInfo) if matches!(m.body.len(), 216 | 222) => {
             if m.body[212] == 0 {
                 m.body[..128].fill(0);
             }
         }
-        0x459 if m.body.len() == 2590 => {
+        Some(crate::Opcode::Snapshot5V5) if m.body.len() == 2590 => {
             for row in m.body[..16 * 161].as_chunks_mut::<161>().0 {
                 if !row[105..141].starts_with(b"__Kindred_Player_Bot__") {
                     row[25..57].fill(0);
@@ -115,7 +115,7 @@ fn sanitize(m: &mut Message) -> bool {
             }
         }
         // Audited outbound gameplay opcodes only. Unknown and control messages stay out.
-        0x3f2
+        Some(crate::Opcode::Snapshot)
             if m.body.len() == 122
                 && (super::compact::recordable_mid_structure(&m.body)
                     || super::compact::recordable_minion_birth(&m.body)
@@ -127,12 +127,12 @@ fn sanitize(m: &mut Message) -> bool {
                         [52..=199, 0, 0, 1, 1, 1] | [52..=199, 0, 0, 1, 4, 2]
                     ))
                     || super::aral_spawn::recordable(&m.body)) => {}
-        0x42b
+        Some(crate::Opcode::EntityState)
             if matches!(
                 m.body.as_slice(),
                 [0, 0, _, _, 0..=7, 1, 0 | 15, 0, 0, 0, 0, 0, 0, 0]
             ) => {}
-        0x3f8
+        Some(crate::Opcode::EntityFloat)
             if m.body.len() == 9
                 && (14..=199).contains(&m.body[0])
                 && m.body[1..]
@@ -141,14 +141,16 @@ fn sanitize(m: &mut Message) -> bool {
                     .iter()
                     .all(|b| f32::from_be_bytes(*b).is_finite()) => {}
         // Only the authored hero-slot and target combinations have verified wire meanings.
-        0x48a if super::native_cooldown::recordable(m) => {}
-        0x41f if super::scene::mode_variables::recordable(&m.body) => {}
-        0x435 if super::aral::announcements::recordable(&m.body) => {}
-        0x43a
+        Some(crate::Opcode::CooldownSync) if super::native_cooldown::recordable(m) => {}
+        Some(crate::Opcode::ModifyGameModeVar)
+            if super::scene::mode_variables::recordable(&m.body) => {}
+        Some(crate::Opcode::MakeAnnouncement)
+            if super::aral::announcements::recordable(&m.body) => {}
+        Some(crate::Opcode::GrantAbility)
             if matches!(m.body.as_slice(), [0, 0, 5, 220..=229, 0, 0, 0, operand]
             if halcyon_sim::known_native_learn_operand(*operand)) => {}
-        0x40d if super::npc_projectile::recordable(m) => {}
-        0x43e
+        Some(crate::Opcode::FireProjectile) if super::npc_projectile::recordable(m) => {}
+        Some(crate::Opcode::EntityProp)
             if matches!(m.fields(), Ok(halcyon_protocol::Fields::BuffApplication(effect))
                 if (1500..=1505).contains(&effect.prefix.source)
                     && (1500..=1505).contains(&effect.prefix.target)
@@ -157,14 +159,20 @@ fn sanitize(m: &mut Message) -> bool {
                                  effect.prefix.source == effect.prefix.target),
                                  (954, 0x4400, false) | (820, 0x4066, true))
                     && effect.suffix == [0; 6]) => {}
-        0x43e | 0x445 | 0x415 | 0x41a | 0x41b if super::ringo::references(m).is_some() => {}
-        0x415 if super::npc_attack::actors(m).is_some() => {}
-        0x415
+        Some(
+            crate::Opcode::EntityProp
+            | crate::Opcode::CancelBuff
+            | crate::Opcode::PlayAbility
+            | crate::Opcode::OverrideAbility
+            | crate::Opcode::ClearAbilityOverride,
+        ) if super::ringo::references(m).is_some() => {}
+        Some(crate::Opcode::PlayAbility) if super::npc_attack::actors(m).is_some() => {}
+        Some(crate::Opcode::PlayAbility)
             if matches!(
                 m.body.as_slice(),
                 [0, 0, 5, 220..=229, 0, 0, 5, 220..=229, 2]
             ) => {}
-        0x416
+        Some(crate::Opcode::PlayPointAbility)
             if m.body.len() == 17
                 && matches!(m.body[..4], [0, 0, 5, 220..=229])
                 && matches!(m.body[16], 0 | 1 | 3)
@@ -174,39 +182,44 @@ fn sanitize(m: &mut Message) -> bool {
                     .iter()
                     .all(|v| f32::from_be_bytes(*v).is_finite())
                 && f32::from_be_bytes(m.body[8..12].try_into().unwrap()) == 0.0 => {}
-        0x48c
+        Some(crate::Opcode::AggroState)
             if halcyon_protocol::TowerAggro::decode(m).is_some_and(|state| {
                 matches!(state.tower_slot, 3..=7 | 9 | 11..=15)
                     && matches!(state.target_slot, None | Some(14..=199))
             }) => {}
-        0x424 if matches!(m.body.as_slice(), [_, _, _, _, 0, 0]) => {}
-        0x481
+        Some(crate::Opcode::RequestModifyBasicAttackTarget)
+            if matches!(m.body.as_slice(), [_, _, _, _, 0, 0]) => {}
+        Some(crate::Opcode::EquipTalent)
             if matches!(
                 m.body.as_slice(),
                 [0, 0, 5, 220..=225, 255, 0] | [0, 0, 5, 220..=225, 0..=2, 1..=255]
             ) => {}
-        0x488 if matches!(m.body.as_slice(), [0, 0, _, _, 0..=2 | 254]) => {}
-        0x45c if matches!(m.body.len(), 96 | 102) && m.body[96..].iter().all(|&v| v == 0) => {}
-        0x3ef if m.body.is_empty() || m.body == [0; 6] => {}
-        0x41e if m.body.len() == 22 && m.body[16..] == [0; 6] => {}
-        0x434 if m.body.len() == 14 && m.body[4..] == [0, 0, 0, 1, 0, 0, 0, 0, 0, 0] => {}
-        0x409
+        Some(crate::Opcode::SetRecommendedBuildPath)
+            if matches!(m.body.as_slice(), [0, 0, _, _, 0..=2 | 254]) => {}
+        Some(crate::Opcode::SceneReadiness)
+            if matches!(m.body.len(), 96 | 102) && m.body[96..].iter().all(|&v| v == 0) => {}
+        Some(crate::Opcode::TickSyncA) if m.body.is_empty() || m.body == [0; 6] => {}
+        Some(crate::Opcode::HealthImpact) if m.body.len() == 22 && m.body[16..] == [0; 6] => {}
+        Some(crate::Opcode::LevelUp)
+            if m.body.len() == 14 && m.body[4..] == [0, 0, 0, 1, 0, 0, 0, 0, 0, 0] => {}
+        Some(crate::Opcode::TeleportTo)
             if matches!(m.fields(),Ok(halcyon_protocol::Fields::ActorRelocation{actor:1500..=1505,xyz,flag:1,remaining:[0,0,0,0,0]}) if [
             [-78.18,1.3,0.88],[-81.81,1.3,1.97],[-77.03,1.3,-1.94],
             [79.66,1.5,-0.91],[78.60,1.5,-5.06],[83.22,1.5,0.72]
         ].contains(&xyz)) => {}
-        0x432 if m.body.len() == 22 && m.body[16..] == [0; 6] => {}
-        0x433
+        Some(crate::Opcode::ActorRespawn) if m.body.len() == 22 && m.body[16..] == [0; 6] => {}
+        Some(crate::Opcode::ActorRespawnTimer)
             if matches!(
                 m.fields(),
                 Ok(halcyon_protocol::Fields::RespawnTimer {
                     actor: 1500..=1505, seconds, remaining: [0, 0, 0, 0, 0, 0]
                 }) if seconds.is_finite() && seconds > 0.0
             ) => {}
-        0x431 | 0x40b if matches!(m.body.as_slice(), [0, 0, _, _, 0, 0]) => {}
-        0x430 if m.body.len() == 14 && m.body[8..] == [0; 6] => {}
+        Some(crate::Opcode::ActorDead | crate::Opcode::DestroyEntity)
+            if matches!(m.body.as_slice(), [0, 0, _, _, 0, 0]) => {}
+        Some(crate::Opcode::ActorDeath) if m.body.len() == 14 && m.body[8..] == [0; 6] => {}
         // A recorded vote contains only the authored three-seat view of this team.
-        0x473 if m.body.len() == 155 => {
+        Some(crate::Opcode::TeamSurrenderStateChanged) if m.body.len() == 155 => {
             let Ok(halcyon_protocol::Fields::Live(
                 halcyon_protocol::LiveFields::AralSurrenderBoard(b),
             )) = m.fields()
@@ -226,11 +239,12 @@ fn sanitize(m: &mut Message) -> bool {
                 return false;
             }
         }
-        0x3fb if super::native_abilities::recordable_stop(m) => {}
-        0x452 | 0x48f if m.body.is_empty() => {}
-        0x48d if m.body.len() == 1612 => {}
-        0x3f1 if matches!(m.body.as_slice(), [0, 0, 0, 1 | 2, 0 | 2, 0]) => {}
-        0x438
+        Some(crate::Opcode::StopActor) if super::native_abilities::recordable_stop(m) => {}
+        Some(crate::Opcode::EnterPostgame | crate::Opcode::RejectBuyItem) if m.body.is_empty() => {}
+        Some(crate::Opcode::StatisticsReport) if m.body.len() == 1612 => {}
+        Some(crate::Opcode::TickSyncC)
+            if matches!(m.body.as_slice(), [0, 0, 0, 1 | 2, 0 | 2, 0]) => {}
+        Some(crate::Opcode::ReorderItem)
             if m.body.len() == 6
                 && matches!(
                     u32::from_be_bytes(m.body[..4].try_into().unwrap()),
@@ -240,8 +254,20 @@ fn sanitize(m: &mut Message) -> bool {
                 && m.body[4..]
                     .iter()
                     .all(|slot| usize::from(*slot) < halcyon_sim::ARAL_ITEM_CAPACITY) => {}
-        0x3e9 | 0x3f3 | 0x41c | 0x41d | 0x42e | 0x439 | 0x43d | 0x44b | 0x451 | 0x46c | 0x46f
-        | 0x470 => {}
+        Some(
+            crate::Opcode::GameSetup
+            | crate::Opcode::EntitySpawn
+            | crate::Opcode::StatModifier
+            | crate::Opcode::EntityStat
+            | crate::Opcode::Position
+            | crate::Opcode::ShopRequest
+            | crate::Opcode::ItemGrant
+            | crate::Opcode::RemoveItem
+            | crate::Opcode::OpeningWorldClock
+            | crate::Opcode::BeginLoading
+            | crate::Opcode::ModeName
+            | crate::Opcode::SceneTransition,
+        ) => {}
         _ => return false,
     }
     true
@@ -320,7 +346,10 @@ mod tests {
                 |_| true,
             );
         }
-        for opcode in [0x43e, 0x445] {
+        for opcode in [
+            crate::wire_opcode::EntityProp,
+            crate::wire_opcode::CancelBuff,
+        ] {
             let mut message = out.iter().find(|m| m.opcode == opcode).unwrap().clone();
             assert!(sanitize(&mut message));
             *message.body.last_mut().unwrap() = 1;
@@ -362,14 +391,17 @@ mod tests {
         move_to.extend_from_slice(&(-80.0_f32).to_be_bytes());
         move_to.extend_from_slice(&1.0_f32.to_be_bytes());
         for mut m in [
-            Message::new(0x03f8, move_to),
-            Message::new(0x0431, [0, 0, 5, 220, 0, 0]),
-            Message::new(0x040b, [0, 0, 8, 13, 0, 0]),
-            Message::new(0x0424, [0, 0, 5, 221, 0, 0]),
+            Message::known(crate::Opcode::EntityFloat, move_to),
+            Message::known(crate::Opcode::ActorDead, [0, 0, 5, 220, 0, 0]),
+            Message::known(crate::Opcode::DestroyEntity, [0, 0, 8, 13, 0, 0]),
+            Message::known(
+                crate::Opcode::RequestModifyBasicAttackTarget,
+                [0, 0, 5, 221, 0, 0],
+            ),
             Message::ability_learned(1501, 3),
             Message::ability_learned(1501, 4),
             Message::ability_point_used(1501, [-40.5, -0.0, 1.], 3),
-            Message::new(0x0415, [0, 0, 5, 220, 0, 0, 5, 221, 2]),
+            Message::known(crate::Opcode::PlayAbility, [0, 0, 5, 220, 0, 0, 5, 221, 2]),
             halcyon_protocol::BuffApplication {
                 prefix: halcyon_protocol::BuffPrefix {
                     target: 1502,
@@ -383,9 +415,9 @@ mod tests {
             }
             .to_message()
             .unwrap(),
-            Message::new(0x0481, [0, 0, 5, 220, 255, 0]),
-            Message::new(0x0481, [0, 0, 5, 225, 1, 1]),
-            Message::new(0x0488, [0, 0, 5, 220, 254]),
+            Message::known(crate::Opcode::EquipTalent, [0, 0, 5, 220, 255, 0]),
+            Message::known(crate::Opcode::EquipTalent, [0, 0, 5, 225, 1, 1]),
+            Message::known(crate::Opcode::SetRecommendedBuildPath, [0, 0, 5, 220, 254]),
         ] {
             assert!(sanitize(&mut m));
             m.body.push(42);
@@ -409,7 +441,15 @@ mod tests {
         assert!(sanitize(&mut board));
         board.body[55] = 42;
         assert!(!sanitize(&mut board));
-        for control in [0x0472, 0x03f5, 0x0411, 0x0412, 0x0436, 0x0484, 0x0485] {
+        for control in [
+            crate::wire_opcode::SetSurrenderStateRequest,
+            crate::wire_opcode::StateUpdA,
+            crate::wire_opcode::RequestTargetAbility,
+            crate::wire_opcode::RequestPointAbility,
+            crate::wire_opcode::RequestUpgradeAbility,
+            crate::wire_opcode::RequestEquipTalent,
+            crate::wire_opcode::RequestRecommendedBuildPath,
+        ] {
             assert!(!sanitize(&mut Message::new(control, [0; 6])));
         }
     }
