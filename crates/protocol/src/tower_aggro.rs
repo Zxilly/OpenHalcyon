@@ -11,9 +11,9 @@ impl TowerAggro {
     pub fn decode(message: &Message) -> Option<Self> {
         let b = &message.body;
         if message.opcode != 0x048c
-            || b.len() != 14
+            || !matches!(b.len(), 8 | 14)
             || b[2..6] != 9_f32.to_be_bytes()
-            || b[7..] != [0; 7]
+            || b[7..].iter().any(|&byte| byte != 0)
             || b[0] == u8::MAX
         {
             return None;
@@ -58,6 +58,10 @@ mod tests {
             assert!(TowerAggro::decode(&frame).is_none());
             frame.body[6] ^= 1;
             frame.body[8] = 1;
+            assert!(TowerAggro::decode(&frame).is_none());
+            frame.body.truncate(8);
+            assert_eq!(TowerAggro::decode(&frame), Some(state));
+            frame.body[7] = 1;
             assert!(TowerAggro::decode(&frame).is_none());
         }
     }

@@ -29,8 +29,8 @@ mod item_actions;
 pub use item_actions::ItemAction;
 mod live;
 pub use live::LiveFields;
-mod native_motion;
 mod mutations;
+mod native_motion;
 pub use mutations::{AttributeChange, ResourceChange};
 mod metadata;
 mod opcode;
@@ -210,20 +210,24 @@ impl Message {
                 remaining: &b[5..],
             },
             0x48d if statistics::complete(b) => Fields::MatchStatistics(MatchStatistics(b)),
-            0x41a | 0x41b if b.len() == 14 => Fields::AbilityOverride {
-                actor: number(0)?,
-                key: number(4)?,
-                replacement: if self.opcode == 0x41a {
-                    Some(number(8)?)
-                } else {
-                    None
-                },
-                remaining: if self.opcode == 0x41a {
-                    &b[12..]
-                } else {
-                    &b[8..]
-                },
-            },
+            0x41a | 0x41b
+                if matches!((self.opcode, b.len()), (_, 14) | (0x41a, 13) | (0x41b, 8)) =>
+            {
+                Fields::AbilityOverride {
+                    actor: number(0)?,
+                    key: number(4)?,
+                    replacement: if self.opcode == 0x41a {
+                        Some(number(8)?)
+                    } else {
+                        None
+                    },
+                    remaining: if self.opcode == 0x41a {
+                        &b[12..]
+                    } else {
+                        &b[8..]
+                    },
+                }
+            }
             0x441 | 0x445 | 0x446
                 if b.len() == 14 || b.len() == if self.opcode == 0x441 { 12 } else { 8 } =>
             {
@@ -246,12 +250,12 @@ impl Message {
                 actor: number(0)?,
                 bytes: [b[4], b[5]],
             },
-            0x43c if b.len() == 14 => Fields::AbilityCancellation {
+            0x43c if matches!(b.len(), 10 | 14) => Fields::AbilityCancellation {
                 actor: number(0)?,
                 reference: number(4)?,
                 remaining: &b[8..],
             },
-            0x48c if b.len() == 14 => Fields::AggroState {
+            0x48c if matches!(b.len(), 8 | 14) => Fields::AggroState {
                 prefix: [b[0], b[1]],
                 value: float(2)?,
                 remaining: &b[6..],
@@ -274,7 +278,7 @@ impl Message {
                 flag: b[13],
                 remaining: &b[14..],
             },
-            0x432 if b.len() == 22 => Fields::Respawn {
+            0x432 if matches!(b.len(), 16 | 22) => Fields::Respawn {
                 actor: number(0)?,
                 position: [float(4)?, float(8)?, float(12)?],
                 remaining: &b[16..],
@@ -284,7 +288,7 @@ impl Message {
                 seconds: float(4)?,
                 remaining: &b[8..],
             },
-            0x434 | 0x43a if b.len() == 14 => Fields::ProgressAction {
+            0x434 | 0x43a if matches!(b.len(), 8 | 14) => Fields::ProgressAction {
                 kind: Opcode::try_from(self.opcode).expect("matched known opcode"),
                 actor: number(0)?,
                 operand: number(4)?,
@@ -307,14 +311,14 @@ impl Message {
                 selector: b[8],
                 remaining: &b[9..],
             },
-            0x428 if b.len() == 14 => Fields::CooldownValue {
+            0x428 if matches!(b.len(), 13 | 14) => Fields::CooldownValue {
                 owner: number(0)?,
                 key: number(4)?,
                 value: float(8)?,
                 mode: b[12],
                 remaining: &b[13..],
             },
-            0x429 if b.len() == 14 => Fields::AbilityCharges {
+            0x429 if matches!(b.len(), 13 | 14) => Fields::AbilityCharges {
                 owner: number(0)?,
                 ability_slot: number(4)?,
                 operand: number(8)?,

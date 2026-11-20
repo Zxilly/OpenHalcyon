@@ -1,4 +1,4 @@
-use halcyon_protocol::{AndroidLayout, READ_SIZES};
+use halcyon_protocol::{AndroidLayout, Fields, Message, READ_SIZES};
 
 #[test]
 fn all_android_prefixes_preserve_surplus_bytes_and_reject_short_bodies() {
@@ -32,4 +32,34 @@ fn all_android_prefixes_preserve_surplus_bytes_and_reject_short_bodies() {
     let unknown = AndroidLayout::for_opcode(0xffff);
     assert_eq!(unknown, AndroidLayout::Unlisted);
     assert_eq!(unknown.split_body(b"xyz").unwrap(), (&b""[..], &b"xyz"[..]));
+}
+
+#[test]
+fn removing_cipher_padding_preserves_the_android_action_decoder() {
+    for &(opcode, frame_bytes) in READ_SIZES {
+        let Some(frame_bytes) = frame_bytes else {
+            continue;
+        };
+        let body_bytes = frame_bytes - 4;
+        let padded = (body_bytes + 2).next_multiple_of(8) - 2;
+        if padded == body_bytes {
+            continue;
+        }
+        let compact = Message::new(opcode, vec![0; body_bytes]);
+        let encrypted_body = Message::new(opcode, vec![0; padded]);
+        let Ok(wire) = encrypted_body.fields() else {
+            continue;
+        };
+        if matches!(wire, Fields::Opaque(_)) {
+            continue;
+        }
+        let native = compact
+            .fields()
+            .unwrap_or_else(|err| panic!("{opcode:#x}: {err}"));
+        assert_eq!(
+            std::mem::discriminant(&native),
+            std::mem::discriminant(&wire),
+            "{opcode:#x}: {body_bytes} native bytes and {padded} padded bytes"
+        );
+    }
 }
