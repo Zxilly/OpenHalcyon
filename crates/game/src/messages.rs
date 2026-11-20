@@ -72,7 +72,10 @@ pub fn setup(
     picks: &[Pick],
 ) -> Vec<Message> {
     let mut config = settings(seat, mode_name(mode), true);
-    if KnownQueue::parse(mode) == Some(KnownQueue::Ranked) {
+    if matches!(
+        KnownQueue::parse(mode).map(KnownQueue::mode),
+        Some(NativeMode::RankedFold | NativeMode::CasualFold | NativeMode::Blitz)
+    ) {
         config.body[16..18].fill(3);
         config.body[96..100].copy_from_slice(&5f32.to_be_bytes());
         config.body[100] = world.entities[seat].team + 1;
@@ -89,7 +92,14 @@ pub(super) fn draft_catalog(
     queue: &str,
     picks: &[Pick],
 ) -> Vec<Message> {
+    let parsed_mode = KnownQueue::parse(queue).map(KnownQueue::mode);
     let mut mode = vec![0; 68];
+    if matches!(
+        parsed_mode,
+        Some(NativeMode::CasualFold | NativeMode::RankedFold | NativeMode::Blitz)
+    ) {
+        mode[..4].copy_from_slice(&3u32.to_be_bytes());
+    }
     put_text(&mut mode[4..], mode_name(queue));
     let mut out = Vec::with_capacity(catalog.len() + 2);
     out.push(Message::known(crate::Opcode::DraftModeAnnouncement, mode));
@@ -98,8 +108,21 @@ pub(super) fn draft_catalog(
             .iter()
             .map(|entry| Message::known(crate::Opcode::DraftCatalogEntry, *entry)),
     );
-    out.push(snapshot(world, players, picks));
+    let roster = if parsed_mode == Some(NativeMode::Blitz) {
+        aral_roster_from_world(world, players, picks)
+    } else {
+        snapshot(world, players, picks)
+    };
+    out.push(roster);
     out
+}
+
+fn aral_roster_from_world(world: &World, players: &[Uuid], picks: &[Pick]) -> Message {
+    let mut msg = snapshot(world, players, picks);
+    msg.opcode = crate::wire_opcode::DraftRosterAral;
+    msg.body[..4].copy_from_slice(&crate::aral::DRAFT_SECONDS.to_be_bytes());
+    msg.body[4..8].copy_from_slice(&crate::aral::DRAFT_SECONDS.to_be_bytes());
+    msg
 }
 pub fn snapshot(world: &World, players: &[Uuid], picks: &[Pick]) -> Message {
     let mut body = vec![0; 2590];
@@ -262,14 +285,15 @@ pub(super) fn world_header(
     mode: &str,
     seat: usize,
 ) -> Vec<Message> {
-    let mut out: Vec<_> = (0..10)
+    let seats = picks.len().min(10);
+    let mut out: Vec<_> = (0..seats)
         .map(|i| info(world, players, picks, i, false))
         .collect();
     out.push(world_settings(seat, mode));
     out.push(Message::known(crate::Opcode::DraftTransitionToLoading, [0]));
     out.push(scene_mode(mode, 1));
     out.push(Message::known(crate::Opcode::SceneLoadedDismiss, [0]));
-    out.extend((0..10).map(|i| info(world, players, picks, i, true)));
+    out.extend((0..seats).map(|i| info(world, players, picks, i, true)));
     out.push(world_clock(world.tick));
     out
 }
@@ -687,6 +711,12 @@ mod mode_tests {
             ("5v5_private_draft", "*GameMode_5v5_PrivateDraft*"),
             ("5v5_private_bots", "*GameMode_5v5_PrivateBots*"),
             ("5v5_practice", "*GameMode_5v5_Practice*"),
+            ("3v3_pvp_casual", "*GameMode_HF_Casual*"),
+            ("3v3_pvp_ranked", "*GameMode_HF_Ranked*"),
+            ("ranked", "*GameMode_HF_Ranked*"),
+            ("blitz_3v3", "*GameMode_Blitz_Revamp*"),
+            ("blitz", "*GameMode_Blitz_Revamp*"),
+            ("blitz_pvp_ranked", "*GameMode_Blitz_Revamp*"),
             ("aral_casual", "*GameMode_Aral_Casual*"),
             ("casual_aral", "*GameMode_Aral_Casual*"),
             ("custom_pool", "*GameMode_5v5_Casual*"),

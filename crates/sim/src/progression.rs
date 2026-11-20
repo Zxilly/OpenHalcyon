@@ -277,7 +277,12 @@ impl Room<'_> {
         t.status = Default::default();
         events.push(Event::Death { id, killer: src });
         if kind != Kind::Armory {
-            t.respawn = self.state.tick + RESPAWN + (self.state.tick / 60).min(900);
+            t.respawn = self.state.tick
+                + match self.state.layout {
+                    Layout::HalcyonFold { .. } => crate::map_3v3::respawn_ticks(self.state.tick),
+                    Layout::Blitz { .. } => crate::map_blitz::respawn_ticks(self.state.tick),
+                    _ => RESPAWN + (self.state.tick / 60).min(900),
+                };
         }
         self.entities.forget_target(i);
         if kind == Kind::Armory {
@@ -311,6 +316,12 @@ impl Room<'_> {
         }
         if kind == Kind::Hero && team < 2 {
             self.first_blood = true;
+        }
+        if self.on_halcyon_fold_lethal(i, src, team, events) {
+            return;
+        }
+        if self.on_blitz_lethal(i, src, team, events) {
+            return;
         }
         // Ten stable hero seats. A death awards its killer even if the projectile
         // travelled beyond the project assist radius after release.

@@ -4,7 +4,9 @@
 pub enum NativeMode {
     CasualFive,
     RankedFive,
+    CasualFold,
     RankedFold,
+    Blitz,
     SoloBots,
     CoopBots,
     Private,
@@ -19,7 +21,9 @@ impl NativeMode {
         match self {
             Self::CasualFive => "*GameMode_5v5_Casual*",
             Self::RankedFive => "*GameMode_5v5_Ranked*",
+            Self::CasualFold => "*GameMode_HF_Casual*",
             Self::RankedFold => "*GameMode_HF_Ranked*",
+            Self::Blitz => "*GameMode_Blitz_Revamp*",
             Self::SoloBots => "*GameMode_5v5_SoloBots*",
             Self::CoopBots => "*GameMode_5v5_CoopBots*",
             Self::Private => "*GameMode_5v5_Private*",
@@ -28,6 +32,21 @@ impl NativeMode {
             Self::Practice => "*GameMode_5v5_Practice*",
             Self::Aral => "*GameMode_Aral_Casual*",
         }
+    }
+
+    pub const fn is_three_per_side(self) -> bool {
+        matches!(
+            self,
+            Self::Aral | Self::CasualFold | Self::RankedFold | Self::Blitz
+        )
+    }
+
+    pub const fn is_halcyon_fold(self) -> bool {
+        matches!(self, Self::CasualFold | Self::RankedFold)
+    }
+
+    pub const fn is_blitz(self) -> bool {
+        matches!(self, Self::Blitz)
     }
 }
 
@@ -59,6 +78,17 @@ macro_rules! queues {
 
 queues! {
     Ranked = "ranked" => RankedFold,
+    PvpRankedFold = "3v3_pvp_ranked" => RankedFold,
+    FoldRanked = "3v3_ranked" => RankedFold,
+    RankedFold = "ranked_3v3" => RankedFold,
+    PvpCasualFold = "3v3_pvp_casual" => CasualFold,
+    FoldCasual = "3v3_casual" => CasualFold,
+    CasualFold = "casual_3v3" => CasualFold,
+    BlitzThree = "blitz_3v3" => Blitz,
+    Blitz = "blitz" => Blitz,
+    BlitzPvpRanked = "blitz_pvp_ranked" => Blitz,
+    BlitzRanked = "blitz_ranked" => Blitz,
+    BlitzCasual = "blitz_casual" => Blitz,
     PvpRankedFive = "5v5_pvp_ranked" => RankedFive,
     FiveRanked = "5v5_ranked" => RankedFive,
     RankedFive = "ranked_5v5" => RankedFive,
@@ -95,6 +125,13 @@ mod tests {
         }
         assert_eq!(KnownQueue::AralCasual.mode(), KnownQueue::CasualAral.mode());
         assert_ne!(KnownQueue::AralCasual, KnownQueue::CasualAral);
+        assert_eq!(KnownQueue::PvpRankedFold.mode(), KnownQueue::Ranked.mode());
+        assert_eq!(KnownQueue::PvpCasualFold.mode(), NativeMode::CasualFold);
+        assert_eq!(KnownQueue::BlitzThree.mode(), NativeMode::Blitz);
+        assert_eq!(KnownQueue::Blitz.mode(), NativeMode::Blitz);
+        assert!(NativeMode::Blitz.is_three_per_side());
+        assert!(NativeMode::CasualFold.is_three_per_side());
+        assert!(NativeMode::RankedFold.is_three_per_side());
         assert_ne!(KnownQueue::Ranked.mode(), KnownQueue::RankedFive.mode());
         for unknown in ["bench_4", "CASUAL_ARAL", " solo", "3v3_standard"] {
             assert_eq!(KnownQueue::parse(unknown), None);

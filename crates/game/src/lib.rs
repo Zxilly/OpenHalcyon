@@ -14,6 +14,7 @@ mod commands;
 mod compact;
 mod hero_progress;
 mod messages;
+mod modes_3v3_blitz;
 mod native_abilities;
 mod native_cooldown;
 mod npc_attack;
@@ -1070,6 +1071,7 @@ impl Room {
         self.last_active = Instant::now();
         self.generation += 1;
         if game {
+            let _ = modes_3v3_blitz::prepare_world(self);
             // The reconnect snapshot represents precisely this simulation tick.
             let team = self.world.entities[idx].team;
             let visible = &mut self.visible[usize::from(team)];
@@ -1163,6 +1165,11 @@ impl Room {
         Some((idx, ch, self.generation, batch))
     }
     fn spawn_view(&self, team: Option<u8>) -> Batch {
+        if modes_3v3_blitz::is_managed(self.known_queue) {
+            let mut out = Vec::new();
+            modes_3v3_blitz::append_opening(self, team, &mut out);
+            return out;
+        }
         let mut out = vec![];
         for e in &self.world.entities {
             if e.hp <= 0. || team.is_some_and(|t| !self.world.visible(t, e)) {
@@ -1212,12 +1219,13 @@ impl Room {
     }
     fn roster_with_echo(&self, except: Option<usize>, echo: Option<&Message>) -> Message {
         let legacy = self.legacy_aral();
-        let mut roster = if legacy {
+        let blitz = modes_3v3_blitz::is_blitz(self.known_queue);
+        let mut roster = if legacy || blitz {
             aral::roster(self, self.aral_remaining(), false)
         } else {
             snapshot(&self.world, &self.players, &self.picks)
         };
-        if !legacy && self.phase == crate::RoomPhase::HeroSelect {
+        if !legacy && !blitz && self.phase == crate::RoomPhase::HeroSelect {
             roster.body[..4].copy_from_slice(
                 &(300. - self.phase_start.elapsed().as_secs_f32())
                     .max(0.)
@@ -1448,7 +1456,11 @@ impl Room {
                 let _ = self.world.command(hero.id, command);
             }
             Fields::Live(halcyon_protocol::LiveFields::TalentSelection(selection)) => {
-                out = aral::talent_response(self, i, ch, selection);
+                out = if modes_3v3_blitz::is_blitz(self.known_queue) {
+                    modes_3v3_blitz::talent_response(self, i, selection)
+                } else {
+                    aral::talent_response(self, i, ch, selection)
+                };
             }
             Fields::Live(halcyon_protocol::LiveFields::MovePoint { .. })
                 if ch == 0 && (legacy || solo_scene) => {}
@@ -1517,7 +1529,8 @@ impl Room {
                 if m.is(crate::Opcode::DraftRefreshRequest)
                     && (legacy
                         || self.solo_scene()
-                        || self.known_queue == Some(KnownQueue::Ranked))
+                        || self.known_queue == Some(KnownQueue::Ranked)
+                        || modes_3v3_blitz::is_managed(self.known_queue))
                     && ch == 0
                     && self.phase == crate::RoomPhase::HeroSelect
                     && self.seats[i].peers[0].is_some()
@@ -1558,6 +1571,7 @@ impl Room {
                         out.push(roster);
                     }
                     if self.seats.iter().all(|s| s.locked) {
+                        let _ = modes_3v3_blitz::prepare_world(self);
                         self.phase(crate::RoomPhase::Loading);
                     }
                 }
@@ -1760,6 +1774,7 @@ impl Room {
             scene::initial_structures(self);
         }
         let events = self.world.step();
+        modes_3v3_blitz::publish_tick(self, &events);
         self.solo_structure_snapshot.observe(&events);
         if legacy {
             if self.world.winner.is_none() {
@@ -1836,7 +1851,8 @@ impl Room {
         }
         let result = match self.surrender.iter().position(surrender::Ballot::passed) {
             Some(loser) => Message::aral_surrender_result(2 - loser as u8).ok(),
-            None => result_frames::crystal_end(&self.queue, &self.world),
+            None => result_frames::crystal_end(&self.queue, &self.world)
+                .or_else(|| result_frames::score_or_time_end(&self.queue, &self.world)),
         };
         if let Some(result) = result {
             let mut final_batch = Vec::with_capacity(2);

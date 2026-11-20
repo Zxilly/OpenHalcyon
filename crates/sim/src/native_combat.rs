@@ -92,7 +92,10 @@ impl super::Room<'_> {
         equipped: Option<(&str, std::num::NonZeroU8)>,
         data: &GameData,
     ) -> Result<(), &'static str> {
-        if !matches!(self.layout, super::Layout::Aral { .. }) {
+        if !matches!(
+            self.layout,
+            super::Layout::Aral { .. } | super::Layout::Blitz { .. }
+        ) {
             return Err("talents unavailable for mode");
         }
         let i = self.index(actor).ok_or("unknown actor")?;

@@ -13,6 +13,12 @@ pub(super) enum Layout {
     Aral {
         hero_starts: [Position; 6],
     },
+    HalcyonFold {
+        hero_starts: [Position; 6],
+    },
+    Blitz {
+        hero_starts: [Position; 6],
+    },
     SoloMid {
         hero_starts: [Position; 10],
     },
@@ -32,7 +38,9 @@ impl Layout {
         match (self, level) {
             (Self::Aral { .. }, 4) => Some(90.),
             (Self::Aral { .. }, 5..=12) => Some(130. + 10. * f32::from(level - 5)),
-            (Self::SoloMid { .. }, 1..=12) => Some(68. + 16. * f32::from(level - 1)),
+            (Self::HalcyonFold { .. } | Self::Blitz { .. } | Self::SoloMid { .. }, 1..=12) => {
+                Some(68. + 16. * f32::from(level - 1))
+            }
             _ => None,
         }
     }
@@ -43,10 +51,16 @@ impl Layout {
                 hero_starts[(actor.id - 1) as usize]
             }
             Self::SoloMid { .. } => point(actor.team, 90., 0.),
-            Self::Aral { hero_starts } if actor.kind == Kind::Hero => {
+            Self::Aral { hero_starts }
+            | Self::HalcyonFold { hero_starts }
+            | Self::Blitz { hero_starts }
+                if actor.kind == Kind::Hero =>
+            {
                 hero_starts[(actor.id - 1) as usize]
             }
-            Self::Aral { .. } => self.wave(actor.team, 0),
+            Self::Aral { .. } | Self::HalcyonFold { .. } | Self::Blitz { .. } => {
+                self.wave(actor.team, 0)
+            }
             Self::Validation => base(actor.team),
         }
     }
@@ -61,9 +75,10 @@ impl Layout {
             }
         };
         match self {
-            Self::Aral { .. } => aral::PADS[usize::from(actor.team)]
-                .iter()
-                .any(|&(x, z)| inside(Position { x, y: z })),
+            Self::Aral { .. } | Self::HalcyonFold { .. } | Self::Blitz { .. } => aral::PADS
+                [usize::from(actor.team)]
+            .iter()
+            .any(|&(x, z)| inside(Position { x, y: z })),
             Self::Validation => inside(base(actor.team)),
             Self::SoloMid { .. } => STARTS.iter().any(|&(x, z)| inside(point(actor.team, x, z))),
         }
@@ -73,7 +88,9 @@ impl Layout {
         match self {
             Self::Validation => base(team),
             Self::SoloMid { .. } => point(team, 75., 0.),
-            Self::Aral { .. } => point(team, 76.12, 19.9),
+            Self::Aral { .. } | Self::HalcyonFold { .. } | Self::Blitz { .. } => {
+                point(team, 76.12, 19.9)
+            }
         }
     }
 
@@ -84,13 +101,18 @@ impl Layout {
                 ..base(team)
             },
             Self::SoloMid { .. } => point(team, 70., 0.),
-            Self::Aral { .. } => point(team, 71.28, 12.93),
+            Self::Aral { .. } | Self::HalcyonFold { .. } | Self::Blitz { .. } => {
+                point(team, 71.28, 12.93)
+            }
         }
     }
 
     pub fn walkable(&self, p: Position) -> bool {
         match self {
             Self::Aral { .. } => (-95.0..=95.).contains(&p.x) && (-7.0..=21.).contains(&p.y),
+            Self::HalcyonFold { .. } | Self::Blitz { .. } => {
+                (-95.0..=95.).contains(&p.x) && (-12.0..=55.).contains(&p.y)
+            }
             Self::Validation => nav::walkable(p),
             Self::SoloMid { .. } => solo_side::walkable(p),
         }
@@ -100,7 +122,9 @@ impl Layout {
         match self {
             Self::Validation => nav::clear(a, b),
             Self::SoloMid { .. } => solo_side::clear(a, b),
-            Self::Aral { .. } => self.walkable(a) && self.walkable(b),
+            Self::Aral { .. } | Self::HalcyonFold { .. } | Self::Blitz { .. } => {
+                self.walkable(a) && self.walkable(b)
+            }
         }
     }
 }

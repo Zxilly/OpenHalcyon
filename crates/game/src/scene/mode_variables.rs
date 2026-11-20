@@ -12,6 +12,8 @@ const MODE_KEY: u32 = 0x224f_f1a2;
 
 pub(crate) enum Opening {
     Solo,
+    HalcyonFold,
+    Blitz,
     Aral,
 }
 
@@ -19,6 +21,8 @@ impl Opening {
     pub(crate) fn messages(self) -> impl Iterator<Item = Message> {
         let mode_word: u32 = match self {
             Self::Solo => 1,
+            Self::HalcyonFold => 2,
+            Self::Blitz => 3,
             Self::Aral => 5,
         };
         KEYS.into_iter().map(move |key| {

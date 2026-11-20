@@ -29,6 +29,9 @@ mod effects_replay;
 mod layout;
 pub use layout::SOLO_CRYSTAL_START_INSTANCES;
 mod lorelai;
+pub mod map_3v3;
+pub mod map_blitz;
+pub use map_blitz::BlitzTalentSlot;
 mod native_camps;
 mod native_combat;
 mod native_learn;
@@ -355,6 +358,19 @@ pub enum Event {
         id: u32,
         level: u8,
     },
+    ObjectiveCaptured {
+        team: u8,
+        actor: u32,
+        gold: u32,
+    },
+    BlitzPoints {
+        team: u8,
+        points: u8,
+        source: u32,
+        target: u32,
+        total: u32,
+    },
+    BlitzSuddenDeath,
     End {
         winner: u8,
     },
@@ -593,6 +609,8 @@ pub struct RoomState {
     nav_budget: u8,
     native_navigation: Option<Box<native_navigation::NativeNavigation>>,
     native_camps: Option<Vec<native_camps::NativeCampUnit>>,
+    halcyon_fold: Option<Box<map_3v3::FoldState>>,
+    blitz: Option<Box<map_blitz::BlitzState>>,
     first_blood: bool,
     scores: [PlayerScore; 10],
     team_scores: [TeamScore; 2],
@@ -676,6 +694,12 @@ impl Room<'_> {
         }
         if let Some(camps) = &self.native_camps {
             serde_json::to_writer(&mut hash, camps).expect("finite camp placements");
+        }
+        if let Some(fold) = &self.halcyon_fold {
+            serde_json::to_writer(&mut hash, fold).expect("finite halcyon fold state");
+        }
+        if let Some(blitz) = &self.blitz {
+            serde_json::to_writer(&mut hash, blitz).expect("finite blitz state");
         }
         if let Some(difficulty) = self.bot_difficulty {
             hash.update(difficulty.as_str().as_bytes());
@@ -863,6 +887,8 @@ impl Room<'_> {
                 nav_budget: 0,
                 native_navigation: None,
                 native_camps: None,
+                halcyon_fold: None,
+                blitz: None,
                 first_blood: false,
                 scores: Default::default(),
                 team_scores: Default::default(),
@@ -1104,6 +1130,17 @@ impl Room<'_> {
                 }
                 Layout::SoloMid { .. } => solo_side::steer(e.position, p),
                 Layout::Aral { .. } => state.layout.clear(e.position, p).then_some(p),
+                Layout::HalcyonFold { .. } | Layout::Blitz { .. } => {
+                    if e.kind == Kind::Minion
+                        && e.order == Command::MoveTo(p)
+                        && p == state.layout.objective(1 - e.team)
+                    {
+                        let goal = aral::march_goal(e, p);
+                        state.layout.clear(e.position, goal).then_some(goal)
+                    } else {
+                        state.layout.clear(e.position, p).then_some(p)
+                    }
+                }
             }
         };
         let Some(waypoint) = next else {
@@ -1226,6 +1263,10 @@ impl Room<'_> {
     fn spawn_tick_waves(&mut self, events: &mut Vec<Event>) {
         if matches!(self.layout, Layout::Aral { .. }) {
             self.spawn_aral_wave(events);
+        } else if matches!(self.layout, Layout::HalcyonFold { .. }) {
+            self.advance_halcyon_fold(events);
+        } else if matches!(self.layout, Layout::Blitz { .. }) {
+            self.advance_blitz(events);
         } else if matches!(self.layout, Layout::SoloMid { .. }) {
             self.spawn_native_camps(events);
             self.spawn_solo_mid_wave(events);

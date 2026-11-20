@@ -137,6 +137,8 @@ impl Room<'_> {
             && match self.layout {
                 Layout::SoloMid { .. } => actor.type_id == EntityTemplate::OuterTurret5v5.as_raw(),
                 Layout::Aral { .. } => actor.position == point(actor.team, 17.06, 1.93),
+                Layout::HalcyonFold { .. } => self.is_halcyon_fold_outer_tower(actor),
+                Layout::Blitz { .. } => self.is_blitz_outer_tower(actor),
                 Layout::Validation => true,
             }
     }
@@ -163,27 +165,31 @@ impl Room<'_> {
     }
 
     pub(super) fn aral_march_goal(&self, actor: &Entity) -> Position {
-        // Route through the three measured positions on each side. Exact navmesh
-        // splines are unknown. The next objective is always in the enemy direction.
-        let direction = if actor.team == 0 { 1. } else { -1. };
-        for (x, z) in [
-            (-54., 2.92),
-            (-35.78, 1.17),
-            (-17.06, 1.93),
-            (17.06, 1.93),
-            (35.78, 1.17),
-            (54., 2.92),
-            (68.59, 19.97),
-        ] {
-            if direction * actor.position.x < x - 0.3 {
-                return Position {
-                    x: direction * x,
-                    y: z,
-                };
-            }
-        }
-        self.layout.objective(1 - actor.team)
+        march_goal(actor, self.layout.objective(1 - actor.team))
     }
+}
+
+pub(super) fn march_goal(actor: &Entity, objective: Position) -> Position {
+    // Route through the three measured positions on each side. Exact navmesh
+    // splines are unknown. The next objective is always in the enemy direction.
+    let direction = if actor.team == 0 { 1. } else { -1. };
+    for (x, z) in [
+        (-54., 2.92),
+        (-35.78, 1.17),
+        (-17.06, 1.93),
+        (17.06, 1.93),
+        (35.78, 1.17),
+        (54., 2.92),
+        (68.59, 19.97),
+    ] {
+        if direction * actor.position.x < x - 0.3 {
+            return Position {
+                x: direction * x,
+                y: z,
+            };
+        }
+    }
+    objective
 }
 
 #[cfg(test)]
