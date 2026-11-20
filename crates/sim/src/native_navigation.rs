@@ -6,7 +6,7 @@ const PROJECT_RADIUS: f32 = 8.;
 const REPLAN_DISTANCE: f32 = 1.25;
 type Triangle = [[f32; 2]; 3];
 
-struct Brush {
+pub(super) struct Brush {
     bounds: [f32; 4],
     triangles: Box<[Triangle]>,
 }
@@ -30,7 +30,7 @@ impl Brush {
         }
     }
 
-    fn contains(&self, p: Position) -> bool {
+    pub(super) fn contains(&self, p: Position) -> bool {
         let [low_x, low_y, high_x, high_y] = self.bounds;
         (low_x..=high_x).contains(&p.x)
             && (low_y..=high_y).contains(&p.y)
@@ -117,6 +117,10 @@ impl NativeNavigation {
         serde_json::to_writer(hash, &self.routes).expect("finite native navigation");
     }
 
+    #[cfg(feature = "ecs-visibility-bench")]
+    pub(super) fn brush_at(&self, target: Position) -> Option<&Brush> {
+        self.brushes.iter().find(|area| area.contains(target))
+    }
     pub(super) fn can_see(&self, viewer: Position, target: Position) -> bool {
         self.brushes
             .iter()

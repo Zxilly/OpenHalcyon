@@ -4,6 +4,8 @@ use halcyon_data::EntityTemplate;
 mod ai;
 mod aral;
 mod arcane_fire;
+#[cfg(feature = "ecs-visibility-bench")]
+pub mod ecs_experiment;
 mod vision_devices;
 pub use vision_devices::{VisionDevice, VisionDeviceKind};
 mod aral_inventory;

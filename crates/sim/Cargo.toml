@@ -5,8 +5,16 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+ecs-visibility-bench = ["dep:hecs"]
+
+[[example]]
+name = "ecs_bench"
+required-features = ["ecs-visibility-bench"]
+
 [dependencies]
 halcyon-data = { path = "../data" }
+hecs = { version = "0.11", optional = true }
 serde = { version = "1", features = ["derive", "rc"] }
 serde_json.workspace = true
 sha2 = "0.10"
