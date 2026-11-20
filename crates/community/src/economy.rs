@@ -1,6 +1,7 @@
+use crate::views::{Inventory, InventoryItem, Items, Quest, QuestStatus, enum_column};
 use rusqlite::{OptionalExtension, Transaction, params};
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::Value;
 use uuid::Uuid;
 
 use crate::{Action, Community, CommunityError, Result, ensure_player, optional_row, validated};
@@ -224,16 +225,23 @@ fn inventory(tx: &Transaction<'_>, player: &str) -> Result<Value> {
          LEFT JOIN community_equipment e ON e.player=i.player AND e.item=i.item AND e.slot=d.slot
          WHERE i.player=? ORDER BY d.slot,i.item",
     )?;
-    let items = query.query_map([player], |row| Ok(json!({
-        "id":row.get::<_, String>(0)?, "name":row.get::<_, String>(1)?, "slot":row.get::<_, String>(2)?,
-        "count":row.get::<_, u32>(3)?, "equipped":row.get::<_, bool>(4)?,
-    })))?.collect::<rusqlite::Result<Vec<_>>>()?;
-    let equipped: serde_json::Map<String, Value> = items
+    let items = query
+        .query_map([player], |row| {
+            Ok(InventoryItem {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                slot: row.get(2)?,
+                count: row.get(3)?,
+                equipped: row.get(4)?,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let equipped = items
         .iter()
-        .filter(|item| item["equipped"] == true)
-        .filter_map(|item| Some((item["slot"].as_str()?.to_owned(), item["id"].clone())))
+        .filter(|item| item.equipped)
+        .map(|item| (item.slot.clone(), item.id.clone()))
         .collect();
-    Ok(json!({"items":items,"equipped":equipped}))
+    Ok(serde_json::to_value(Inventory { items, equipped })?)
 }
 
 fn quests(tx: &Transaction<'_>, player: &str, category: Option<String>) -> Result<Value> {
@@ -244,13 +252,22 @@ fn quests(tx: &Transaction<'_>, player: &str, category: Option<String>) -> Resul
          FROM community_quests q LEFT JOIN community_quest_states s ON s.quest=q.id AND s.player=?1
          WHERE ?2 IS NULL OR q.category=?2 ORDER BY q.id",
     )?;
-    let items = query.query_map(params![player, category], |row| Ok(json!({
-        "id":row.get::<_, String>(0)?, "category":row.get::<_, String>(1)?, "title":row.get::<_, String>(2)?,
-        "goal":row.get::<_, u32>(3)?, "skippable":row.get::<_, bool>(4)?,
-        "rewardItem":row.get::<_, Option<String>>(5)?, "rewardCount":row.get::<_, Option<u32>>(6)?,
-        "progress":row.get::<_, u32>(7)?, "state":row.get::<_, String>(8)?,
-    })))?.collect::<rusqlite::Result<Vec<_>>>()?;
-    Ok(json!({"items":items}))
+    let items = query
+        .query_map(params![player, category], |row| {
+            Ok(Quest {
+                id: row.get(0)?,
+                category: row.get(1)?,
+                title: row.get(2)?,
+                goal: row.get(3)?,
+                skippable: row.get(4)?,
+                reward_item: row.get(5)?,
+                reward_count: row.get(6)?,
+                progress: row.get(7)?,
+                state: enum_column(row, 8)?,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(serde_json::to_value(Items { items })?)
 }
 
 struct QuestState {
@@ -258,7 +275,7 @@ struct QuestState {
     skippable: bool,
     reward: Option<(String, u32)>,
     progress: u32,
-    state: String,
+    state: QuestStatus,
 }
 
 fn quest_state(tx: &Transaction<'_>, player: &str, quest: &str) -> Result<QuestState> {
@@ -269,7 +286,7 @@ fn quest_state(tx: &Transaction<'_>, player: &str, quest: &str) -> Result<QuestS
             Ok(QuestState {
                 goal:row.get(0)?, skippable:row.get(1)?,
                 reward:row.get::<_, Option<String>>(2)?.zip(row.get::<_, Option<u32>>(3)?),
-                progress:row.get(4)?, state:row.get(5)?,
+                progress:row.get(4)?, state:enum_column(row,5)?,
             })
         },
     ), "quest does not exist")
@@ -327,8 +344,8 @@ pub(crate) fn execute(tx: &Transaction<'_>, player: &str, action: Action) -> Res
         Action::ClaimQuest { quest } => {
             let quest = key(quest)?;
             let state = quest_state(tx, player, &quest)?;
-            if state.state != "claimed" {
-                if state.state != "active" || state.progress < state.goal {
+            if state.state != QuestStatus::Claimed {
+                if state.state != QuestStatus::Active || state.progress < state.goal {
                     return Err(CommunityError::Conflict("quest is not claimable"));
                 }
                 tx.execute(
@@ -344,7 +361,7 @@ pub(crate) fn execute(tx: &Transaction<'_>, player: &str, action: Action) -> Res
         Action::SkipQuest { quest } => {
             let quest = key(quest)?;
             let state = quest_state(tx, player, &quest)?;
-            if !state.skippable || state.state == "claimed" {
+            if !state.skippable || state.state == QuestStatus::Claimed {
                 return Err(CommunityError::Conflict("quest cannot be skipped"));
             }
             tx.execute(

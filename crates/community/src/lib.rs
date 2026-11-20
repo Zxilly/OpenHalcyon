@@ -3,6 +3,7 @@ mod exchange;
 mod groups;
 pub mod queue;
 mod social;
+mod views;
 
 pub use economy::{ItemDefinition, QuestDefinition};
 pub use exchange::Recipe;
@@ -30,6 +31,8 @@ pub enum CommunityError {
     Forbidden,
     #[error("community storage unavailable: {0}")]
     Storage(#[from] rusqlite::Error),
+    #[error("could not serialize community data: {0}")]
+    Serialization(#[from] serde_json::Error),
     #[error("community worker unavailable")]
     WorkerUnavailable,
 }

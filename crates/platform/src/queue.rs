@@ -68,6 +68,10 @@ pub(super) fn community_error(error: CommunityError) -> PlatformError {
         CommunityError::Conflict(message) | CommunityError::Missing(message) => {
             PlatformError::Conflict(message)
         }
+        CommunityError::Serialization(error) => {
+            tracing::error!(%error, "could not encode community response");
+            PlatformError::WorkerUnavailable
+        }
         CommunityError::WorkerUnavailable => PlatformError::WorkerUnavailable,
     }
 }

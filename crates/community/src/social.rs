@@ -1,5 +1,6 @@
+use crate::views::{Contact, FriendRequest, Friends};
 use rusqlite::{Transaction, params};
-use serde_json::{Value, json};
+use serde_json::Value;
 use uuid::Uuid;
 
 use crate::{Action, Community, CommunityError, Result, ensure_player, validated};
@@ -150,11 +151,13 @@ fn friends(tx: &Transaction<'_>, actor: &str) -> Result<Value> {
     let contacts = query
         .query_map([actor], |row| {
             let online = receive && row.get::<_, bool>(4)?;
-            Ok(json!({
-                "playerId":row.get::<_, String>(0)?, "handle":row.get::<_, String>(1)?,
-                "favorite":row.get::<_, bool>(2)?, "online":online,
-                "status":if online { Some(row.get::<_, String>(3)?) } else { None },
-            }))
+            Ok(Contact {
+                player_id: row.get(0)?,
+                handle: row.get(1)?,
+                favorite: row.get(2)?,
+                online,
+                status: if online { Some(row.get(3)?) } else { None },
+            })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     let mut query = tx.prepare(
@@ -165,13 +168,18 @@ fn friends(tx: &Transaction<'_>, actor: &str) -> Result<Value> {
     )?;
     let requests = query
         .query_map([actor], |row| {
-            Ok(json!({
-                "playerId":row.get::<_, String>(0)?, "handle":row.get::<_, String>(1)?,
-                "created":row.get::<_, i64>(2)?, "incoming":row.get::<_, bool>(3)?,
-            }))
+            Ok(FriendRequest {
+                player_id: row.get(0)?,
+                handle: row.get(1)?,
+                created: row.get(2)?,
+                incoming: row.get(3)?,
+            })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    Ok(json!({ "friends":contacts, "requests":requests }))
+    Ok(serde_json::to_value(Friends {
+        friends: contacts,
+        requests,
+    })?)
 }
 
 /// Check friendship and the target's opt-out on the platform's current transaction.

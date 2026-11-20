@@ -1,6 +1,7 @@
+use crate::views::{GroupMember, GroupView, GuildListing, Invitation, Items, enum_column};
 use rusqlite::{OptionalExtension, Transaction, params};
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::Value;
 use uuid::Uuid;
 
 use crate::{
@@ -215,19 +216,26 @@ fn group_info(tx: &Transaction<'_>, actor: &str, id: &str) -> Result<Value> {
             |row| {
                 let member: bool = row.get(10)?;
                 let invited: bool = row.get(11)?;
-                let kind: String = row.get(1)?;
+                let kind: GroupKind = enum_column(row, 1)?;
                 let invite_only: bool = row.get(6)?;
                 Ok((
-                    member || invited || (kind == "guild" && !invite_only),
+                    member || invited || (kind == GroupKind::Guild && !invite_only),
                     member,
-                    json!({
-                        "id":row.get::<_, String>(0)?, "kind":kind, "name":row.get::<_, String>(2)?,
-                        "tag":row.get::<_, String>(3)?, "motto":row.get::<_, String>(4)?,
-                        "mode":row.get::<_, String>(5)?, "inviteOnly":invite_only,
-                        "lobbyOpen":row.get::<_, bool>(7)?,
-                        "joinCode":if member { row.get::<_, Option<String>>(8)? } else { None },
-                        "created":row.get::<_, i64>(9)?,
-                    }),
+                    GroupView {
+                        id: row.get(0)?,
+                        kind,
+                        name: row.get(2)?,
+                        tag: row.get(3)?,
+                        motto: row.get(4)?,
+                        mode: row.get(5)?,
+                        invite_only,
+                        lobby_open: row.get(7)?,
+                        join_code: if member { row.get(8)? } else { None },
+                        created: row.get(9)?,
+                        max_members: kind.limit(),
+                        member_count: 0,
+                        members: None,
+                    },
                 ))
             },
         ),
@@ -236,12 +244,6 @@ fn group_info(tx: &Transaction<'_>, actor: &str, id: &str) -> Result<Value> {
     if !output.0 {
         return Err(CommunityError::Forbidden);
     }
-    let kind = GroupKind::parse(
-        output.2["kind"]
-            .as_str()
-            .ok_or(CommunityError::WorkerUnavailable)?,
-    )?;
-    output.2["maxMembers"] = json!(kind.limit());
     let mut members = tx.prepare(
         "SELECT m.player,p.handle,m.role,m.side
          FROM community_members m JOIN community_players p ON p.id=m.player
@@ -249,17 +251,19 @@ fn group_info(tx: &Transaction<'_>, actor: &str, id: &str) -> Result<Value> {
     )?;
     let rows = members
         .query_map([id], |row| {
-            Ok(json!({
-                "playerId":row.get::<_, String>(0)?, "handle":row.get::<_, String>(1)?,
-                "role":row.get::<_, String>(2)?, "side":row.get::<_, u8>(3)?,
-            }))
+            Ok(GroupMember {
+                player_id: row.get(0)?,
+                handle: row.get(1)?,
+                role: enum_column(row, 2)?,
+                side: row.get(3)?,
+            })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    output.2["memberCount"] = json!(rows.len());
+    output.2.member_count = rows.len();
     if output.1 {
-        output.2["members"] = json!(rows);
+        output.2.members = Some(rows);
     }
-    Ok(output.2)
+    Ok(serde_json::to_value(output.2)?)
 }
 
 fn search_guilds(tx: &Transaction<'_>, term: String, limit: usize, offset: u64) -> Result<Value> {
@@ -273,11 +277,19 @@ fn search_guilds(tx: &Transaction<'_>, term: String, limit: usize, offset: u64) 
            AND (instr(lower(g.name), ?1)>0 OR instr(lower(g.tag), ?1)>0)
          ORDER BY lower(g.name),g.id LIMIT ?2 OFFSET ?3",
     )?;
-    let items = query.query_map(params![term, limit, offset], |row| Ok(json!({
-        "id":row.get::<_, String>(0)?, "name":row.get::<_, String>(1)?, "tag":row.get::<_, String>(2)?,
-        "motto":row.get::<_, String>(3)?, "memberCount":row.get::<_, u8>(4)?, "maxMembers":GroupKind::Guild.limit(),
-    })))?.collect::<rusqlite::Result<Vec<_>>>()?;
-    Ok(json!({ "items": items }))
+    let items = query
+        .query_map(params![term, limit, offset], |row| {
+            Ok(GuildListing {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                tag: row.get(2)?,
+                motto: row.get(3)?,
+                member_count: row.get(4)?,
+                max_members: GroupKind::Guild.limit(),
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(serde_json::to_value(Items { items })?)
 }
 
 fn invites(tx: &Transaction<'_>, actor: &str, kind: GroupKind) -> Result<Value> {
@@ -288,14 +300,16 @@ fn invites(tx: &Transaction<'_>, actor: &str, kind: GroupKind) -> Result<Value> 
     )?;
     let items = query
         .query_map(params![actor, kind.as_str()], |row| {
-            Ok(json!({
-                "groupId":row.get::<_, String>(0)?, "name":row.get::<_, String>(1)?,
-                "inviterId":row.get::<_, String>(2)?, "inviter":row.get::<_, String>(3)?,
-                "created":row.get::<_, i64>(4)?,
-            }))
+            Ok(Invitation {
+                group_id: row.get(0)?,
+                name: row.get(1)?,
+                inviter_id: row.get(2)?,
+                inviter: row.get(3)?,
+                created: row.get(4)?,
+            })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    Ok(json!({ "items": items }))
+    Ok(serde_json::to_value(Items { items })?)
 }
 
 fn apply_membership(
