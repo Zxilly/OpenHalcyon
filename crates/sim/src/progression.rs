@@ -181,10 +181,10 @@ impl World {
             Kind::Hero => (250 + if self.first_blood { 0 } else { 125 }, 90.),
             Kind::Tower => (300, 60.),
             Kind::Crystal | Kind::Armory => (0, 0.),
-            Kind::Minion => match t.type_id {
-                335 => (25, 6.),
-                337 => (60, 12.),
-                338 => (100, 12.),
+            Kind::Minion => match EntityTemplate::from_raw(t.type_id) {
+                Some(EntityTemplate::MinionRange5v5) => (25, 6.),
+                Some(EntityTemplate::MinionSiege5v5) => (60, 12.),
+                Some(EntityTemplate::MinionCaptain5v5) => (100, 12.),
                 _ => (35, 6.),
             },
         };
@@ -205,7 +205,7 @@ impl World {
                 .and_then(|s| self.entities.get_mut(s as usize))
             && killer.id == src
             && killer.kind == Kind::Hero
-            && killer.type_id == 243
+            && killer.type_id == EntityTemplate::Ringo.as_raw()
             && killer.hp > 0.
             && killer.status.double_down.is_none()
             && killer.team == team

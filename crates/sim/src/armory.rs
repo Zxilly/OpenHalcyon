@@ -6,7 +6,7 @@ pub(super) const REBUILD: u64 = 270 * TICK_HZ;
 
 impl World {
     pub(super) fn spawn_solo_armories(&mut self) {
-        let stats = Stats::new(297, 4350., 0., 100., 0., 0.);
+        let stats = Stats::new(EntityTemplate::VainNode, 4350., 0., 100., 0., 0.);
         self.next_id = 2000 - 1499;
         for team in 0..2 {
             for (x, z) in [(70., -11.), (63., 0.), (70., 11.)] {

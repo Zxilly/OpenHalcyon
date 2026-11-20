@@ -1,5 +1,6 @@
 //! Deterministic straight-lane validation map. Coordinates are project world units.
 //! Vision, spawn offsets, windup, attack cadence, retreat and respawn are project rules.
+use halcyon_data::EntityTemplate;
 mod ai;
 mod aral;
 mod aral_inventory;
@@ -203,17 +204,32 @@ const NAMES: [&str; 8] = [
     "5v5_Minion_Captain",
 ];
 impl Stats {
-    const fn new(id: u16, hp: f32, weapon: f32, armor: f32, range: f32, speed: f32) -> Self {
+    const fn new(
+        template: EntityTemplate,
+        hp: f32,
+        weapon: f32,
+        armor: f32,
+        range: f32,
+        speed: f32,
+    ) -> Self {
         Self {
-            id,
+            id: template.as_raw(),
             hp,
             weapon,
             armor,
             range,
             speed,
-            energy: if id == 243 { 163. } else { 0. },
-            shield: if id == 243 { 20. } else { armor },
-            growth: if id == 243 {
+            energy: if matches!(template, EntityTemplate::Ringo) {
+                163.
+            } else {
+                0.
+            },
+            shield: if matches!(template, EntityTemplate::Ringo) {
+                20.
+            } else {
+                armor
+            },
+            growth: if matches!(template, EntityTemplate::Ringo) {
                 Growth {
                     hp: 127.64,
                     energy: 23.,
@@ -222,11 +238,11 @@ impl Stats {
                     shield: 3.182,
                 }
             } else {
-                let (hp, weapon) = match id {
-                    335 => (30., 5.),
-                    336 => (53., 4.),
-                    337 => (142., 5.),
-                    338 => (169., 5.),
+                let (hp, weapon) = match template {
+                    EntityTemplate::MinionRange5v5 => (30., 5.),
+                    EntityTemplate::MinionMelee5v5 => (53., 4.),
+                    EntityTemplate::MinionSiege5v5 => (142., 5.),
+                    EntityTemplate::MinionCaptain5v5 => (169., 5.),
                     _ => (0., 0.),
                 };
                 Growth {
@@ -441,14 +457,14 @@ impl World {
     pub fn new(seed: u64, human_seats: u8) -> Self {
         // Confirmed delivery base numbers, usable without distributing extracted assets.
         let stats = [
-            Stats::new(243, 703., 74., 25., 6.2, 3.6),
-            Stats::new(340, 3000., 190., 100., 9., 0.),
-            Stats::new(295, 20000., 0., 0., 22., 0.),
-            Stats::new(296, 20000., 0., 0., 22., 0.),
-            Stats::new(336, 575., 13., 0., 1.3, 3.5),
-            Stats::new(335, 475., 15., 0., 4.5, 3.5),
-            Stats::new(337, 880., 15., 0., 4., 3.5),
-            Stats::new(338, 950., 15., 0., 5., 3.5),
+            Stats::new(EntityTemplate::Ringo, 703., 74., 25., 6.2, 3.6),
+            Stats::new(EntityTemplate::OuterTurret5v5, 3000., 190., 100., 9., 0.),
+            Stats::new(EntityTemplate::VainCrystalHome5v5, 20000., 0., 0., 22., 0.),
+            Stats::new(EntityTemplate::VainCrystalAway5v5, 20000., 0., 0., 22., 0.),
+            Stats::new(EntityTemplate::MinionMelee5v5, 575., 13., 0., 1.3, 3.5),
+            Stats::new(EntityTemplate::MinionRange5v5, 475., 15., 0., 4.5, 3.5),
+            Stats::new(EntityTemplate::MinionSiege5v5, 880., 15., 0., 4., 3.5),
+            Stats::new(EntityTemplate::MinionCaptain5v5, 950., 15., 0., 5., 3.5),
         ];
         Self::build(seed, human_seats, stats, 900, 600)
     }
@@ -1130,7 +1146,7 @@ impl World {
                     let haste = e.status.haste_until > self.tick;
                     let crystal = e.kind == Kind::Crystal;
                     // Karas's 4.13 basic-attack coefficient is explicitly named in official_rules.
-                    let karas_crystal = if e.type_id == 926 {
+                    let karas_crystal = if e.type_id == EntityTemplate::Karas.as_raw() {
                         shop::mitigated(
                             e.item_stats.crystal * self.abilities.karas_basic_crystal_ratio,
                             t.stats.shield,

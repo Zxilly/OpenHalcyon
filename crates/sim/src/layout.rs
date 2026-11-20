@@ -102,8 +102,8 @@ impl Layout {
 
 pub(super) fn solo_inner_towers() -> [Stats; 2] {
     [
-        Stats::new(339, 4000., 250., 100., 9., 0.),
-        Stats::new(341, 5000., 280., 100., 9., 0.),
+        Stats::new(EntityTemplate::Turret5v5, 4000., 250., 100., 9., 0.),
+        Stats::new(EntityTemplate::ArmoryTurret5v5, 5000., 280., 100., 9., 0.),
     ]
 }
 

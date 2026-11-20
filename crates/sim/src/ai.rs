@@ -101,7 +101,7 @@ impl World {
                 {
                     return cmd;
                 }
-                if e.type_id == 273
+                if e.type_id == EntityTemplate::Idris.as_raw()
                     && self.can_cast(i, AbilitySlot::B, CastTarget::Point(t.position))
                 {
                     return Command::Cast {

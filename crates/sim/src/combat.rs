@@ -37,20 +37,20 @@ enum Skill {
 fn skill(hero: u16, slot: AbilitySlot) -> Option<Skill> {
     use AbilitySlot::*;
     use Skill::*;
-    Some(match (hero, slot) {
-        (273, B) => Chakram,
-        (lorelai::HERO, A) => FishFood,
-        (lorelai::HERO, B) => Splashdown,
-        (lorelai::HERO, C) => Waterwall,
-        (243, A) => Achilles,
-        (243, B) => Twirl,
-        (243, C) => Hellfire,
-        (244, A) => Gift,
-        (244, B) => Agent,
-        (269, A) => Sigil,
-        (250, B) => Suppress,
-        (926, B) => Wind,
-        (927, C) => Strike,
+    Some(match (EntityTemplate::from_raw(hero)?, slot) {
+        (EntityTemplate::Idris, B) => Chakram,
+        (EntityTemplate::Lorelai, A) => FishFood,
+        (EntityTemplate::Lorelai, B) => Splashdown,
+        (EntityTemplate::Lorelai, C) => Waterwall,
+        (EntityTemplate::Ringo, A) => Achilles,
+        (EntityTemplate::Ringo, B) => Twirl,
+        (EntityTemplate::Ringo, C) => Hellfire,
+        (EntityTemplate::Adagio, A) => Gift,
+        (EntityTemplate::Adagio, B) => Agent,
+        (EntityTemplate::Lyra, A) => Sigil,
+        (EntityTemplate::Saw, B) => Suppress,
+        (EntityTemplate::Karas, B) => Wind,
+        (EntityTemplate::Shin, C) => Strike,
         _ => return None,
     })
 }
@@ -515,17 +515,17 @@ impl SpellEffect {
 /// Median launch-to-impact delays by two-unit separation band, quantized to
 /// 20 Hz. The sparse outer bands reuse the last populated band.
 fn npc_flight_ticks(template: u16, victim: u16, distance: f32) -> u64 {
-    if template == 340 {
-        return match victim {
-            335 | 336 => 7,
-            337 => 5,
+    if template == EntityTemplate::OuterTurret5v5.as_raw() {
+        return match EntityTemplate::from_raw(victim) {
+            Some(EntityTemplate::MinionRange5v5 | EntityTemplate::MinionMelee5v5) => 7,
+            Some(EntityTemplate::MinionSiege5v5) => 5,
             _ => unreachable!("only measured Solo minion targets schedule a windup"),
         };
     }
-    let bins = match template {
-        287 => [2, 6, 12, 14, 14],
-        288 => [2, 6, 10, 10, 10],
-        300 | 301 => [4, 4, 6, 10, 14],
+    let bins = match EntityTemplate::from_raw(template) {
+        Some(EntityTemplate::RangedMinion) => [2, 6, 12, 14, 14],
+        Some(EntityTemplate::LeadMinion) => [2, 6, 10, 10, 10],
+        Some(EntityTemplate::Turret | EntityTemplate::VainTurret) => [4, 4, 6, 10, 14],
         _ => unreachable!("only measured ARAL templates schedule a windup"),
     };
     bins[((distance / 2.) as usize).min(bins.len() - 1)]
@@ -557,18 +557,27 @@ impl World {
     pub(super) fn npc_launch_delay(&self, attacker: &Entity, victim: &Entity) -> Option<u64> {
         if matches!(self.layout, Layout::SoloMid { .. }) {
             return (attacker.kind == Kind::Tower
-                && attacker.type_id == 340
+                && attacker.type_id == EntityTemplate::OuterTurret5v5.as_raw()
                 && matches!(attacker.id, 510 | 512 | 514)
                 && victim.kind == Kind::Minion
-                && matches!(victim.type_id, 335..=337))
+                && matches!(
+                    EntityTemplate::from_raw(victim.type_id),
+                    Some(
+                        EntityTemplate::MinionRange5v5
+                            | EntityTemplate::MinionMelee5v5
+                            | EntityTemplate::MinionSiege5v5
+                    )
+                ))
             .then_some(2);
         }
         if !matches!(self.layout, Layout::Aral { .. }) {
             return None;
         }
-        match (attacker.kind, attacker.type_id) {
-            (Kind::Tower, 300 | 301) => Some(6),
-            (Kind::Minion, 287 | 288) => Some(10),
+        match (attacker.kind, EntityTemplate::from_raw(attacker.type_id)) {
+            (Kind::Tower, Some(EntityTemplate::Turret | EntityTemplate::VainTurret)) => Some(6),
+            (Kind::Minion, Some(EntityTemplate::RangedMinion | EntityTemplate::LeadMinion)) => {
+                Some(10)
+            }
             _ => None,
         }
     }

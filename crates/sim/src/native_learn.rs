@@ -1,14 +1,16 @@
 use super::AbilitySlot;
+use halcyon_data::EntityTemplate;
 
 // The three columns correspond to native learn indices 0, 1 and 2.
-const MAPPINGS: [(u16, [Option<u8>; 3]); 4] = [
-    (254, [Some(0), Some(1), None]),
-    (439, [Some(0), Some(2), Some(3)]),
-    (273, [Some(0), Some(3), Some(4)]),
-    (409, [Some(0), Some(1), Some(2)]),
+const MAPPINGS: [(EntityTemplate, [Option<u8>; 3]); 4] = [
+    (EntityTemplate::Hero009, [Some(0), Some(1), None]),
+    (EntityTemplate::Yates, [Some(0), Some(2), Some(3)]),
+    (EntityTemplate::Idris, [Some(0), Some(3), Some(4)]),
+    (EntityTemplate::Lorelai, [Some(0), Some(1), Some(2)]),
 ];
 
 pub fn native_learn_operand(hero: u16, slot: AbilitySlot) -> Option<u8> {
+    let hero = EntityTemplate::from_raw(hero)?;
     MAPPINGS.iter().find(|(id, _)| *id == hero)?.1[slot as usize]
 }
 
@@ -28,7 +30,8 @@ mod tests {
 
     #[test]
     fn captured_human_slots_consume_points_and_obey_rank_gates() {
-        for (hero, expected) in MAPPINGS {
+        for (template, expected) in MAPPINGS {
+            let hero = template.as_raw();
             let mut w = World::new(1, 1);
             w.entities[0].type_id = hero;
             w.entities[0].level = 5;

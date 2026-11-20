@@ -11,12 +11,12 @@ pub(super) const PADS: [[(f32, f32); 3]; 2] = [
 ];
 
 // Original placement index within one side, template, unsigned X and world Z.
-const TOWERS: [(u8, u16, f32, f32); 5] = [
-    (3, 301, 75.48, 11.96),
-    (4, 301, 68.59, 19.97),
-    (5, 300, 54., 2.92),
-    (6, 300, 35.78, 1.17),
-    (7, 300, 17.06, 1.93),
+const TOWERS: [(u8, EntityTemplate, f32, f32); 5] = [
+    (3, EntityTemplate::VainTurret, 75.48, 11.96),
+    (4, EntityTemplate::VainTurret, 68.59, 19.97),
+    (5, EntityTemplate::Turret, 54., 2.92),
+    (6, EntityTemplate::Turret, 35.78, 1.17),
+    (7, EntityTemplate::Turret, 17.06, 1.93),
 ];
 
 #[derive(Serialize)]
@@ -24,13 +24,13 @@ pub(super) struct Units([Stats; 7]);
 impl Default for Units {
     fn default() -> Self {
         let mut rows = [
-            Stats::new(287, 350., 10., 0., 4.5, 3.2),
-            Stats::new(288, 522., 32., 0., 2.9, 3.2),
-            Stats::new(289, 400., 13., 0., 1.2, 3.2),
-            Stats::new(292, 10000., 0., 0., 0., 0.),
-            Stats::new(293, 10000., 0., 0., 0., 0.),
-            Stats::new(300, 3500., 300., 32., 9., 0.),
-            Stats::new(301, 2600., 400., 32., 9., 0.),
+            Stats::new(EntityTemplate::RangedMinion, 350., 10., 0., 4.5, 3.2),
+            Stats::new(EntityTemplate::LeadMinion, 522., 32., 0., 2.9, 3.2),
+            Stats::new(EntityTemplate::TankMinion, 400., 13., 0., 1.2, 3.2),
+            Stats::new(EntityTemplate::VainCrystalHome3v3, 10000., 0., 0., 0., 0.),
+            Stats::new(EntityTemplate::VainCrystalAway3v3, 10000., 0., 0., 0., 0.),
+            Stats::new(EntityTemplate::Turret, 3500., 300., 32., 9., 0.),
+            Stats::new(EntityTemplate::VainTurret, 2600., 400., 32., 9., 0.),
         ];
         for (s, (hp, weapon)) in rows.iter_mut().zip([(56., 4.), (272., 15.), (96., 3.)]) {
             s.growth.hp = hp;
@@ -109,7 +109,11 @@ impl World {
             );
             for (slot, template, x, z) in TOWERS {
                 self.next_id = first + u32::from(slot);
-                let stats = self.aral_units.0[if template == 300 { 5 } else { 6 }];
+                let stats = self.aral_units.0[if template == EntityTemplate::Turret {
+                    5
+                } else {
+                    6
+                }];
                 self.spawn_with_stats(team, Kind::Tower, stats, point(team, x, z), false);
             }
         }
@@ -128,7 +132,7 @@ impl World {
     pub(super) fn is_outer_tower(&self, actor: &Entity) -> bool {
         actor.kind == Kind::Tower
             && match self.layout {
-                Layout::SoloMid { .. } => actor.type_id == 340,
+                Layout::SoloMid { .. } => actor.type_id == EntityTemplate::OuterTurret5v5.as_raw(),
                 Layout::Aral { .. } => actor.position == point(actor.team, 17.06, 1.93),
                 Layout::Validation => true,
             }

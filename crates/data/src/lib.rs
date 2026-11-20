@@ -1,6 +1,8 @@
 //! Read the separately supplied 4.13.4 delivery. Unknown fields retain their original names and values.
 mod difficulty;
+mod entity_template;
 pub use difficulty::BotDifficulty;
+pub use entity_template::EntityTemplate;
 pub use halcyon_protocol::ce::{KnownQueue, NativeMode};
 
 /// Matchmaking ID observed in the iOS-era ARAL requests.

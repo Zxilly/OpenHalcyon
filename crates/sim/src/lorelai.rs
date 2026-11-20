@@ -1,7 +1,7 @@
 //! Lorelai's native point and allied-hero casts. See lorelai.md for evidence and tuning.
 use super::*;
 
-pub(super) const HERO: u16 = 409;
+pub(super) const HERO: u16 = EntityTemplate::Lorelai.as_raw();
 const DURATION: u64 = 8 * TICK_HZ;
 
 #[derive(Clone, Copy, Debug, Serialize)]
