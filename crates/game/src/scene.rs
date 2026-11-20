@@ -1,4 +1,5 @@
 //! Native scene negotiation on an authenticated control stream.
+pub(crate) mod mode_variables;
 use super::{Batch, Message, Room, messages};
 #[derive(Default)]
 pub(super) struct Preamble {
@@ -155,6 +156,9 @@ pub(super) fn solo_opening(room: &mut Room, seat: usize) -> std::io::Result<Batc
                 room.visible[team as usize].insert(e.id);
             }
         }
+    }
+    if initial {
+        out.extend(mode_variables::Opening::Solo.messages());
     }
     out.extend(room.recommended_paths(Some(team)));
     Ok(out)
@@ -403,6 +407,7 @@ mod tests {
             }
             assert_eq!(next(&mut socket, &cipher).await.opcode, 0x451);
             let mut hero_ids = Vec::new();
+            let mut variables = Vec::new();
             let mut full_structures = Vec::new();
             let mut compact_structures = Vec::new();
             loop {
@@ -412,6 +417,9 @@ mod tests {
                 }
                 if m.opcode == 0x3f2 {
                     compact_structures.push(u32::from_be_bytes(m.body[..4].try_into().unwrap()));
+                }
+                if m.opcode == 0x041f {
+                    variables.push(m.clone());
                 }
                 if m.opcode == 0x3f3 {
                     let template = u16::from_be_bytes(m.body[2..4].try_into().unwrap());
@@ -448,6 +456,7 @@ mod tests {
                 }
             }
             if reconnect {
+                assert!(variables.is_empty());
                 assert!(hero_ids.len() < 10 && hero_ids.contains(&1500));
                 full_structures.sort_unstable();
                 assert_eq!(
@@ -456,6 +465,10 @@ mod tests {
                 );
                 assert_eq!(compact_structures, [295]);
             } else {
+                assert_eq!(
+                    variables,
+                    mode_variables::Opening::Solo.messages().collect::<Vec<_>>()
+                );
                 assert_eq!(hero_ids.len(), 10);
                 assert!(full_structures.is_empty());
                 assert!(compact_structures.is_empty());

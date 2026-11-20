@@ -287,3 +287,18 @@ and registered actor for five successive arrivals.
 All 63 flag-1 `0409` actions in seven recordings pair one-to-one with the next `0432` of the same hero, including the first and last occurrences. Each immediately precedes a same-timestamp `042E` with identical actor and X/Z. The coordinates exactly match that hero's opening pad. Relocation height is 1.3 on team 0 and 1.5 on team 1. The later respawn followed in 0.177–0.423 seconds (median 0.304). Resource, visibility and some inventory updates can intervene before the respawn. The traces include eight relocations of the recording player's hero, 29 of allies and 26 of opponents.
 
 The host emits the pair six 20 Hz ticks before the existing authoritative respawn. Health and simulation position change only at respawn. The pair requires the actor's registration on the current gameplay connection. Opponents additionally need current sight of the destination. An authorized full-scene observer with that registration receives the same pair. Four archived flag-0 actions have a different context.
+
+## Initial game-mode variables
+
+All seven played ARAL streams sent the same six consecutive `041F` actions within the first scene batch following the seat’s `046E` and `0471`. The six actions share one capture timestamp and immediately precede the initial tower aggro records. Android Solo repeats the six keys in section zero at replay time 4.0 seconds before the scene acknowledgments. Subsequent Solo sections have no such records.
+
+| Big-endian key, in order | ARAL word | Solo word |
+|---|---:|---:|
+| `f53cc2dd` | 0 | 0 |
+| `4ccccfe4` | 0 | 0 |
+| `4eb4dfc1` | 0 | 0 |
+| `224ff1a2` | 5 | 1 |
+| `7c9ddf52` | 0 | 0 |
+| `e674f03d` | 0 | 0 |
+
+Every action has a big-endian 32-bit key and value, then six zero alignment bytes. The hosted native modes emit the measured sequence on initial scene load. The captures supply neither variable names nor live changes to these values.

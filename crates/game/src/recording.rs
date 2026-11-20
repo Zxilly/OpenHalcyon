@@ -142,6 +142,7 @@ fn sanitize(m: &mut Message) -> bool {
                     .all(|b| f32::from_be_bytes(*b).is_finite()) => {}
         // Only the authored hero-slot and target combinations have verified wire meanings.
         0x48a if super::native_cooldown::recordable(m) => {}
+        0x41f if super::scene::mode_variables::recordable(&m.body) => {}
         0x435 if super::aral::announcements::recordable(&m.body) => {}
         0x43a
             if matches!(m.body.as_slice(), [0, 0, 5, 220..=229, 0, 0, 0, operand]

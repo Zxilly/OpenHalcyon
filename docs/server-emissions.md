@@ -11,8 +11,8 @@ The host paths are in [room dispatch](../crates/game/src/lib.rs), [transport](..
 | `0000` | 1,175 | E | Session clock |
 | `03E8` | 16 | H | First authenticated peer attachment during ARAL draft. Fourteen early notifications carry another roster member’s UUID. The two later triggers remain unresolved. [Draft membership](aral.md) |
 | `03E9` | 9 | H | Actor and mode settings |
-| `03EA` | 10 | U | Word |
-| `03EC` | 6 | U | Word |
+| `03EA` | 10 | U | Declared hero ID |
+| `03EC` | 6 | U | Declared hero ID following the same actor’s `03EA` |
 | `03ED` | 18 | H | Other ARAL seat entering an already registered peer’s scene |
 | `03EE` | 84 | H | Participant declarations at load or restore |
 | `03EF` | 7 | H | ActionStartMatch · Room start or readiness confirmation |
@@ -43,7 +43,7 @@ The host paths are in [room dispatch](../crates/game/src/lib.rs), [transport](..
 | `041C` | 6,668 | A | ActionModifyActorAttribute · Supported inventory modifiers and hero progression fields |
 | `041D` | 109,869 | A | ActionModifyActorResource · Simulated resource deltas including earned gold and purchase debits |
 | `041E` | 16,559 | A | ActionImpactHealth · Applied damage or healing with visible participants |
-| `041F` | 42 | R | ActionModifyGameModeVar |
+| `041F` | 42 | H | ActionModifyGameModeVar · Six initial keys after the authenticated native ARAL or Solo scene request. [Wire order](game-wire.md#initial-game-mode-variables) |
 | `0421` | 22 | R | ActionCreateZoneOfControl |
 | `0423` | 22 | R | ActionDestroyZoneOfControl |
 | `0424` | 2,268 | E | ActionRequestModifyBasicAttackTarget · Accepted ARAL basic attack target |
@@ -113,3 +113,5 @@ The host paths are in [room dispatch](../crates/game/src/lib.rs), [transport](..
 | `048F` | 1 | A | [Declined ARAL shop order](aral-shop.md#declined-order) |
 
 All 15 captured originating point-cast requests have a byte-identical server acknowledgment before the actor-bearing release. The 842 server-side point requests include other traffic. A canceled accepted cast can therefore have an acknowledgment without a release in the host. The sole originating target cast has an actor-bearing release and no corresponding target-request echo.
+
+Six classes have unresolved server triggers. All 26 `0456`, two `0461` and six `0462` occur in the draft. Both `0461` are bracketed by `0459` rosters when periodic `045A`, catalog entries and clocks are excluded. Seventeen `0456` are bracketed by two `045F` skin-selection records under the same filter. All ten `03EA` and six `03EC` name a declared hero and have two zero padding bytes. Tracking each actor separately within its match, every `03EC` follows a `03EA`, and one actor subsequently repeats `03EA`. Their neighboring combat updates do not identify the state change. The sole `0479` occurs between a visibility update and a player registration. These are receiver-side orderings from the captured seat.

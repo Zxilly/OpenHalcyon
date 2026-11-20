@@ -182,6 +182,9 @@ pub(super) fn opening(room: &mut Room, team: Option<u8>) -> Batch {
     map_objects.sort_unstable_by_key(|m| std::cmp::Reverse(m.body[116]));
     batch.extend(map_objects);
     batch.extend(lane_minions);
+    if room.world.tick == 0 && team.is_none() {
+        batch.extend(super::scene::mode_variables::Opening::Aral.messages());
+    }
     batch.extend(room.recommended_paths(team));
     batch.extend(talent_snapshot(room));
     if let Some(team) = team {
@@ -277,6 +280,7 @@ mod tests {
         let mut declared = false;
         let mut structures = Vec::new();
         let mut talents = Vec::new();
+        let mut variables = Vec::new();
         let pads = [
             (-78.18_f32, 0.88_f32),
             (79.66, -0.91),
@@ -292,6 +296,9 @@ mod tests {
             }
             if frame.opcode == 0x0481 {
                 talents.push(frame.body.clone());
+            }
+            if frame.opcode == 0x041f {
+                variables.push(frame.clone());
             }
             if frame.opcode == 0x03f3 {
                 let id = u32::from_be_bytes(frame.body[8..12].try_into().unwrap());
@@ -322,8 +329,15 @@ mod tests {
             }
         }
         if initial {
+            assert_eq!(
+                variables,
+                crate::scene::mode_variables::Opening::Aral
+                    .messages()
+                    .collect::<Vec<_>>()
+            );
             assert!(talents.is_empty());
         } else {
+            assert!(variables.is_empty());
             assert_eq!(
                 talents,
                 [vec![0, 0, 5, 220, 0, 1], vec![0, 0, 5, 223, 255, 0]]
