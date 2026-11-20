@@ -14,7 +14,7 @@ opcodes on the original TCP connection. The native Solo opening uses measured
 hero and structure positions. The host now simulates all three lanes, their
 18 turrets and six armories using recorded slots and minion routes. A device run verified movement
 from its starting pad and later ended in a native crash. Native reentry and
-the victory screen remain open. [CE compatibility](docs/protocol-coverage.md) · [Solo mid lane](docs/solo-lane.md)
+the victory screen remain open. [CE compatibility](docs/protocol-coverage.md) · [Solo lanes](docs/solo-lane.md)
 
 The Rust game host runs a match through crystal destruction and settlement.
 An integration test starts three independent server processes, signs two CE
@@ -42,7 +42,7 @@ On Windows the executable is `target\release\openhalcyon.exe`. Set `--host` to a
 
 The bootstrap endpoint is `http://HOST:8080/kindred/live/147219-status-redirect`. It advertises the HTTPS platform on port 8443. Notifications use port 2112. Newly initialized instances also advertise XMPP with STARTTLS on port 5222. Sign in to `https://HOST:8443/admin` as `admin` using `initial-admin-password`. Game rooms advertise their own TCP ports.
 
-Paths in `server.toml` are relative to that file. For a local research installation set `data_dir` to the directory containing `units.json`, `items.json` and `entity_manifest.json`, and `manifests_dir` to the directory containing the archived talents and skin manifest responses. Place these top-level keys before any TOML section. Only manifest payloads are consumed from those two responses. Keep private captures outside the checkout. With no external data the simulation uses built-in unit statistics. Native Solo and legacy ARAL use their measured mid-lane layouts. Other queues use the validation layout.
+Paths in `server.toml` are relative to that file. For a local research installation set `data_dir` to the directory containing `units.json`, `items.json` and `entity_manifest.json`, and `manifests_dir` to the directory containing the archived talents and skin manifest responses. Place these top-level keys before any TOML section. Only manifest payloads are consumed from those two responses. Keep private captures outside the checkout. With no external data the simulation uses built-in unit statistics. Native Solo uses the three-lane layout. Legacy ARAL uses its measured single lane. Other queues use the validation layout.
 
 An operator with a decoded draft trace can export the catalog once. Run
 `openhalcyon export-catalog --trace /private/match_decoded.jsonl > /srv/game-data/catalog.json`.
