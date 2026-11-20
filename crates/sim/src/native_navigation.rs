@@ -340,6 +340,38 @@ mod tests {
     use super::*;
 
     #[test]
+    #[ignore = "requires the native ARAL brush geometry"]
+    fn bot_cannot_acquire_a_hidden_hero_until_its_team_can_see_inside_the_brush() {
+        let base = std::env::var_os("HALCYON_DELIVERY").unwrap();
+        let extra = std::path::PathBuf::from(std::env::var_os("HALCYON_DATA_EXTRA").unwrap());
+        let data = GameData::load_with_extra(base, Some(&extra)).unwrap();
+        let mut world = World::from_data(0, 6, &data).unwrap();
+        world.use_six_human_roster().unwrap();
+        world.use_aral_lane().unwrap();
+        world.install_map_data(&data).unwrap();
+        for e in &mut world.entities[2..] {
+            e.hp = 0.;
+        }
+        let hidden = Position {
+            x: -22.94,
+            y: -5.37,
+        };
+        world.entities[0].position = Position { x: -22., y: 1. };
+        world.entities[1].position = hidden;
+        let team = world.entities[0].team;
+        let attack = Command::Attack(world.entities[1].id);
+        assert!(!world.visible(team, &world.entities[1]));
+        assert_ne!(world.decide(0), attack);
+
+        let scout = &mut world.entities[2];
+        assert_eq!(scout.team, team);
+        scout.position = hidden;
+        scout.hp = scout.max_hp;
+        assert!(world.visible(team, &world.entities[1]));
+        assert_eq!(world.decide(0), attack);
+    }
+
+    #[test]
     #[ignore = "requires the local base delivery and server-data supplement"]
     fn supplemental_native_hero_uses_connected_ground_in_both_modes() {
         let base = std::env::var_os("HALCYON_DELIVERY").unwrap();

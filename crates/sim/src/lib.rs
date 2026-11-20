@@ -1313,17 +1313,18 @@ impl World {
                 };
                 let order = self.decide(i);
                 let elapsed = started.map(|start| start.elapsed());
-                if let Command::Attack(id)
-                | Command::Cast {
-                    target: CastTarget::Entity(id),
-                    ..
-                } = order
+                let result = self.order(i, order);
+                if result.is_ok()
+                    && let Command::Attack(id)
+                    | Command::Cast {
+                        target: CastTarget::Entity(id),
+                        ..
+                    } = order
                     && let Some(j) = self.index(id)
                     && self.entities[j].team != self.entities[i].team
                 {
                     self.entities[i].last_seen = Some((id, self.entities[j].position, self.tick));
                 }
-                let result = self.order(i, order);
                 if DIAG && let Some(elapsed) = elapsed {
                     diagnostics.as_deref_mut().unwrap().decision(
                         &self.entities[i],

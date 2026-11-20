@@ -54,6 +54,14 @@ impl World {
             if d > sensor || !self.layout.clear(e.position, t.position) {
                 continue;
             }
+            // A teammate, reveal or vision device can expose a target across a brush boundary.
+            if self
+                .native_navigation
+                .as_ref()
+                .is_some_and(|map| !map.can_see(e.position, t.position) && !self.visible(e.team, t))
+            {
+                continue;
+            }
             let hit_tick = self.tick + 3 + (d * TICK_HZ as f32 / 18.).ceil() as u64;
             let predicted = if t.kind == Kind::Minion && e.kind == Kind::Hero {
                 self.predicted_hp(t, hit_tick)
