@@ -1,5 +1,25 @@
 # Bevy ECS room measurements
 
+## Fixed tick, persistent effects and target memory
+
+The [baseline](https://github.com/Zxilly/OpenHalcyon/tree/08cc383) and [combined build](https://github.com/Zxilly/OpenHalcyon/tree/510c218) played complete native Solo matches with ten Bots. Eight rounds used Rust 1.100.0 release builds on logical processor 16 of a Windows Ryzen 9 9950X3D. Each round ran four builds on both rosters. Their order rotated to balance first and last positions, and the roster order alternated. Other compilation and verification processes shared the machine. The timer covers simulated play from the first tick to a crystal defeat, excluding asset loading and network traffic.
+
+| Build | Navigation roster, median seconds | Paired change | Lyra/Adagio roster, median seconds | Paired change |
+|---|---:|---:|---:|---:|
+| Baseline | 3.066 | — | 5.739 | — |
+| Baseline + shared fixed-tick scope only | 2.944 | −1.86% | 5.532 | −3.26% |
+| Combined production changes | 2.957 | −3.19% | 5.471 | −4.71% |
+| Baseline with table-stored Bot target memory | 3.336 | +7.78% | 6.165 | +8.28% |
+
+Paired change is the median of the eight within-round ratios. The combined build was faster in seven of eight navigation rounds and all eight Lyra/Adagio rounds. Every navigation run ended on tick 67,186 and every Lyra/Adagio run on tick 137,328. The latter produced 230 Gifts of Fire and 129 Bright Bulwarks. Within each roster all four builds agreed on the winner, the hash over 1,000-tick checkpoints and the final state digest. [All 64 samples](bevy-tick-room.csv)
+
+- **Tick scheduling.** Six serial stages used to remove and restore the same frame and actor metadata, and re-establish the same exclusive world access. The simulation now obtains that access once for device updates, spell resolution, waves, upkeep and actor turns. The cleanup query still applies deferred despawns and the milestone system retains its tick condition. A match-ending effect still stops the turn sequence at the same point. [Fixed tick](../../crates/sim/src/fixed_tick.rs)
+- **Persistent spells.** A family now removes expired handles while collecting active handles in cast order. It rechecks generations after callbacks, and newly cast spells wait until the next pass. The actor loop also skips a Twister lookup for templates that cannot own it. A separate test exercised 30,000 effect phases per run and verified the same 13,200 events and final state digest. Across ten alternating pairs the median reported block cost was 735 ns at baseline and 720.5 ns combined, with the combined run faster in seven pairs. [Spell lifecycle](../../crates/sim/src/persistent_spells.rs) · [Phase samples](bevy-tick-effects.csv)
+- **Component storage.** Removing just `#[component(storage = "SparseSet")]` from `LastSeenTarget` on the baseline produced the table-storage row above. A Bot gains and loses this component during pursuit. Sparse storage lets its main actor component stay in the same table during those changes. The room keeps a single-thread executor for ordered combat. Different rooms can run concurrently. The headless app and ECS use their `std` features. [Actor storage](../../crates/sim/src/actors.rs) · [Dependency configuration](../../Cargo.toml)
+- **Replication.** Observer paths share the active-scene check, queue delivery and slow-observer removal. Callers supply their own eligibility rule and derive frames from each observer’s declared actors, projectiles and effects. The simulation benchmarks above do not exercise observer transport. [Observer delivery](../../crates/game/src/observer.rs)
+
+For each release checkout, build `cargo +1.100.0 build --locked --release -p halcyon-sim --example native_nav_bench`. Pin the parent process to one logical CPU, then use the comparison command at the end of this page with `--scenario room` or `--scenario room-effects`. To reproduce the isolated scope build, apply only the fixed_tick.rs change from 510c218 to 08cc383. For the phase benchmark, run `cargo +1.100.0 test --locked --release -p halcyon-sim --lib phase_cost::effect_phase_cost -- --ignored --exact --nocapture` with `HALCYON_DELIVERY` and `HALCYON_DATA_EXTRA` pointing to the local operator data. Historical migration timings below use different rules and match lengths.
+
 ## Authoritative room migration
 
 Seven rounds on logical processor 16 of a Windows Ryzen 9 9950X3D used Rust 1.97.1 release builds with identical benchmark source, data, seed and roster. Builds rotated within each workload. Other processes were active on the host. The [original room](https://github.com/Zxilly/OpenHalcyon/tree/321e354), [initial Bevy migration](https://github.com/Zxilly/OpenHalcyon/tree/ba98acb) and [optimized room](https://github.com/Zxilly/OpenHalcyon/tree/913ad9a) ran all three scenarios.
