@@ -67,7 +67,7 @@ impl Leap {
         (self.channel[r] * TICK_HZ as f32).round() as u64
     }
 }
-impl World {
+impl Room<'_> {
     pub(super) fn spell_motion_clear(&self, a: Position, b: Position) -> bool {
         self.native_navigation
             .as_ref()
@@ -79,7 +79,7 @@ impl World {
             return;
         }
         e.position = point;
-        if let Some(map) = &mut self.native_navigation {
+        if let Some(map) = &mut self.state.native_navigation {
             map.forget_route(e.id);
             map.moved(e.id, point);
         }
@@ -89,7 +89,7 @@ impl World {
         });
     }
     pub(super) fn launch_flail(&mut self, i: usize, r: usize, aim: Position) {
-        let a = self.abilities.flail.as_ref().unwrap();
+        let a = self.state.abilities.flail.as_ref().unwrap();
         let e = &mut self.entities[i];
         let start = e.position;
         let distance = start.dist(aim);
@@ -227,7 +227,7 @@ impl World {
             let t = &mut self.entities[j];
             if t.team == team {
                 if t.kind == Kind::Hero {
-                    let previous = if t.status.barrier_until > self.tick {
+                    let previous = if t.status.barrier_until > self.state.tick {
                         t.status.barrier
                     } else {
                         0.

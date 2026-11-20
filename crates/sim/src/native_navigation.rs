@@ -206,7 +206,7 @@ impl NativeNavigation {
     }
 }
 
-impl World {
+impl Room<'_> {
     /// Install the configured geometry and placements for the selected native layout.
     pub fn install_map_data(&mut self, data: &GameData) -> Result<(), String> {
         if let Some(maps) = data.native_maps() {
@@ -300,7 +300,7 @@ impl World {
             };
             for idx in 0..6 {
                 let e = &mut self.entities[idx];
-                e.position = self.layout.home(e);
+                e.position = self.state.layout.home(e);
             }
         } else {
             // This asset contains only canonical turret/crystal positions. The live capture

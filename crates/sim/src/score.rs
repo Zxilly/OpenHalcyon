@@ -101,7 +101,7 @@ impl PlayerScore {
     }
 }
 
-impl World {
+impl Room<'_> {
     pub(super) fn native_passive_income(&mut self, events: &mut Vec<Event>) {
         let (first_second, gold, xp) = match self.layout {
             Layout::SoloMid { .. } => (40, 3, 0.6),
@@ -121,7 +121,7 @@ impl World {
             let hero = &mut self.entities[i];
             let amount = gold.min(u32::MAX - hero.gold);
             hero.gold += amount;
-            self.scores[i].gold_income.passive_awards += u64::from(amount);
+            self.state.scores[i].gold_income.passive_awards += u64::from(amount);
             if amount > 0 {
                 events.push(Event::GoldAward {
                     id: hero.id,
@@ -152,7 +152,7 @@ impl World {
             *net_worth += worth;
             *levels += u32::from(hero.level);
             if five {
-                let score = &mut self.scores[(hero.id - 1) as usize];
+                let score = &mut self.state.scores[(hero.id - 1) as usize];
                 score.lane_last_hits_at_five = Some(score.lane_last_hits);
                 score.net_worth_at_five = Some(worth);
             }

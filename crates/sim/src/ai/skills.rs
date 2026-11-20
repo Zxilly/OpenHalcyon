@@ -1,6 +1,6 @@
 use super::*;
 
-impl World {
+impl Room<'_> {
     /// Select an intent from the same learned abilities, cooldowns and resource checks as a player.
     pub(super) fn hero_combat_order(&self, caster: usize, enemy: &Entity) -> Option<Command> {
         use AbilitySlot::{A, B, C};

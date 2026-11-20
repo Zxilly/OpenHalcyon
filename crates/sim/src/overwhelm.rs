@@ -40,7 +40,7 @@ impl Overwhelm {
         }
     }
 }
-impl World {
+impl Room<'_> {
     pub(super) fn overwhelm_reaches(&self, i: usize, point: Position) -> bool {
         let e = &self.entities[i];
         let Some(r) = e.ability_ranks[AbilitySlot::B as usize].checked_sub(1) else {
@@ -72,11 +72,11 @@ impl World {
                 || e.hp <= 0.
                 || !matches!(e.kind, Kind::Hero | Kind::Minion | Kind::Neutral)
                 || e.position.dist(pos) > charge.radius
-                || !self.layout.clear(pos, e.position)
+                || !self.state.layout.clear(pos, e.position)
             {
                 continue;
             }
-            e.status.stun_until = e.status.stun_until.max(self.tick + charge.stun_ticks);
+            e.status.stun_until = e.status.stun_until.max(self.state.tick + charge.stun_ticks);
             e.winding = None;
             e.cast = None;
             e.status.channel = 0;

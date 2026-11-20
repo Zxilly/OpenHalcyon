@@ -94,7 +94,7 @@ pub(crate) fn update(hero: &mut Entity, tick: u64, shop: &Shop) {
         None
     };
 }
-impl World {
+impl Room<'_> {
     pub(crate) fn consume_infusion(
         &mut self,
         index: usize,
@@ -108,6 +108,7 @@ impl World {
             .ok_or("item not held")?;
         let held = hero.inventory[pos];
         let rule = self
+            .state
             .shop
             .infusion(held.kind)
             .ok_or("infusion unavailable")?;
@@ -116,7 +117,8 @@ impl World {
         }
         hero.inventory.remove(pos);
         if let Some(old) = hero.item_stats.infusion {
-            self.shop
+            self.state
+                .shop
                 .infusion(old.kind)
                 .expect("active rule")
                 .change(hero, old.kind, old.level, -1.);
@@ -125,7 +127,7 @@ impl World {
         hero.item_stats.infusion = Some(Active {
             kind: held.kind,
             level: hero.level,
-            until: self.tick.saturating_add(rule.duration),
+            until: self.state.tick.saturating_add(rule.duration),
         });
         Ok(())
     }

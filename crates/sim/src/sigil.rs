@@ -62,13 +62,14 @@ pub(super) struct Field {
     next: u64,
 }
 impl Field {
-    fn contains(&self, w: &World, p: Position) -> bool {
+    fn contains(&self, w: &Room<'_>, p: Position) -> bool {
         p.dist(self.center) <= self.radius && w.layout.clear(self.center, p)
     }
 }
-impl World {
+impl Room<'_> {
     pub(super) fn start_sigil(&mut self, i: usize, r: usize, center: Position) {
-        let a = self.abilities.sigil.as_ref().unwrap();
+        let state = &mut *self.state;
+        let a = state.abilities.sigil.as_ref().unwrap();
         let e = &self.entities[i];
         let cp = e.item_stats.crystal;
         self.entities.spawn_spell(Field {
@@ -87,7 +88,7 @@ impl World {
             speed: a.speed[r],
             speed_ticks: (a.speed_time[r] * TICK_HZ as f32).round() as u64,
             minion_factor: 1. - a.minion_reduction[r],
-            next: self.tick + TICK_HZ,
+            next: state.tick + TICK_HZ,
         });
     }
     pub(super) fn sigil_sight(&self, team: u8, p: Position) -> bool {
@@ -140,7 +141,7 @@ impl World {
             if t.team == f.team && t.kind == Kind::Hero {
                 let s = &mut self.entities[j].status;
                 s.sigil_speed = f.speed;
-                s.sigil_speed_until = self.tick + f.speed_ticks;
+                s.sigil_speed_until = self.state.tick + f.speed_ticks;
                 s.sigil_speed_duration = f.speed_ticks;
                 self.heal(
                     f.source,
@@ -170,7 +171,7 @@ impl crate::persistent_spells::TimedSpell for Field {
     fn begin_impact(&mut self) -> Self {
         *self
     }
-    fn advance(&mut self, world: &mut World, events: &mut Vec<Event>) -> bool {
+    fn advance(&mut self, world: &mut Room<'_>, events: &mut Vec<Event>) -> bool {
         let pulse = world.tick >= self.next;
         let mut count = 0;
         for j in 0..world.entities.len() {

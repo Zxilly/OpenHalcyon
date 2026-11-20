@@ -4,7 +4,7 @@ use super::*;
 pub(super) const REGENERATE: u64 = 180 * TICK_HZ;
 pub(super) const REBUILD: u64 = 270 * TICK_HZ;
 
-impl World {
+impl Room<'_> {
     pub(super) fn spawn_solo_armories(&mut self) {
         let stats = Stats::new(EntityTemplate::VainNode, 4350., 0., 100., 0., 0.);
         self.next_id = 2000 - 1499;
@@ -24,7 +24,7 @@ impl World {
 
     pub(super) fn advance_armory(&mut self, i: usize, events: &mut Vec<Event>) {
         let e = &mut self.entities[i];
-        if e.hp >= e.max_hp || self.tick < e.respawn {
+        if e.hp >= e.max_hp || self.state.tick < e.respawn {
             return;
         }
         if e.hp == 0. {

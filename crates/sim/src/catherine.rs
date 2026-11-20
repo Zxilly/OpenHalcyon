@@ -74,13 +74,13 @@ impl Tremor {
         ticks(self.pre[r])
     }
 }
-impl World {
+impl Room<'_> {
     pub(super) fn raise_stormguard(&mut self, i: usize, r: usize) {
-        let a = self.abilities.stormguard.as_ref().unwrap();
+        let a = self.state.abilities.stormguard.as_ref().unwrap();
         let e = &mut self.entities[i];
         e.status.captain_effects.arm().stormguard = Some(Bubble {
-            until: self.tick + ticks(a.duration[r]),
-            next_pulse: self.tick + TICK_HZ,
+            until: self.state.tick + ticks(a.duration[r]),
+            next_pulse: self.state.tick + TICK_HZ,
             damage: a.burn.at(r, e.item_stats.crystal, 0.),
             radius: a.radius[r],
             threshold: (e.max_hp - e.bonus_hp).max(0.) * a.threshold[r],
@@ -94,11 +94,11 @@ impl World {
         let Some(b) = e.status.captain_effects.read().stormguard else {
             return;
         };
-        if self.tick > b.until {
+        if self.state.tick > b.until {
             e.status.captain_effects.arm().stormguard = None;
             return;
         }
-        if self.tick < b.next_pulse {
+        if self.state.tick < b.next_pulse {
             return;
         }
         e.status
@@ -143,7 +143,7 @@ impl World {
         else {
             return (amount, None);
         };
-        if e.hp <= 0. || self.tick >= b.until || amount <= b.threshold {
+        if e.hp <= 0. || self.state.tick >= b.until || amount <= b.threshold {
             return (amount, None);
         }
         b.until = b.until.saturating_sub(b.loss);
@@ -196,14 +196,14 @@ impl World {
         point: Position,
         events: &mut Vec<Event>,
     ) {
-        let a = self.abilities.tremor.as_ref().unwrap();
+        let a = self.state.abilities.tremor.as_ref().unwrap();
         let e = &mut self.entities[i];
         let (src, team, pos, pierce) = (e.id, e.team, e.position, e.item_stats.shield_pierce);
         let damage = a.damage.at(r, e.item_stats.crystal, 0.);
         let range = a.range[r];
-        let silence = self.tick + ticks(a.silence[r]);
-        e.status.reveal_until = self.tick + ticks(a.reveal[r]);
-        e.status.channel_until = self.tick + ticks(a.post[r]).saturating_sub(1);
+        let silence = self.state.tick + ticks(a.silence[r]);
+        e.status.reveal_until = self.state.tick + ticks(a.reveal[r]);
+        e.status.channel_until = self.state.tick + ticks(a.post[r]).saturating_sub(1);
         let len = pos.dist(point);
         let (dx, dy) = ((point.x - pos.x) / len, (point.y - pos.y) / len);
         for j in 0..self.entities.len() {

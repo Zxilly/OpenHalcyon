@@ -36,7 +36,7 @@ pub(super) struct Water {
     pool: Pool,
 }
 
-impl World {
+impl Room<'_> {
     pub(super) fn lorelai_action(&self, i: usize, enemy: Position) -> Option<Command> {
         let e = &self.entities[i];
         let ally = self
@@ -89,7 +89,7 @@ impl World {
             })
             .is_some();
         let e = &self.entities[caster];
-        let rules = self.abilities.lorelai.as_ref();
+        let rules = self.state.abilities.lorelai.as_ref();
         let splash_rank = if slot == AbilitySlot::B {
             rank
         } else {
@@ -170,20 +170,6 @@ impl World {
                         base + ratio * crystal + r.hp_to_barrier[rank] * bonus_hp
                     },
                 );
-                // Concurrent veils refresh duration and preserve the larger remaining barrier.
-                if ally.status.barrier_until <= self.tick {
-                    ally.status.barrier = 0.;
-                }
-                if !empowered && id != owner && ally.status.barrier <= 0. {
-                    let instance = self.next_id;
-                    self.next_id += 1;
-                    events.push(Event::WaterwallApplied {
-                        source: owner,
-                        target: id,
-                        id: instance,
-                    });
-                }
-                ally.status.barrier = ally.status.barrier.max(strength);
                 let duration = rules.map_or_else(
                     || if empowered { 6. } else { 4. },
                     |r| {
@@ -195,7 +181,21 @@ impl World {
                     },
                 );
                 let duration = (duration * TICK_HZ as f32).round() as u64;
-                ally.status.barrier_until = self.tick + duration;
+                // Concurrent veils refresh duration and preserve the larger remaining barrier.
+                if ally.status.barrier_until <= self.state.tick {
+                    ally.status.barrier = 0.;
+                }
+                if !empowered && id != owner && ally.status.barrier <= 0. {
+                    let instance = self.state.next_id;
+                    self.state.next_id += 1;
+                    events.push(Event::WaterwallApplied {
+                        source: owner,
+                        target: id,
+                        id: instance,
+                    });
+                }
+                ally.status.barrier = ally.status.barrier.max(strength);
+                ally.status.barrier_until = self.state.tick + duration;
                 (ally.position, Some(id), duration, splash)
             }
             _ => unreachable!("validated Lorelai cast"),
@@ -208,7 +208,7 @@ impl World {
             team,
             position,
             follows,
-            start: self.tick + delay,
+            start: tick + delay,
             pool,
         });
     }
@@ -225,7 +225,7 @@ impl crate::persistent_spells::TimedSpell for Water {
     fn begin_impact(&mut self) -> Self {
         *self
     }
-    fn advance(&mut self, world: &mut World, events: &mut Vec<Event>) -> bool {
+    fn advance(&mut self, world: &mut Room<'_>, events: &mut Vec<Event>) -> bool {
         if world.winner.is_some() {
             return false;
         }
@@ -233,14 +233,14 @@ impl crate::persistent_spells::TimedSpell for Water {
             if let Some(i) = world.index(id) {
                 self.position = world.entities[i].position;
             }
-            if world.tick >= self.start {
+            if world.state.tick >= self.start {
                 self.follows = None;
             }
         }
-        if world.tick < self.start {
+        if world.state.tick < self.start {
             return true;
         }
-        let elapsed = world.tick - self.start;
+        let elapsed = world.state.tick - self.start;
         if matches!(self.pool, Pool::Fish { .. }) && !elapsed.is_multiple_of(TICK_HZ) {
             return true;
         }
@@ -256,20 +256,20 @@ impl crate::persistent_spells::TimedSpell for Water {
                 || !matches!(e.kind, Kind::Hero | Kind::Minion)
                 || (e.position.x - self.position.x).abs() > self.pool.radius()
                 || e.position.dist(self.position) > self.pool.radius()
-                || !world.layout.clear(self.position, e.position)
+                || !world.state.layout.clear(self.position, e.position)
             {
                 continue;
             }
             match self.pool {
                 Pool::Fish { rank, stun } if e.team != self.team => {
                     if elapsed == 0 {
-                        e.status.stun_until = e.status.stun_until.max(world.tick + stun);
+                        e.status.stun_until = e.status.stun_until.max(world.state.tick + stun);
                         e.winding = None;
                         e.cast = None;
                         e.status.channel = 0;
                         e.status.channel_until = 0;
                     }
-                    let raw = if let Some(rules) = &world.abilities.lorelai {
+                    let raw = if let Some(rules) = &world.state.abilities.lorelai {
                         (if elapsed == 0 {
                             &rules.impact
                         } else {
@@ -292,7 +292,7 @@ impl crate::persistent_spells::TimedSpell for Water {
                     );
                 }
                 Pool::Splash { speed, .. } if e.team == self.team => {
-                    e.status.water_speed_bonus = if e.status.water_speed_until > world.tick {
+                    e.status.water_speed_bonus = if e.status.water_speed_until > world.state.tick {
                         match (e.status.water_speed_bonus, speed) {
                             (Some(a), Some(b)) => Some(a.max(b)),
                             (a, b) => a.or(b),
@@ -300,15 +300,15 @@ impl crate::persistent_spells::TimedSpell for Water {
                     } else {
                         speed
                     };
-                    e.status.water_speed_until = world.tick + 1;
+                    e.status.water_speed_until = world.state.tick + 1;
                 }
                 Pool::Splash { slow_factor, .. } => {
-                    e.status.water_slow_factor = if e.status.water_slow_until > world.tick {
+                    e.status.water_slow_factor = if e.status.water_slow_until > world.state.tick {
                         e.status.water_slow_factor.min(slow_factor)
                     } else {
                         slow_factor
                     };
-                    e.status.water_slow_until = world.tick + 1;
+                    e.status.water_slow_until = world.state.tick + 1;
                 }
                 _ => {}
             }

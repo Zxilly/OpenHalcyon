@@ -59,7 +59,7 @@ pub(super) fn load(maps: &NativeMaps, data: &GameData) -> Result<Vec<NativeCampU
     Ok(units)
 }
 
-impl World {
+impl Room<'_> {
     pub fn install_native_camps(&mut self, data: &GameData) -> Result<(), String> {
         if self.tick != 0 || !matches!(self.layout, Layout::SoloMid { .. }) {
             return Err("camp placement requires a fresh Solo world".into());

@@ -107,7 +107,7 @@ pub(super) fn solo_inner_towers() -> [Stats; 2] {
     ]
 }
 
-impl World {
+impl Room<'_> {
     /// The native Solo replay has three staggered lanes for each team.
     pub(super) fn spawn_solo_mid_wave(&mut self, events: &mut Vec<Event>) {
         let Some(elapsed) = self.tick.checked_sub(19 * TICK_HZ) else {
@@ -184,10 +184,10 @@ impl World {
             let e = &mut self.entities[idx];
             e.solo_side = lanes[(e.id - 1) as usize];
             e.gold = 600;
-            self.scores[(e.id - 1) as usize]
+            self.state.scores[(e.id - 1) as usize]
                 .gold_income
                 .starting_balance = e.gold;
-            e.position = self.layout.home(e);
+            e.position = self.state.layout.home(e);
         }
         self.spawn_solo_armories();
         // Preserve the original actor namespace, including gaps between static actors.

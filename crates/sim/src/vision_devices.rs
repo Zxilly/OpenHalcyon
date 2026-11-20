@@ -100,7 +100,7 @@ impl Charges {
         }
     }
 }
-impl World {
+impl Room<'_> {
     pub fn visible_enemy_cams(&self, actor: u32) -> Vec<u32> {
         let Some(i) = self.index(actor) else {
             return Vec::new();
@@ -178,20 +178,21 @@ impl World {
         };
         let id = self.next_id;
         let next = id.checked_add(1).ok_or("entity id exhausted")?;
-        let c = &mut self.vision_charges[i];
+        let state = &mut *self.state;
+        let c = &mut state.vision_charges[i];
         match kind {
             VisionDeviceKind::ScoutCam => {
-                c.recharge(self.tick);
-                if c.spent >= self.shop.vision.charges {
+                c.recharge(state.tick);
+                if c.spent >= state.shop.vision.charges {
                     return Err("no scout cam charge");
                 }
                 if c.spent == 0 {
-                    c.next = self.tick + 180 * TICK_HZ;
+                    c.next = state.tick + 180 * TICK_HZ;
                 }
                 c.spent += 1;
             }
             VisionDeviceKind::ScoutTrap => {
-                if c.trap_ready > self.tick {
+                if c.trap_ready > state.tick {
                     return Err("trap cooldown");
                 }
                 let hero = &mut self.entities[i];
@@ -205,11 +206,11 @@ impl World {
                     .unwrap()
                     .remove_held(hero.inventory[index])?;
                 hero.inventory.remove(index);
-                c.trap_ready = self.tick + self.shop.vision.cooldown;
+                c.trap_ready = state.tick + state.shop.vision.cooldown;
             }
         }
         let hero = &self.entities[i];
-        self.next_id = next;
+        self.state.next_id = next;
         let device = VisionDevice {
             id,
             owner: hero.id,
@@ -272,7 +273,8 @@ impl World {
             .run_system_cached_with(step_devices, input)
             .expect("vision device system");
         let ecs = &self.entities.ecs;
-        self.vision_device_ids
+        self.state
+            .vision_device_ids
             .retain(|id| ecs.get::<VisionDevice>(*id).is_some());
     }
 }

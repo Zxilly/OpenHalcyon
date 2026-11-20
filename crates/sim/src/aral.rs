@@ -57,7 +57,7 @@ impl Units {
     }
 }
 
-impl World {
+impl Room<'_> {
     /// Activate once after assigning the six human ARAL seats, before the first simulated tick.
     pub fn use_aral_lane(&mut self) -> Result<(), String> {
         if self.tick != 0 {
@@ -88,13 +88,13 @@ impl World {
         self.entities.retain(|actor| actor.kind == Kind::Hero);
         for idx in 0..self.entities.len() {
             let hero = &mut self.entities[idx];
-            hero.position = self.layout.home(hero);
+            hero.position = self.state.layout.home(hero);
             hero.level = 4;
             hero.skill_points = 4;
             hero.apply_growth(3);
             hero.gold = 2000;
             hero.aral_inventory = Some(Box::new(super::AralInventory::starting()));
-            self.scores[(hero.id - 1) as usize]
+            self.state.scores[(hero.id - 1) as usize]
                 .gold_income
                 .starting_balance = hero.gold;
         }

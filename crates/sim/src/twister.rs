@@ -29,9 +29,10 @@ pub(super) struct Dash {
     pierce: f32,
     hit: Vec<u32>,
 }
-impl World {
+impl Room<'_> {
     pub(super) fn begin_twister(&mut self, i: usize, r: usize, point: Position) {
-        let rules = self.abilities.twister.as_ref().unwrap();
+        let state = &mut *self.state;
+        let rules = state.abilities.twister.as_ref().unwrap();
         let e = &self.entities[i];
         self.entities.spawn_spell(Dash {
             source: e.id,
@@ -58,7 +59,7 @@ impl crate::persistent_spells::TimedSpell for Dash {
             ..self.clone()
         }
     }
-    fn advance(&mut self, world: &mut World, events: &mut Vec<Event>) -> bool {
+    fn advance(&mut self, world: &mut Room<'_>, events: &mut Vec<Event>) -> bool {
         let Some(i) = world.index(self.source) else {
             return false;
         };
