@@ -17,6 +17,7 @@ mod hero_progress;
 mod messages;
 mod modes_3v3_blitz;
 mod native_abilities;
+mod native_abilities_catalog;
 mod native_cooldown;
 mod npc_attack;
 mod npc_projectile;

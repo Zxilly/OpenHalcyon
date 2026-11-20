@@ -29,9 +29,17 @@ const LORELAI: u16 = EntityTemplate::Lorelai.as_raw();
 
 #[derive(Default)]
 pub(super) struct NativeAbilities {
-    learned_at: Option<u64>,
+    pub(super) learned_at: Option<u64>,
     walked_at: Option<u64>,
     cast: Option<PendingCast>,
+    pub(super) catalog_cast: Option<crate::native_abilities_catalog::PendingCatalogCast>,
+    pub(super) tripwires: crate::native_abilities_catalog::TripwireWireTracker,
+}
+
+impl NativeAbilities {
+    pub(super) fn take_legacy_cast_slot(&mut self) -> Option<AbilitySlot> {
+        self.cast.take().map(|pending| pending.slot)
+    }
 }
 
 struct PendingCast {
@@ -48,12 +56,19 @@ pub(super) fn receive(room: &mut Room, seat: usize, channel: usize, m: Message) 
     let Some(peer) = connection.peers[channel].as_ref() else {
         return Vec::new();
     };
-    if channel != 0
-        || !(room.solo_scene() || room.legacy_aral())
-        || !connection.world_actor_written
-        || actor.kind != Kind::Hero
-        || actor.bot
-    {
+    if actor.kind != Kind::Hero || actor.bot {
+        return Vec::new();
+    }
+    if !room.legacy_aral() {
+        let valid_channel =
+            channel == 1 || (channel == 0 && room.solo_scene() && connection.world_actor_written);
+        if !valid_channel {
+            return Vec::new();
+        }
+        let _ = peer;
+        return crate::native_abilities_catalog::receive(room, seat, m);
+    }
+    if channel != 0 || !connection.world_actor_written {
         return Vec::new();
     }
     let generation = peer.generation;
@@ -234,7 +249,7 @@ impl NativeCast {
 
 // The origin has a generation-bound confirmation on its issuing control socket.
 // Every other seat receives one release on its current world stream.
-fn witness(
+pub(super) fn witness(
     room: &mut Room,
     source: u32,
     target: Option<u32>,
@@ -270,7 +285,7 @@ fn witness(
     room.publish_observers(std::slice::from_ref(message));
 }
 
-fn deliver_registered(
+pub(super) fn deliver_registered(
     room: &mut Room,
     source: u32,
     team: u8,
@@ -421,10 +436,10 @@ fn publish_visible(room: &mut Room, actors: &[u32], frames: &[Message]) {
 }
 
 pub(super) fn publish(room: &mut Room, events: &[Event]) {
-    if !(room.solo_scene() || room.legacy_aral()) {
-        return;
-    }
     let aral = room.legacy_aral();
+    if !aral {
+        crate::native_abilities_catalog::tick_tripwires(room);
+    }
     for (event_index, event) in events.iter().enumerate() {
         if aral
             && let Event::RebootRecovered {
@@ -497,6 +512,18 @@ pub(super) fn publish(room: &mut Room, events: &[Event]) {
             Event::Cast { source, slot, .. } | Event::Learned { source, slot } => (source, slot),
             _ => continue,
         };
+        if !aral
+            && room
+                .world
+                .entities
+                .iter()
+                .position(|e| e.id == source)
+                .and_then(|idx| room.seats.get(idx))
+                .is_none_or(|seat| seat.native_abilities.cast.is_none())
+        {
+            crate::native_abilities_catalog::publish_event(room, event);
+            continue;
+        }
         let Some(index) = source.checked_sub(1).map(|v| v as usize) else {
             continue;
         };

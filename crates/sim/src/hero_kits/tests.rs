@@ -90,7 +90,7 @@ fn step_ticks(w: &mut World, n: usize) -> Vec<Event> {
 #[test]
 fn batch_a_covers_exact_30_unique_heroes_and_non_empty_ids() {
     let specs = all_specs();
-    assert_eq!(specs.len(), 30, "Batch A must register exact 30 heroes");
+    assert_eq!(specs.len(), 61, "Batch A + B must register exact 61 heroes");
 
     let mut tids = BTreeSet::new();
     let mut ids = BTreeSet::new();
