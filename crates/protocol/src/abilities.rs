@@ -1,6 +1,22 @@
 use crate::Message;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum CooldownMode {
+    Adjust = 0,
+    Set = 1,
+}
+
 impl Message {
+    pub fn cooldown_adjustment(owner: u32, key: u32, value: f32, mode: CooldownMode) -> Self {
+        let mut body = [0; 13];
+        body[..4].copy_from_slice(&owner.to_be_bytes());
+        body[4..8].copy_from_slice(&key.to_be_bytes());
+        body[8..12].copy_from_slice(&value.to_be_bytes());
+        body[12] = mode as u8;
+        Self::known(crate::Opcode::CooldownValue, body)
+    }
+
     /// Observed 0x043A actor and learned ability operand.
     pub fn ability_learned(actor: u32, operand: u32) -> Self {
         Self::known(
