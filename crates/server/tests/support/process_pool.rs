@@ -1,6 +1,7 @@
-//! Run both subprocess scenarios with
+//! Run the subprocess scenarios with
 //! `cargo test -p openhalcyon --test peer_play subprocess_ -- --ignored --nocapture --test-threads=1`.
 //! The long scenario waits up to 45 minutes of real time for the simulated match to finish.
+//! The supplemental data case also needs HALCYON_DELIVERY and HALCYON_DATA_EXTRA.
 //! All credentials, pool certificates, binaries and SQLite files are scoped to a temporary directory.
 use super::RpcEnvelope;
 use super::{echo_clock, login, pool, until};
@@ -172,7 +173,13 @@ async fn get(client: &Client, n: &Node, cookie: &str, path: &str) -> Value {
         .await
         .unwrap()
 }
-fn spawn_nodes(dir: &Path) -> Vec<Node> {
+#[derive(Clone, Copy)]
+struct ServerData<'a> {
+    base: &'a Path,
+    extra: &'a Path,
+}
+
+fn spawn_nodes(dir: &Path, data: Option<[ServerData<'_>; 3]>) -> Vec<Node> {
     // Each pool restarts its original executable even if the workspace rebuilds.
     let binary = dir.join(format!("pool-server{}", std::env::consts::EXE_SUFFIX));
     fs::copy(env!("CARGO_BIN_EXE_openhalcyon"), &binary).unwrap();
@@ -214,6 +221,8 @@ fn spawn_nodes(dir: &Path) -> Vec<Node> {
             jwt_secret: "secret",
             certificate: &f.cert,
             private_key: &f.key,
+            data_dir: data.map(|assets| assets[i].base),
+            data_extra_dir: data.map(|assets| assets[i].extra),
             admin: PoolAdmin {
                 origin: &origin,
                 username: "operator",
@@ -273,7 +282,15 @@ struct RunningPool {
     _drains: tokio::task::JoinSet<()>,
 }
 async fn running_pool(dir: &Path) -> RunningPool {
-    let nodes = spawn_nodes(dir);
+    running_pool_with_data(dir, None, None).await
+}
+
+async fn running_pool_with_data(
+    dir: &Path,
+    data: Option<[ServerData<'_>; 3]>,
+    selection: Option<[u16; 2]>,
+) -> RunningPool {
+    let nodes = spawn_nodes(dir, data);
     let client = Client::builder()
         .no_proxy()
         .timeout(Duration::from_secs(10))
@@ -331,9 +348,17 @@ async fn running_pool(dir: &Path) -> RunningPool {
     assert_eq!(a["port"], b["port"]);
     let cipher = MatchCipher::new(id);
     let mut sockets = vec![];
-    for (player, _) in &identities {
+    for (index, (player, _)) in identities.iter().enumerate() {
         let mut s = login(&addr, *player, &cipher).await;
         until(&mut s, &cipher, wire_opcode::Snapshot5V5).await;
+        if let Some(heroes) = selection {
+            let mut body = [0; 8];
+            body[..4].copy_from_slice(&u32::from(heroes[index]).to_be_bytes());
+            let choice = Message::new(wire_opcode::HeroSelection, body);
+            s.write_all(&cipher.encode(&choice).unwrap()).await.unwrap();
+            let echo = until(&mut s, &cipher, wire_opcode::HeroSelection).await;
+            assert_eq!(echo.body[..8], choice.body);
+        }
         s.write_all(
             &cipher
                 .encode(&Message::new(wire_opcode::HeroLock, [0; 6]))
@@ -344,9 +369,22 @@ async fn running_pool(dir: &Path) -> RunningPool {
         until(&mut s, &cipher, wire_opcode::HeroLock).await;
         sockets.push(s);
     }
-    for (player, _) in &identities {
+    for (index, (player, _)) in identities.iter().enumerate() {
         let mut s = login(&addr, *player, &cipher).await;
-        until(&mut s, &cipher, wire_opcode::EntitySpawn).await;
+        if let Some(heroes) = selection {
+            timeout(Duration::from_secs(10), async {
+                loop {
+                    let spawn = until(&mut s, &cipher, wire_opcode::EntitySpawn).await;
+                    if matches!(spawn.fields(), Ok(halcyon_protocol::Fields::Spawn {template, entity:1500..=1501, ..})
+                        if template == u32::from(heroes[index]))
+                    {
+                        break;
+                    }
+                }
+            }).await.expect("selected human hero was not spawned by the third host");
+        } else {
+            until(&mut s, &cipher, wire_opcode::EntitySpawn).await;
+        }
         echo_clock(&mut s, &cipher, 13.25).await;
         sockets.push(s);
     }
@@ -576,6 +614,10 @@ struct PoolServerConfig<'a> {
     jwt_secret: &'a str,
     certificate: &'a Path,
     private_key: &'a Path,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    data_dir: Option<&'a Path>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    data_extra_dir: Option<&'a Path>,
     admin: PoolAdmin<'a>,
     federation: PoolFederation<'a>,
 }
@@ -591,4 +633,235 @@ struct PoolFederation<'a> {
     journal: &'a str,
     latency_ms: BTreeMap<Uuid, u32>,
     max_latency_ms: u32,
+}
+
+fn copy_data_tree(source: &Path, destination: &Path) {
+    fs::create_dir(destination).unwrap();
+    for item in fs::read_dir(source).unwrap() {
+        let item = item.unwrap();
+        let path = destination.join(item.file_name());
+        let kind = item.file_type().unwrap();
+        if kind.is_dir() {
+            copy_data_tree(&item.path(), &path);
+        } else if kind.is_file() {
+            fs::copy(item.path(), path).unwrap();
+        }
+    }
+}
+
+fn read_only(path: &Path) -> rusqlite::Connection {
+    let connection =
+        rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .unwrap();
+    connection.busy_timeout(Duration::from_secs(2)).unwrap();
+    connection
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "starts three local OS processes using HALCYON_DELIVERY and HALCYON_DATA_EXTRA"]
+async fn subprocess_supplement_rules_gate_cross_home_matching() {
+    use halcyon_data::GameData;
+    use std::collections::BTreeMap;
+
+    let base = PathBuf::from(std::env::var_os("HALCYON_DELIVERY").unwrap())
+        .canonicalize()
+        .unwrap();
+    let supplement = PathBuf::from(std::env::var_os("HALCYON_DATA_EXTRA").unwrap())
+        .canonicalize()
+        .unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let localized = directory.path().join("localized");
+    let different = directory.path().join("different-rules");
+    copy_data_tree(&supplement, &localized);
+    copy_data_tree(&supplement, &different);
+
+    let dictionary = localized.join("localization/en.json");
+    let mut text: BTreeMap<String, String> =
+        serde_json::from_slice(&fs::read(&dictionary).unwrap()).unwrap();
+    text.insert(
+        "RETRIEVE_CREDENTIALS_DESCRIPTION".into(),
+        "Pool test translation".into(),
+    );
+    fs::write(dictionary, serde_json::to_vec(&text).unwrap()).unwrap();
+
+    let units = different.join("units_full.json");
+    let mut defs: Vec<Value> = serde_json::from_slice(&fs::read(&units).unwrap()).unwrap();
+    let bear = defs
+        .iter_mut()
+        .find(|row| row["name"] == "5v5_BigBear")
+        .unwrap();
+    bear["gold_bounty"] = Value::from(bear["gold_bounty"].as_f64().unwrap() + 1.);
+    fs::write(units, serde_json::to_vec(&defs).unwrap()).unwrap();
+
+    let original = GameData::load_with_extra(&base, Some(&supplement)).unwrap();
+    let translation = GameData::load_with_extra(&base, Some(&localized)).unwrap();
+    let changed = GameData::load_with_extra(&base, Some(&different)).unwrap();
+    let original_rules = halcyon_sim::rules_digest(Some(&original));
+    let changed_rules = halcyon_sim::rules_digest(Some(&changed));
+    assert_eq!(
+        halcyon_sim::rules_digest(Some(&translation)),
+        original_rules
+    );
+    assert_ne!(changed_rules, original_rules);
+    assert!(
+        changed.full_unit("5v5_BigBear").unwrap().gold_bounty
+            > original.full_unit("5v5_BigBear").unwrap().gold_bounty
+    );
+    assert_ne!(
+        translation.references().unwrap().digest,
+        original.references().unwrap().digest
+    );
+    assert_eq!(
+        changed.references().unwrap().digest,
+        original.references().unwrap().digest
+    );
+
+    let fleet = directory.path().join("fleet");
+    fs::create_dir(&fleet).unwrap();
+    let common = ServerData {
+        base: &base,
+        extra: &supplement,
+    };
+    let RunningPool {
+        mut nodes,
+        client,
+        cookies,
+        room_id,
+        _drains,
+        ..
+    } = running_pool_with_data(
+        &fleet,
+        Some([
+            common,
+            common,
+            ServerData {
+                base: &base,
+                extra: &localized,
+            },
+        ]),
+        Some([
+            original.type_id("Idris").unwrap(),
+            original.type_id("Lorelai").unwrap(),
+        ]),
+    )
+    .await;
+
+    let content = get(&client, &nodes[0], &cookies[0], "content").await;
+    let host_content = get(&client, &nodes[2], &cookies[2], "content").await;
+    assert_eq!(
+        content["rulesContentDigest"],
+        host_content["rulesContentDigest"]
+    );
+    assert_eq!(
+        host_content["referenceDigest"],
+        translation.references().unwrap().digest
+    );
+    assert_ne!(content["referenceDigest"], host_content["referenceDigest"]);
+    assert!(!room_id.is_empty());
+
+    // Change just one home's installed gameplay file while the same quorum,
+    // host eligibility and established match stay intact.
+    nodes[1].stop();
+    let mut config: toml::Table = fs::read_to_string(&nodes[1].path).unwrap().parse().unwrap();
+    config.insert(
+        "data_extra_dir".into(),
+        toml::Value::String(different.to_str().unwrap().into()),
+    );
+    fs::write(&nodes[1].path, toml::to_string(&config).unwrap()).unwrap();
+    nodes[1].start();
+    let replaced = admin(&client, &nodes[1]).await;
+    let altered_content = get(&client, &nodes[1], &replaced, "content").await;
+    assert_ne!(
+        altered_content["rulesContentDigest"],
+        content["rulesContentDigest"]
+    );
+    assert_eq!(
+        altered_content["referenceDigest"],
+        content["referenceDigest"]
+    );
+
+    let mut negative = Vec::new();
+    for node in &nodes[..2] {
+        let (id, token) = session(&client, node).await;
+        rpc(
+            &client,
+            node,
+            RpcMethod::JoinLobby.as_str(),
+            (
+                &token,
+                LobbyJoin {
+                    lobby: "5v5_pvp_casual",
+                },
+                "147219",
+            ),
+        )
+        .await;
+        negative.push((id, token));
+    }
+    let committed = timeout(Duration::from_secs(30), async {
+        loop {
+            let mut ids = Vec::new();
+            for (node, (player, _)) in nodes.iter().zip(&negative) {
+                let db = read_only(&node.db);
+                let mut rows = db.prepare("SELECT ticket FROM federated_queue WHERE player=? AND phase='queued' AND match_id IS NULL").unwrap();
+                if let Ok(ticket) = rows.query_row([player.to_string()], |row|row.get::<_,String>(0)) {
+                    ids.push(ticket);
+                }
+            }
+            if ids.len() == negative.len() {return ids;}
+            sleep(Duration::from_millis(100)).await;
+        }
+    }).await.expect("both incompatible tickets must be committed and queued");
+
+    for (index, id) in committed.iter().enumerate() {
+        let journal = read_only(&nodes[index].path.with_file_name("journal.db"));
+        let payload: String = journal
+            .query_row(
+                "SELECT payload FROM enqueue_payloads WHERE id=?",
+                [id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let ticket: halcyon_matchmaking::Ticket = serde_json::from_str(&payload).unwrap();
+        assert_eq!(
+            ticket.queue.rules_digest.as_str(),
+            if index == 0 {
+                original_rules.as_str()
+            } else {
+                changed_rules.as_str()
+            }
+        );
+        assert_eq!(ticket.latency_ms.len(), 1);
+        assert_eq!(ticket.latency_ms.values().next(), Some(&5));
+    }
+    // Multiple worker cycles with both homes queued and the host still healthy.
+    let until_time = Instant::now() + Duration::from_secs(3);
+    while Instant::now() < until_time {
+        for (node, (_, token)) in nodes.iter().zip(&negative) {
+            let view = rpc(&client, node, RpcMethod::Update.as_str(), (token,)).await;
+            assert_eq!(
+                view["returnValue"]["state"],
+                LobbyState::PendingAuto.as_str()
+            );
+        }
+        sleep(Duration::from_millis(250)).await;
+    }
+    assert_eq!(
+        get(
+            &client,
+            &nodes[2],
+            &cookies[2],
+            &format!("matches/{room_id}")
+        )
+        .await["phase"],
+        "running"
+    );
+    let journal = read_only(&nodes[2].path.with_file_name("journal.db"));
+    let how_many: i64 = journal
+        .query_row("SELECT count(*) FROM hosted", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(
+        how_many, 1,
+        "incompatible homes must not allocate another room"
+    );
 }
