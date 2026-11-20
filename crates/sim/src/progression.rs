@@ -385,15 +385,25 @@ mod tests {
     #[test]
     fn draft_reselection_restores_base_stats_then_applies_growth_once() {
         use halcyon_data::ManifestEntry;
-        use serde_json::{Value, json};
+        use serde_json::Value;
 
-        let unit = serde_json::from_value(json!({
-            "name":"Lorelai", "hp": 700.0, "energy": 300.0, "weapon": 40.0,
-            "armor": 10.0, "shield": 15.0, "range": 5.0, "attack_speed": 1.0,
-            "move_speed": 3.5, "hp_per_level": 120.0, "energy_per_level": 50.0,
-            "weapon_per_level": 8.0, "armor_per_level": 3.0, "shield_per_level": 2.0
-        }))
-        .unwrap();
+        let unit = halcyon_data::Unit {
+            name: "Lorelai".into(),
+            hp: 700.,
+            energy: 300.,
+            weapon: 40.,
+            armor: 10.,
+            shield: 15.,
+            range: 5.,
+            attack_speed: 1.,
+            move_speed: 3.5,
+            hp_per_level: 120.,
+            energy_per_level: 50.,
+            weapon_per_level: 8.,
+            armor_per_level: 3.,
+            shield_per_level: 2.,
+            other: Default::default(),
+        };
         let data = GameData {
             units: vec![unit],
             items: vec![],

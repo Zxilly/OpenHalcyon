@@ -1,4 +1,9 @@
 use anyhow::{Context, ensure};
+use halcyon_platform::{AbortReason, LobbyPhase};
+#[derive(serde::Serialize, serde::Deserialize)]
+struct AbortedRoom {
+    reason: AbortReason,
+}
 use halcyon_federation::{Capacity, Federation};
 use halcyon_game::Rooms;
 use halcyon_matchmaking::{
@@ -517,13 +522,13 @@ impl Inner {
     async fn project(
         &self,
         i: &FederatedIntent,
-        phase: &str,
+        phase: LobbyPhase,
         id: Option<Uuid>,
         address: Option<String>,
         result: Option<Value>,
     ) -> anyhow::Result<()> {
         self.platform
-            .federated_project(i.ticket, phase, id, address, result)
+            .federated_project(i.ticket, phase.as_str(), id, address, result)
             .await?;
         Ok(())
     }
@@ -541,15 +546,22 @@ impl Inner {
                     generation: entry.ticket.generation,
                 });
                 if let Some(room) = prior.filter(|room| {
-                    !room
-                        .result
-                        .as_ref()
-                        .is_some_and(|value| value["reason"] == "host_restarted")
+                    !room.result.as_ref().is_some_and(|value| {
+                        <AbortedRoom as serde::Deserialize>::deserialize(value)
+                            .is_ok_and(|room| room.reason == AbortReason::HostRestarted)
+                    })
                 }) {
-                    self.project(i, "finished", Some(room.id), None, room.result.clone())
-                        .await
+                    self.project(
+                        i,
+                        LobbyPhase::Finished,
+                        Some(room.id),
+                        None,
+                        room.result.clone(),
+                    )
+                    .await
                 } else {
-                    self.project(i, "closed", None, None, None).await?;
+                    self.project(i, LobbyPhase::Closed, None, None, None)
+                        .await?;
                     self.platform.federated_release(i.ticket).await?;
                     Ok(())
                 }
@@ -558,7 +570,7 @@ impl Inner {
                 if i.cancel {
                     return self.cancel(i).await;
                 }
-                self.project(i, "queued", None, None, None).await
+                self.project(i, LobbyPhase::Queued, None, None, None).await
             }
             TicketPhase::Assigned(id) => {
                 let a = &p.allocations[id];
@@ -568,13 +580,14 @@ impl Inner {
                         .as_ref()
                         .context("ready allocation without endpoint")?;
                     return self
-                        .project(i, "playing", Some(*id), Some(ep.address()), None)
+                        .project(i, LobbyPhase::Playing, Some(*id), Some(ep.address()), None)
                         .await;
                 }
                 if i.cancel {
                     return self.cancel(i).await;
                 }
-                self.project(i, "offered", Some(*id), None, None).await?;
+                self.project(i, LobbyPhase::Offered, Some(*id), None, None)
+                    .await?;
                 if i.accepted_match == Some(*id) && !a.accepted.contains(&i.ticket) {
                     self.accept(i, *id).await?
                 }
@@ -734,8 +747,12 @@ impl Worker {
                     // Only the assigned host can sign this terminal outcome. The
                     // normal outbox retries it across quorum loss or restart.
                     ensure!(
-                        s.journal
-                            .finish(a.id, &serde_json::json!({"reason":"host_restarted"}))?,
+                        s.journal.finish(
+                            a.id,
+                            &serde_json::to_value(AbortedRoom {
+                                reason: AbortReason::HostRestarted
+                            })?
+                        )?,
                         "missing recorded hosted room"
                     );
                     self.lost_rooms.remove(&a.id);

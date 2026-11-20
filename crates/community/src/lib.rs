@@ -3,7 +3,7 @@ mod exchange;
 mod groups;
 pub mod queue;
 mod social;
-mod views;
+pub mod views;
 
 pub use economy::{ItemDefinition, QuestDefinition};
 pub use exchange::Recipe;

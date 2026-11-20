@@ -2,6 +2,19 @@ use super::*;
 use halcyon_matchmaking::{Endpoint, Phase, Queue, Ticket, TicketRef, result_digest};
 use std::time::Instant;
 
+#[derive(serde::Serialize)]
+struct StoredResultSample {
+    winner: u8,
+    players: [ScoreSample; 1],
+    duration: u32,
+}
+#[derive(serde::Serialize)]
+struct ScoreSample {
+    kills: u32,
+    assists: u32,
+    deaths: u32,
+}
+
 const HOME: Uuid = Uuid::from_u128(1);
 const POOL: Uuid = Uuid::from_u128(2);
 fn entry(index: u64, request: Uuid, command: Command) -> Entry<Types> {
@@ -25,7 +38,16 @@ fn fixture(rooms: u64) -> Machine {
             id: ticket,
             generation: 1,
         };
-        let result = serde_json::json!({"winner":0,"players":[{"kills":3,"assists":5,"deaths":1}],"duration":1721});
+        let result = serde_json::to_value(StoredResultSample {
+            winner: 0,
+            players: [ScoreSample {
+                kills: 3,
+                assists: 5,
+                deaths: 1,
+            }],
+            duration: 1721,
+        })
+        .unwrap();
         let digest = result_digest(&result).unwrap();
         let commands = [
             Command::Enqueue(Ticket {

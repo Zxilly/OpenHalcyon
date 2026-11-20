@@ -14,20 +14,20 @@ pub(super) fn enum_column<T: DeserializeOwned>(row: &Row<'_>, index: usize) -> r
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub(super) enum QuestStatus {
+pub enum QuestStatus {
     Active,
     Claimed,
     Skipped,
 }
 
-#[derive(Serialize)]
-pub(super) struct Items<T> {
+#[derive(Serialize, Deserialize)]
+pub struct Items<T> {
     pub items: Vec<T>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub(super) struct Contact {
+pub struct Contact {
     pub player_id: String,
     pub handle: String,
     pub favorite: bool,
@@ -35,25 +35,25 @@ pub(super) struct Contact {
     pub status: Option<String>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub(super) struct FriendRequest {
+pub struct FriendRequest {
     pub player_id: String,
     pub handle: String,
     pub created: i64,
     pub incoming: bool,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub(super) struct Friends {
+pub struct Friends {
     pub friends: Vec<Contact>,
     pub requests: Vec<FriendRequest>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub(super) struct InventoryItem {
+pub struct InventoryItem {
     pub id: String,
     pub name: String,
     pub slot: String,
@@ -61,16 +61,16 @@ pub(super) struct InventoryItem {
     pub equipped: bool,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub(super) struct Inventory {
+pub struct Inventory {
     pub items: Vec<InventoryItem>,
     pub equipped: BTreeMap<String, String>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub(super) struct Quest {
+pub struct Quest {
     pub id: String,
     pub category: String,
     pub title: String,
@@ -82,18 +82,18 @@ pub(super) struct Quest {
     pub state: QuestStatus,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub(super) struct GroupMember {
+pub struct GroupMember {
     pub player_id: String,
     pub handle: String,
     pub role: Role,
     pub side: u8,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub(super) struct GroupView {
+pub struct GroupView {
     pub id: String,
     pub kind: GroupKind,
     pub name: String,
@@ -110,9 +110,9 @@ pub(super) struct GroupView {
     pub members: Option<Vec<GroupMember>>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub(super) struct GuildListing {
+pub struct GuildListing {
     pub id: String,
     pub name: String,
     pub tag: String,
@@ -121,9 +121,9 @@ pub(super) struct GuildListing {
     pub max_members: u8,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub(super) struct Invitation {
+pub struct Invitation {
     pub group_id: String,
     pub name: String,
     pub inviter_id: String,
