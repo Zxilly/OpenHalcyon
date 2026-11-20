@@ -91,7 +91,7 @@ impl Rooms {
                 }
             }
             drop(listener);
-            let completed=room.lock().unwrap().reason==Some("completed");
+            let completed=room.lock().unwrap().reason==Some(crate::RoomEndReason::Completed);
             tokio::select! {
                 biased;
                 _=revoked.wait_for(|cancel|*cancel)=>{},
@@ -258,7 +258,7 @@ async fn client(
         r=&mut outgoing=>return r,
         r=incoming=>return r,
     }
-    if room.lock().unwrap().reason != Some("completed") {
+    if room.lock().unwrap().reason != Some(crate::RoomEndReason::Completed) {
         return Ok(());
     }
     tokio::select! {biased; _=revoked.wait_for(|cancel|*cancel)=>Ok(()),r=&mut outgoing=>r}

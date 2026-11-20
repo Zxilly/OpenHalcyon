@@ -348,7 +348,7 @@ async fn connection(mut sock: TcpStream, room: Shared, manager: Rooms) -> io::Re
                 // ARAL keeps its authenticated connections open between the
                 // crystal defeat or surrender and the final statistics report.
                 crate::RoomPhase::Ending
-                    if state.reason == Some("completed")
+                    if state.reason == Some(crate::RoomEndReason::Completed)
                         && !*state.stop.borrow()
                         && m.is(crate::Opcode::ClockSync)
                         && m.body.len() == 6
@@ -374,7 +374,7 @@ async fn connection(mut sock: TcpStream, room: Shared, manager: Rooms) -> io::Re
         r=&mut write_loop=>return r,
         r=read_loop=>return r,
     }
-    if room.lock().unwrap().reason != Some("completed") {
+    if room.lock().unwrap().reason != Some(crate::RoomEndReason::Completed) {
         return Ok(());
     }
     tokio::select! {biased; _=slow.changed()=>Err(bad("output queue full")),r=&mut write_loop=>r}
@@ -415,7 +415,7 @@ pub(super) async fn serve(
         }
     }
     drop(listener);
-    let completed = room.lock().unwrap().reason == Some("completed");
+    let completed = room.lock().unwrap().reason == Some(crate::RoomEndReason::Completed);
     // Settlement and room capacity are independent of any socket's flush deadline.
     manager.finished(&room);
     close_clients(&mut tasks, completed).await;
@@ -539,7 +539,7 @@ mod tests {
             }
             let reason = r.reason;
             drop(r);
-            assert_eq!(reason, Some("completed"));
+            assert_eq!(reason, Some(crate::RoomEndReason::Completed));
         }
         // The final batch is pending for this grant, but revocation takes priority.
         rooms.stop_spectating(id, withdrawn.spectator_id).unwrap();

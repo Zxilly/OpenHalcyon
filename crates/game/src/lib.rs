@@ -40,7 +40,7 @@ use messages::{setup, snapshot, spawn, wire_id, world_header};
 mod responses;
 pub(crate) use halcyon_protocol::{Opcode, wire_opcode};
 use responses::{Channel, EventDetail, EventKind};
-pub use responses::{RoomParticipant, RoomPhase, RoomSummary, TickLatencyReport};
+pub use responses::{RoomEndReason, RoomParticipant, RoomPhase, RoomSummary, TickLatencyReport};
 use serde_json::Value;
 use std::{
     collections::{HashMap, HashSet},
@@ -170,8 +170,8 @@ struct Room {
     created: DateTime<Utc>,
     since: DateTime<Utc>,
     ended: Option<DateTime<Utc>>,
-    reason: Option<&'static str>,
-    termination: Option<Value>,
+    reason: Option<RoomEndReason>,
+    termination: Option<responses::Termination>,
     events: Vec<responses::RoomEvent>,
     stop: watch::Sender<bool>,
     generation: u64,
@@ -329,8 +329,8 @@ impl Rooms {
         let room = self.room(id).ok_or(TerminateError::Missing)?;
         let mut r = room.lock().unwrap();
         if let Some(prior) = &r.termination {
-            return if prior["reason"] == reason {
-                Ok((r.ended.is_some(), prior.clone()))
+            return if prior.reason == reason {
+                Ok((r.ended.is_some(), responses::value(prior)))
             } else {
                 Err(TerminateError::Conflict)
             };
@@ -338,14 +338,15 @@ impl Rooms {
         if matches!(r.phase, crate::RoomPhase::Ending | crate::RoomPhase::Ended) {
             return Err(TerminateError::Conflict);
         }
-        let v = responses::value(responses::Termination {
+        let termination = responses::Termination {
             match_id: id,
             requested_at: now(),
-            requested_by: actor,
-            reason,
-        });
-        r.termination = Some(v.clone());
-        r.reason = Some("admin_terminated");
+            requested_by: actor.to_owned(),
+            reason: reason.to_owned(),
+        };
+        let response = responses::value(&termination);
+        r.termination = Some(termination);
+        r.reason = Some(RoomEndReason::AdminTerminated);
         r.event(
             EventKind::AdminAction,
             "Termination requested",
@@ -355,13 +356,13 @@ impl Rooms {
         );
         r.phase(crate::RoomPhase::Ending);
         r.stop.send_replace(true);
-        Ok((false, v))
+        Ok((false, response))
     }
     fn finished(&self, room: &Shared) {
         let (id, result) = {
             let mut r = room.lock().unwrap();
 
-            let end = r.reason.unwrap_or("error");
+            let end = r.reason.unwrap_or(RoomEndReason::Error);
             r.reason = Some(end);
             r.ended = Some(Utc::now());
             r.phase(crate::RoomPhase::Ended);
@@ -399,7 +400,7 @@ impl Rooms {
             (
                 r.id,
                 responses::value(responses::ResultReport {
-                    reason: end,
+                    reason: end.as_str(),
                     surrendered_team: r.surrender.iter().position(surrender::Ballot::passed),
                     winner: r.world.winner,
                     ticks: r.world.tick,
@@ -791,7 +792,7 @@ impl Room {
             created_at: self.created.to_rfc3339(),
             phase_since: self.since.to_rfc3339(),
             ended_at: self.ended.map(|x| x.to_rfc3339()),
-            end_reason: self.reason,
+            end_reason: self.reason.map(RoomEndReason::as_str),
             human_players: self.players.len(),
             bot_players: self.picks.len() - self.players.len(),
             pool_id: self.federation.as_ref().map(|f| f.pool),
@@ -1462,7 +1463,7 @@ impl Room {
         if !self.admitted {
             return;
         }
-        if self.phase == crate::RoomPhase::Ending && self.reason == Some("completed") {
+        if self.phase == crate::RoomPhase::Ending && self.reason == Some(RoomEndReason::Completed) {
             if !self.dead_actors.is_empty() {
                 let elapsed = self.phase_start.elapsed().as_millis()
                     * u128::from(halcyon_sim::TICK_HZ)
@@ -1485,7 +1486,7 @@ impl Room {
                 .iter()
                 .all(|s| s.peers.iter().all(Option::is_none))
         {
-            self.reason = Some("error");
+            self.reason = Some(RoomEndReason::Error);
             self.phase(crate::RoomPhase::Ending);
             self.stop.send_replace(true);
             return;
@@ -1586,7 +1587,7 @@ impl Room {
             self.advance_ballots();
         }
         if self.world.winner.is_some() {
-            self.reason = Some("completed");
+            self.reason = Some(RoomEndReason::Completed);
             self.phase(crate::RoomPhase::Ending);
             if self.known_queue.map(KnownQueue::mode) != Some(NativeMode::Aral) {
                 self.finish_world();

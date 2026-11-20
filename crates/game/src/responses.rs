@@ -29,6 +29,23 @@ impl RoomPhase {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RoomEndReason {
+    Completed,
+    AdminTerminated,
+    Error,
+}
+
+impl RoomEndReason {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Completed => "completed",
+            Self::AdminTerminated => "admin_terminated",
+            Self::Error => "error",
+        }
+    }
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TickLatencyReport {
@@ -69,11 +86,11 @@ pub(super) struct EventPage<'a> {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(super) struct Termination<'a> {
+pub(super) struct Termination {
     pub match_id: Uuid,
     pub requested_at: String,
-    pub requested_by: &'a str,
-    pub reason: &'a str,
+    pub requested_by: String,
+    pub reason: String,
 }
 
 #[derive(Clone, Copy, Debug, Serialize)]

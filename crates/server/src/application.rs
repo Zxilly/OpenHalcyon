@@ -10,7 +10,7 @@ use bevy_ecs::{
 };
 use halcyon_ce_platform::Platform;
 use halcyon_data::GameData;
-use halcyon_game::Rooms;
+use halcyon_game::{RoomEndReason, Rooms};
 use halcyon_platform::{AppState, PlatformConfig};
 use tokio::net::TcpListener;
 
@@ -141,7 +141,11 @@ fn install_room_settlement(local: Res<LocalServices>, network: Option<Res<Federa
                     }
                 }
             }
-            let outcome = if result["reason"] == "admin_terminated" || result["reason"] == "error" {
+            let reason = result["reason"].as_str();
+            let aborted = [RoomEndReason::AdminTerminated, RoomEndReason::Error]
+                .into_iter()
+                .any(|r| reason == Some(r.as_str()));
+            let outcome = if aborted {
                 completion.abort_match(id)
             } else {
                 completion.finish_match(id, result)
