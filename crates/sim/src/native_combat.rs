@@ -1,6 +1,6 @@
 //! Rank parameters for modeled releases whose damage block has a single verified role.
 use halcyon_data::{
-    AbilityParameter, DamageOperand, GameData, ModeledTalent, TalentParameter,
+    AbilityParameter, DamageOperand, EntityTemplate, GameData, ModeledTalent, TalentParameter,
     combat_content::Ability,
 };
 use serde::Serialize;
@@ -104,46 +104,82 @@ impl super::Room<'_> {
             e.long_shot = None;
             e.mobile_bulwark_bonus = None;
             e.speed_loader = None;
+            if let Some(k) = e.hero_kit.as_deref_mut() {
+                k.talent = None;
+                if k.is_inert_default() {
+                    e.hero_kit = None;
+                }
+            }
             return Ok(());
         };
-        let talent = data.talent_definition(id).ok_or("unknown talent")?;
-        let modeled = ModeledTalent::parse(id).ok_or("unsupported talent for hero")?;
-        let template = modeled.hero().as_raw();
-        if template != e.type_id
-            || talent.hero.as_deref().and_then(|name| data.type_id(name)) != Some(template)
-        {
-            return Err("unsupported talent for hero");
-        }
-        let value = |label: TalentParameter| {
-            talent
-                .modifier(label.as_str())
-                .and_then(|m| m.value_at(level, e.item_stats.crystal, e.stats.weapon))
-                .ok_or("unsupported talent modifier")
-        };
-        match modeled {
-            ModeledTalent::LongShot => {
-                e.long_shot = Some(LongShot {
-                    range: value(TalentParameter::BonusRange)?,
-                    damage: value(TalentParameter::DamageModifier)?,
-                    cooldown: value(TalentParameter::CooldownModifier)?,
-                });
-                e.mobile_bulwark_bonus = None;
+        if let Some(modeled) = ModeledTalent::parse(id) {
+            let talent = data.talent_definition(id).ok_or("unknown talent")?;
+            let template = modeled.hero().as_raw();
+            if template != e.type_id
+                || talent.hero.as_deref().and_then(|name| data.type_id(name)) != Some(template)
+            {
+                return Err("unsupported talent for hero");
             }
-            ModeledTalent::MobileBulwark => {
-                let bonus = value(TalentParameter::BonusDuration)?;
-                if bonus < 0. {
-                    return Err("unsupported talent duration");
+            let value = |label: TalentParameter| {
+                talent
+                    .modifier(label.as_str())
+                    .and_then(|m| m.value_at(level, e.item_stats.crystal, e.stats.weapon))
+                    .ok_or("unsupported talent modifier")
+            };
+            match modeled {
+                ModeledTalent::LongShot => {
+                    e.long_shot = Some(LongShot {
+                        range: value(TalentParameter::BonusRange)?,
+                        damage: value(TalentParameter::DamageModifier)?,
+                        cooldown: value(TalentParameter::CooldownModifier)?,
+                    });
+                    e.mobile_bulwark_bonus = None;
+                    e.speed_loader = None;
                 }
-                e.mobile_bulwark_bonus = Some(bonus);
-                e.long_shot = None;
-            }
-            ModeledTalent::SpeedLoader => {
-                if level.get() != 1 {
-                    return Err("unsupported Speed Loader level");
+                ModeledTalent::MobileBulwark => {
+                    let bonus = value(TalentParameter::BonusDuration)?;
+                    if bonus < 0. {
+                        return Err("unsupported talent duration");
+                    }
+                    e.mobile_bulwark_bonus = Some(bonus);
+                    e.long_shot = None;
+                    e.speed_loader = None;
                 }
-                e.speed_loader = Some(level);
+                ModeledTalent::SpeedLoader => {
+                    e.speed_loader = Some(level);
+                    e.long_shot = None;
+                    e.mobile_bulwark_bonus = None;
+                }
+            }
+            let st = e.hero_kit.get_or_insert_with(Box::default);
+            st.talent = Some(crate::talents_runtime::ActiveTalentState {
+                id: id.to_string(),
+                level,
+            });
+            return Ok(());
+        }
+
+        let spec = crate::talents_runtime::find_talent(id).ok_or("unknown talent")?;
+        if let Some(expected_hero) = spec.hero_id {
+            let matches_data = data
+                .type_id(expected_hero)
+                .is_some_and(|tid| tid == e.type_id);
+            let matches_kit = crate::hero_kits::kit_spec_by_hero_id(expected_hero)
+                .is_some_and(|ks| ks.type_id == e.type_id);
+            let matches_template = EntityTemplate::from_raw(e.type_id)
+                .is_some_and(|t| format!("{t:?}").eq_ignore_ascii_case(expected_hero));
+            if !matches_data && !matches_kit && !matches_template {
+                return Err("unsupported talent for hero");
             }
         }
+        e.long_shot = None;
+        e.mobile_bulwark_bonus = None;
+        e.speed_loader = None;
+        let st = e.hero_kit.get_or_insert_with(Box::default);
+        st.talent = Some(crate::talents_runtime::ActiveTalentState {
+            id: spec.id.to_string(),
+            level,
+        });
         Ok(())
     }
 }

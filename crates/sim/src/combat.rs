@@ -86,6 +86,8 @@ pub(super) struct Cast {
     release: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) verse: Option<verse::Channel>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    hero_kit_rank: Option<u8>,
 }
 /// These controllers are only armed by Catherine and Yates. Lane units keep a single empty
 /// slot. The serialized fields stay in their original order for replay checkpoints.
@@ -288,6 +290,8 @@ pub(super) struct AbilityBook {
     strike_hits: u8,
     chakram_weapon_ratio: f32,
     pub(super) karas_basic_crystal_ratio: f32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) hero_kits: Option<super::hero_kit::HeroKitBook>,
 }
 impl Default for AbilityBook {
     fn default() -> Self {
@@ -342,6 +346,7 @@ impl Default for AbilityBook {
             strike_hits: 3,
             chakram_weapon_ratio: 0.8,
             karas_basic_crystal_ratio: 0.6,
+            hero_kits: None,
         }
     }
 }
@@ -448,6 +453,7 @@ impl AbilityBook {
                 .as_u64()
                 .and_then(|n| n.try_into().ok())
                 .ok_or("invalid Shin.C_hits")?,
+            hero_kits: super::hero_kit::HeroKitBook::load(data)?,
         })
     }
 }
@@ -558,17 +564,20 @@ impl Room<'_> {
     }
     pub(super) fn can_learn(&self, i: usize, slot: AbilitySlot) -> bool {
         let e = &self.entities[i];
-        let rank = e.ability_ranks[slot.idx()];
-        let needed = if slot == AbilitySlot::C {
-            6 + 3 * rank
-        } else {
-            1 + 2 * rank
-        };
-        e.skill_points > 0
-            && (self.modeled_skill(e.type_id, slot).is_some()
-                || (!e.bot && native_learn_operand(e.type_id, slot).is_some()))
-            && rank < if slot == AbilitySlot::C { 3 } else { 5 }
-            && e.level >= needed
+        if self.modeled_skill(e.type_id, slot).is_some()
+            || (!e.bot && native_learn_operand(e.type_id, slot).is_some())
+        {
+            let rank = e.ability_ranks[slot.idx()];
+            let needed = if slot == AbilitySlot::C {
+                6 + 3 * rank
+            } else {
+                1 + 2 * rank
+            };
+            return e.skill_points > 0
+                && rank < if slot == AbilitySlot::C { 3 } else { 5 }
+                && e.level >= needed;
+        }
+        self.kit_can_learn(i, slot)
     }
     pub(super) fn learn(&mut self, i: usize, slot: AbilitySlot) -> Result<(), &'static str> {
         if !self.can_learn(i, slot) {
@@ -590,6 +599,8 @@ impl Room<'_> {
 
     pub(super) fn can_cast(&self, i: usize, slot: AbilitySlot, target: CastTarget) -> bool {
         self.castable(i, slot, target).is_ok()
+            || (self.modeled_skill(self.entities[i].type_id, slot).is_none()
+                && self.kit_castable(i, slot, target).is_ok())
     }
     fn castable(
         &self,
@@ -732,6 +743,28 @@ impl Room<'_> {
         if self.entities[i].cast.is_some() {
             return Err("cast in progress");
         }
+        if self.modeled_skill(self.entities[i].type_id, slot).is_none() {
+            let (rank, _, _, _, _) = self.kit_castable(i, slot, target)?;
+            let windup = self.kit_windup_ticks(i, slot);
+            let castable_during_move = self
+                .active_ability_spec(i, slot)
+                .is_some_and(|ab| ab.castable_during_movement);
+            let e = &mut self.entities[i];
+            e.winding = None;
+            if !castable_during_move {
+                e.order = Command::Stop;
+            }
+            e.status.channel = 0;
+            e.status.channel_until = 0;
+            e.cast = Some(Cast {
+                slot,
+                target,
+                release: self.state.tick + windup,
+                verse: None,
+                hero_kit_rank: Some(rank),
+            });
+            return Ok(());
+        }
         let (skill, rank, rules) = self.castable(i, slot, target)?;
         let fortification =
             (skill == Skill::Verse).then(|| self.abilities.verse.as_ref().unwrap().fortified[rank]);
@@ -754,6 +787,7 @@ impl Room<'_> {
             slot,
             target,
             release: self.state.tick + rules.windup,
+            hero_kit_rank: None,
         });
         Ok(())
     }
@@ -777,6 +811,19 @@ impl Room<'_> {
             return;
         }
         self.entities[i].cast = None;
+        if c.hero_kit_rank.is_some() {
+            let src = self.entities[i].id;
+            if self.kit_castable(i, c.slot, c.target).is_err() {
+                return;
+            }
+            events.push(Event::Cast {
+                source: src,
+                slot: c.slot,
+                target: c.target,
+            });
+            let _ = self.kit_begin_or_release_cast(i, c.slot, c.target, events);
+            return;
+        }
         if let Some(channel) = c.verse {
             self.release_verse(i, channel.rank, events);
             return;
@@ -1214,6 +1261,13 @@ impl Room<'_> {
                     channel: 0,
                 });
             }
+        }
+        if self.hero_kit_enabled()
+            && let Some(spec) = crate::hero_kits::kit_spec(self.entities[i].type_id)
+            && let Some(on_cast) = spec.perk.on_ability_cast
+        {
+            let mut ctx = crate::hero_kit::HeroKitContext::new(self, events, i);
+            on_cast(&mut ctx, c.slot, (r as u8) + 1, c.target);
         }
     }
 }

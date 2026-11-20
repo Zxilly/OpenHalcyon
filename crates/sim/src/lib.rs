@@ -26,6 +26,8 @@ mod chakram;
 mod combat;
 #[cfg(test)]
 mod effects_replay;
+mod hero_kit;
+mod hero_kits;
 mod layout;
 pub use layout::SOLO_CRYSTAL_START_INSTANCES;
 mod lorelai;
@@ -44,6 +46,7 @@ mod score;
 mod shop;
 mod solo_route;
 mod solo_side;
+mod talents_runtime;
 mod world_rules;
 pub use world_rules::WorldRules;
 mod sigil;
@@ -504,6 +507,8 @@ pub struct Entity {
     speed_loader: Option<std::num::NonZeroU8>,
     #[serde(skip_serializing_if = "Option::is_none")]
     reboot: Option<reboot::Phase>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) hero_kit: Option<Box<hero_kit::HeroKitState>>,
     pub id: u32,
     pub team: u8,
     pub kind: Kind,
@@ -523,7 +528,7 @@ pub struct Entity {
     pub aral_inventory: Option<Box<AralInventory>>,
     pub item_stats: ItemStats,
     #[serde(skip)]
-    bonus_hp: f32,
+    pub(crate) bonus_hp: f32,
     pub ability_ranks: [u8; 3],
     #[serde(skip)]
     cast: Option<Cast>,
@@ -668,6 +673,10 @@ impl Room<'_> {
             ),
         )
         .expect("finite vision device state");
+        let kit_effects = self.entities.spell_snapshot::<hero_kit::KitEffect>();
+        if !kit_effects.is_empty() {
+            serde_json::to_writer(&mut hash, &kit_effects).expect("finite hero kit effect state");
+        }
         if let Some(rewards) = self.solo_lane_rewards {
             serde_json::to_writer(&mut hash, &rewards).expect("finite unit rewards");
         }
@@ -712,7 +721,7 @@ impl Room<'_> {
         self.bot_difficulty = difficulty;
     }
 
-    fn basic_attack_interval(&self, e: &Entity) -> u64 {
+    fn basic_attack_interval(&self, e: &Entity, extra_attack_speed: f32) -> u64 {
         let haste = e.status.haste_until > self.tick;
         let twirl = self
             .abilities
@@ -726,8 +735,14 @@ impl Room<'_> {
             .map_or(1., |p| {
                 p.attack_speed + f32::from(e.level.saturating_sub(1)) * p.attack_speed_growth
             });
+        let eff = if self.hero_kit_enabled() {
+            hero_kits::kit_spec(e.type_id).map_or(1.0, |s| s.perk.attack_speed_efficiency)
+        } else {
+            1.0
+        };
+        let bonus_as = (e.item_stats.attack_speed + extra_attack_speed) * eff;
         let interval = (if haste && twirl.is_none() { 10.0 } else { 17.0 })
-            / (speed + e.item_stats.attack_speed + twirl.map_or(0., |(b, r)| b.attack_speed[r]));
+            / (speed + bonus_as + twirl.map_or(0., |(b, r)| b.attack_speed[r]));
         interval.ceil() as u64
     }
     fn decision_interval(&self, entity: &Entity) -> u64 {
@@ -828,6 +843,7 @@ impl Room<'_> {
         hero.long_shot = None;
         hero.speed_loader = None;
         hero.reboot = None;
+        hero.hero_kit = None;
         hero.stats = Stats::load(id, unit, data);
         hero.energy = unit.energy;
         hero.max_energy = unit.energy;
@@ -946,6 +962,7 @@ impl Room<'_> {
             next_attack: 0,
             winding: None,
             respawn: 0,
+            hero_kit: None,
         });
         id
     }
@@ -966,22 +983,33 @@ impl Room<'_> {
             })
     }
     pub fn visible(&self, team: u8, e: &Entity) -> bool {
-        e.team == team
-            || (e.hp > 0.
-                && (self.device_sight(team, e.position) || self.sigil_sight(team, e.position)))
-            || (e.hp > 0. && e.status.reveal_until > self.tick)
-            || (e.hp > 0.
-                && self.entities.any_unordered(|a| {
-                    a.team == team
-                        && a.hp > 0.
-                        && (a.position.x - e.position.x).abs() <= a.stats.sight()
-                        && a.position.dist(e.position) <= a.stats.sight()
-                        && self.combat_clear(a, e)
-                        && self
-                            .native_navigation
-                            .as_ref()
-                            .is_none_or(|map| map.can_see(a.position, e.position))
-                }))
+        if e.team == team {
+            return true;
+        }
+        if e.hp <= 0. {
+            return false;
+        }
+        let revealed = self.device_sight(team, e.position)
+            || self.sigil_sight(team, e.position)
+            || e.status.reveal_until > self.tick;
+        if e.hero_kit
+            .as_deref()
+            .is_some_and(|k| self.tick < k.stealth_until)
+        {
+            return revealed;
+        }
+        revealed
+            || self.entities.any_unordered(|a| {
+                a.team == team
+                    && a.hp > 0.
+                    && (a.position.x - e.position.x).abs() <= a.stats.sight()
+                    && a.position.dist(e.position) <= a.stats.sight()
+                    && self.combat_clear(a, e)
+                    && self
+                        .native_navigation
+                        .as_ref()
+                        .is_none_or(|map| map.can_see(a.position, e.position))
+            })
     }
     pub fn command(&mut self, id: u32, cmd: Command) -> Result<(), &'static str> {
         if self.winner.is_some() {
@@ -1001,7 +1029,10 @@ impl Room<'_> {
         if e.is_rebooting() {
             return Err("hero is rebooting");
         }
-        if e.status.stun_until > self.tick
+        if (e.status.stun_until > self.tick
+            || e.hero_kit.as_deref().is_some_and(|k| {
+                self.tick < k.sleep_until || self.tick < k.fear_until || self.tick < k.taunt_until
+            }))
             && matches!(
                 cmd,
                 Command::MoveTo(_) | Command::Attack(_) | Command::Cast { .. }
@@ -1043,7 +1074,13 @@ impl Room<'_> {
                     .index(id)
                     .map(|j| &self.entities[j])
                     .ok_or("unknown target")?;
-                if t.team == e.team || t.hp <= 0. || !self.visible(e.team, t) {
+                if t.team == e.team
+                    || t.hp <= 0.
+                    || !self.visible(e.team, t)
+                    || t.hero_kit
+                        .as_deref()
+                        .is_some_and(|k| self.tick < k.untargetable_until)
+                {
                     return Err("invalid target");
                 }
             }
@@ -1078,6 +1115,11 @@ impl Room<'_> {
     }
 
     fn walk(&mut self, i: usize, p: Position, events: &mut Vec<Event>) {
+        let kit_bonus = if self.hero_kit_enabled() || self.entities[i].hero_kit.is_some() {
+            self.kit_bonus_stats(i)
+        } else {
+            hero_kit::KitStatBonus::default()
+        };
         let state = &mut *self.state;
         let e = &mut self.entities[i];
         if e.stats.speed <= 0. || e.status.root_until > state.tick {
@@ -1155,12 +1197,13 @@ impl Room<'_> {
                     * e.status.sigil_speed_until.saturating_sub(state.tick) as f32
                     / e.status.sigil_speed_duration.max(1) as f32
                 + e.item_stats.boot_speed
+                + kit_bonus.move_speed_flat
                 + if state.tick < e.item_stats.sprint_until {
                     e.item_stats.sprint_speed
                 } else {
                     0.
                 })
-                * (1. + e.item_stats.move_speed_amp)
+                * (1. + e.item_stats.move_speed_amp + kit_bonus.move_speed_pct)
                 * pace
                 / TICK_HZ as f32,
         );
@@ -1259,6 +1302,7 @@ impl Room<'_> {
         events: &mut Vec<Event>,
         mut diagnostics: Option<&mut BotDiagnostics>,
     ) {
+        self.tick_hero_kits(events);
         let n = self.entities.len();
         // Rotate priority when actions coincide. Stable indices and the match seed determine all ties.
         let first = (self.tick.wrapping_add(self.seed) % n as u64) as usize;
@@ -1378,6 +1422,10 @@ impl Room<'_> {
             }
             let hero = &self.entities[i];
             if hero.status.stun_until > self.tick
+                || hero
+                    .hero_kit
+                    .as_deref()
+                    .is_some_and(|k| self.tick < k.sleep_until)
                 || (hero.type_id == EntityTemplate::Karas.as_raw()
                     && self
                         .entities
@@ -1386,7 +1434,37 @@ impl Room<'_> {
             {
                 continue;
             }
-            if hero.bot
+            if let Some(fear_src) = hero
+                .hero_kit
+                .as_deref()
+                .and_then(|k| (self.tick < k.fear_until).then_some(k.fear_source))
+            {
+                let hpos = hero.position;
+                let hteam = hero.team;
+                let away = self
+                    .index(fear_src)
+                    .map(|fi| self.entities[fi].position)
+                    .filter(|p| *p != hpos)
+                    .map_or_else(
+                        || base(hteam),
+                        |p| Position {
+                            x: hpos.x + (hpos.x - p.x),
+                            y: hpos.y + (hpos.y - p.y),
+                        },
+                    );
+                self.walk_diagnosed::<DIAG>(i, away, events, diagnostics.as_deref_mut());
+                continue;
+            }
+            let taunted = hero.hero_kit.as_deref().and_then(|k| {
+                (self.tick < k.taunt_until && k.taunt_target != 0).then_some(k.taunt_target)
+            });
+            if let Some(tt) = taunted {
+                self.entities[i].cast = None;
+                self.entities[i].order = Command::Attack(tt);
+            }
+            let hero = &self.entities[i];
+            if taunted.is_none()
+                && hero.bot
                 && hero.hp < hero.max_hp * 0.14
                 && (hero.cast.is_some()
                     || hero.winding.is_some()
@@ -1402,8 +1480,10 @@ impl Room<'_> {
                 continue;
             }
             let e = &self.entities[i];
-            let automated =
-                e.kind != Kind::Neutral && e.winding.is_none() && (e.bot || e.kind != Kind::Hero);
+            let automated = taunted.is_none()
+                && e.kind != Kind::Neutral
+                && e.winding.is_none()
+                && (e.bot || e.kind != Kind::Hero);
             let offset = self.tick + u64::from(e.id);
             let decide = automated && offset.is_multiple_of(self.decision_interval(e));
             if decide
@@ -1506,9 +1586,27 @@ impl Room<'_> {
                         self.entities[i].order = Command::Stop;
                         continue;
                     };
+                    let kit_active = self.hero_kit_enabled()
+                        || self.entities[i].hero_kit.is_some()
+                        || self.entities[j].hero_kit.is_some();
+                    let kit_atk = if kit_active {
+                        self.kit_bonus_stats(i)
+                    } else {
+                        hero_kit::KitStatBonus::default()
+                    };
+                    let kit_def = if kit_active {
+                        self.kit_bonus_stats(j)
+                    } else {
+                        hero_kit::KitStatBonus::default()
+                    };
                     let e = &self.entities[i];
                     let t = &self.entities[j];
-                    if (e.kind != Kind::Neutral && !self.visible(e.team, t)) || t.hp <= 0. {
+                    if (e.kind != Kind::Neutral && !self.visible(e.team, t))
+                        || t.hp <= 0.
+                        || t.hero_kit
+                            .as_deref()
+                            .is_some_and(|k| self.tick < k.untargetable_until)
+                    {
                         self.entities[i].order = Command::Stop;
                         self.entities[i].winding = None;
                         continue;
@@ -1517,7 +1615,8 @@ impl Room<'_> {
                         p.armed_until > self.tick
                             && matches!(t.kind, Kind::Hero | Kind::Minion | Kind::Neutral)
                     });
-                    if e.position.dist(t.position) > e.stats.range + pursuit.map_or(0., |p| p.range)
+                    if e.position.dist(t.position)
+                        > e.stats.range + kit_atk.attack_range + pursuit.map_or(0., |p| p.range)
                         || !self.combat_clear(e, t)
                     {
                         let p = t.position;
@@ -1549,45 +1648,93 @@ impl Room<'_> {
                     }
                     let source = e.id;
                     let team = e.team;
+                    let target_kind = t.kind;
                     let bonus = if e.status.empowered > 0 && e.status.agent_crystal_until.is_none()
                     {
                         e.status.empower_damage
                     } else {
                         0.
                     };
-                    let school = if e.type_id == lorelai::HERO {
+                    let basic_crystal = self.hero_kit_enabled()
+                        && hero_kits::kit_spec(e.type_id)
+                            .is_some_and(|s| s.perk.basic_attack_is_crystal);
+                    let aa_dmg_mult = if self.hero_kit_enabled() {
+                        hero_kits::kit_spec(e.type_id)
+                            .map_or(1.0, |s| s.perk.basic_attack_damage_mult)
+                    } else {
+                        1.0
+                    };
+                    let school = if e.type_id == lorelai::HERO || basic_crystal {
                         DamageSchool::Crystal
                     } else if e.kind == Kind::Crystal {
                         DamageSchool::True
                     } else {
                         DamageSchool::Weapon
                     };
+                    let eff_wp = if kit_atk.weapon_flat == 0. && kit_atk.weapon_pct == 0. {
+                        e.stats.weapon
+                    } else {
+                        (e.stats.weapon + kit_atk.weapon_flat) * (1. + kit_atk.weapon_pct)
+                    } * aa_dmg_mult;
+                    let eff_armor = if kit_def.armor_flat == 0. && kit_def.armor_pct == 0. {
+                        t.stats.armor
+                    } else {
+                        (t.stats.armor + kit_def.armor_flat) * (1. + kit_def.armor_pct)
+                    };
+                    let eff_shield = if kit_def.shield_flat == 0. && kit_def.shield_pct == 0. {
+                        t.stats.shield
+                    } else {
+                        (t.stats.shield + kit_def.shield_flat) * (1. + kit_def.shield_pct)
+                    };
                     let double_down = e.status.double_down;
-                    let damage = if e.type_id == lorelai::HERO {
-                        shop::mitigated(
-                            10. + e.stats.weapon + bonus,
-                            t.stats.shield,
-                            e.item_stats.shield_pierce,
+                    let (damage, was_crit) = if e.type_id == lorelai::HERO {
+                        (
+                            shop::mitigated(
+                                10. + eff_wp + bonus,
+                                eff_shield,
+                                e.item_stats.shield_pierce + kit_atk.shield_pierce,
+                            ),
+                            false,
                         )
                     } else if e.kind == Kind::Crystal {
-                        t.max_hp * 0.04
+                        (t.max_hp * 0.04, false)
                     } else {
                         let multiplier = if e.kind == Kind::Hero
                             && matches!(t.kind, Kind::Hero | Kind::Minion)
                         {
                             if double_down.is_some() {
-                                1.5 + e.item_stats.crit_damage
-                            } else {
+                                1.5 + e.item_stats.crit_damage + kit_atk.crit_damage
+                            } else if kit_atk.crit_chance == 0. && kit_atk.crit_damage == 0. {
                                 shop::weapon_multiplier(&mut self.state.crit_rng, e.item_stats)
+                            } else {
+                                let mut items = e.item_stats;
+                                items.crit_chance =
+                                    (items.crit_chance + kit_atk.crit_chance).min(1.);
+                                items.crit_damage += kit_atk.crit_damage;
+                                shop::weapon_multiplier(&mut self.state.crit_rng, items)
                             }
                         } else {
                             1.
                         };
-                        shop::mitigated(
-                            e.stats.weapon * multiplier + bonus,
-                            t.stats.armor,
-                            e.item_stats.armor_pierce,
-                        )
+                        let raw = if kit_atk.damage_amp == 0. {
+                            eff_wp * multiplier + bonus
+                        } else {
+                            (eff_wp * multiplier + bonus) * (1. + kit_atk.damage_amp)
+                        };
+                        let dmg = if basic_crystal {
+                            shop::mitigated(
+                                raw,
+                                eff_shield,
+                                e.item_stats.shield_pierce + kit_atk.shield_pierce,
+                            )
+                        } else {
+                            shop::mitigated(
+                                raw,
+                                eff_armor,
+                                e.item_stats.armor_pierce + kit_atk.armor_pierce,
+                            )
+                        };
+                        (dmg, double_down.is_some() || multiplier > 1.01)
                     };
                     let haste = e.status.haste_until > self.tick;
                     let twirl = self
@@ -1600,14 +1747,14 @@ impl Room<'_> {
                     let bonus_crystal = if e.type_id == EntityTemplate::Karas.as_raw() {
                         shop::mitigated(
                             e.item_stats.crystal * self.abilities.karas_basic_crystal_ratio,
-                            t.stats.shield,
-                            e.item_stats.shield_pierce,
+                            eff_shield,
+                            e.item_stats.shield_pierce + kit_atk.shield_pierce,
                         )
                     } else if let Some((b, r)) = twirl {
                         shop::mitigated(
                             b.damage.at(r, e.item_stats.crystal, 0.),
-                            t.stats.shield,
-                            e.item_stats.shield_pierce,
+                            eff_shield,
+                            e.item_stats.shield_pierce + kit_atk.shield_pierce,
                         )
                     } else {
                         0.
@@ -1625,8 +1772,8 @@ impl Room<'_> {
                                     } else {
                                         0.
                                     },
-                                t.stats.shield,
-                                e.item_stats.shield_pierce,
+                                eff_shield,
+                                e.item_stats.shield_pierce + kit_atk.shield_pierce,
                             )
                         } else {
                             0.
@@ -1635,7 +1782,7 @@ impl Room<'_> {
                     let npc_launch = self.npc_launch_delay(e, t);
                     let ranged = e.kind == Kind::Hero && e.stats.range >= 4.;
                     let travel = (e.position.dist(t.position) * TICK_HZ as f32 / 18.).ceil() as u64;
-                    let interval = self.basic_attack_interval(e);
+                    let interval = self.basic_attack_interval(e, kit_atk.attack_speed);
                     self.entities[i].winding = None;
                     self.entities[i].next_attack = self.tick + interval;
                     self.entities[i].status.empowered =
@@ -1687,6 +1834,24 @@ impl Room<'_> {
                     if let Some(p) = pursuit {
                         self.pursuit_impact(i, j, p, events);
                     }
+                    if kit_atk.lifesteal > 0.
+                        && damage > 0.
+                        && matches!(target_kind, Kind::Hero | Kind::Minion | Kind::Neutral)
+                    {
+                        let a = &mut self.entities[i];
+                        if a.hp > 0. {
+                            let healed = (damage * kit_atk.lifesteal).min(a.max_hp - a.hp);
+                            if healed > 0. {
+                                a.hp += healed;
+                                events.push(Event::Heal {
+                                    source,
+                                    target: source,
+                                    amount: healed,
+                                    hp: a.hp,
+                                });
+                            }
+                        }
+                    }
                     if bonus_crystal > 0. {
                         if ranged {
                             self.entities.spawn_spell(SpellEffect::impact(
@@ -1708,6 +1873,7 @@ impl Room<'_> {
                             );
                         }
                     }
+                    self.kit_on_basic_attack(i, j, damage, was_crit, events);
                     if self.winner.is_some() {
                         break;
                     }
