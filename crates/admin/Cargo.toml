@@ -6,6 +6,8 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+halcyon-data = { path = "../data" }
+strum = { version = "0.27", features = ["derive"] }
 cookie = "0.18"
 argon2 = "0.5"
 axum.workspace = true

@@ -1,3 +1,4 @@
+mod content;
 mod pool;
 pub use pool::{PoolHealth, PoolRole, PoolStatus};
 mod sessions;
@@ -93,6 +94,8 @@ pub fn router(
                 .delete(sessions::logout),
         )
         .route("/overview", get(overview))
+        .route("/content", get(content::installed))
+        .route("/content/{collection}", get(content::browse))
         .route("/federation/pools", get(federation))
         .route("/players", get(players))
         .route("/players/{id}", get(player))

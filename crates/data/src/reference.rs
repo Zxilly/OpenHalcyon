@@ -242,13 +242,15 @@ impl References {
         self.dictionaries.get(language).map(BTreeMap::len)
     }
 
-    pub fn message_keys(&self) -> impl Iterator<Item = &str> {
+    pub fn message_keys(&self, language: &str) -> impl Iterator<Item = &str> {
         let english = &self.dictionaries["en"];
         english
             .keys()
             .chain(
-                self.dictionaries["zh_CN"]
-                    .keys()
+                matches!(language, "zh_CN" | "zh-CN")
+                    .then(|| &self.dictionaries["zh_CN"])
+                    .into_iter()
+                    .flat_map(|d| d.keys())
                     .filter(|k| !english.contains_key(*k)),
             )
             .map(String::as_str)
@@ -274,7 +276,7 @@ mod tests {
         assert_eq!((r.assets.len(), r.languages.len()), (942, 14));
         assert_eq!(r.dictionary_size("en"), Some(7329));
         assert_eq!(r.dictionary_size("zh_CN"), Some(7328));
-        assert_eq!(r.message_keys().count(), 7329);
+        assert_eq!(r.message_keys("zh-CN").count(), 7329);
         let key = "RETRIEVE_CREDENTIALS_DESCRIPTION";
         assert_eq!(r.translate("zh-CN", key).unwrap().language, "en");
         assert!(r.translate("zh_CN", "missing key").is_none());

@@ -61,6 +61,11 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 #termination label { flex: 1 1 14rem; }
 #timeline { max-height: 18rem; overflow-y: auto; }
 #player-detail { margin-top: .75rem; overflow-wrap: anywhere; }
+#content-filter { display: flex; flex-wrap: wrap; align-items: end; gap: .75rem; }
+#content-filter label { display: grid; gap: .35rem; }
+#content-rows details { padding: .55rem 0; border-bottom: 1px solid var(--border); }
+#content-rows summary { cursor: pointer; overflow-wrap: anywhere; }
+#content-rows pre { max-height: 28rem; overflow: auto; padding: .6rem; background: var(--canvas); }
 @media (max-width: 37rem) {
   .metrics { grid-template-columns: 1fr; }
 }

@@ -103,6 +103,24 @@
           <tbody id="pool-rows"></tbody>
         </table></div>
       </section>
+      <section class="panel" aria-labelledby="content-heading">
+        <div class="section-head">
+          <h2 id="content-heading">Game data</h2>
+          <button type="button" id="content-open">Browse installed data</button>
+        </div>
+        <p id="content-status" class="muted" aria-live="polite"></p>
+        <form id="content-filter" hidden>
+          <label>Collection <select name="collection" required></select></label>
+          <label>Search <input name="q" type="search" maxlength="128"></label>
+          <label>Message language <select name="language"><option value="en">English</option><option value="zh_CN">简体中文</option></select></label>
+          <button type="submit">Search</button>
+        </form>
+        <div id="content-rows"></div>
+        <div class="pages" id="content-pages" hidden>
+          <button id="content-prev" type="button">Previous</button>
+          <button id="content-next" type="button">Next</button>
+        </div>
+      </section>
     </div>
   </main>
 </body>

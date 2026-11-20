@@ -9,6 +9,8 @@ const current = {
   detailTimer: null,
 };
 const notice = select("#notice");
+const content = {request: 0, offset: 0, next: null, criteria: null};
+const contentLimit = 20;
 const date = (value) => value ? new Date(value).toLocaleString() : "—";
 const title = (value) => value ? value.replaceAll("_", " ") : "—";
 const yes = (value) => value ? "Yes" : "No";
@@ -35,8 +37,74 @@ function signedIn(active) {
   select("#sign-in").hidden = active;
   select("#console").hidden = !active;
   select("#sign-out").hidden = !active;
-  if (!active) closeMatch();
+  if (!active) {
+    closeMatch();
+    content.request++;
+    content.criteria = null;
+    select("#content-rows").replaceChildren();
+    select("#content-filter").hidden = true;
+    select("#content-pages").hidden = true;
+    select("#content-status").textContent = "";
+    select("#content-open").hidden = false;
+  }
 }
+
+async function openContent() {
+  const request = ++content.request;
+  const catalog = await api("/content");
+  if (request !== content.request) return;
+  if (!catalog.installed) {
+    select("#content-status").textContent = "No supplemental game data installed.";
+    return;
+  }
+  const form = select("#content-filter");
+  form.elements.collection.replaceChildren(...catalog.collections.map((id) => new Option(id.replaceAll("-", " "), id)));
+  form.hidden = false;
+  select("#content-open").hidden = true;
+  await searchContent();
+}
+
+function searchContent() {
+  content.criteria = Object.fromEntries(new FormData(select("#content-filter")));
+  return browseContent(0);
+}
+
+async function browseContent(offset) {
+  if (offset == null || !content.criteria) return;
+  const request = ++content.request;
+  const {collection, q, language} = content.criteria;
+  const query = new URLSearchParams({q, language, offset, limit: contentLimit});
+  const page = await api(`/content/${encodeURIComponent(collection)}?${query}`);
+  if (request !== content.request) return;
+  content.offset = offset;
+  content.next = page.nextOffset;
+  const records = page.items.map(({key, data}) => {
+    const detail = document.createElement("details");
+    const heading = document.createElement("summary");
+    heading.textContent = key;
+    detail.append(heading);
+    detail.addEventListener("toggle", () => {
+      if (!detail.open || detail.childElementCount > 1) return;
+      const record = document.createElement("pre");
+      record.textContent = JSON.stringify(data, null, 2);
+      detail.append(record);
+    });
+    return detail;
+  });
+  select("#content-rows").replaceChildren(...records);
+  select("#content-status").textContent = records.length ? `Showing ${offset + 1}–${offset + records.length}` : "No matching records.";
+  select("#content-pages").hidden = false;
+  select("#content-prev").disabled = offset === 0;
+  select("#content-next").disabled = page.nextOffset == null;
+}
+
+select("#content-open").addEventListener("click", () => openContent().catch(fail));
+select("#content-filter").addEventListener("submit", (event) => {
+  event.preventDefault();
+  searchContent().catch(fail);
+});
+select("#content-prev").addEventListener("click", () => browseContent(Math.max(0, content.offset - contentLimit)).catch(fail));
+select("#content-next").addEventListener("click", () => browseContent(content.next).catch(fail));
 
 function fail(error) {
   if (error.status === 401) signedIn(false);

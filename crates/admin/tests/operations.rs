@@ -20,7 +20,11 @@ const ORIGIN: &str = "https://admin.example.test";
 const PASSWORD: &str = "test-only admin password";
 
 fn service() -> (Router, AppState) {
-    let rooms = Rooms::new(IpAddr::V4(Ipv4Addr::LOCALHOST), "localhost".into(), 4, None);
+    service_with_data(None)
+}
+
+fn service_with_data(data: Option<Arc<halcyon_data::GameData>>) -> (Router, AppState) {
+    let rooms = Rooms::new(IpAddr::V4(Ipv4Addr::LOCALHOST), "localhost".into(), 4, data);
     let platform = AppState::open(
         PlatformConfig {
             database_path: ":memory:".into(),
@@ -474,4 +478,206 @@ struct Credentials<'a> {
 #[derive(serde::Serialize)]
 struct OperatorReason<'a> {
     reason: &'a str,
+}
+
+async fn content_admin_cookie(app: &Router) -> String {
+    let credentials = serde_json::to_value(Credentials {
+        username: "owner",
+        password: PASSWORD,
+    })
+    .unwrap();
+    let (status, headers, _) =
+        request(app, "POST", "/session", Some(ORIGIN), None, credentials).await;
+    assert_eq!(status, StatusCode::OK);
+    cookie(&headers).to_owned()
+}
+
+async fn content_get(app: &Router, path: &str, session: Option<&str>) -> (StatusCode, Value) {
+    let (status, _, value) = request(app, "GET", path, None, session, Value::Null).await;
+    (status, value)
+}
+
+#[tokio::test]
+async fn content_routes_require_login_and_validate_filters_before_querying() {
+    let (app, _) = service();
+    for endpoint in ["/content", "/content/heroes", "/content/unknown?limit=99"] {
+        assert_eq!(
+            content_get(&app, endpoint, None).await.0,
+            StatusCode::UNAUTHORIZED
+        );
+    }
+    let session = content_admin_cookie(&app).await;
+    let session = Some(session.as_str());
+    let (status, install) = content_get(&app, "/content", session).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(install["installed"], false);
+    assert!(install["rulesContentDigest"].is_null());
+    assert!(install["referenceDigest"].is_null());
+    assert!(install["collections"].as_array().unwrap().is_empty());
+    assert_eq!(
+        content_get(&app, "/content/heroes", session).await.0,
+        StatusCode::NOT_FOUND
+    );
+    for path in [
+        "/content/unknown",
+        "/content/heroes?limit=0",
+        "/content/heroes?limit=51",
+        "/content/heroes?limit=bad",
+        "/content/heroes?offset=-1",
+        "/content/heroes?unknown=1",
+        "/content/messages?language=123456789012345678901234567890123",
+    ] {
+        assert_eq!(
+            content_get(&app, path, session).await.0,
+            StatusCode::BAD_REQUEST,
+            "{path}"
+        );
+    }
+    let oversized_query = format!("/content/heroes?q={}", "a".repeat(129));
+    assert_eq!(
+        content_get(&app, &oversized_query, session).await.0,
+        StatusCode::BAD_REQUEST
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires HALCYON_DELIVERY and HALCYON_DATA_EXTRA operator fixtures"]
+async fn content_catalog_queries_the_complete_operator_supplement() {
+    let base = std::env::var_os("HALCYON_DELIVERY").unwrap();
+    let extra = std::path::PathBuf::from(std::env::var_os("HALCYON_DATA_EXTRA").unwrap());
+    let data = Arc::new(halcyon_data::GameData::load_with_extra(base, Some(&extra)).unwrap());
+    let (app, _) = service_with_data(Some(data.clone()));
+    let session = content_admin_cookie(&app).await;
+    let session = Some(session.as_str());
+    let (status, installed) = content_get(&app, "/content", session).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(installed["installed"], true);
+    assert_eq!(installed["rulesContentDigest"], data.content_digest);
+    assert_eq!(
+        installed["referenceDigest"],
+        data.references().unwrap().digest
+    );
+    let expected = [
+        "heroes",
+        "abilities",
+        "units",
+        "talents",
+        "items",
+        "stores",
+        "skins",
+        "themes",
+        "skin-assets",
+        "lobby-manifests",
+        "levels",
+        "camps",
+        "meshes",
+        "languages",
+        "messages",
+        "assets",
+        "opcodes",
+        "replay-entities",
+        "stats",
+        "session-constants",
+    ];
+    let collections = installed["collections"].as_array().unwrap();
+    assert_eq!(collections.len(), expected.len());
+    for path in expected {
+        assert!(collections.iter().any(|entry| entry == path), "{path}");
+        let (status, page) = content_get(&app, &format!("/content/{path}?limit=1"), session).await;
+        assert_eq!(status, StatusCode::OK, "{path}");
+        let items = page["items"].as_array().unwrap();
+        assert_eq!(items.len(), 1, "{path}");
+        assert!(!items[0]["key"].as_str().unwrap().is_empty(), "{path}");
+        assert!(!items[0]["data"].is_null(), "{path}");
+    }
+
+    let (_, first) = content_get(&app, "/content/levels?limit=2", session).await;
+    let (_, second) = content_get(&app, "/content/levels?offset=2&limit=2", session).await;
+    let (_, all_four) = content_get(&app, "/content/levels?limit=4", session).await;
+    assert_eq!(first["nextOffset"], 2);
+    assert_eq!(second["nextOffset"], 4);
+    let combined: Vec<_> = first["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .chain(second["items"].as_array().unwrap())
+        .collect();
+    assert_eq!(
+        combined,
+        all_four["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .collect::<Vec<_>>()
+    );
+    let (_, empty) = content_get(&app, "/content/levels?offset=1000", session).await;
+    assert!(empty["items"].as_array().unwrap().is_empty());
+    assert!(empty["nextOffset"].is_null());
+
+    let (_, search) = content_get(&app, "/content/levels?q=sovereIGnsrise", session).await;
+    let found = search["items"].as_array().unwrap();
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0]["key"], "SovereignsRiseLevel_Base");
+
+    let key = "RETRIEVE_CREDENTIALS_DESCRIPTION";
+    let (_, english) = content_get(
+        &app,
+        &format!("/content/messages?language=en&q={key}"),
+        session,
+    )
+    .await;
+    let (_, fallback) = content_get(
+        &app,
+        &format!("/content/messages?language=zh-CN&q={key}"),
+        session,
+    )
+    .await;
+    assert_eq!(fallback, english);
+    assert_eq!(fallback["items"][0]["key"], key);
+    assert_eq!(fallback["items"][0]["data"]["language"], "en");
+
+    let (_, meshes) = content_get(&app, "/content/meshes?limit=50", session).await;
+    let entries = meshes["items"].as_array().unwrap();
+    assert_eq!(entries.len(), 16);
+    assert!(meshes["nextOffset"].is_null());
+    for row in entries {
+        let mesh = row["data"].as_object().unwrap();
+        assert_eq!(mesh["source_path"], row["key"]);
+        assert_eq!(mesh["sha256"].as_str().unwrap().len(), 64);
+        assert!(mesh["detour_header"]["tile_count"].as_u64().unwrap() > 0);
+        assert!(mesh["size_bytes"].as_u64().unwrap() > 0);
+        assert!(mesh.keys().all(|key| {
+            [
+                "source_path",
+                "obb_md5",
+                "file",
+                "sha256",
+                "detour_header",
+                "size_bytes",
+            ]
+            .contains(&key.as_str())
+        }));
+    }
+    let observed = data
+        .references()
+        .unwrap()
+        .observations
+        .values()
+        .find(|row| !row.sample_hex.is_empty())
+        .expect("fixture has original payload metadata");
+    let (_, opcodes) = content_get(
+        &app,
+        &format!("/content/opcodes?q={}", observed.opcode_hex),
+        session,
+    )
+    .await;
+    let summary = &opcodes["items"][0];
+    assert_eq!(summary["key"], observed.opcode_hex);
+    assert_eq!(summary["data"]["opcode_dec"], observed.opcode_dec);
+    assert!(
+        !summary["data"]
+            .as_object()
+            .unwrap()
+            .contains_key("sample_hex")
+    );
 }

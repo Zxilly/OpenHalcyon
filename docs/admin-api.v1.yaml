@@ -18,6 +18,60 @@ tags:
   - name: Players
   - name: Matches
 paths:
+  /content:
+    get:
+      operationId: installedContent
+      summary: 查看本实例加载的补充数据和可查询目录
+      responses:
+        '200':
+          description: 已安装状态、规则内容摘要、参考资料摘要和目录名称
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [installed, rulesContentDigest, referenceDigest, collections]
+                properties:
+                  installed: {type: boolean}
+                  rulesContentDigest: {type: [string, 'null']}
+                  referenceDigest: {type: [string, 'null']}
+                  collections: {type: array, items: {type: string}}
+        '401': {description: 需要管理员会话}
+  /content/{collection}:
+    get:
+      operationId: browseInstalledContent
+      summary: 分页浏览本地内容、语言词条和协议参考
+      parameters:
+        - name: collection
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [heroes, abilities, units, talents, items, stores, skins, themes, skin-assets, lobby-manifests, levels, camps, meshes, languages, messages, assets, opcodes, replay-entities, stats, session-constants]
+        - {name: q, in: query, schema: {type: string, maxLength: 128}}
+        - {name: language, in: query, schema: {type: string, default: en}}
+        - {name: offset, in: query, schema: {type: integer, minimum: 0, default: 0}}
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 50, default: 20}}
+      responses:
+        '200':
+          description: 按名称过滤后的已安装记录。翻译条目标明实际使用的语言。
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, nextOffset]
+                properties:
+                  nextOffset: {type: [integer, 'null']}
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      required: [key, data]
+                      properties:
+                        key: {type: string}
+                        data: {}
+        '400': {description: 未知目录或分页参数无效}
+        '401': {description: 需要管理员会话}
+        '404': {description: 未安装补充数据}
   /session:
     post:
       tags: [Session]

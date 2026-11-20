@@ -26,6 +26,7 @@ struct MeshAsset {
 pub struct MeshInfo {
     pub file: String,
     pub source_path: String,
+    pub obb_md5: String,
     pub size_bytes: usize,
     pub detour_header: MeshHeader,
     #[serde(default, skip_deserializing)]
@@ -130,6 +131,12 @@ impl NativeMaps {
     pub(crate) fn load(dir: &Path, hash: &mut Sha256) -> io::Result<Self> {
         let mut meshes = BTreeMap::new();
         for mut asset in read::<Vec<MeshInfo>>(dir, "maps/navmesh_index.json", hash)? {
+            if asset.obb_md5.len() != 32 || !asset.obb_md5.bytes().all(|c| c.is_ascii_hexdigit()) {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "invalid mesh OBB key",
+                ));
+            }
             let name = Path::new(&asset.file);
             if name.file_name() != Some(name.as_os_str())
                 || name.extension().is_none_or(|e| e != "navmesh")
