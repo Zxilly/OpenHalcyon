@@ -2,6 +2,11 @@
 
 Nine complete TCP streams contain 398,293 encrypted server frames in 103 opcode classes. The plaintext handshake acknowledgment is outside these counts. Each count includes every captured form of the opcode. The scope column describes the subset the host currently emits.
 
+Of the 103 classes, 67 have a documented host path for at least one scenario:
+35 room outputs, 18 setup or draft outputs, and 14 conditional responses.
+Thirty further classes have an identified reader-side action. Six have an
+unresolved server trigger and receiver-side field evidence only.
+
 **A** is authoritative room output. **H** is setup, draft or scene output. **E** is a conditional response to the originating request. **R** is a read-only class with a documented action role. **U** has readable fields and an unresolved server role. Action names come from the independently labeled Windows action table. Counts come from the full captured streams. [Capture method](live-captures.md) 路 [Independent action labels](https://github.com/TurnaboutHero/vainglory-replay-decoder/blob/f4743be743564e3aadef1566499fe25d9d0f9ffc/vg/docs/vg-binary-event-candidates-2026-09-09-details.md)
 
 The host paths are in [room dispatch](../crates/game/src/lib.rs), [transport](../crates/game/src/transport.rs), [wire messages](../crates/game/src/messages.rs), [ARAL](../crates/game/src/aral.rs), [native abilities](../crates/game/src/native_abilities.rs), [Solo scene loading](../crates/game/src/scene.rs) and [settlement](../crates/game/src/result_frames.rs). The table excludes test fixtures and replay-only encoders.
@@ -37,9 +42,9 @@ The host paths are in [room dispatch](../crates/game/src/lib.rs), [transport](..
 | `0414` | 48 | R | ActionRequestCancelAbility_Client |
 | `0415` | 9,106 | A | ActionPlayAbility 路 Released Lorelai C and native lane-minion/tower basic attacks with visible actors |
 | `0416` | 886 | A | ActionPlayAbility 路 Released Idris B or Lorelai A/B with visible caster |
-| `0419` | 12 | R | ActionPlayPfxAtLocation |
-| `041A` | 534 | A | ActionOverrideAbility · [ARAL Ringo Double Down after a last hit](aral-ability-overrides.md) |
-| `041B` | 414 | A | ActionClearAbilityOverride · [ARAL Ringo Double Down consumed by an attack](aral-ability-overrides.md) |
+| `0419` | 12 | R | [Reim B range effect after a remote release](native-abilities.md) |
+| `041A` | 534 | A | ActionOverrideAbility 路 [ARAL Ringo Double Down after a last hit](aral-ability-overrides.md) |
+| `041B` | 414 | A | ActionClearAbilityOverride 路 [ARAL Ringo Double Down consumed by an attack](aral-ability-overrides.md) |
 | `041C` | 6,668 | A | ActionModifyActorAttribute 路 Supported inventory modifiers and hero progression fields |
 | `041D` | 109,869 | A | ActionModifyActorResource 路 Simulated resource deltas including earned gold and purchase debits |
 | `041E` | 16,559 | A | ActionImpactHealth 路 Applied damage or healing with visible participants |
