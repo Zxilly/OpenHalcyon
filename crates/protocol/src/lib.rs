@@ -7,6 +7,8 @@ use blowfish::{
 use md5::{Digest, Md5};
 use std::io::{self, Read, Write};
 
+mod actor_flags;
+pub use actor_flags::{ActorFlagChange, ActorFlags};
 mod tower_aggro;
 pub use tower_aggro::TowerAggro;
 mod zone;
@@ -30,6 +32,8 @@ pub use buff_actions::{
 };
 mod hud;
 pub use hud::{HudQuickMessage, MapPing};
+mod pfx;
+pub use pfx::PlayPfxAtLocation;
 mod gold;
 mod item_actions;
 pub use item_actions::ItemAction;

@@ -96,6 +96,15 @@ impl Stream {
                         }
                         e.typed += 1;
                     }
+                    Ok(Fields::ActionWords(_)) if m.opcode == 0x0419 => {
+                        let effect = m
+                            .play_pfx_at_location()
+                            .ok_or_else(|| invalid("invalid location effect"))?;
+                        if effect.to_message() != m {
+                            return Err(invalid("location effect did not reproduce original"));
+                        }
+                        e.typed += 1;
+                    }
                     Ok(Fields::Live(halcyon_protocol::LiveFields::HudQuickMessage(q))) => {
                         if q.message() != m {
                             return Err(invalid("HUD fields did not reproduce the frame"));
@@ -111,6 +120,15 @@ impl Stream {
                             return Err(invalid(
                                 "native movement fields did not reproduce the frame",
                             ));
+                        }
+                        e.typed += 1;
+                    }
+                    Ok(_) if matches!(m.opcode, 0x03ea..=0x03ec) => {
+                        let flags = m
+                            .actor_flags()
+                            .ok_or_else(|| invalid("invalid actor flags"))?;
+                        if flags.to_message() != m {
+                            return Err(invalid("actor flags did not reproduce original"));
                         }
                         e.typed += 1;
                     }

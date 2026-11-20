@@ -1,6 +1,8 @@
 macro_rules! opcodes {
     ($( $name:ident = $raw:literal, )*) => {
-        /// Opcodes with observed CE meanings. Unknown numbers stay in Message::opcode.
+        /// CE opcodes. Some identifiers retain early capture labels for API compatibility.
+        /// In particular, `PosUpdate` clears two actor flags. Use `Message::actor_flags`
+        /// to decode the receiver operations for 0x03EA through 0x03EC.
         #[derive(Debug, Clone, Copy, Eq, PartialEq)]
         #[repr(u16)]
         pub enum Opcode { $( $name = $raw, )* }

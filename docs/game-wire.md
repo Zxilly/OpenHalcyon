@@ -302,3 +302,14 @@ All seven played ARAL streams sent the same six consecutive `041F` actions withi
 | `e674f03d` | 0 | 0 |
 
 Every action has a big-endian 32-bit key and value, then six zero alignment bytes. The hosted native modes emit the measured sequence on initial scene load. The captures supply neither variable names nor live changes to these values.
+
+## Actor flags
+
+The Windows receiver passes the actor ID and the value 1 to two different
+setters for `03EA` and `03EB`. For `03EC` it calls both setters with zero.
+Each path first looks up the actor. The Rust codec reads the same four-byte
+big-endian ID and preserves the two padding bytes when present. The nine TCP
+captures contain ten first-flag sets, zero second-flag sets and six clears.
+Every clear follows a first-flag set for the same actor. The gameplay names
+and the server events that set these flags remain unknown.
+[First setter](https://github.com/TurnaboutHero/vainglory-replay-decoder/blob/f4743be743564e3aadef1566499fe25d9d0f9ffc/vg/docs/evidence/2026-09-09-binary-events/branches/03ea.c.txt) · [Second setter](https://github.com/TurnaboutHero/vainglory-replay-decoder/blob/f4743be743564e3aadef1566499fe25d9d0f9ffc/vg/docs/evidence/2026-09-09-binary-events/branches/03eb.c.txt) · [Clear](https://github.com/TurnaboutHero/vainglory-replay-decoder/blob/f4743be743564e3aadef1566499fe25d9d0f9ffc/vg/docs/evidence/2026-09-09-binary-events/branches/03ec.c.txt)
