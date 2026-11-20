@@ -126,3 +126,30 @@ registrations do not produce a new draft notification. Spectators and seats
 in other rooms do not receive it.
 
 The original clock continues through the postgame delay. In the five crystal endings, 14 client clocks arrived between the postgame marker and 250 ms before the statistics report. In the two surrender endings, the final 14.5 seconds before the report contained 14 more clocks with the same cutoff. All 28 had a byte-identical reply within 300 ms. The host accepts finite nonnegative, six-byte clock bodies on the authenticated connection during this delay. Gameplay input remains closed, and the ordered statistics/result batch closes the stream.
+
+## Draft position and build preferences
+
+For build 147219, 0461 selects a draft position and 0462 selects a draft
+build. Both carry one selector byte; 255 clears the corresponding choice.
+The 161-byte occupied seat stores position at +13 and build at +14. In all
+eight captured notifications, the immediately preceding 0459 or 045A
+changed one seat's corresponding byte to exactly the echoed value, 0–31 ms
+before the echo. Four notifications reached a teammate, four an opponent.
+None of those eight was the recording player's own action. Both
+notifications and subsequent draft refreshes therefore use the room roster.
+The room accepts input only from the authenticated seat's draft connection
+while selection is open. Several recorded updates changed already locked
+rows while other players were still drafting.
+
+The receiver accepts the position values present in original rosters
+(0, 1, 5), the three build values (0–2), and the clear sentinel. Names for
+individual position values remain unverified. These draft choices are
+independent of the later in-game recommended build selection.
+
+Across 26 captured 0456 reroll notifications the operand was always zero.
+The immediately preceding roster changed the hero template of exactly one
+seat in every case. The Android call path increments a reroll counter and
+references gold, but the recordings and supplied rules give neither the
+authoritative per-use fee nor a replay-safe transaction key binding the
+home account debit to the room's new hero. Hosted rooms leave this paid
+action unavailable.

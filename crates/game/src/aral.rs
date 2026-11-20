@@ -109,6 +109,7 @@ pub(super) fn roster(room: &Room, remaining: f32, private: bool) -> Message {
         if let (Some(player), Some(pick)) = (room.players.get(index), room.picks.get(index)) {
             let actor = &room.world.entities[index];
             row[8] = 1;
+            pick.preferences.write(row);
             row[10] = u8::from(pick.selected);
             row[11] = u8::from(pick.locked);
             row[16] = actor.team + 1;

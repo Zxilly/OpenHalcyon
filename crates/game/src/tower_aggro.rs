@@ -451,6 +451,7 @@ mod tests {
             .iter()
             .filter(|e| e.kind == Kind::Hero)
             .map(|_| super::super::Pick {
+                preferences: Default::default(),
                 name: "Ringo".into(),
                 skin: 0,
                 selected: true,

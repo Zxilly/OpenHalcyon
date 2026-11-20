@@ -121,7 +121,9 @@ impl Seat {
             .or_else(|| self.peers[0].as_ref().filter(|_| self.preamble.confirmed()))
     }
 }
+mod draft_preferences;
 struct Pick {
+    preferences: draft_preferences::Preferences,
     name: String,
     skin: u32,
     selected: bool,
@@ -652,6 +654,7 @@ impl Rooms {
                 }
             }
             picks.push(Pick {
+                preferences: Default::default(),
                 name: name.into(),
                 skin: self
                     .0
@@ -1049,6 +1052,9 @@ impl Room {
         }
     }
     fn roster_update(&self, except: Option<usize>) -> Message {
+        self.roster_with_echo(except, None)
+    }
+    fn roster_with_echo(&self, except: Option<usize>, echo: Option<&Message>) -> Message {
         let legacy = self.legacy_aral();
         let mut roster = if legacy {
             aral::roster(self, self.aral_remaining(), false)
@@ -1074,7 +1080,9 @@ impl Room {
             if except != Some(i)
                 && let Some(p) = &s.peers[0]
             {
-                p.send(transport::Delivery::Private(vec![roster.clone()]));
+                let mut batch = vec![roster.clone()];
+                batch.extend(echo.cloned());
+                p.send(transport::Delivery::Private(batch));
             }
         }
         roster
@@ -1300,6 +1308,18 @@ impl Room {
             {
                 out = self.buy(i, actor, item);
             }
+            Fields::ControlByte { value, remaining }
+                if ch == 0
+                    && self.phase == crate::RoomPhase::HeroSelect
+                    && self.seats[i].peers[0].is_some()
+                    && remaining.iter().all(|b| *b == 0)
+                    && let Some(choice) =
+                        draft_preferences::Choice::parse(m.known_opcode(), value) =>
+            {
+                choice.apply(&mut self.picks[i].preferences);
+                out.push(self.roster_with_echo(Some(i), Some(&m)));
+                out.push(m);
+            }
             Fields::ControlByte { value: 0, .. }
                 if m.is(crate::Opcode::SetupA)
                     && (legacy
@@ -1383,6 +1403,7 @@ impl Room {
                         };
                         let skin = self.validated_skin(&name, requested);
                         self.picks[i] = Pick {
+                            preferences: self.picks[i].preferences,
                             name,
                             skin,
                             selected: true,

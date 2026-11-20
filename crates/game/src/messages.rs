@@ -117,6 +117,7 @@ pub fn snapshot(world: &World, players: &[Uuid], picks: &[Pick]) -> Message {
             .zip(picks.get(idx))
         {
             r[8] = 1;
+            pick.preferences.write(r);
             if pick.selected {
                 r[10] = 1;
                 r[11] = u8::from(pick.locked);
