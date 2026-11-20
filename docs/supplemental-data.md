@@ -14,7 +14,7 @@ data_extra_dir = "data/server_data_extra"
 | `abilities.json` | 按 61 个英雄索引 277 条技能、1,599 个技能变量、19 个英雄额外变量和 180 个伤害块。查询支持等级、倍率和按 tooltip 标识哈希选择伤害块。Ringo 的普通技能和大招使用不同的命中、灼烧、攻速与耗能规则，Idris 的飞轮分别计算去程和回程，Lorelai 的水池和护盾使用各自的表。 |
 | `units_full.json` | 219 个完整单位定义供查询。模拟器在已绑定模板中读取成长、回复、攻速、视野及奖励。Solo 远程、近战、攻城、队长兵的基础经验依次为 6、8、9、11，基础金币为 25、35、60、100。ARAL 三类兵在双向记录中的单人补刀奖励吻合双倍基础值。 |
 | `talents_full.json` | 189 条天赋、436 个修饰项，319 项随等级变化。171 条有公开 ID 和所属英雄，可生成原生天赋目录，进度按本服账号投影。具名 Ringo Long Shot 在模拟命令中按等级修改射程、伤害和冷却。把 ARAL 数字选项映射到具名天赋仍需对应证据。 |
-| `items_full.json`、`item_stores.json` | 93 件装备和五份有序商店表。已实现的装备从模式对应商店检查上架资格，按组件实例结算合成、出售和属性撤销。四份出售回执核对了退款列。Bot 能购买并激活 Sprint Boots；ARAL Healing Flask 使用持有槽、屏障、恢复和冷却。其他装备的主动或被动还需各自的触发规则。[装备说明](equipment-catalog.md) |
+| `items_full.json`、`item_stores.json` | 93 条装备定义和五份有序商店表。76 件普通商品按所属模式检查上架资格，按组件实例结算合成、出售和属性撤销。另有五件未上架物品、十二件内部或特殊条目。四份出售回执核对了退款列。Bot 能购买并激活 Sprint Boots；ARAL Healing Flask 使用持有槽、屏障、恢复和冷却。两种药剂按实例消耗并随等级结算，张力之弩、交流电与基础武器吸血接入普攻命中。逐件效果表列出了其余触发规则的实现进度。[装备说明](equipment-catalog.md) |
 | `heroes_and_skins.json` | 290 条官方皮肤、192 个主题、304 条 CFF0 皮肤条目和六个大厅清单。选皮检查哈希、实际英雄归属和实例公告范围。57 位公告英雄上的 218 个皮肤通过归属核对。启动时生成客户端所需的字符串化皮肤目录，显式配置的归档优先。 |
 | `maps/navmesh_index.json` 和 16 个网格 | 8,059 个 Detour tile。地图查询保留源 OBB 标识和本地二进制 SHA-256。ARAL 和 Solo 英雄移动按地面连通性投影目标、跨 tile 寻路，Bot 追击和撤退使用同一入口。每个房间每 tick 最多进行六次寻路，缓存每名英雄的当前路径。[地图说明](navmesh.md) |
 | `maps/level_layouts.json`、`maps/camps_and_modes.json` | 25 个关卡和 139 条营地或模式定义。已识别的塔、出生台、基地商店和草丛分别进入对应的运行逻辑。营地摆放与实体定义按 ID 连接，可计算已确认变换的世界坐标。移动网格、草丛和视野网格有不同语义。 |
@@ -29,9 +29,11 @@ data_extra_dir = "data/server_data_extra"
 
 Solo 已接入 12 个营地在首轮生成的 18 只普通野怪，双方均可攻击，野怪有独立身份、血量、死亡与本服奖励。10 次记录内的击杀覆盖五个模板。野怪追击、再次刷新和两个龙坑的行为仍需不同证据。[Solo 营地](solo-camps.md)
 
-工具提示中的带参标识可以和本技能的伤害块按哈希核对。已有 154 个块获得无歧义的标识，其余 26 个保留原始头字段。管理面板的技能记录提供所选语言的说明。Reim 的 Winter Spire 分两次检查范围内的目标，其释放广播、技能等级与取样范围列在[技能表](native-abilities.md)中。完整消息与实录逐项对照的命令见[协议数据校验](empirical-verification.md)。
+工具提示中的带参标识可以和本技能的伤害块按哈希核对。已有 154 个块获得无歧义的标识，全部 180 个块均保留原始头字段。管理面板的技能记录提供所选语言的说明。Reim 的 Winter Spire 分两次检查范围内的目标，Chill Winds 的伤害和定身按同一次权威释放广播。Catherine 与 Yates 的六个技能已接入真人和 Bot 指令。原生广播与各技能的数值来源列在[技能表](native-abilities.md)中。完整消息与实录逐项对照的命令见[协议数据校验](empirical-verification.md)。
 
 ## 本地验证
+
+单机执行 `openhalcyon check-data --data-dir data/delivery --data-extra-dir data/server_data_extra` 可在部署前校验两个目录、编译对局规则并读完所有地面和视野网格。命令返回的 JSON 包含内容计数、实际解析的 tile 数和匹配规则摘要。
 
 ```powershell
 $env:HALCYON_DELIVERY = (Resolve-Path ../vg/_ana/delivery).Path
@@ -43,3 +45,5 @@ cargo test --locked -p halcyon-ce-platform --test android supplement_serves -- -
 ```
 
 最后一项从 delivery 的上一级读取两个归档回包，逐字段比对公开皮肤目录与天赋标识，并检查本服的会话路由。包中的等级上限估值、未命名数值槽和天赋费用样例可用于研究，不能单独确定原生按键、触发时刻或玩家的已购等级。各协议的采样方向、命令处理和广播状态列在[协议覆盖表](protocol-coverage.md)与[服务端输出表](server-emissions.md)中。
+
+三节点实包测试让两个归属服的玩家分别选择 Idris 与 Lorelai，由仅有翻译差异的第三个节点承载对局；对一个归属服调整 Big Bear 奖励后，两张票据进入各自的规则队列。该回归覆盖收到的加密开场声明。

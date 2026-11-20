@@ -36,7 +36,8 @@
 cargo test -p halcyon-sim
 cargo run --release -p halcyon-sim --example lane_bench -- ../vg/_ana/delivery
 ```
-### 房间初始化
+
+## 房间初始化
 
 进程启动时用 `WorldRules::load` 编译英雄基础数值、技能、装备和兵线参数。每个新房间共享技能表、商店配方和属性表，单独持有模式商品可用性、装备实例、英雄和计时器。创建不同模式的房间可以并行进行。
 

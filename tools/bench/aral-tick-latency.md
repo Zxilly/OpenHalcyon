@@ -30,6 +30,18 @@ The 121.079-second steady window measured 77,484 ticks with no samples over 40 m
 
 Wake delay accounts for most elapsed time in this completed run. The historical incident did not occur in its steady window, so these results place no tighter bound on the historical split or host scheduler's share.
 
+The 45-second ramp failure was a distinct startup issue. A diagnostic binary logged SQLite `SQLITE_BUSY` for `acceptMatch`. The offer snapshot performed an unconditional attempt to update last-seen while using a deferred read transaction. A regression test that holds a WAL writer reproduces the same error before the fix. The snapshot now resolves the authenticated session and reads the roster without claiming a write reservation. Normal profile and acceptance paths retain their presence behavior.
+
+With the read-only fix applied, the original 45-second ramp completed on the same CPUs and at full width. The binary used the frozen base, stage instrumentation, offer fix and a classification log emitted only on an unexpected CE error. Its SHA-256 was `706b31e598e150d950b756e23e56114617071c547a3991198df7508bc2a806b0`. The 121.109-second steady sample covered 77,516 ticks with zero above 40 ms. Average process CPU was 16.95%, maximum rolling minute CPU was 18.70%, and peak sampled RSS was 42.58 MiB. The largest sampled room p99 was 15.807 ms and the largest tick since opening was 28.721 ms. All 192 seats connected without slow disconnects, clock sequence errors or CE service errors.
+
+| Stage | Steady mean | Lifetime maximum |
+|---|---:|---:|
+| Wake delay | 6,203.50 µs | 28,677 µs |
+| Lock wait | 0.17 µs | 1,245 µs |
+| Room work | 29.73 µs | 7,720 µs |
+
+The steady windows from both completed instrumented runs total 155,000 ticks. They support measuring the pre-lock delay separately and resolve the startup error. The earlier late batches were not reproduced, so their scheduler or runtime cause remains open.
+
 ```powershell
-python tools/bench/windows.py --native-aral --humans 6 --rooms 32 --room-capacity 33 --seconds 120 --ramp-seconds 90 --host-telemetry --server-cpus 14 --client-cpus 26 28 30 --data-dir $env:HALCYON_DELIVERY --data-extra-dir $env:HALCYON_DATA_EXTRA --binary-dir target/release --output runtime/aral-tick-attribution
+python tools/bench/windows.py --native-aral --humans 6 --rooms 32 --room-capacity 33 --seconds 120 --ramp-seconds 45 --host-telemetry --server-cpus 14 --client-cpus 26 28 30 --data-dir $env:HALCYON_DELIVERY --data-extra-dir $env:HALCYON_DATA_EXTRA --binary-dir target/release --output runtime/aral-tick-attribution
 ```
