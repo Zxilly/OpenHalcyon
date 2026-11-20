@@ -45,6 +45,8 @@ Catherine 和 Yates 的四项专属效果在首次使用时共同分配，未启
 
 双队视野实验使用两个 seed、两种地图，每组跑 2,400 tick，逐 tick 校验七种实现的有序输出。在最多 122 个存活实体的 Solo 房间，现有实现、按队拆分的向量、按队分组的 hecs、保留跨 tick 映射的 hecs 平均分别用时 27.90、28.63、30.11、41.65 µs。生产房间继续使用现有视野查询。新增需要跨实体批处理的系统时，可以按同样方法单独测量。整机容量另用多房间测试评估。[视野实验与复现命令](https://github.com/Zxilly/OpenHalcyon/tree/c6b1be0e556cc8054063129978071559da21ace1/tools/bench/ecs-visibility) · [多房间测量](../../tools/bench/aral-tick-latency.md)
 
+Bevy ECS 另有两个可运行试验，分别测了视野广播和由 ECS 管理的持续技能。技能试验在正常对局结算 Lyra 的结界与 Adagio 的持续治疗和燃烧，两边共用同一份逐 tick 回归用例。[Bevy 实验、完整对局和复现方法](../../tools/bench/bevy-ecs.md)
+
 ## 房间初始化
 
 进程启动时用 `WorldRules::load` 编译英雄基础数值、技能、装备和兵线参数。每个新房间共享技能表、商店配方和属性表，单独持有模式商品可用性、装备实例、英雄和计时器。创建不同模式的房间可以并行进行。
