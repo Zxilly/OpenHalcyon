@@ -12,6 +12,7 @@ mod projectile;
 pub(super) use projectile::recordable as recordable_spell_projectile;
 mod reboot;
 mod skedaddle;
+pub(super) use reboot::recordable as recordable_reboot;
 pub(super) fn recordable_skedaddle(m: &Message) -> bool {
     skedaddle::recordable(m)
 }
@@ -370,47 +371,25 @@ pub(super) fn publish_before_impacts(room: &mut Room, events: &[Event]) {
     }
 }
 
-fn publish_reboot(room: &mut Room, actor: u32, instance: u32) {
-    let Some(instance) = instance.checked_add(1499) else {
-        return;
-    };
-    let wire = u32::from(wire_id(actor));
-    let Some(application) = (halcyon_protocol::BuffApplication {
-        prefix: halcyon_protocol::BuffPrefix {
-            target: wire,
-            source: wire,
-            duration_bits: 0x4300,
-            instance,
-            definition: 683,
-        },
-        extras: None,
-        suffix: &[],
-    })
-    .to_message()
-    .ok() else {
-        return;
-    };
-    let batch = [
-        Message::known(crate::Opcode::ActorUndead, wire.to_be_bytes()),
-        application,
-    ];
+/// All actor references must belong to the recipient's visible, registered scene.
+fn publish_visible(room: &mut Room, actors: &[u32], frames: &[Message]) {
     let mut shared = None;
     for (i, seat) in room.seats.iter().enumerate() {
-        let viewer = &room.world.entities[i];
-        if viewer.id != actor
-            && room.visible[usize::from(viewer.team)].contains(&actor)
-            && room.scene_views[i].knows(actor)
-            && (seat.world_actor_written || seat.peers[1].is_some())
+        let team = usize::from(room.world.entities[i].team);
+        if (seat.world_actor_written || seat.peers[1].is_some())
+            && actors
+                .iter()
+                .all(|id| room.visible[team].contains(id) && room.scene_views[i].knows(*id))
             && let Some(peer) = seat.gameplay_peer()
         {
             peer.send(Delivery::Team(
                 shared
-                    .get_or_insert_with(|| super::transport::TeamBatch::new(batch.to_vec()))
+                    .get_or_insert_with(|| super::transport::TeamBatch::new(frames.to_vec()))
                     .clone(),
             ));
         }
     }
-    room.publish_observer_actors(&[actor], &batch);
+    room.publish_observer_actors(actors, frames);
 }
 
 pub(super) fn publish(room: &mut Room, events: &[Event]) {
@@ -435,7 +414,7 @@ pub(super) fn publish(room: &mut Room, events: &[Event]) {
                 actor, instance, ..
             } = *event
         {
-            publish_reboot(room, actor, instance);
+            reboot::start(room, actor, instance);
             continue;
         }
         if aral && let Event::BasicTargetChanged { actor, target } = *event {
@@ -857,6 +836,7 @@ mod tests {
         for recipient in &mut recipients {
             while recipient.try_recv().is_ok() {}
         }
+        room.world.entities[0].type_id = EntityTemplate::Alpha.as_raw();
         let reboot = [Event::RebootStarted {
             actor: 1,
             source: 2,
@@ -874,8 +854,9 @@ mod tests {
         assert!(
             matches!(frames[1].fields(),Ok(halcyon_protocol::Fields::BuffApplication(b)) if b.prefix.definition==683 && b.prefix.duration_bits==0x4300 && b.prefix.instance==1899 && b.prefix.target==1500 && b.prefix.source==1500)
         );
-        assert!(recipients[0].try_recv().is_err());
+        assert_eq!(recipients[0].try_recv().unwrap().into_records(), frames);
         assert!(recipients[1].try_recv().is_err());
+        room.world.entities[0].type_id = IDRIS;
         let change = [Event::BasicTargetChanged {
             actor: 1,
             target: 2,

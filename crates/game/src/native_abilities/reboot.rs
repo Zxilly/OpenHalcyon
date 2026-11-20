@@ -62,36 +62,88 @@ fn recovery(actor: u32, instance: u32, seconds: f32, hp: f32) -> Batch {
     batch
 }
 
+fn is_alpha(room: &Room, actor: u32) -> bool {
+    actor
+        .checked_sub(1)
+        .and_then(|i| room.world.entities.get(i as usize))
+        .is_some_and(|e| {
+            e.id == actor && e.kind == Kind::Hero && e.type_id == EntityTemplate::Alpha.as_raw()
+        })
+}
+
+pub(super) fn start(room: &mut Room, actor: u32, instance: u32) {
+    let Some(instance) = instance.checked_add(1499) else {
+        return;
+    };
+    if !is_alpha(room, actor) {
+        return;
+    }
+    let wire = u32::from(wire_id(actor));
+    let effect = BuffApplication {
+        prefix: BuffPrefix::timed_self(wire, instance, BuffDefinition::Rebooting, 3.5),
+        extras: None,
+        suffix: &[],
+    }
+    .to_message()
+    .expect("fixed reboot effect");
+    publish_visible(
+        room,
+        &[actor],
+        &[
+            Message::known(crate::Opcode::ActorUndead, wire.to_be_bytes()),
+            effect,
+        ],
+    );
+}
+
 pub(super) fn publish(room: &mut Room, actor: u32, instance: u32, seconds: f32, hp: f32) {
     let Some(instance) = instance.checked_add(1499) else {
         return;
     };
-    if !room
-        .world
-        .entities
-        .iter()
-        .take(room.seats.len())
-        .any(|e| e.id == actor && e.type_id == EntityTemplate::Alpha.as_raw())
-    {
-        return;
+    if is_alpha(room, actor) {
+        publish_visible(
+            room,
+            &[actor],
+            &recovery(u32::from(wire_id(actor)), instance, seconds, hp),
+        );
     }
-    let batch = recovery(u32::from(wire_id(actor)), instance, seconds, hp);
-    let mut shared = None;
-    for (index, seat) in room.seats.iter().enumerate() {
-        let team = usize::from(room.world.entities[index].team);
-        if room.scene_views[index].knows(actor)
-            && room.visible[team].contains(&actor)
-            && (seat.world_actor_written || seat.peers[1].is_some())
-            && let Some(peer) = seat.gameplay_peer()
-        {
-            peer.send(Delivery::Team(
-                shared
-                    .get_or_insert_with(|| super::super::transport::TeamBatch::new(batch.clone()))
-                    .clone(),
-            ));
+}
+
+pub(crate) fn recordable(m: &Message) -> bool {
+    use halcyon_protocol::Fields;
+    let hero = |actor| (1500..=1505).contains(&actor);
+    let recharge = |duration| matches!(duration, 65. | 75. | 85.);
+    if let Some(mutation) = m.buff_mutation() {
+        return matches!(mutation.change, BuffChange::Duration(seconds) if recharge(seconds))
+            && hero(mutation.target)
+            && mutation.instance > 1505
+            && mutation.padding.is_empty();
+    }
+    match m.fields() {
+        Ok(Fields::BuffApplication(b)) => {
+            hero(b.prefix.target)
+                && b.prefix.source == b.prefix.target
+                && b.prefix.instance > 1505
+                && b.extras.is_none()
+                && b.suffix.is_empty()
+                && ((b.prefix.definition == BuffDefinition::RebootCooldown as u16
+                    && recharge(b.prefix.duration()))
+                    || (b.prefix.definition == BuffDefinition::Rebooting as u16
+                        && b.prefix.duration() == 3.5))
         }
+        Ok(Fields::CooldownValue {
+            owner,
+            key,
+            value,
+            mode,
+            ..
+        }) if hero(owner) && m.body.len() == 13 && mode == CooldownMode::Set as u8 => {
+            (key == AlphaCooldown::Reboot as u32 && recharge(value))
+                || (matches!(key, k if k == AlphaCooldown::PrimeDirective as u32 || k == AlphaCooldown::CoreCharge as u32)
+                    && value == 0.)
+        }
+        _ => false,
     }
-    room.publish_observer_actor(actor, &batch);
 }
 
 #[cfg(test)]
@@ -100,6 +152,7 @@ mod tests {
     #[test]
     fn cooldown_update_names_the_same_instance_as_the_preceding_application() {
         let batch = recovery(1501, 15302, 75., 1560.);
+        assert!(batch[2..].iter().all(recordable));
         let application = match batch[5].fields().unwrap() {
             halcyon_protocol::Fields::BuffApplication(application) => application,
             other => panic!("{other:?}"),
