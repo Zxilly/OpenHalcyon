@@ -169,9 +169,9 @@ mod tests {
         let mut caster = messages::spawn(&room.world.entities[0], &room.picks, None);
         caster.body[745] = 16;
         let mut streams = Vec::new();
-        for i in 0..5 {
+        for seat in room.seats.iter_mut().take(5) {
             let (tx, rx) = mpsc::channel(8);
-            room.seats[i].peers[1] = Some(Peer {
+            seat.peers[1] = Some(Peer {
                 generation: 1,
                 tx,
                 stalled: watch::channel(false).0,

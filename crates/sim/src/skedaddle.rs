@@ -130,9 +130,9 @@ mod tests {
                 slot: AbilitySlot::B,
                 target: CastTarget::SelfCast,
             };
-            assert!(world.command(1, cast.clone()).is_err());
+            assert!(world.command(1, cast).is_err());
             world.command(1, Command::Learn(AbilitySlot::B)).unwrap();
-            world.command(1, cast.clone()).unwrap();
+            world.command(1, cast).unwrap();
             world.tick = 1;
             let mut events = Vec::new();
             world.advance_cast(0, &mut events);
