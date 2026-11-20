@@ -59,6 +59,14 @@ impl super::Actors<'_> {
         self.ecs.despawn(id);
         Some(spell)
     }
+    pub(crate) fn remove_spell_handle<T: TimedSpell>(&mut self, id: Entity) -> Option<T> {
+        if let Some(mut order) = self.ecs.get_resource_mut::<CastOrder<T>>() {
+            order.handles.retain(|h| *h != id);
+        }
+        let spell = self.ecs.entity_mut(id).take::<T>()?;
+        self.ecs.despawn(id);
+        Some(spell)
+    }
     pub(super) fn refresh_fire(&mut self, spell: Pulse) {
         self.remove_spell::<Pulse>(|p| p.same_application(&spell));
         self.spawn_spell(spell);

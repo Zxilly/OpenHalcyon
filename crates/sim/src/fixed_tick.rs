@@ -147,6 +147,7 @@ fn advance(ecs: &mut Ecs) {
         room.advance_spell_family::<crate::arcane_fire::Pulse>(events);
         room.advance_spell_family::<crate::twister::Dash>(events);
         room.advance_spell_family::<crate::sigil::Field>(events);
+        room.advance_spell_family::<crate::hero_kit::KitEffect>(events);
         if room.winner.is_some() {
             return false;
         }

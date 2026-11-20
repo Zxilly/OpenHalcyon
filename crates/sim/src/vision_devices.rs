@@ -380,7 +380,7 @@ impl Room<'_> {
         {
             return Err("cannot hit scout cam");
         }
-        let interval = self.basic_attack_interval(e);
+        let interval = self.basic_attack_interval(e, 0.);
         self.entities[i].next_attack = self.tick + interval;
         let handle = self.vision_device_ids[j];
         let max_hits = 5u8.saturating_add(v.extra_hits);

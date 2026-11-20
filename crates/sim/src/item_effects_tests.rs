@@ -228,7 +228,7 @@ fn atlas_pauldron_delays_then_slows_attack_speed_and_reduces_wp_unless_blocked()
         effect: 0,
     });
     w.entities[1].stats.weapon = 100.;
-    let base_interval = w.basic_attack_interval(&w.entities[1]);
+    let base_interval = w.basic_attack_interval(&w.entities[1], 0.);
 
     let atlas = w.purchase(1, BasicItem::AtlasPauldron).unwrap().granted;
     w.command(
@@ -241,12 +241,12 @@ fn atlas_pauldron_delays_then_slows_attack_speed_and_reduces_wp_unless_blocked()
     .unwrap();
     // Before 0.8s (16 ticks), Atlas has not detonated yet.
     step_ticks(&mut w, 15);
-    assert_eq!(w.basic_attack_interval(&w.entities[1]), base_interval);
+    assert_eq!(w.basic_attack_interval(&w.entities[1], 0.), base_interval);
 
     // After 0.8s detonation, hero 2 is debuffed, hero 4 blocked it.
     step_ticks(&mut w, 2);
-    assert!(w.basic_attack_interval(&w.entities[1]) >= base_interval * 2);
-    assert_eq!(w.basic_attack_interval(&w.entities[3]), base_interval);
+    assert!(w.basic_attack_interval(&w.entities[1], 0.) >= base_interval * 2);
+    assert_eq!(w.basic_attack_interval(&w.entities[3], 0.), base_interval);
 
     // WP damage from hero 2 is reduced by 30%.
     let mut events = Vec::new();

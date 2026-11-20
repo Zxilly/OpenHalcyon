@@ -9,6 +9,7 @@ pub(super) fn field_replay_world(data: &GameData) -> World {
     book.verse = None;
     book.skedaddle = None;
     book.super_kick = None;
+    book.hero_kits = None;
     world.use_six_human_roster().unwrap();
     for (seat, name) in [(0, "Lyra"), (1, "Adagio"), (2, "Lyra"), (3, "Adagio")] {
         world.select_hero(seat, name, data).unwrap();

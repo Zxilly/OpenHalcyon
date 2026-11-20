@@ -285,13 +285,20 @@ impl Room<'_> {
         } else {
             remaining
         };
-        let amount = if let Some(channel) = t.cast.as_mut().and_then(|c| c.verse.as_mut()) {
+        let remaining = if let Some(channel) = t.cast.as_mut().and_then(|c| c.verse.as_mut()) {
             let saved = channel.fortified.min(remaining * 0.5);
             channel.fortified -= saved;
-            (remaining - saved).min(t.hp)
+            remaining - saved
         } else {
-            item_passives::apply_slumbering_fortify(t, remaining, self.state.tick).min(t.hp)
+            item_passives::apply_slumbering_fortify(t, remaining, self.state.tick)
         };
+        let remaining = if self.hero_kit_enabled() || self.entities[i].hero_kit.is_some() {
+            self.kit_modify_incoming_damage(src, i, remaining, school, events)
+        } else {
+            remaining
+        };
+        let t = &mut self.entities[i];
+        let amount = remaining.min(t.hp);
         if amount <= 0. {
             item_passives::on_damage_landed(self, ctx, events);
             return;
@@ -429,6 +436,9 @@ impl Room<'_> {
                 };
         }
         self.entities.forget_target(i);
+        if self.hero_kit_enabled() || self.entities[i].hero_kit.is_some() {
+            self.kit_on_death(i);
+        }
         if kind == Kind::Armory {
             return;
         }
@@ -526,6 +536,21 @@ impl Room<'_> {
             };
             for j in &allies[..count] {
                 self.award_xp(*j, shares, events)
+            }
+        }
+        if self.hero_kit_enabled() {
+            let killer_idx = self.index(src);
+            if let Some(kj) = killer_idx
+                && kj != i
+                && self.entities[kj].kind == Kind::Hero
+                && self.entities[kj].hp > 0.
+            {
+                self.kit_on_kill_assist(kj, i, true, events);
+            }
+            for &aj in &allies[..count] {
+                if Some(aj) != killer_idx && aj != i && self.entities[aj].hp > 0. {
+                    self.kit_on_kill_assist(aj, i, false, events);
+                }
             }
         }
     }
