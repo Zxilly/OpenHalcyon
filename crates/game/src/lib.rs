@@ -1792,7 +1792,7 @@ impl Room {
             std::mem::swap(previous, current);
             if control_stream {
                 if self.world.tick.is_multiple_of(10 * halcyon_sim::TICK_HZ) {
-                    out.push(aral::clock(self.world.tick));
+                    out.push(messages::world_clock(self.world.tick));
                 }
             } else if self.world.tick.is_multiple_of(20) {
                 out.push(snapshot(&self.world, &self.players, &self.picks));

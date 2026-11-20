@@ -145,7 +145,7 @@ pub(super) fn solo_opening(room: &mut Room, seat: usize) -> std::io::Result<Batc
         Message::known(crate::Opcode::SceneTransition, [0]),
     ];
     out.extend(players(room));
-    out.push(super::aral::clock(room.world.tick));
+    out.push(messages::world_clock(room.world.tick));
     room.visible[team as usize].clear();
     if !initial {
         room.solo_slots.retain_living(&room.world.entities);

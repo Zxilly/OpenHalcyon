@@ -162,7 +162,7 @@ pub(super) fn opening(room: &mut Room, team: Option<u8>) -> Batch {
     let mut batch: Batch = Vec::new();
     batch.push(messages::scene_mode(&room.queue, 0));
     batch.extend(crate::scene::players(room));
-    batch.push(clock(room.world.tick));
+    batch.push(messages::world_clock(room.world.tick));
     let mut map_objects: Vec<_> = super::aral_spawn::scenery().collect();
     let mut lane_minions = Vec::new();
     for actor in &room.world.entities {
@@ -222,13 +222,6 @@ pub(super) fn opening(room: &mut Room, team: Option<u8>) -> Batch {
         batch.extend(room.surrender_snapshot(team));
     }
     batch
-}
-
-pub(super) fn clock(tick: u64) -> Message {
-    Message::known(
-        crate::Opcode::OpeningWorldClock,
-        (tick as f32 / halcyon_sim::TICK_HZ as f32).to_be_bytes(),
-    )
 }
 
 #[cfg(test)]

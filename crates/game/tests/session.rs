@@ -167,6 +167,13 @@ async fn reservation_and_two_authenticated_sockets() {
     let mut game = login(&addr, player, &c).await;
     let info = until(&mut game, &c, halcyon_protocol::wire_opcode::PlayerInfo).await;
     assert_eq!(&info.body[160..164], &1500u32.to_be_bytes());
+    let clock = until(
+        &mut game,
+        &c,
+        halcyon_protocol::wire_opcode::OpeningWorldClock,
+    )
+    .await;
+    assert_eq!(&clock.body[..4], &0_f32.to_be_bytes());
     let spawn = until(&mut game, &c, halcyon_protocol::wire_opcode::EntitySpawn).await;
     assert_eq!(&spawn.body[4..8], &0xf240ebfeu32.to_be_bytes());
 
@@ -178,6 +185,27 @@ async fn reservation_and_two_authenticated_sockets() {
         .await
         .unwrap();
     until(&mut game, &c, halcyon_protocol::wire_opcode::Position).await;
+    drop(game);
+    timeout(Duration::from_secs(2), async {
+        while rooms.detail_typed(id).unwrap().participants.unwrap()[0].game_connected {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    let mut game = login(&addr, player, &c).await;
+    let clock = until(
+        &mut game,
+        &c,
+        halcyon_protocol::wire_opcode::OpeningWorldClock,
+    )
+    .await;
+    let seconds = f32::from_be_bytes(clock.body[..4].try_into().unwrap());
+    assert!(
+        seconds >= 1.0 / halcyon_sim::TICK_HZ as f32,
+        "fresh data socket received {seconds}s after movement"
+    );
+    until(&mut game, &c, halcyon_protocol::wire_opcode::EntitySpawn).await;
     let viewer = Uuid::new_v4();
     let grant = rooms.spectate(id, viewer).unwrap();
     assert_eq!(

@@ -246,6 +246,13 @@ pub(super) fn redact_player_info(body: &mut [u8]) {
     }
 }
 
+pub(super) fn world_clock(tick: u64) -> Message {
+    Message::known(
+        crate::Opcode::OpeningWorldClock,
+        (tick as f32 / halcyon_sim::TICK_HZ as f32).to_be_bytes(),
+    )
+}
+
 /// Replay chunks contain both roster forms before the first world spawn.
 pub(super) fn world_header(
     world: &World,
@@ -262,7 +269,7 @@ pub(super) fn world_header(
     out.push(scene_mode(mode, 1));
     out.push(Message::known(crate::Opcode::SceneTransition, [0]));
     out.extend((0..10).map(|i| info(world, players, picks, i, true)));
-    out.push(Message::known(crate::Opcode::OpeningWorldClock, [0; 4]));
+    out.push(world_clock(world.tick));
     out
 }
 
