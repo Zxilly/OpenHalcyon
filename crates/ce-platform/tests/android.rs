@@ -43,6 +43,16 @@ async fn supplement_serves_native_manifests_and_local_session_settings() {
     let delivery = std::path::PathBuf::from(std::env::var_os("HALCYON_DELIVERY").unwrap());
     let extra = std::path::PathBuf::from(std::env::var_os("HALCYON_DATA_EXTRA").unwrap());
     let data = Arc::new(halcyon_data::GameData::load_with_extra(&delivery, Some(&extra)).unwrap());
+    for manifests in [None, Some(delivery.parent().unwrap())] {
+        check_native_manifests(&data, &delivery, manifests).await;
+    }
+}
+
+async fn check_native_manifests(
+    data: &Arc<halcyon_data::GameData>,
+    delivery: &std::path::Path,
+    manifests: Option<&std::path::Path>,
+) {
     let archived = |name: &str| -> Value {
         let path = delivery.parent().unwrap().join(name);
         let mut envelope: Value =
@@ -68,7 +78,7 @@ async fn supplement_serves_native_manifests_and_local_session_settings() {
         },
         &[72; 32],
         &path,
-        None,
+        manifests,
     )
     .unwrap();
     Platform::configure_game_data(&mut platform, Some(data.clone())).unwrap();

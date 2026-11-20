@@ -23,7 +23,18 @@ pub(crate) struct Catalog {
     bindings: BTreeMap<String, Binding>,
 }
 
-type LevelRequirements = BTreeMap<String, u64>;
+#[derive(Serialize, Deserialize)]
+#[serde(untagged)]
+enum LevelRequirements {
+    Costs(BTreeMap<String, u64>),
+    AtCap(CappedMarker),
+}
+
+#[derive(Serialize, Deserialize)]
+enum CappedMarker {
+    #[serde(rename = "")]
+    Empty,
+}
 
 struct Definition {
     public: PublicTalent,
@@ -54,7 +65,7 @@ impl Definition {
             .level_row
             .as_ref()
             .filter(|(level, _, _)| *level == progress.level);
-        let empty = BTreeMap::new();
+        let empty = LevelRequirements::Costs(BTreeMap::new());
         serde_json::to_value(ProjectedTalent {
             public: &self.public,
             progress,
@@ -93,14 +104,16 @@ impl Catalog {
                 || ["def", "hero"]
                     .iter()
                     .any(|key| row[*key].as_str().is_none_or(str::is_empty))
-                || !row["maxLevel"].is_boolean()
-                || !row["levelRequirements"]
-                    .as_object()
-                    .is_some_and(|fields| fields.values().all(Value::is_u64))
                 || ["level", "fragments"]
                     .iter()
                     .any(|key| row.get(*key).is_some_and(|v| !v.is_u64()))
             {
+                return Err(invalid());
+            }
+            let capped = row["maxLevel"].as_bool().ok_or_else(invalid)?;
+            let requirements =
+                LevelRequirements::deserialize(&row["levelRequirements"]).map_err(|_| invalid())?;
+            if !capped && matches!(requirements, LevelRequirements::AtCap(_)) {
                 return Err(invalid());
             }
             // An operator can supply a captured response. Admit only documented public
@@ -115,12 +128,7 @@ impl Catalog {
                 .map(|v| {
                     let level =
                         u32::try_from(v.as_u64().ok_or_else(invalid)?).map_err(|_| invalid())?;
-                    Ok::<_, Error>((
-                        level,
-                        row["maxLevel"].as_bool().ok_or_else(invalid)?,
-                        LevelRequirements::deserialize(&row["levelRequirements"])
-                            .map_err(|_| invalid())?,
-                    ))
+                    Ok::<_, Error>((level, capped, requirements))
                 })
                 .transpose()?;
             definitions.insert(id.clone(), Definition { public, level_row });
@@ -343,7 +351,7 @@ mod tests {
                             },
                             74,
                             false,
-                            &BTreeMap::new(),
+                            &LevelRequirements::Costs(BTreeMap::new()),
                         ),
                     )
                 })
@@ -469,10 +477,14 @@ mod tests {
     #[test]
     fn observed_cap_and_cost_belong_only_to_the_observed_level() {
         for (capped, cost) in [
-            (true, BTreeMap::new()),
+            (true, LevelRequirements::Costs(BTreeMap::new())),
+            (true, LevelRequirements::AtCap(CappedMarker::Empty)),
             (
                 false,
-                BTreeMap::from([("[fragments]".into(), 90), ("silver".into(), 1300)]),
+                LevelRequirements::Costs(BTreeMap::from([
+                    ("[fragments]".into(), 90),
+                    ("silver".into(), 1300),
+                ])),
             ),
         ] {
             let fixture = talent_fixture(
