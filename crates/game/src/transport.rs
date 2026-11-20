@@ -238,6 +238,7 @@ async fn connection(mut sock: TcpStream, room: Shared, manager: Rooms) -> io::Re
             (solo, registration, aral_owner)
         };
         let mut aral_inventory_known = false;
+        let mut data_header = ch == 1;
         while let Some(mut batch) = next {
             if let Some((actor, slot)) = aral_owner
                 && aral_inventory_known
@@ -281,18 +282,21 @@ async fn connection(mut sock: TcpStream, room: Shared, manager: Rooms) -> io::Re
                 }
                 waiting_for_scene = false;
             }
-            if let Some((actor, slot)) = registration
-                && batch.declares_actor(actor, slot)
+            if data_header
+                || registration.is_some_and(|(actor, slot)| batch.declares_actor(actor, slot))
             {
                 let mut state = room.lock().unwrap();
-                let seat = &mut state.seats[seat];
-                if seat.peers[ch]
+                if state.seats[seat].peers[ch]
                     .as_ref()
                     .is_some_and(|p| p.generation == generation)
                 {
-                    seat.world_actor_written = true;
+                    if ch == 0 {
+                        state.seats[seat].world_actor_written = true;
+                    }
+                    state.world_connected(seat, ch);
                 }
                 registration = None;
+                data_header = false;
             }
             // Large initial catalogs are sent once. Keep steady-state buffers small.
             if bytes.capacity() > 32 * 1024 {

@@ -168,6 +168,7 @@ async fn client(
             }));
         }
         b.extend(r.spawn_view(None));
+        b.extend(r.absent_players());
         let mut view = tower_aggro::View::default();
         if let Some(scene) = &mut scene {
             scene.prepare(

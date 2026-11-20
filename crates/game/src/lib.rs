@@ -19,6 +19,7 @@ mod npc_attack;
 mod npc_projectile;
 mod observer;
 mod player_actions;
+mod player_presence;
 mod point_move;
 mod recording;
 mod registry;
@@ -96,6 +97,7 @@ impl Peer {
 }
 #[derive(Default)]
 struct Seat {
+    presence: player_presence::Presence,
     action_receipts: player_actions::Receipts,
     locked: bool,
     draft_sync_sent: bool,
@@ -1026,6 +1028,7 @@ impl Room {
             .is_some_and(|p| p.generation == generation)
         {
             self.seats[i].peers[ch] = None;
+            self.world_disconnected(i, ch);
             // The empty-room grace starts when the last current connection leaves.
             // A connected player may have received updates without sending input.
             self.last_active = Instant::now();
