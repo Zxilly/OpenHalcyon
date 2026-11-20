@@ -321,3 +321,365 @@ struct HeroStats<'a> {
 async fn wire_activity(meta: &Meta, player: Uuid) -> Value {
     serde_json::to_value(meta.player_fields(player).await.unwrap()).unwrap()
 }
+
+struct ReserveHost;
+impl MatchHost for ReserveHost {
+    fn reserve(&self, _: Reservation) -> Result<HostedMatch, PlatformError> {
+        Ok(HostedMatch {
+            address: "localhost:8001".into(),
+        })
+    }
+}
+
+#[tokio::test]
+async fn diesel_settlement_and_federated_projection_drive_match_stats_and_quests() {
+    let temp = tempfile::tempdir().unwrap();
+    let path_a = temp.path().join("home-a.sqlite");
+    let path_b = temp.path().join("home-b.sqlite");
+    let cfg_a = PlatformConfig {
+        database_path: path_a.clone(),
+        public_address: "localhost:8443".into(),
+        seats_per_match: 2,
+    };
+    let cfg_b = PlatformConfig {
+        database_path: path_b.clone(),
+        public_address: "localhost:8444".into(),
+        seats_per_match: 2,
+    };
+
+    let app_a = AppState::open(cfg_a.clone(), Arc::new(ReserveHost)).unwrap();
+    let app_b = AppState::open(cfg_b.clone(), Arc::new(ReserveHost)).unwrap();
+    let comm_a = halcyon_community::Community::open(&path_a).unwrap();
+    let comm_b = halcyon_community::Community::open(&path_b).unwrap();
+    let meta_a = Meta::open(&path_a).unwrap();
+    let meta_b = Meta::open(&path_b).unwrap();
+
+    let player_a = app_a.create_guest("Alpha".into()).await.unwrap();
+    let opponent_a = app_a.create_guest("Bravo".into()).await.unwrap();
+    let player_b = app_b.create_guest("Charlie".into()).await.unwrap();
+
+    for (comm, guest, name) in [
+        (&comm_a, &player_a, "Alpha"),
+        (&comm_a, &opponent_a, "Bravo"),
+        (&comm_b, &player_b, "Charlie"),
+    ] {
+        comm.observe_player(guest.player_id, name.into(), true)
+            .await
+            .unwrap();
+    }
+    let db_a = Connection::open(&path_a).unwrap();
+    let db_b = Connection::open(&path_b).unwrap();
+    for (db, player) in [(&db_a, player_a.player_id), (&db_b, player_b.player_id)] {
+        db.execute_batch(
+            "INSERT INTO community_quests(id,category,title,goal,skippable) VALUES
+                ('complete','complete_match','Complete',10,0),
+                ('win','win_match','Win',10,0);",
+        )
+        .unwrap();
+        for quest in ["complete", "win"] {
+            db.execute(
+                "INSERT INTO community_quest_states(player,quest,progress,state) VALUES(?,?,0,'active')",
+                params![player.to_string(), quest],
+            )
+            .unwrap();
+        }
+    }
+
+    // 1. Local match settlement via Diesel finish_match, including rollback & retry & duplicate checks.
+    for guest in [&player_a, &opponent_a] {
+        app_a
+            .join(&guest.session_token, "aral_casual".into())
+            .await
+            .unwrap();
+    }
+    let local_room = app_a
+        .profile(&player_a.session_token)
+        .await
+        .unwrap()
+        .lobby
+        .unwrap()
+        .match_id
+        .unwrap();
+    for guest in [&player_a, &opponent_a] {
+        app_a
+            .accept(&guest.session_token, local_room)
+            .await
+            .unwrap();
+    }
+
+    let local_outcome = serde_json::to_value(HeroOutcome {
+        reason: "completed",
+        players: std::collections::BTreeMap::from([
+            (
+                player_a.player_id,
+                HeroVictory {
+                    hero: "Ringo",
+                    victory: &Value::Bool(true),
+                },
+            ),
+            (
+                opponent_a.player_id,
+                HeroVictory {
+                    hero: "Catherine",
+                    victory: &Value::Bool(false),
+                },
+            ),
+        ]),
+    })
+    .unwrap();
+    let conflicting_outcome = serde_json::to_value(HeroOutcome {
+        reason: "completed",
+        players: std::collections::BTreeMap::from([(
+            player_a.player_id,
+            HeroVictory {
+                hero: "Ringo",
+                victory: &Value::Bool(false),
+            },
+        )]),
+    })
+    .unwrap();
+
+    db_a.execute_batch(
+        "CREATE TRIGGER reject_ce_match_finished BEFORE INSERT ON events
+         WHEN json_extract(NEW.body,'$.type')='match_finished'
+         BEGIN SELECT RAISE(ABORT, 'injected trigger failure'); END;",
+    )
+    .unwrap();
+    assert!(
+        app_a
+            .finish_match(local_room, local_outcome.clone())
+            .is_err()
+    );
+    assert_eq!(
+        db_a.query_row("SELECT count(*) FROM ce_completed", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        db_a.query_row("SELECT count(*) FROM ce_match_handles", [], |r| {
+            r.get::<_, i64>(0)
+        })
+        .unwrap(),
+        0
+    );
+    db_a.execute_batch("DROP TRIGGER reject_ce_match_finished")
+        .unwrap();
+
+    app_a
+        .finish_match(local_room, local_outcome.clone())
+        .unwrap();
+    app_a.finish_match(local_room, local_outcome).unwrap();
+    assert!(matches!(
+        app_a.finish_match(local_room, conflicting_outcome.clone()),
+        Err(PlatformError::Conflict(_))
+    ));
+    for guest in [&player_a, &opponent_a] {
+        app_a
+            .acknowledge_post_match(&guest.session_token)
+            .await
+            .unwrap();
+    }
+
+    // 2. Cross-home federated projection via Diesel federated_project, including rollback, duplicate, and conflict.
+    let pool = Uuid::new_v4();
+    let fed_room = Uuid::new_v4();
+    let intent_a = app_a
+        .federated_join(&player_a.session_token, pool, "ranked_5v5".into(), 2)
+        .await
+        .unwrap();
+    let intent_b = app_b
+        .federated_join(&player_b.session_token, pool, "ranked_5v5".into(), 2)
+        .await
+        .unwrap();
+    for (app, ticket) in [(&app_a, intent_a.ticket), (&app_b, intent_b.ticket)] {
+        app.federated_project(ticket, "offered", Some(fed_room), None, None)
+            .await
+            .unwrap();
+        app.federated_action(ticket, Some(fed_room), false)
+            .await
+            .unwrap();
+        app.federated_project(
+            ticket,
+            "playing",
+            Some(fed_room),
+            Some("127.0.0.1:9200".into()),
+            None,
+        )
+        .await
+        .unwrap();
+    }
+
+    let fed_outcome = serde_json::to_value(HeroOutcome {
+        reason: "completed",
+        players: std::collections::BTreeMap::from([
+            (
+                player_a.player_id,
+                HeroVictory {
+                    hero: "Kestrel",
+                    victory: &Value::Bool(true),
+                },
+            ),
+            (
+                player_b.player_id,
+                HeroVictory {
+                    hero: "Kestrel",
+                    victory: &Value::Bool(true),
+                },
+            ),
+        ]),
+    })
+    .unwrap();
+
+    db_a.execute_batch(
+        "CREATE TRIGGER reject_fed_finished BEFORE INSERT ON events
+         WHEN json_extract(NEW.body,'$.type')='match_finished'
+         BEGIN SELECT RAISE(ABORT, 'injected fed failure'); END;",
+    )
+    .unwrap();
+    assert!(
+        app_a
+            .federated_project(
+                intent_a.ticket,
+                "finished",
+                Some(fed_room),
+                None,
+                Some(fed_outcome.clone()),
+            )
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        db_a.query_row(
+            "SELECT count(*) FROM ce_completed WHERE player=? AND room=?",
+            params![player_a.player_id.to_string(), fed_room.to_string()],
+            |r| r.get::<_, i64>(0),
+        )
+        .unwrap(),
+        0
+    );
+    db_a.execute_batch("DROP TRIGGER reject_fed_finished")
+        .unwrap();
+
+    for (app, ticket) in [(&app_a, intent_a.ticket), (&app_b, intent_b.ticket)] {
+        app.federated_project(
+            ticket,
+            "finished",
+            Some(fed_room),
+            None,
+            Some(fed_outcome.clone()),
+        )
+        .await
+        .unwrap();
+        app.federated_project(
+            ticket,
+            "finished",
+            Some(fed_room),
+            None,
+            Some(fed_outcome.clone()),
+        )
+        .await
+        .unwrap();
+        assert!(matches!(
+            app.federated_project(
+                ticket,
+                "finished",
+                Some(fed_room),
+                None,
+                Some(conflicting_outcome.clone()),
+            )
+            .await,
+            Err(PlatformError::Conflict(_))
+        ));
+    }
+
+    let stats_a = wire_activity(&meta_a, player_a.player_id).await;
+    assert_eq!(stats_a["completed"], 2);
+    assert_eq!(stats_a["wins"], 2);
+    assert_eq!(stats_a["winsToday"], 2);
+    assert_eq!(stats_a["wins_aral"], 1);
+    assert_eq!(stats_a["wins_casual"], 1);
+    assert_eq!(stats_a["wins_ranked"], 1);
+    assert_eq!(stats_a["winStreak"], 2);
+    assert_eq!(
+        meta_a.hero_stats(player_a.player_id).await.unwrap(),
+        serde_json::to_value([
+            HeroStats {
+                hero: "Kestrel",
+                completed: 1,
+                wins: 1
+            },
+            HeroStats {
+                hero: "Ringo",
+                completed: 1,
+                wins: 1
+            },
+        ])
+        .unwrap()
+    );
+    let stats_b = wire_activity(&meta_b, player_b.player_id).await;
+    assert_eq!(stats_b["completed"], 1);
+    assert_eq!(stats_b["wins"], 1);
+    assert_eq!(stats_b["wins_ranked"], 1);
+    assert_eq!(stats_b["winStreak"], 1);
+    for (db, player, expected) in [
+        (&db_a, player_a.player_id, 2_u32),
+        (&db_b, player_b.player_id, 1_u32),
+    ] {
+        for quest in ["complete", "win"] {
+            let progress: u32 = db
+                .query_row(
+                    "SELECT progress FROM community_quest_states WHERE player=? AND quest=?",
+                    params![player.to_string(), quest],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(progress, expected);
+        }
+        let handles: i64 = db
+            .query_row(
+                "SELECT count(*) FROM ce_match_handles WHERE room=? AND player=?",
+                params![fed_room.to_string(), player.to_string()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(handles, 1);
+    }
+
+    // 3. Reopen both homes and acknowledge federated post-match state.
+    drop(meta_a);
+    drop(meta_b);
+    drop(comm_a);
+    drop(comm_b);
+    drop(app_a);
+    drop(app_b);
+
+    let reopened_a = AppState::open(cfg_a, Arc::new(ReserveHost)).unwrap();
+    let reopened_b = AppState::open(cfg_b, Arc::new(ReserveHost)).unwrap();
+    let reopened_meta_a = Meta::open(&path_a).unwrap();
+    assert_eq!(
+        wire_activity(&reopened_meta_a, player_a.player_id).await,
+        stats_a
+    );
+    reopened_a
+        .acknowledge_post_match(&player_a.session_token)
+        .await
+        .unwrap();
+    reopened_b.federated_release(intent_b.ticket).await.unwrap();
+    assert!(
+        reopened_a
+            .profile(&player_a.session_token)
+            .await
+            .unwrap()
+            .lobby
+            .is_none()
+    );
+    assert!(
+        reopened_b
+            .profile(&player_b.session_token)
+            .await
+            .unwrap()
+            .lobby
+            .is_none()
+    );
+}

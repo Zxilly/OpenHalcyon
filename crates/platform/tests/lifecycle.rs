@@ -1214,3 +1214,620 @@ async fn notification_reader_reopens_legacy_events_and_authenticates_in_memory()
         );
     }
 }
+
+#[tokio::test]
+async fn duplicate_settlement_and_cross_home_federated_projection_are_consistent() {
+    let dir = tempfile::tempdir().unwrap();
+    let local_db_path = dir.path().join("local.sqlite");
+    let home_a_path = dir.path().join("home-a.sqlite");
+    let home_b_path = dir.path().join("home-b.sqlite");
+
+    let host = Arc::new(Host::default());
+    let local = AppState::open(
+        PlatformConfig {
+            database_path: local_db_path.clone(),
+            public_address: "localhost:8000".into(),
+            seats_per_match: 2,
+        },
+        host.clone(),
+    )
+    .unwrap();
+    let home_a = AppState::open(
+        PlatformConfig {
+            database_path: home_a_path.clone(),
+            public_address: "localhost:8001".into(),
+            seats_per_match: 2,
+        },
+        host.clone(),
+    )
+    .unwrap();
+    let home_b = AppState::open(
+        PlatformConfig {
+            database_path: home_b_path.clone(),
+            public_address: "localhost:8002".into(),
+            seats_per_match: 2,
+        },
+        host,
+    )
+    .unwrap();
+
+    let p1 = local.create_guest("LocalA".into()).await.unwrap();
+    let p2 = local.create_guest("LocalB".into()).await.unwrap();
+    for guest in [&p1, &p2] {
+        local
+            .join(&guest.session_token, "duo".into())
+            .await
+            .unwrap();
+    }
+    let local_room = local
+        .profile(&p1.session_token)
+        .await
+        .unwrap()
+        .lobby
+        .unwrap()
+        .match_id
+        .unwrap();
+    for guest in [&p1, &p2] {
+        local
+            .accept(&guest.session_token, local_room)
+            .await
+            .unwrap();
+    }
+
+    let blue_win = serde_json::to_value(Winner {
+        winner: TestTeam::Blue,
+    })
+    .unwrap();
+    let red_win = serde_json::to_value(Winner {
+        winner: TestTeam::Red,
+    })
+    .unwrap();
+
+    local.finish_match(local_room, blue_win.clone()).unwrap();
+    local.finish_match(local_room, blue_win.clone()).unwrap();
+    assert!(matches!(
+        local.finish_match(local_room, red_win.clone()),
+        Err(PlatformError::Conflict(_))
+    ));
+    assert!(matches!(
+        local.abort_match(local_room),
+        Err(PlatformError::Conflict(_))
+    ));
+    let local_db = rusqlite::Connection::open(&local_db_path).unwrap();
+    for guest in [&p1, &p2] {
+        let count: i64 = local_db
+            .query_row(
+                "SELECT count(*) FROM events WHERE player=? AND json_extract(body,'$.type')='match_finished'",
+                [guest.player_id.to_string()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1);
+    }
+
+    let pool = Uuid::new_v4();
+    let fed_room = Uuid::new_v4();
+    let guest_a = home_a.create_guest("HomeA".into()).await.unwrap();
+    let guest_b = home_b.create_guest("HomeB".into()).await.unwrap();
+    let intent_a = home_a
+        .federated_join(&guest_a.session_token, pool, "duo".into(), 2)
+        .await
+        .unwrap();
+    let intent_b = home_b
+        .federated_join(&guest_b.session_token, pool, "duo".into(), 2)
+        .await
+        .unwrap();
+    for (home, ticket) in [(&home_a, intent_a.ticket), (&home_b, intent_b.ticket)] {
+        home.federated_project(ticket, "offered", Some(fed_room), None, None)
+            .await
+            .unwrap();
+        home.federated_action(ticket, Some(fed_room), false)
+            .await
+            .unwrap();
+        home.federated_project(
+            ticket,
+            "playing",
+            Some(fed_room),
+            Some("127.0.0.1:9100".into()),
+            None,
+        )
+        .await
+        .unwrap();
+        home.federated_project(
+            ticket,
+            "finished",
+            Some(fed_room),
+            None,
+            Some(blue_win.clone()),
+        )
+        .await
+        .unwrap();
+        home.federated_project(
+            ticket,
+            "finished",
+            Some(fed_room),
+            None,
+            Some(blue_win.clone()),
+        )
+        .await
+        .unwrap();
+        assert!(matches!(
+            home.federated_project(
+                ticket,
+                "finished",
+                Some(fed_room),
+                None,
+                Some(red_win.clone()),
+            )
+            .await,
+            Err(PlatformError::Conflict(_))
+        ));
+    }
+
+    let lobby_a = home_a
+        .profile(&guest_a.session_token)
+        .await
+        .unwrap()
+        .lobby
+        .unwrap();
+    let lobby_b = home_b
+        .profile(&guest_b.session_token)
+        .await
+        .unwrap()
+        .lobby
+        .unwrap();
+    assert_eq!(lobby_a.match_id, Some(fed_room));
+    assert_eq!(lobby_b.match_id, Some(fed_room));
+    assert_eq!(lobby_a.phase, "finished");
+    assert_eq!(lobby_b.phase, "finished");
+    assert_eq!(lobby_a.result.as_ref(), Some(&blue_win));
+    assert_eq!(lobby_b.result.as_ref(), Some(&blue_win));
+
+    for (db_path, player_id) in [
+        (&home_a_path, guest_a.player_id),
+        (&home_b_path, guest_b.player_id),
+    ] {
+        let db = rusqlite::Connection::open(db_path).unwrap();
+        let finished_count: i64 = db
+            .query_row(
+                "SELECT count(*) FROM events WHERE player=? AND json_extract(body,'$.type')='match_finished'",
+                [player_id.to_string()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(finished_count, 1);
+        let settled_count: i64 = db
+            .query_row(
+                "SELECT count(*) FROM native_settlements WHERE room=?",
+                [fed_room.to_string()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(settled_count, 1);
+    }
+}
+
+#[tokio::test]
+async fn atomic_rollback_and_restart_recovery_for_local_and_federated_settlement() {
+    use halcyon_community::{Action, Community};
+    use halcyon_platform::HostedSpectator;
+
+    #[derive(Default)]
+    struct SpectatableHost;
+    impl MatchHost for SpectatableHost {
+        fn reserve(&self, reservation: Reservation) -> Result<HostedMatch, PlatformError> {
+            assert_eq!(reservation.mode, "duo");
+            Ok(HostedMatch {
+                address: "localhost:8001".into(),
+            })
+        }
+
+        fn spectate(
+            &self,
+            _match_id: Uuid,
+            _viewer: Uuid,
+        ) -> Result<HostedSpectator, PlatformError> {
+            Ok(HostedSpectator {
+                address: "localhost:8002".into(),
+                spectator_id: Uuid::new_v4(),
+            })
+        }
+
+        fn stop_spectating(
+            &self,
+            _match_id: Uuid,
+            _spectator_id: Uuid,
+        ) -> Result<(), PlatformError> {
+            Ok(())
+        }
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("rollback-restart.sqlite");
+    let config = PlatformConfig {
+        database_path: path.clone(),
+        public_address: "localhost:8000".into(),
+        seats_per_match: 2,
+    };
+    let host = Arc::new(SpectatableHost);
+    let state = AppState::open(config.clone(), host.clone()).unwrap();
+    let community = Community::open(&path).unwrap();
+
+    let local_party = party(&community, &state).await;
+    let local_captain = &local_party[0].session_token;
+    let local_member = &local_party[1].session_token;
+    state
+        .join_party_or_solo(local_captain, "duo".into(), 2)
+        .await
+        .unwrap();
+    let local_room = state
+        .profile(local_captain)
+        .await
+        .unwrap()
+        .lobby
+        .unwrap()
+        .match_id
+        .unwrap();
+    for token in [local_captain, local_member] {
+        state.accept(token, local_room).await.unwrap();
+    }
+
+    let watcher = state.create_guest("Watcher".into()).await.unwrap();
+    community
+        .observe_player(watcher.player_id, "Watcher".into(), true)
+        .await
+        .unwrap();
+    community
+        .execute(
+            watcher.player_id,
+            Action::RequestFriend {
+                target: local_party[0].player_id,
+            },
+        )
+        .await
+        .unwrap();
+    community
+        .execute(
+            local_party[0].player_id,
+            Action::ResolveFriend {
+                requester: watcher.player_id,
+                accept: true,
+            },
+        )
+        .await
+        .unwrap();
+    state
+        .start_spectating(&watcher.session_token, local_party[0].player_id)
+        .await
+        .unwrap();
+
+    let fed_party = party(&community, &state).await;
+    let fed_captain = &fed_party[0].session_token;
+    let fed_member = &fed_party[1].session_token;
+    let pool = Uuid::new_v4();
+    let fed_intent = state
+        .federated_join_party_or_solo(fed_captain, pool, "duo".into(), 2)
+        .await
+        .unwrap();
+    let fed_room = Uuid::new_v4();
+    state
+        .federated_project(fed_intent.ticket, "offered", Some(fed_room), None, None)
+        .await
+        .unwrap();
+    for token in [fed_captain, fed_member] {
+        state
+            .federated_action_as(token, fed_intent.ticket, Some(fed_room), false)
+            .await
+            .unwrap();
+    }
+    state
+        .federated_project(
+            fed_intent.ticket,
+            "playing",
+            Some(fed_room),
+            Some("localhost:9001".into()),
+            None,
+        )
+        .await
+        .unwrap();
+
+    let db = rusqlite::Connection::open(&path).unwrap();
+    db.execute_batch(
+        "CREATE TRIGGER reject_match_finished BEFORE INSERT ON events
+         WHEN json_extract(NEW.body,'$.type')='match_finished'
+         BEGIN SELECT RAISE(ABORT, 'injected settlement failure'); END;",
+    )
+    .unwrap();
+
+    let blue_win = serde_json::to_value(Winner {
+        winner: TestTeam::Blue,
+    })
+    .unwrap();
+    assert!(state.finish_match(local_room, blue_win.clone()).is_err());
+    assert!(
+        state
+            .federated_project(
+                fed_intent.ticket,
+                "finished",
+                Some(fed_room),
+                None,
+                Some(blue_win.clone()),
+            )
+            .await
+            .is_err()
+    );
+
+    assert_eq!(
+        db.query_row(
+            "SELECT phase FROM matches WHERE id=?",
+            [local_room.to_string()],
+            |row| row.get::<_, String>(0),
+        )
+        .unwrap(),
+        "playing"
+    );
+    assert_eq!(
+        db.query_row(
+            "SELECT phase FROM federated_queue WHERE ticket=?",
+            [fed_intent.ticket.to_string()],
+            |row| row.get::<_, String>(0),
+        )
+        .unwrap(),
+        "playing"
+    );
+    assert_eq!(
+        db.query_row(
+            "SELECT count(*) FROM spectator_sessions WHERE match_id=?",
+            [local_room.to_string()],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap(),
+        1
+    );
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM community_party_queues", [], |row| row
+            .get::<_, i64>(0),)
+            .unwrap(),
+        2
+    );
+    assert_eq!(
+        db.query_row(
+            "SELECT count(*) FROM events WHERE json_extract(body,'$.type') IN ('match_finished','spectator_left')",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap(),
+        0
+    );
+    assert_eq!(
+        db.query_row(
+            "SELECT count(*) FROM native_settlements WHERE room IN (?,?)",
+            rusqlite::params![local_room.to_string(), fed_room.to_string()],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap(),
+        0
+    );
+
+    drop(community);
+    drop(state);
+    let reopened = AppState::open(config.clone(), host.clone()).unwrap();
+    for token in [local_captain, local_member, fed_captain, fed_member] {
+        assert_eq!(
+            reopened.profile(token).await.unwrap().lobby.unwrap().phase,
+            "playing"
+        );
+    }
+    assert_eq!(
+        reopened
+            .profile(&watcher.session_token)
+            .await
+            .unwrap()
+            .lobby
+            .unwrap()
+            .phase,
+        "spectating"
+    );
+
+    db.execute_batch("DROP TRIGGER reject_match_finished")
+        .unwrap();
+    reopened.finish_match(local_room, blue_win.clone()).unwrap();
+    reopened
+        .federated_project(
+            fed_intent.ticket,
+            "finished",
+            Some(fed_room),
+            None,
+            Some(blue_win.clone()),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM spectator_sessions", [], |row| row
+            .get::<_, i64>(0),)
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM community_party_queues", [], |row| row
+            .get::<_, i64>(0),)
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        db.query_row(
+            "SELECT count(*) FROM events WHERE player=? AND json_extract(body,'$.type')='spectator_left'",
+            [watcher.player_id.to_string()],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap(),
+        1
+    );
+    assert_eq!(
+        db.query_row(
+            "SELECT count(*) FROM native_settlements WHERE room IN (?,?)",
+            rusqlite::params![local_room.to_string(), fed_room.to_string()],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap(),
+        2
+    );
+
+    drop(reopened);
+    let settled = AppState::open(config, host).unwrap();
+    for token in [local_captain, local_member, fed_captain, fed_member] {
+        let lobby = settled.profile(token).await.unwrap().lobby.unwrap();
+        assert_eq!(lobby.phase, "finished");
+        assert_eq!(lobby.result.as_ref(), Some(&blue_win));
+        assert!(lobby.settled_at_ms.is_some());
+        let notice = settled
+            .next_notification(token, 0, true)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            notice.kind(),
+            Some(halcyon_platform::EventKind::MatchFinished)
+        );
+    }
+    for player_id in [
+        local_party[0].player_id,
+        local_party[1].player_id,
+        fed_party[0].player_id,
+        fed_party[1].player_id,
+    ] {
+        let count: i64 = db
+            .query_row(
+                "SELECT count(*) FROM notification_events ne JOIN events e ON e.cursor=ne.event_cursor
+                 WHERE ne.player=? AND json_extract(e.body,'$.type')='match_finished'",
+                [player_id.to_string()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1);
+    }
+    for token in [local_captain, local_member] {
+        settled.acknowledge_post_match(token).await.unwrap();
+        assert!(settled.profile(token).await.unwrap().lobby.is_none());
+    }
+    assert!(matches!(
+        settled.federated_release(fed_intent.ticket).await,
+        Err(PlatformError::Conflict(_))
+    ));
+    settled
+        .federated_acknowledge(fed_captain, fed_intent.ticket)
+        .await
+        .unwrap();
+    settled
+        .federated_acknowledge(fed_captain, fed_intent.ticket)
+        .await
+        .unwrap();
+    assert!(settled.profile(fed_captain).await.unwrap().lobby.is_none());
+    assert_eq!(
+        settled
+            .profile(fed_member)
+            .await
+            .unwrap()
+            .lobby
+            .unwrap()
+            .phase,
+        "finished"
+    );
+    settled
+        .federated_acknowledge(fed_member, fed_intent.ticket)
+        .await
+        .unwrap();
+    assert!(settled.profile(fed_member).await.unwrap().lobby.is_none());
+}
+
+#[tokio::test]
+async fn abort_match_rolls_back_atomically_and_persists_idempotently() {
+    use halcyon_community::Community;
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("abort.sqlite");
+    let config = PlatformConfig {
+        database_path: path.clone(),
+        public_address: "localhost:8000".into(),
+        seats_per_match: 2,
+    };
+    let host = Arc::new(Host::default());
+    let state = AppState::open(config.clone(), host.clone()).unwrap();
+    let community = Community::open(&path).unwrap();
+    let players = party(&community, &state).await;
+    let captain = &players[0].session_token;
+    let member = &players[1].session_token;
+    state
+        .join_party_or_solo(captain, "duo".into(), 2)
+        .await
+        .unwrap();
+    let room = state
+        .profile(captain)
+        .await
+        .unwrap()
+        .lobby
+        .unwrap()
+        .match_id
+        .unwrap();
+    for token in [captain, member] {
+        state.accept(token, room).await.unwrap();
+    }
+
+    let db = rusqlite::Connection::open(&path).unwrap();
+    db.execute_batch(
+        "CREATE TRIGGER reject_match_aborted BEFORE INSERT ON events
+         WHEN json_extract(NEW.body,'$.type')='match_aborted'
+         BEGIN SELECT RAISE(ABORT, 'injected abort failure'); END;",
+    )
+    .unwrap();
+    assert!(state.abort_match(room).is_err());
+    assert_eq!(
+        db.query_row(
+            "SELECT phase FROM matches WHERE id=?",
+            [room.to_string()],
+            |row| { row.get::<_, String>(0) }
+        )
+        .unwrap(),
+        "playing"
+    );
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM community_party_queues", [], |row| {
+            row.get::<_, i64>(0)
+        })
+        .unwrap(),
+        1
+    );
+    assert_eq!(
+        db.query_row(
+            "SELECT count(*) FROM tickets WHERE match_id=?",
+            [room.to_string()],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap(),
+        2
+    );
+
+    db.execute_batch("DROP TRIGGER reject_match_aborted")
+        .unwrap();
+    state.abort_match(room).unwrap();
+    state.abort_match(room).unwrap();
+    assert!(matches!(
+        state.finish_match(
+            room,
+            serde_json::to_value(Winner {
+                winner: TestTeam::Blue,
+            })
+            .unwrap()
+        ),
+        Err(PlatformError::Conflict(_))
+    ));
+    drop(community);
+    drop(state);
+
+    let reopened = AppState::open(config, host).unwrap();
+    for token in [captain, member] {
+        assert!(reopened.profile(token).await.unwrap().lobby.is_none());
+    }
+    reopened.abort_match(room).unwrap();
+}

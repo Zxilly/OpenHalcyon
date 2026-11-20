@@ -67,6 +67,28 @@ impl AccountStore {
         })
     }
 
+    /// Run a deferred read on one SQLite snapshot.
+    pub fn read<T, E>(
+        &mut self,
+        read: impl FnOnce(&mut SqliteConnection) -> std::result::Result<T, E>,
+    ) -> std::result::Result<T, E>
+    where
+        E: From<diesel::result::Error>,
+    {
+        self.0.transaction(read)
+    }
+
+    /// Run an unauthenticated platform mutation in an immediate SQLite transaction.
+    pub fn write<T, E>(
+        &mut self,
+        apply: impl FnOnce(&mut SqliteConnection) -> std::result::Result<T, E>,
+    ) -> std::result::Result<T, E>
+    where
+        E: From<diesel::result::Error>,
+    {
+        self.0.immediate_transaction(apply)
+    }
+
     /// Run a deferred read on the same SQLite snapshot as session validation.
     pub fn read_as<T, E>(
         &mut self,
@@ -76,7 +98,7 @@ impl AccountStore {
     where
         E: From<Error> + From<diesel::result::Error>,
     {
-        self.0.transaction(|db| {
+        self.read(|db| {
             let player = session_owner(db, session_key)?;
             read(db, &player)
         })
@@ -91,7 +113,7 @@ impl AccountStore {
     where
         E: From<Error> + From<diesel::result::Error>,
     {
-        self.0.immediate_transaction(|db| {
+        self.write(|db| {
             let player = session_owner(db, session_key)?;
             apply(db, &player)
         })

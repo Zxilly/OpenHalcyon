@@ -1,5 +1,4 @@
 use crate::{EventBody, LobbyPhase};
-use halcyon_community::queue as community_queue;
 use rusqlite::{Connection, OptionalExtension, Row, Transaction, params};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -7,10 +6,7 @@ use uuid::Uuid;
 
 use super::{
     AppState, BotDifficulty, PlatformError, Result, digest, event, player,
-    queue::{
-        Roster, add_difficulty_column, community_error, read_difficulty, validate_difficulty,
-        validate_mode,
-    },
+    queue::{Roster, add_difficulty_column, read_difficulty, validate_difficulty, validate_mode},
 };
 
 pub struct FederatedOfferBinding {
@@ -475,119 +471,6 @@ impl AppState {
                     ));
                 }
                 apply_action(tx, &intent, &intent.player.to_string(), accept, cancel)
-            })
-        })
-        .await
-    }
-
-    /// Apply an observed state from a committed federation record.
-    pub async fn federated_project(
-        &self,
-        ticket: Uuid,
-        phase: &str,
-        match_id: Option<Uuid>,
-        address: Option<String>,
-        result: Option<Value>,
-    ) -> Result<()> {
-        let phase = LobbyPhase::parse(phase)
-            .ok_or(PlatformError::Invalid("invalid federated projection"))?;
-        match phase {
-            LobbyPhase::Queued | LobbyPhase::Closed => {}
-            LobbyPhase::Offered | LobbyPhase::Finished if match_id.is_some() => {}
-            LobbyPhase::Playing
-                if match_id.is_some() && address.as_ref().is_some_and(|a| !a.trim().is_empty()) => {
-            }
-            _ => return Err(PlatformError::Invalid("invalid federated projection")),
-        }
-        let ticket = ticket.to_string();
-        self.run(move |state| state.transaction(|tx| {
-            let Some(intent) = intent_by_ticket(tx, &ticket)? else {
-                return Ok(());
-            };
-            let previous=LobbyPhase::parse(&intent.phase);
-            if previous == Some(phase) && intent.match_id == match_id && intent.address == address && intent.result == result {
-                return Ok(());
-            }
-            if previous == Some(LobbyPhase::Closed) || (previous == Some(LobbyPhase::Finished) && phase != LobbyPhase::Closed)
-                || (previous == Some(LobbyPhase::Playing) && !matches!(phase, LobbyPhase::Playing | LobbyPhase::Finished | LobbyPhase::Closed))
-            {
-                return Err(PlatformError::Conflict("stale federated state"));
-            }
-            if matches!(previous, Some(LobbyPhase::Playing | LobbyPhase::Finished)) && phase != LobbyPhase::Closed && match_id != intent.match_id {
-                return Err(PlatformError::Conflict("federated match identity changed"));
-            }
-            let match_string = match_id.map(|id| id.to_string());
-            let accepted = intent.accepted_match.filter(|id| Some(*id) == match_id)
-                .map(|id| id.to_string());
-            tx.execute(
-                "UPDATE federated_queue SET phase=?, match_id=?, address=?, result=?, accepted_match=? WHERE ticket=?",
-                params![phase.as_str(), match_string, address, result.as_ref().map(Value::to_string), accepted, ticket],
-            )?;
-            if intent.match_id != match_id {
-                tx.execute(
-                    "UPDATE federated_queue_members SET accepted_match=NULL WHERE ticket=?",
-                    [&ticket],
-                )?;
-            }
-            if matches!(phase, LobbyPhase::Closed | LobbyPhase::Finished) {
-                community_queue::release(tx, &ticket).map_err(community_error)?;
-            }
-            let message = match phase {
-                LobbyPhase::Queued => EventBody::Queued { mode: &intent.mode },
-                LobbyPhase::Offered => EventBody::MatchOffered { match_id: match_id.ok_or(PlatformError::HostUnavailable)?, mode: &intent.mode },
-                LobbyPhase::Playing => EventBody::MatchPlaying { match_id: match_id.ok_or(PlatformError::HostUnavailable)?, address: address.as_deref().ok_or(PlatformError::HostUnavailable)? },
-                LobbyPhase::Finished => EventBody::MatchFinished { match_id: match_id.ok_or(PlatformError::HostUnavailable)?, result: result.as_ref() },
-                LobbyPhase::Closed if intent.match_id.or(match_id).is_some() => EventBody::MatchAborted { match_id: match_id.or(intent.match_id).ok_or(PlatformError::HostUnavailable)?, reason: crate::AbortReason::FederationClosed },
-                _ => EventBody::QueueLeft,
-            };
-            tx.execute(
-                "INSERT INTO events(player,body) SELECT player, ? FROM federated_queue_members
-                 WHERE ticket=? AND released=0 ORDER BY pos",
-                params![message.encode()?, ticket],
-            )?;
-            Ok(())
-        })).await
-    }
-
-    /// Release one participant's local claim after they exit results.
-    pub async fn federated_acknowledge(&self, token: &str, ticket: Uuid) -> Result<()> {
-        let key = digest(token);
-        self.run(move |state| {
-            state.transaction(|tx| {
-                let id = player(tx, &key)?;
-                let Some(intent) = intent_for_player(tx, &id)? else {
-                    return Ok(());
-                };
-                if intent.ticket != ticket || intent.phase_kind() != Some(LobbyPhase::Finished) {
-                    return Err(PlatformError::Conflict("federated ticket is still active"));
-                }
-                acknowledge(tx, &intent, &id)
-            })
-        })
-        .await
-    }
-
-    /// Release the entire closed ticket, or acknowledge a single-player result.
-    pub async fn federated_release(&self, ticket: Uuid) -> Result<()> {
-        let ticket = ticket.to_string();
-        self.run(move |state| {
-            state.transaction(|tx| {
-                let Some(intent) = intent_by_ticket(tx, &ticket)? else {
-                    return Ok(());
-                };
-                match intent.phase_kind() {
-                    Some(LobbyPhase::Closed) => {
-                        community_queue::release(tx, &ticket).map_err(community_error)?;
-                        tx.execute("DELETE FROM federated_queue WHERE ticket=?", [&ticket])?;
-                        Ok(())
-                    }
-                    Some(LobbyPhase::Finished) if intent.players.len() == 1 => {
-                        acknowledge(tx, &intent, &intent.player.to_string())
-                    }
-                    _ => Err(PlatformError::Conflict(
-                        "each party member must exit individually",
-                    )),
-                }
             })
         })
         .await

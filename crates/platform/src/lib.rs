@@ -398,23 +398,6 @@ impl AppState {
         })
     }
 
-    /// Ends an active match after the trusted host confirms it can no longer run.
-    pub fn abort_match(&self, match_id: Uuid) -> Result<()> {
-        let match_id = match_id.to_string();
-        self.transaction(|tx| {
-            let phase: Option<String> = tx
-                .query_row("SELECT phase FROM matches WHERE id=?", [&match_id], |row| {
-                    row.get(0)
-                })
-                .optional()?;
-            match phase.as_deref().and_then(LobbyPhase::parse) {
-                Some(LobbyPhase::Playing) => abort(tx, &match_id, AbortReason::HostStopped),
-                Some(LobbyPhase::Aborted) => Ok(()),
-                _ => Err(PlatformError::Conflict("match is not playing")),
-            }
-        })
-    }
-
     /// Expire unanswered offers. A deployment may call this periodically.
     pub async fn expire_offers(&self) -> Result<()> {
         self.run(|state| {
@@ -432,45 +415,6 @@ impl AppState {
             })
         })
         .await
-    }
-
-    /// Record a terminal result once. Each participant acknowledges it with leave.
-    pub fn finish_match(&self, match_id: Uuid, result: Value) -> Result<()> {
-        let match_id = match_id.to_string();
-        self.transaction(|tx| {
-            let row = tx
-                .query_row(
-                    "SELECT phase, result FROM matches WHERE id=?",
-                    [&match_id],
-                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
-                )
-                .optional()?;
-            match row.map(|(phase, result)| (LobbyPhase::parse(&phase), result)) {
-                Some((Some(LobbyPhase::Finished), stored)) => {
-                    if stored.as_deref() == Some(result.to_string().as_str()) {
-                        return Ok(());
-                    }
-                    return Err(PlatformError::Conflict("match has a different result"));
-                }
-                Some((Some(LobbyPhase::Playing), _)) => {}
-                _ => return Err(PlatformError::Conflict("match is not playing")),
-            }
-            tx.execute(
-                "UPDATE matches SET phase='finished', result=? WHERE id=?",
-                params![result.to_string(), match_id],
-            )?;
-            queue::release_matches(tx, &match_id)?;
-            spectator::close_match(tx, &match_id)?;
-            announce(
-                tx,
-                &match_id,
-                EventBody::MatchFinished {
-                    match_id: parse_id(&match_id)?,
-                    result: Some(&result),
-                },
-            )?;
-            Ok(())
-        })
     }
 }
 
