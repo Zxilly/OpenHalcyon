@@ -1673,6 +1673,7 @@ dependencies = [
  "argon2",
  "async-trait",
  "axum",
+ "diesel",
  "halcyon-community",
  "halcyon-data",
  "halcyon-protocol",

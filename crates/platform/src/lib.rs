@@ -7,6 +7,7 @@ mod chat;
 mod event_body;
 mod federation;
 mod native_offer;
+mod settlement;
 use event_body::EventBody;
 pub use event_body::{AbortReason, EventKind, LobbyPhase};
 mod notification;

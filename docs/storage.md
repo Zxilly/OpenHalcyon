@@ -6,7 +6,7 @@ The platform identity path uses the SQLite backend of Diesel 2.3.4 with embedded
 
 Account lookup uses a typed Diesel query. Account linking validates the session and inserts the unique login/owner pair in one immediate SQLite transaction. Password verification stays outside SQLite's write transaction. Afterwards, the transaction verifies that the password record still matches and rotates recovery and session digests atomically. Guest creation and recovery use the same session-issuance helper as password login. Creation inserts the player and session together. Recovery keeps the existing recovery digest, and each successful recovery replaces the previous session while marking the player online. Rename and logout use the same ORM connection. A repeated logout removes no row and sends no change notification.
 
-Recipient-local notification reads authorize the session and select its cursor and event on one Diesel read snapshot. Existing SQLite triggers assign recipient-local ordinals and the legacy backfill remains in place.
+Recipient-local notification reads authorize the session and select its cursor and event on one Diesel read snapshot. Existing SQLite triggers assign recipient-local ordinals and the legacy backfill remains in place. Native post-match acknowledgement uses an immediate Diesel transaction for its session check, terminal-state check, seat release and notification. An active queue or match retains its seat.
 
 Composite lobby profiles and matchmaking code continue to use the existing connection to the same underlying database. Their authorization checks stay in their own transactions until the relevant lobby tables migrate together. There is one authoritative copy of each identity table.
 

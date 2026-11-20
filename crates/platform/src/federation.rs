@@ -368,35 +368,6 @@ impl AppState {
         .await
     }
 
-    /// Acknowledge an existing result without cancelling a pending match or queue.
-    pub async fn acknowledge_post_match(&self, token: &str) -> Result<()> {
-        let key = digest(token);
-        self.run(move |state| {
-            state.transaction(|tx| {
-                let id = player(tx, &key)?;
-                let conflict = || PlatformError::Conflict("no finished match to acknowledge");
-                if let Some(intent) = intent_for_player(tx, &id)? {
-                    return match intent.phase_kind() {
-                        Some(LobbyPhase::Finished) => acknowledge(tx, &intent, &id),
-                        Some(LobbyPhase::Closed) => Ok(()),
-                        _ => Err(conflict()),
-                    };
-                }
-                let current = tx.query_row(
-                    "SELECT m.id,m.phase FROM tickets t LEFT JOIN matches m ON t.match_id=m.id WHERE t.player=?",
-                    [&id],
-                    |row| Ok((row.get::<_, Option<String>>(0)?, row.get::<_, Option<String>>(1)?)),
-                ).optional()?;
-                match current {
-                    None => Ok(()),
-                    Some((Some(match_id), Some(phase))) if LobbyPhase::parse(&phase) == Some(LobbyPhase::Finished) =>
-                        crate::acknowledge_local_result(tx, &id, &match_id),
-                    _ => Err(conflict()),
-                }
-            })
-        }).await
-    }
-
     /// Record a leave request or acknowledge finished results atomically.
     /// A caller absent from this pool already satisfies the leave request.
     pub async fn federated_begin_leave(

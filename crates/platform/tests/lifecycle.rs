@@ -603,10 +603,35 @@ async fn federated_party_keeps_roster_and_acknowledges_each_player() {
         )
         .await
         .unwrap();
-    state
-        .federated_acknowledge(captain, intent.ticket)
-        .await
+    let db = rusqlite::Connection::open(&path).unwrap();
+    db.execute_batch(
+        "CREATE TRIGGER reject_post_match_left BEFORE INSERT ON events
+         WHEN json_extract(NEW.body,'$.type')='post_match_left'
+         BEGIN SELECT RAISE(ABORT, 'injected notification failure'); END;",
+    )
+    .unwrap();
+    assert!(state.acknowledge_post_match(captain).await.is_err());
+    assert_eq!(
+        state
+            .profile(captain)
+            .await
+            .unwrap()
+            .lobby
+            .unwrap()
+            .match_id,
+        Some(id),
+    );
+    db.execute_batch("DROP TRIGGER reject_post_match_left")
         .unwrap();
+
+    state.acknowledge_post_match(captain).await.unwrap();
+    state.acknowledge_post_match(captain).await.unwrap();
+    let events: i64 = db.query_row(
+        "SELECT count(*) FROM events WHERE player=? AND json_extract(body, '$.type')='post_match_left'",
+        [players[0].player_id.to_string()],
+        |row| row.get(0),
+    ).unwrap();
+    assert_eq!(events, 1);
     assert!(state.profile(captain).await.unwrap().lobby.is_none());
     assert_eq!(
         state.profile(member).await.unwrap().lobby.unwrap().phase,
@@ -621,10 +646,7 @@ async fn federated_party_keeps_roster_and_acknowledges_each_player() {
     let pending = state.pending_federated_intents(pool).await.unwrap();
     assert_eq!(pending.len(), 1);
     assert_eq!(pending[0].ticket, new.ticket);
-    state
-        .federated_acknowledge(member, intent.ticket)
-        .await
-        .unwrap();
+    state.acknowledge_post_match(member).await.unwrap();
     assert_eq!(state.federated_intents(pool).await.unwrap().len(), 1);
 }
 

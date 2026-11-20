@@ -67,6 +67,21 @@ impl AccountStore {
         })
     }
 
+    /// Run a platform mutation on the same connection as its session check.
+    pub fn write_as<T, E>(
+        &mut self,
+        session_key: &[u8],
+        apply: impl FnOnce(&mut SqliteConnection, &str) -> std::result::Result<T, E>,
+    ) -> std::result::Result<T, E>
+    where
+        E: From<Error> + From<diesel::result::Error>,
+    {
+        self.0.immediate_transaction(|db| {
+            let player = session_owner(db, session_key)?;
+            apply(db, &player)
+        })
+    }
+
     pub fn link(&mut self, session_key: &[u8], login: &str, hash: &str) -> Result<()> {
         self.0.immediate_transaction(|db| {
             let player = session_owner(db, session_key)?;
