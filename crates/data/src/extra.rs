@@ -2,23 +2,6 @@
 use sha2::Sha256;
 use std::{collections::BTreeSet, io, path::Path};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum AbilityParameter {
-    Cooldown,
-    EnergyCost,
-    Range,
-}
-
-impl AbilityParameter {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Cooldown => "Cooldown",
-            Self::EnergyCost => "Energy Cost",
-            Self::Range => "Range",
-        }
-    }
-}
-
 #[derive(Default, Debug)]
 pub struct ExtraData {
     pub(crate) references: Option<crate::reference::References>,

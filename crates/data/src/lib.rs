@@ -1,4 +1,6 @@
 //! Read the separately supplied 4.13.4 delivery. Unknown fields retain their original names and values.
+mod ability_parameter;
+pub use ability_parameter::{AbilityParameter, DamageOperand, TalentParameter};
 pub mod combat_content;
 mod difficulty;
 mod entity_template;
@@ -17,7 +19,7 @@ pub mod skins;
 mod unit_rewards;
 pub use difficulty::BotDifficulty;
 pub use entity_template::EntityTemplate;
-pub use extra::{AbilityParameter, ExtraData};
+pub use extra::ExtraData;
 pub use halcyon_protocol::ce::{KnownQueue, NativeMode};
 pub use unit_rewards::SoloLaneRewards;
 

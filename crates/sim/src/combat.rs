@@ -31,6 +31,8 @@ enum Skill {
     Wind,
     Strike,
     Chakram,
+    Pursuit,
+    Overwhelm,
     ChillWinds,
     WinterSpire,
     FishFood,
@@ -42,6 +44,8 @@ fn skill(hero: u16, slot: AbilitySlot) -> Option<Skill> {
     use Skill::*;
     Some(match (EntityTemplate::from_raw(hero)?, slot) {
         (EntityTemplate::Idris, B) => Chakram,
+        (EntityTemplate::Catherine, A) => Pursuit,
+        (EntityTemplate::Yates, B) => Overwhelm,
         (EntityTemplate::Reim, A) => WinterSpire,
         (EntityTemplate::Reim, B) => ChillWinds,
         (EntityTemplate::Lorelai, A) => FishFood,
@@ -67,6 +71,8 @@ pub(super) struct Cast {
 }
 #[derive(Clone, Copy, Default, Debug, Serialize)]
 pub(super) struct Status {
+    pub(super) overwhelm: Option<super::overwhelm::Charge>,
+    pub(super) pursuit: Option<super::pursuit::PursuitAttack>,
     pub(super) double_down: Option<u32>,
     pub(super) stamina_spent: f32,
     pub(super) stamina_spent_at: u64,
@@ -171,6 +177,8 @@ impl ExtraCast {
 #[derive(Clone, Debug, Serialize)]
 pub(super) struct AbilityBook {
     extra_casts: [ExtraCast; Skill::Waterwall as usize + 1],
+    pub(super) pursuit: Option<super::pursuit::Pursuit>,
+    pub(super) overwhelm: Option<super::overwhelm::Overwhelm>,
     chill_winds: Option<super::native_combat::ChillWinds>,
     winter_spire: Option<super::native_combat::WinterSpire>,
     other: Option<super::native_combat::OtherSpells>,
@@ -200,6 +208,8 @@ impl Default for AbilityBook {
     fn default() -> Self {
         Self {
             extra_casts: Default::default(),
+            pursuit: None,
+            overwhelm: None,
             chill_winds: None,
             winter_spire: None,
             other: None,
@@ -274,6 +284,8 @@ impl AbilityBook {
         for (skill, hero, slot, ranks) in [
             (Skill::Chakram, "Idris", "B", 5),
             (Skill::WinterSpire, "Reim", "A", 5),
+            (Skill::Pursuit, "Catherine", "A", 5),
+            (Skill::Overwhelm, "Yates", "B", 5),
             (Skill::ChillWinds, "Reim", "B", 5),
             (Skill::FishFood, "Lorelai", "A", 5),
             (Skill::Splashdown, "Lorelai", "B", 5),
@@ -295,6 +307,8 @@ impl AbilityBook {
         }
         Ok(Self {
             extra_casts,
+            pursuit: super::pursuit::Pursuit::load(data)?,
+            overwhelm: super::overwhelm::Overwhelm::load(data)?,
             chill_winds: super::native_combat::ChillWinds::load(data)?,
             winter_spire: super::native_combat::WinterSpire::load(data)?,
             other: super::native_combat::OtherSpells::load(data)?,
@@ -336,7 +350,7 @@ impl World {
     fn rules(&self, s: Skill, rank: usize) -> Rules {
         let (range, cost, windup, seconds) = match s {
             Skill::WinterSpire => (0., 0., 2, 0.),
-            Skill::ChillWinds => (0., 0., 1, 0.),
+            Skill::Pursuit | Skill::Overwhelm | Skill::ChillWinds => (0., 0., 1, 0.),
             Skill::Chakram => (8.5, 10., 4, 8.),
             Skill::FishFood => (
                 if rank == 4 { 9.5 } else { 8. },
@@ -373,6 +387,8 @@ impl World {
     fn modeled_skill(&self, hero: u16, slot: AbilitySlot) -> Option<Skill> {
         skill(hero, slot).filter(|s| match s {
             Skill::WinterSpire => self.abilities.winter_spire.is_some(),
+            Skill::Pursuit => self.abilities.pursuit.is_some(),
+            Skill::Overwhelm => self.abilities.overwhelm.is_some(),
             Skill::ChillWinds => self.abilities.chill_winds.is_some(),
             _ => true,
         })
@@ -442,7 +458,12 @@ impl World {
         }
         let point = match (s, target) {
             (
-                Skill::ChillWinds | Skill::Twirl | Skill::Gift | Skill::Agent,
+                Skill::Pursuit
+                | Skill::Overwhelm
+                | Skill::ChillWinds
+                | Skill::Twirl
+                | Skill::Gift
+                | Skill::Agent,
                 CastTarget::SelfCast,
             ) => e.position,
             (
@@ -545,6 +566,15 @@ impl World {
             _ => origin,
         };
         match s {
+            Skill::Pursuit => {
+                let rules = self.abilities.pursuit.as_ref().unwrap();
+                self.entities[i].status.pursuit = Some(rules.arm(r, self.tick, cp));
+                self.entities[i].next_attack = self.tick;
+            }
+            Skill::Overwhelm => {
+                let rules = self.abilities.overwhelm.as_ref().unwrap();
+                self.entities[i].status.overwhelm = Some(rules.charge(r, self.tick, cp));
+            }
             Skill::ChillWinds => {
                 let b = self
                     .abilities

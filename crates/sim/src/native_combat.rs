@@ -1,5 +1,7 @@
 //! Rank parameters for modeled releases whose damage block has a single verified role.
-use halcyon_data::{GameData, combat_content::Ability};
+use halcyon_data::{
+    AbilityParameter, DamageOperand, GameData, TalentParameter, combat_content::Ability,
+};
 use serde::Serialize;
 
 #[derive(Clone, Debug, Serialize)]
@@ -10,7 +12,8 @@ pub(super) struct Damage<const N: usize> {
     weapon: f32,
 }
 impl<const N: usize> Damage<N> {
-    fn named(a: &Ability, label: &str) -> Result<Self, String> {
+    pub(super) fn named(a: &Ability, operand: DamageOperand) -> Result<Self, String> {
+        let label = operand.as_str();
         let block = a
             .damage(label)
             .ok_or_else(|| format!("missing or ambiguous {} damage {label}", a.ability_id))?;
@@ -28,7 +31,11 @@ impl<const N: usize> Damage<N> {
         self.ranks[rank] + self.crystal * crystal + self.weapon * weapon
     }
 }
-fn ranks<const N: usize>(a: &Ability, key: &str) -> Result<[f32; N], String> {
+pub(super) fn ranks<const N: usize>(
+    a: &Ability,
+    parameter: AbilityParameter,
+) -> Result<[f32; N], String> {
+    let key = parameter.as_str();
     a.variable(key)
         .and_then(|v| v.ranks.as_deref())
         .and_then(|r| r.try_into().ok())
@@ -46,9 +53,9 @@ impl Achilles {
             return Ok(None);
         };
         Ok(Some(Self {
-            damage: Damage::named(a, "Damage")?,
-            duration: ranks(a, "SlowDuration")?,
-            slow: ranks(a, "SlowStrength")?,
+            damage: Damage::named(a, DamageOperand::Damage)?,
+            duration: ranks(a, AbilityParameter::SlowDuration)?,
+            slow: ranks(a, AbilityParameter::SlowStrength)?,
         }))
     }
 }
@@ -63,8 +70,8 @@ impl ChakramRanks {
             return Ok(None);
         };
         Ok(Some(Self {
-            damage: Damage::named(a, "Damage on Passthrough")?,
-            stamina_from_hero: ranks(a, "Stamina From Hero Impacts")?,
+            damage: Damage::named(a, DamageOperand::DamageOnPassthrough)?,
+            stamina_from_hero: ranks(a, AbilityParameter::StaminaFromHeroImpacts)?,
         }))
     }
 }
@@ -103,16 +110,16 @@ impl super::World {
         {
             return Err("unsupported talent for hero");
         }
-        let value = |label: &str| {
+        let value = |label: TalentParameter| {
             talent
-                .modifier(label)
+                .modifier(label.as_str())
                 .and_then(|m| m.value_at(level, e.item_stats.crystal, e.stats.weapon))
                 .ok_or("unsupported talent modifier")
         };
         e.long_shot = Some(LongShot {
-            range: value("BONUS_RANGE")?,
-            damage: value("DAMAGE_MODIFIER")?,
-            cooldown: value("COOLDOWN_MODIFIER")?,
+            range: value(TalentParameter::BonusRange)?,
+            damage: value(TalentParameter::DamageModifier)?,
+            cooldown: value(TalentParameter::CooldownModifier)?,
         });
         Ok(())
     }
@@ -131,10 +138,10 @@ impl TwirlingSilver {
             return Ok(None);
         };
         Ok(Some(Self {
-            damage: Damage::named(a, "BonusCrystalDamage")?,
-            duration: ranks(a, "SpeedBuffDuration")?,
-            attack_speed: ranks(a, "BonusASPDStrength")?,
-            move_speed: ranks(a, "BonusMSPDStrength")?,
+            damage: Damage::named(a, DamageOperand::BonusCrystalDamage)?,
+            duration: ranks(a, AbilityParameter::SpeedBuffDuration)?,
+            attack_speed: ranks(a, AbilityParameter::BonusAttackSpeedStrength)?,
+            move_speed: ranks(a, AbilityParameter::BonusMoveSpeedStrength)?,
         }))
     }
 }
@@ -173,26 +180,32 @@ impl LorelaiRanks {
             .ability("Lorelai", "Ability__Lorelai__C")
             .ok_or("missing Lorelai C")?;
         Ok(Some(Self {
-            impact: Damage::named(a, "IMPACT_DAMAGE")?,
-            per_second: Damage::named(a, "DAMAGE_PER_SEC")?,
-            stun: ranks(a, "STUN_DURATION")?,
-            hp_to_stun: ranks(a, "STUN_DURATION_RATIO")?,
-            stun_cap: ranks(a, "STUN_DURATION_CAP")?,
-            empowered_stun: ranks(a, "EMP_STUN_MULTIPLIER")?,
-            snap_delay: ranks(a, "REG_DELAY_TIME")?,
-            splash_delay: ranks(b, "SHOT_SPEED")?,
-            empowered_delay: ranks(b, "SHOT_SPEED_EMPOWERED")?,
-            slow: ranks(b, "SLOW")?,
-            hp_to_slow: ranks(b, "SLOW_RATIO")?,
-            slow_cap: ranks(b, "SLOW_CAP")?,
-            speed: ranks(b, "SPEED_BOOST")?,
-            barrier: ranks(c, "BARRIER_AMOUNT")?,
-            empowered_barrier: ranks(c, "E_BARRIER_AMOUNT")?,
-            hp_to_barrier: ranks(c, "BARRIER_RATIO")?,
-            crystal_to_barrier: c.variable("BARRIER_AMOUNT").unwrap().cp_ratio,
-            crystal_to_empowered_barrier: c.variable("E_BARRIER_AMOUNT").unwrap().cp_ratio,
-            duration: ranks(c, "DURATION")?,
-            empowered_duration: ranks(c, "E_DURATION")?,
+            impact: Damage::named(a, DamageOperand::LorelaiImpactDamage)?,
+            per_second: Damage::named(a, DamageOperand::LorelaiDamagePerSecond)?,
+            stun: ranks(a, AbilityParameter::AreaStunDuration)?,
+            hp_to_stun: ranks(a, AbilityParameter::StunDurationRatio)?,
+            stun_cap: ranks(a, AbilityParameter::StunDurationCap)?,
+            empowered_stun: ranks(a, AbilityParameter::EmpoweredStunMultiplier)?,
+            snap_delay: ranks(a, AbilityParameter::RegularDelayTime)?,
+            splash_delay: ranks(b, AbilityParameter::ShotSpeed)?,
+            empowered_delay: ranks(b, AbilityParameter::EmpoweredShotSpeed)?,
+            slow: ranks(b, AbilityParameter::Slow)?,
+            hp_to_slow: ranks(b, AbilityParameter::SlowRatio)?,
+            slow_cap: ranks(b, AbilityParameter::SlowCap)?,
+            speed: ranks(b, AbilityParameter::SpeedBoost)?,
+            barrier: ranks(c, AbilityParameter::BarrierAmount)?,
+            empowered_barrier: ranks(c, AbilityParameter::EmpoweredBarrierAmount)?,
+            hp_to_barrier: ranks(c, AbilityParameter::BarrierRatio)?,
+            crystal_to_barrier: c
+                .variable(AbilityParameter::BarrierAmount.as_str())
+                .unwrap()
+                .cp_ratio,
+            crystal_to_empowered_barrier: c
+                .variable(AbilityParameter::EmpoweredBarrierAmount.as_str())
+                .unwrap()
+                .cp_ratio,
+            duration: ranks(c, AbilityParameter::Duration)?,
+            empowered_duration: ranks(c, AbilityParameter::EmpoweredDuration)?,
         }))
     }
 }
@@ -210,16 +223,16 @@ impl Hellfire {
         let Some(c) = data.ability("Ringo", "Ability__Ringo__C") else {
             return Ok(None);
         };
-        let frequency: [f32; 3] = ranks(c, "TicksPerSecond")?;
+        let frequency: [f32; 3] = ranks(c, AbilityParameter::TicksPerSecond)?;
         if frequency != [1.; 3] {
             return Err("unsupported Hellfire tick frequency".into());
         }
         Ok(Some(Self {
-            impact: Damage::named(c, "ImpactDamage")?,
-            burn: Damage::named(c, "BurnDamagePerSecond")?,
-            radius: ranks(c, "ImpactSplashRadius")?,
-            burn_radius: ranks(c, "BurnRadius")?,
-            duration: ranks(c, "Burn_Duration")?,
+            impact: Damage::named(c, DamageOperand::ImpactDamage)?,
+            burn: Damage::named(c, DamageOperand::BurnDamagePerSecond)?,
+            radius: ranks(c, AbilityParameter::ImpactSplashRadius)?,
+            burn_radius: ranks(c, AbilityParameter::BurnRadius)?,
+            duration: ranks(c, AbilityParameter::BurnDuration)?,
         }))
     }
 }
@@ -242,9 +255,9 @@ pub(super) struct OtherSpells {
     pub karas: Damage<5>,
 }
 impl<const N: usize> Damage<N> {
-    fn variable(a: &Ability, key: &str) -> Result<Self, String> {
+    fn variable(a: &Ability, key: AbilityParameter) -> Result<Self, String> {
         let ranks = ranks(a, key)?;
-        let v = a.variable(key).expect("rank table already found");
+        let v = a.variable(key.as_str()).expect("rank table already found");
         Ok(Self {
             ranks,
             crystal: v.cp_ratio,
@@ -265,7 +278,7 @@ impl OtherSpells {
         let agent = get("Adagio", "Ability__Adagio__B")?;
         let sigil = get("Lyra", "Ability__Lyra__A")?;
         let saw = get("SAW", "Ability__SAW__B")?;
-        let saw_ticks = ranks(saw, "TicksDuringChannel")?;
+        let saw_ticks = ranks(saw, AbilityParameter::TicksDuringChannel)?;
         if saw_ticks
             .iter()
             .any(|&x| !(1. ..=255.).contains(&x) || x.fract() != 0.)
@@ -275,20 +288,20 @@ impl OtherSpells {
         let shin = get("Shin", "Ability__Shin__C")?;
         let wind = get("Karas", "Ability__Karas__B")?;
         Ok(Some(Self {
-            gift: Damage::variable(gift, "BurstHealStrength")?,
-            agent: Damage::variable(agent, "BaseBonusDamage")?,
-            self_agent: Damage::variable(agent, "SelfBonusDamage")?,
-            agent_duration: ranks(agent, "Stack_Duration")?,
-            sigil_dps: Damage::variable(sigil, "DamagePerSecond")?,
-            sigil_radius: ranks(sigil, "Radius")?,
-            saw_dps: Damage::variable(saw, "DAMAGE_PER_SECOND")?,
-            saw_duration: ranks(saw, "Channel_Duration")?,
+            gift: Damage::variable(gift, AbilityParameter::BurstHealStrength)?,
+            agent: Damage::variable(agent, AbilityParameter::BaseBonusDamage)?,
+            self_agent: Damage::variable(agent, AbilityParameter::SelfBonusDamage)?,
+            agent_duration: ranks(agent, AbilityParameter::StackDuration)?,
+            sigil_dps: Damage::variable(sigil, AbilityParameter::SigilDamagePerSecond)?,
+            sigil_radius: ranks(sigil, AbilityParameter::Radius)?,
+            saw_dps: Damage::variable(saw, AbilityParameter::SuppressingFireDamagePerSecond)?,
+            saw_duration: ranks(saw, AbilityParameter::ChannelDuration)?,
             saw_ticks,
-            saw_slow: ranks(saw, "SlowStrength")?,
-            saw_slow_duration: ranks(saw, "SlowDuration")?,
-            saw_minion_reduction: ranks(saw, "MINION_DAMAGE_REDUCTION")?,
-            shin: Damage::named(shin, "Damage")?,
-            karas: Damage::named(wind, "DAMAGE")?,
+            saw_slow: ranks(saw, AbilityParameter::SlowStrength)?,
+            saw_slow_duration: ranks(saw, AbilityParameter::SlowDuration)?,
+            saw_minion_reduction: ranks(saw, AbilityParameter::MinionDamageReduction)?,
+            shin: Damage::named(shin, DamageOperand::Damage)?,
+            karas: Damage::named(wind, DamageOperand::UppercaseDamage)?,
         }))
     }
 }
@@ -306,11 +319,11 @@ impl WinterSpire {
             return Ok(None);
         };
         Ok(Some(Self {
-            first: Damage::named(a, "Damage First Hit")?,
-            shatter: Damage::named(a, "Damage Second Hit")?,
-            radius: ranks(a, "Radius")?,
-            first_delay: ranks(a, "First Hit Delay")?,
-            shatter_delay: ranks(a, "Second Hit Delay")?,
+            first: Damage::named(a, DamageOperand::DamageFirstHit)?,
+            shatter: Damage::named(a, DamageOperand::DamageSecondHit)?,
+            radius: ranks(a, AbilityParameter::Radius)?,
+            first_delay: ranks(a, AbilityParameter::FirstHitDelay)?,
+            shatter_delay: ranks(a, AbilityParameter::SecondHitDelay)?,
         }))
     }
 }
@@ -327,9 +340,9 @@ impl ChillWinds {
             return Ok(None);
         };
         Ok(Some(Self {
-            damage: Damage::named(b, "Damage")?,
-            radius: ranks(b, "Range")?,
-            root_seconds: ranks(b, "B_RootDuration")?,
+            damage: Damage::named(b, DamageOperand::Damage)?,
+            radius: ranks(b, AbilityParameter::Range)?,
+            root_seconds: ranks(b, AbilityParameter::RootDuration)?,
         }))
     }
 }
@@ -353,6 +366,127 @@ mod tests {
         w.entities[1].position = Position { x: 10., y: 0. };
         w
     }
+    #[test]
+    #[ignore = "requires original delivery and supplemental combat data"]
+    fn catherine_pursuit_resets_the_basic_and_empowers_exactly_one_melee_hit() {
+        let data = original();
+        let mut w = room(&data, "Catherine");
+        w.entities[0].skill_points = 1;
+        w.entities[0].item_stats.crystal = 40.;
+        w.command(1, Command::Learn(AbilitySlot::A)).unwrap();
+        w.entities[1].position = Position {
+            x: w.entities[0].stats.range + 0.8,
+            y: 0.,
+        };
+        w.entities[1].stats.shield = 0.;
+        w.entities[0].energy = 29.;
+        let cast = Command::Cast {
+            slot: AbilitySlot::A,
+            target: CastTarget::SelfCast,
+        };
+        assert!(w.command(1, cast).is_err());
+        w.entities[0].energy = 100.;
+        assert!(
+            w.command(
+                1,
+                Command::Cast {
+                    slot: AbilitySlot::A,
+                    target: CastTarget::Entity(2)
+                }
+            )
+            .is_err()
+        );
+        assert_eq!(w.decide(0), cast);
+        w.entities[0].next_attack = 900;
+        w.command(1, cast).unwrap();
+        w.tick = 1;
+        w.advance_cast(0, &mut Vec::new());
+        assert_eq!(w.entities[0].energy, 70.);
+        assert_eq!(w.entities[0].cooldown[0], 321);
+        assert_eq!(w.entities[0].next_attack, 1);
+        let origin = w.entities[0].position;
+        w.command(1, Command::Attack(2)).unwrap();
+        let first: Vec<_> = (0..4).flat_map(|_| w.step()).collect();
+        assert!(first.iter().any(
+            |event| matches!(event,Event::Damage{source:1,target:2,amount,..} if *amount==75.)
+        ));
+        assert_eq!(w.entities[1].status.stun_until, 19);
+        assert_eq!(w.entities[0].status.pursuit.unwrap().armed_until, 0);
+        assert_eq!(w.entities[0].position, origin);
+        w.entities[1].position = origin;
+        let next: Vec<_> = (0..30).flat_map(|_| w.step()).collect();
+        assert!(next.iter().any(|e| matches!(
+            e,
+            Event::Attack {
+                source: 1,
+                target: 2
+            }
+        )));
+        assert!(!next.iter().any(|e| matches!(
+            e,
+            Event::Damage {
+                source: 1,
+                amount,
+                ..
+            } if *amount==75.
+        )));
+    }
+
+    #[test]
+    #[ignore = "requires original delivery and supplemental combat data"]
+    fn yates_overwhelm_checks_energy_then_hits_at_the_moving_caster_after_charge() {
+        let data = original();
+        let mut w = room(&data, "Yates");
+        w.entities[0].position = Position::default();
+        w.entities[1].position = Position { x: 3.5, y: 0. };
+        w.entities[0].energy = 59.;
+        w.entities[0].skill_points = 1;
+        w.command(1, Command::Learn(AbilitySlot::B)).unwrap();
+        let cast = Command::Cast {
+            slot: AbilitySlot::B,
+            target: CastTarget::SelfCast,
+        };
+        assert!(w.command(1, cast).is_err());
+        w.entities[0].energy = 100.;
+        w.entities[0].item_stats.crystal = 40.;
+        assert!(
+            w.command(
+                1,
+                Command::Cast {
+                    slot: AbilitySlot::B,
+                    target: CastTarget::Entity(2)
+                }
+            )
+            .is_err()
+        );
+        assert_eq!(w.decide(0), cast);
+        w.command(1, cast).unwrap();
+        let mut events = Vec::new();
+        w.tick = 1;
+        w.advance_cast(0, &mut events);
+        assert_eq!(w.entities[0].energy, 40.);
+        assert_eq!(w.entities[0].cooldown[1], 321);
+        w.entities[0].energy = 100.;
+        assert!(w.command(1, cast).is_err());
+        let old_hp = w.entities[1].hp;
+        w.entities[1].stats.shield = 0.;
+        w.entities[0].position = Position { x: 10., y: 0. };
+        w.entities[1].position = Position { x: 13.5, y: 0. };
+        w.entities[2].position = w.entities[0].position;
+        w.entities[3].position = Position { x: 13.51, y: 0. };
+        w.tick = 30;
+        w.advance_overwhelm(0, &mut events);
+        assert_eq!(w.entities[1].hp, old_hp);
+        w.tick = 31;
+        w.advance_overwhelm(0, &mut events);
+        assert_eq!(w.entities[1].hp, old_hp - 110.);
+        assert_eq!(w.entities[1].status.stun_until, 47);
+        assert_eq!(w.entities[2].status.stun_until, 0);
+        assert_eq!(w.entities[3].status.stun_until, 0);
+        w.advance_overwhelm(0, &mut events);
+        assert_eq!(w.entities[1].hp, old_hp - 110.);
+    }
+
     #[test]
     #[ignore = "requires original delivery and supplemental combat data"]
     fn chill_winds_roots_movement_only_and_matches_observed_lane_damage() {

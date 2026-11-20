@@ -18,7 +18,9 @@ mod native_learn;
 mod native_navigation;
 mod nav;
 use layout::Layout;
+mod overwhelm;
 mod progression;
+mod pursuit;
 mod score;
 mod shop;
 mod solo_route;
@@ -960,6 +962,10 @@ impl World {
                     .water_speed_bonus
                     .filter(|_| e.status.water_speed_until > self.tick)
                     .unwrap_or(0.)
+                + e.status
+                    .pursuit
+                    .filter(|p| self.tick < p.speed_until)
+                    .map_or(0., |p| p.speed)
                 + twirl.map_or(0., |(b, r)| b.move_speed[r])
                 + e.item_stats.boot_speed
                 + if self.tick < e.item_stats.sprint_until {
@@ -1163,6 +1169,9 @@ impl World {
                     self.award_xp(i, 0.45, events);
                 }
             }
+            if self.entities[i].status.overwhelm.is_some() {
+                self.advance_overwhelm(i, events);
+            }
             let hero = &self.entities[i];
             if hero.status.stun_until > self.tick {
                 continue;
@@ -1287,7 +1296,13 @@ impl World {
                         self.entities[i].winding = None;
                         continue;
                     }
-                    if e.position.dist(t.position) > e.stats.range || !self.combat_clear(e, t) {
+                    let pursuit = e.status.pursuit.filter(|p| {
+                        p.armed_until > self.tick
+                            && matches!(t.kind, Kind::Hero | Kind::Minion | Kind::Neutral)
+                    });
+                    if e.position.dist(t.position) > e.stats.range + pursuit.map_or(0., |p| p.range)
+                        || !self.combat_clear(e, t)
+                    {
                         let p = t.position;
                         self.entities[i].winding = None;
                         if self.entities[i].kind == Kind::Neutral {
@@ -1445,6 +1460,9 @@ impl World {
                         ));
                     } else {
                         self.hurt(source, team, j, damage, school, events);
+                    }
+                    if let Some(p) = pursuit {
+                        self.pursuit_impact(i, j, p, events);
                     }
                     if bonus_crystal > 0. {
                         if ranged {

@@ -241,3 +241,14 @@ Numeric native talent admission records a template and a shared authorized
 level. It cannot distinguish a named talent in a triplet. The authoritative
 named LongShot path needs an independently authenticated talent ID and level;
 the current native room does not infer it from selector or rarity.
+
+### Supplemental Bot skills
+
+The room selects heroes from the advertised hero list by seed and seat. With the supplemental definitions installed, the normal learn and cast commands drive these Bot skills.
+
+| Hero | Authoritative skill | Remaining skills |
+| --- | --- | --- |
+| Catherine | **A, Merciless Pursuit.** Self-cast resets the basic-attack timer and grants timed movement and melee reach bonuses. The next released basic against a hero, lane minion or neutral inside the window deals bonus crystal damage and stuns once. Overdrive increases the window and stun duration. | B Stormguard and C Blast Tremor |
+| Yates | **B, Overwhelm.** After charging for 1.5 seconds, Yates damages and stuns enemies within 3.5 units of his position at detonation. Allies, structures and units across a blocking wall are excluded. Overdrive increases the stun to one second. | A Wolf's Maw and C Iron Mandate |
+
+Both use the supplied rank costs, cooldowns and crystal ratios. The host uses its one-tick self-cast release, stun interruption rules and shield mitigation. Yates's asset lists an additional movement-strength variable whose timing and units are absent from both B tooltips. The model uses his normal movement during the charge. Native client selectors and dedicated presentation messages still require directional wire evidence.

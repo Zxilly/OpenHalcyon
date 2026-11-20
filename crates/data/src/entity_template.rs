@@ -24,6 +24,7 @@ macro_rules! entity_templates {
 }
 
 entity_templates! {
+    Catherine = 242,
     Ringo = 243,
     Adagio = 244,
     Saw = 250,

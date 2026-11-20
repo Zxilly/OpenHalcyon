@@ -97,6 +97,24 @@ impl World {
                 return Command::MoveTo(p);
             }
             if e.kind == Kind::Hero && t.kind == Kind::Hero {
+                if e.type_id == EntityTemplate::Catherine.as_raw()
+                    && self.pursuit_reaches(i, t.position)
+                    && self.can_cast(i, AbilitySlot::A, CastTarget::SelfCast)
+                {
+                    return Command::Cast {
+                        slot: AbilitySlot::A,
+                        target: CastTarget::SelfCast,
+                    };
+                }
+                if e.type_id == EntityTemplate::Yates.as_raw()
+                    && self.overwhelm_reaches(i, t.position)
+                    && self.can_cast(i, AbilitySlot::B, CastTarget::SelfCast)
+                {
+                    return Command::Cast {
+                        slot: AbilitySlot::B,
+                        target: CastTarget::SelfCast,
+                    };
+                }
                 if e.type_id == lorelai::HERO
                     && let Some(cmd) = self.lorelai_action(i, t.position)
                 {
