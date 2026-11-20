@@ -46,6 +46,20 @@ CPU per decoded frame divides total server CPU by received frame count and inclu
 
 The final ARAL run accumulated 129 late ticks by the first steady sample, all wake-delay dominant. The first rolling room windows retained that startup delay. The following 77,532 measured ticks added no misses; the worst final room p99 was 15.452 ms. The stage counters locate the delay before room work begins. They do not identify the cause of the delayed wake.
 
+
+## Current Solo comparison after fixed-tick cleanup
+
+Two clean Windows Rust 1.100.0 releases ran serially on the same Ryzen 9 9950X3D, using the loopback harness below and the same load-client executable. Each hosted 32 native Solo rooms (32 client seats, 288 server Bots), using the full delivery and supplemental data. The server used logical CPU 14 with one Tokio worker and a 1 GiB process commit limit. The client used CPUs 26, 28 and 30. The ramp was 45 seconds and the requested steady interval was 60 seconds. Sampled intervals spanned 65.48 and 65.50 seconds.
+
+| Build | Mean work per room tick | Server CPU, one core | Peak sampled working set | Highest sampled room-window p99 | Ticks over 40 ms | Steady clock echoes / sends |
+|---|---:|---:|---:|---:|---:|---:|
+| 08cc383 | 87.289 µs | 10.02% | 64.50 MiB | 16.979 ms | 0 / 41,906 | 992 / 992 |
+| 510c218 | 84.994 µs | 8.78% | 51.93 MiB | 16.271 ms | 0 / 41,917 | 992 / 992 |
+
+Both had 100% sampled active room-time, zero slow-client disconnects and zero clock sequence errors. The host chose independent room seeds, producing 1,176,454 versus 1,167,043 decoded frames. This one pair measured 2.63% less mean room work at this load. Its CPU, sampled memory and latency changes need more independent trials before extrapolation to machine capacity. The [paired deterministic room measurements](bevy-ecs.md#fixed-tick-persistent-effects-and-target-memory) isolate the tick and component-storage changes.
+
+Server executable SHA-256 was `ea758a52f1de4ca2e174a278fe2cc8c7d75c82665968b79b892a073e3af3a257` at 08cc383 and `f7996cee70bd0ab732271ee9aeef9350738b67152d4a921ae27edcc8457ca2b5` at 510c218. Both used the 08cc383 driver with SHA-256 `928dd8074e8318c16e0f5b333bd70f83e7a1130116891eeff8ae2adbfe46507f`. Use the Solo reproduction command below with `--seconds 60`.
+
 ## Reproduction
 
 Tests ran serially on Windows on a Ryzen 9 9950X3D, one server worker on logical CPU 14 and a separate load process on CPUs 26, 28 and 30. Every trial used a fresh instance and dynamic loopback ports, full base and supplementary game data, a 33-room configured cap, a 45-second login ramp and the standard host admission policy. Other processes shared the physical machine. The final release compilation overlapped the intermediate Solo trial on different logical CPUs. The intermediate run was already underway when the final candidate became available.
