@@ -41,7 +41,7 @@ impl Chakram {
     }
 }
 
-impl World {
+impl Room<'_> {
     pub(super) fn advance_chakrams(&mut self, events: &mut Vec<Event>) {
         self.advance_spell_family::<Chakram>(events);
     }
@@ -58,7 +58,7 @@ impl crate::persistent_spells::TimedSpell for Chakram {
             ..self.clone()
         }
     }
-    fn advance(&mut self, world: &mut World, events: &mut Vec<Event>) -> bool {
+    fn advance(&mut self, world: &mut Room<'_>, events: &mut Vec<Event>) -> bool {
         let Some(owner) = world.index(self.source) else {
             return false;
         };
@@ -104,10 +104,10 @@ impl crate::persistent_spells::TimedSpell for Chakram {
             let damage = shop::mitigated(self.damage, resist, pierce);
             world.hurt(self.source, self.team, i, damage, school, events);
             if hero && let Some(refund) = self.stamina_refund {
-                let available = stamina(&world.entities[owner], world.tick);
+                let available = stamina(&world.entities[owner], world.state.tick);
                 let status = &mut world.entities[owner].status;
                 status.stamina_spent = (100. - available - refund).max(0.);
-                status.stamina_spent_at = world.tick;
+                status.stamina_spent_at = world.state.tick;
             }
         }
         self.position = next;

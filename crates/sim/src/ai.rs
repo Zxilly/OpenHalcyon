@@ -2,16 +2,17 @@ use super::*;
 
 mod skills;
 mod targeting;
-impl World {
+impl Room<'_> {
     pub(super) fn update_rally(&mut self) {
         self.rally = [None; 2];
         for e in &self.entities {
             if e.kind != Kind::Minion || e.hp <= 0. {
                 continue;
             }
-            let p = &mut self.rally[e.team as usize];
+            let state = &mut *self.state;
+            let p = &mut state.rally[e.team as usize];
             if p.is_none_or(|old| {
-                old.dist(self.layout.home(e)) < e.position.dist(self.layout.home(e))
+                old.dist(state.layout.home(e)) < e.position.dist(state.layout.home(e))
             }) {
                 *p = Some(e.position)
             }

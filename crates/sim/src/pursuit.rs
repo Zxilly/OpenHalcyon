@@ -50,7 +50,7 @@ impl Pursuit {
         }
     }
 }
-impl World {
+impl Room<'_> {
     pub(super) fn pursuit_reaches(&self, i: usize, target: Position) -> bool {
         let e = &self.entities[i];
         let Some(r) = e.ability_ranks[AbilitySlot::A as usize].checked_sub(1) else {
@@ -77,13 +77,13 @@ impl World {
             .as_mut()
             .unwrap()
             .armed_until = 0;
-        e.next_attack = e.next_attack.max(self.tick + p.lock);
+        e.next_attack = e.next_attack.max(self.state.tick + p.lock);
         let (src, team, pierce) = (e.id, e.team, e.item_stats.shield_pierce);
         let t = &mut self.entities[j];
         if t.hp <= 0. {
             return;
         }
-        t.status.stun_until = t.status.stun_until.max(self.tick + p.stun);
+        t.status.stun_until = t.status.stun_until.max(self.state.tick + p.stun);
         t.winding = None;
         t.cast = None;
         t.status.channel = 0;

@@ -5,6 +5,7 @@ mod actors;
 mod ai;
 mod aral;
 mod arcane_fire;
+mod fixed_tick;
 pub use actors::Actors;
 mod persistent_spells;
 mod vision_devices;
@@ -437,10 +438,26 @@ pub struct Entity {
     #[serde(skip)]
     respawn: u64,
 }
-pub struct World {
+/// An owned room at the host boundary. Fixed-tick systems borrow the same actors and state.
+pub type World = Room<'static>;
+pub struct Room<'w> {
+    pub entities: Actors<'w>,
+    state: fixed_tick::StateSlot<'w>,
+}
+impl std::ops::Deref for Room<'_> {
+    type Target = RoomState;
+    fn deref(&self) -> &RoomState {
+        &self.state
+    }
+}
+impl std::ops::DerefMut for Room<'_> {
+    fn deref_mut(&mut self) -> &mut RoomState {
+        &mut self.state
+    }
+}
+pub struct RoomState {
     pub tick: u64,
     pub winner: Option<u8>,
-    pub entities: Actors<'static>,
     stats: [Stats; 8],
     layout: Layout,
     aral_units: aral::Units,
@@ -494,7 +511,7 @@ fn base(team: u8) -> Position {
         y: 0.,
     }
 }
-impl World {
+impl Room<'_> {
     /// Hash both visible and hidden authoritative state for same-build replay checkpoints.
     pub fn state_digest(&self) -> String {
         use sha2::{Digest, Sha256};
@@ -699,33 +716,35 @@ impl World {
     }
     fn build(seed: u64, human_seats: u8, rules: &WorldRules) -> Self {
         let mut w = Self {
-            tick: 0,
-            winner: None,
             entities: Actors::default(),
-            next_id: 1,
-            layout: Layout::default(),
-            aral_units: rules.aral_units,
-            solo_lane_rewards: rules.solo_lane_rewards,
-            solo_inner_towers: rules.solo_inner_towers,
-            vision_devices: Vec::new(),
-            vision_charges: Default::default(),
-            next_item: 40000,
-            stats: rules.stats,
-            seed,
-            crit_rng: seed,
-            bot_difficulty: None,
-            first_wave: rules.first_wave,
-            wave_interval: rules.wave_interval,
-            abilities: rules.abilities.clone(),
-            shop: rules.shop.clone(),
-            pending_item_events: Vec::new(),
-            nav_budget: 0,
-            native_navigation: None,
-            native_camps: None,
-            first_blood: false,
-            scores: Default::default(),
-            team_scores: Default::default(),
-            rally: [None; 2],
+            state: fixed_tick::StateSlot::owned(RoomState {
+                tick: 0,
+                winner: None,
+                next_id: 1,
+                layout: Layout::default(),
+                aral_units: rules.aral_units,
+                solo_lane_rewards: rules.solo_lane_rewards,
+                solo_inner_towers: rules.solo_inner_towers,
+                vision_devices: Vec::new(),
+                vision_charges: Default::default(),
+                next_item: 40000,
+                stats: rules.stats,
+                seed,
+                crit_rng: seed,
+                bot_difficulty: None,
+                first_wave: rules.first_wave,
+                wave_interval: rules.wave_interval,
+                abilities: rules.abilities.clone(),
+                shop: rules.shop.clone(),
+                pending_item_events: Vec::new(),
+                nav_budget: 0,
+                native_navigation: None,
+                native_camps: None,
+                first_blood: false,
+                scores: Default::default(),
+                team_scores: Default::default(),
+                rally: [None; 2],
+            }),
         };
         for seat in 0..10 {
             let team = seat % 2;
@@ -931,21 +950,22 @@ impl World {
     }
 
     fn walk(&mut self, i: usize, p: Position, events: &mut Vec<Event>) {
+        let state = &mut *self.state;
         let e = &mut self.entities[i];
-        if e.stats.speed <= 0. || e.status.root_until > self.tick {
+        if e.stats.speed <= 0. || e.status.root_until > state.tick {
             return;
         }
         let next = if e.kind == Kind::Hero
-            && let Some(map) = &mut self.native_navigation
+            && let Some(map) = &mut state.native_navigation
         {
-            map.next(e, self.tick, p, &mut self.nav_budget)
+            map.next(e, state.tick, p, &mut state.nav_budget)
         } else {
-            match &self.layout {
-                Layout::Validation => e.path.next(e.position, p, &mut self.nav_budget),
+            match &state.layout {
+                Layout::Validation => e.path.next(e.position, p, &mut state.nav_budget),
                 Layout::SoloMid { .. }
                     if e.kind == Kind::Minion
                         && e.order == Command::MoveTo(p)
-                        && p == self.layout.objective(1 - e.team) =>
+                        && p == state.layout.objective(1 - e.team) =>
                 {
                     if e.solo_side == 0 {
                         Some(solo_route::march(e, p))
@@ -955,34 +975,34 @@ impl World {
                     }
                 }
                 Layout::SoloMid { .. } => solo_side::steer(e.position, p),
-                Layout::Aral { .. } => self.layout.clear(e.position, p).then_some(p),
+                Layout::Aral { .. } => state.layout.clear(e.position, p).then_some(p),
             }
         };
         let Some(waypoint) = next else {
             return;
         };
-        let twirl = self.abilities.ringo_b.as_ref().zip(
+        let twirl = state.abilities.ringo_b.as_ref().zip(
             e.status
                 .twirl_rank
-                .filter(|_| e.status.haste_until > self.tick),
+                .filter(|_| e.status.haste_until > state.tick),
         );
-        let pace = if e.status.slow_until > self.tick {
+        let pace = if e.status.slow_until > state.tick {
             e.status.slow_factor
         } else {
             1.
         }
-        .min(if e.status.bulwark_slow_until > self.tick {
+        .min(if e.status.bulwark_slow_until > state.tick {
             e.status.bulwark_slow_factor
         } else {
             1.
         })
-        .min(if e.status.water_slow_until > self.tick {
+        .min(if e.status.water_slow_until > state.tick {
             e.status.water_slow_factor
         } else {
             1.
-        }) * if (e.status.water_speed_until > self.tick
+        }) * if (e.status.water_speed_until > state.tick
             && e.status.water_speed_bonus.is_none())
-            || (twirl.is_none() && e.status.haste_until > self.tick)
+            || (twirl.is_none() && e.status.haste_until > state.tick)
         {
             1.25
         } else {
@@ -993,20 +1013,20 @@ impl World {
             (e.stats.speed
                 + e.status
                     .water_speed_bonus
-                    .filter(|_| e.status.water_speed_until > self.tick)
+                    .filter(|_| e.status.water_speed_until > state.tick)
                     .unwrap_or(0.)
                 + e.status
                     .captain_effects
                     .read()
                     .pursuit
-                    .filter(|p| self.tick < p.speed_until)
+                    .filter(|p| state.tick < p.speed_until)
                     .map_or(0., |p| p.speed)
                 + twirl.map_or(0., |(b, r)| b.move_speed[r])
                 + e.status.sigil_speed
-                    * e.status.sigil_speed_until.saturating_sub(self.tick) as f32
+                    * e.status.sigil_speed_until.saturating_sub(state.tick) as f32
                     / e.status.sigil_speed_duration.max(1) as f32
                 + e.item_stats.boot_speed
-                + if self.tick < e.item_stats.sprint_until {
+                + if state.tick < e.item_stats.sprint_until {
                     e.item_stats.sprint_speed
                 } else {
                     0.
@@ -1028,7 +1048,7 @@ impl World {
             }
             e.position = pos;
             if e.kind == Kind::Hero
-                && let Some(map) = &mut self.native_navigation
+                && let Some(map) = &mut self.state.native_navigation
             {
                 map.moved(e.id, pos);
             }
@@ -1042,33 +1062,6 @@ impl World {
         &self.team_scores
     }
 
-    pub fn step(&mut self) -> Vec<Event> {
-        self.step_with::<false>(None)
-    }
-
-    /// Run the same simulation with wall-clock diagnostics for hero bots.
-    pub fn step_diagnosed(&mut self, diagnostics: &mut BotDiagnostics) -> Vec<Event> {
-        self.step_with::<true>(Some(diagnostics))
-    }
-
-    fn step_with<const DIAG: bool>(
-        &mut self,
-        diagnostics: Option<&mut BotDiagnostics>,
-    ) -> Vec<Event> {
-        let mut events = std::mem::take(&mut self.pending_item_events);
-        if self.winner.is_some() {
-            return events;
-        }
-        self.tick += 1;
-        self.step_tick::<DIAG>(&mut events, diagnostics);
-        if self.tick == 300 * TICK_HZ {
-            self.record_milestone(true);
-        } else if self.tick == 600 * TICK_HZ {
-            self.record_milestone(false);
-        }
-        events
-    }
-
     fn spawn_lane_minion(
         &mut self,
         team: u8,
@@ -1078,7 +1071,8 @@ impl World {
     ) {
         let id = self.spawn_with_stats(team, Kind::Minion, stats, position, false);
         let minion = self.entities.last_mut().unwrap();
-        let level = (2 + self.tick.saturating_sub(120 * TICK_HZ) / (120 * TICK_HZ)).min(12) as u8;
+        let level =
+            (2 + self.state.tick.saturating_sub(120 * TICK_HZ) / (120 * TICK_HZ)).min(12) as u8;
         let extra = f32::from(level - 1);
         minion.level = level;
         minion.max_hp += minion.stats.growth.hp * extra;
@@ -1086,22 +1080,7 @@ impl World {
         minion.stats.weapon += minion.stats.growth.weapon * extra;
         events.push(Event::Spawn { id });
     }
-    fn step_tick<const DIAG: bool>(
-        &mut self,
-        events: &mut Vec<Event>,
-        mut diagnostics: Option<&mut BotDiagnostics>,
-    ) {
-        self.advance_devices();
-        self.nav_budget = 6;
-        self.advance_effects(events);
-        self.advance_chakrams(events);
-        self.advance_water(events);
-        self.advance_persistent_spells(events);
-        self.advance_twisters(events);
-        self.advance_sigils(events);
-        if self.winner.is_some() {
-            return;
-        }
+    fn spawn_tick_waves(&mut self, events: &mut Vec<Event>) {
         if matches!(self.layout, Layout::Aral { .. }) {
             self.spawn_aral_wave(events);
         } else if matches!(self.layout, Layout::SoloMid { .. }) {
@@ -1125,10 +1104,18 @@ impl World {
                 }
             }
         }
+    }
+    fn team_upkeep(&mut self, events: &mut Vec<Event>) {
         if self.tick.is_multiple_of(TICK_HZ) {
             self.native_passive_income(events);
             self.update_rally();
         }
+    }
+    fn resolve_actor_turns<const DIAG: bool>(
+        &mut self,
+        events: &mut Vec<Event>,
+        mut diagnostics: Option<&mut BotDiagnostics>,
+    ) {
         let n = self.entities.len();
         // Rotate priority when actions coincide. Stable indices and the match seed determine all ties.
         let first = (self.tick.wrapping_add(self.seed) % n as u64) as usize;
@@ -1136,7 +1123,7 @@ impl World {
             let i = (first + offset) % n;
             let e = &mut self.entities[i];
             if e.kind == Kind::Hero {
-                shop::infusions::update(e, self.tick, &self.shop);
+                shop::infusions::update(e, self.state.tick, &self.state.shop);
             }
             e.lane_step = None;
             if e.kind == Kind::Armory {
@@ -1145,22 +1132,22 @@ impl World {
             }
             if e.hp <= 0. {
                 if e.kind == Kind::Hero
-                    && matches!(self.layout, Layout::Aral { .. })
-                    && e.respawn.checked_sub(self.tick) == Some(6)
+                    && matches!(self.state.layout, Layout::Aral { .. })
+                    && e.respawn.checked_sub(self.state.tick) == Some(6)
                 {
                     events.push(Event::RespawnApproach {
                         id: e.id,
                         team: e.team,
-                        home: self.layout.home(e),
+                        home: self.state.layout.home(e),
                     });
                 }
-                if e.kind == Kind::Hero && e.respawn <= self.tick {
+                if e.kind == Kind::Hero && e.respawn <= self.state.tick {
                     e.hp = e.max_hp;
                     e.energy = e.max_energy;
                     e.status = Default::default();
                     e.path = Default::default();
-                    e.position = self.layout.home(e);
-                    if let Some(map) = &mut self.native_navigation {
+                    e.position = self.state.layout.home(e);
+                    if let Some(map) = &mut self.state.native_navigation {
                         map.forget_route(e.id);
                     }
                     events.push(Event::Spawn { id: e.id });
@@ -1171,7 +1158,7 @@ impl World {
                 }
                 continue;
             }
-            if e.status.flask_until >= self.tick && e.status.flask_until != 0 {
+            if e.status.flask_until >= self.state.tick && e.status.flask_until != 0 {
                 let before = e.hp;
                 e.hp = (e.hp + e.status.flask_heal_per_tick).min(e.max_hp);
                 e.energy = (e.energy + e.status.flask_energy_per_tick).min(e.max_energy);
@@ -1192,10 +1179,10 @@ impl World {
                 e.hp = (e.hp + regen / TICK_HZ as f32).min(e.max_hp);
             }
             let fountain = e.kind == Kind::Hero
-                && self
-                    .native_navigation
-                    .as_ref()
-                    .map_or_else(|| self.layout.at_base(e, false), |map| map.at_fountain(e));
+                && self.state.native_navigation.as_ref().map_or_else(
+                    || self.state.layout.at_base(e, false),
+                    |map| map.at_fountain(e),
+                );
             if fountain {
                 e.hp = (e.hp + e.max_hp * 0.003).min(e.max_hp);
             }
@@ -1441,7 +1428,7 @@ impl World {
                             if double_down.is_some() {
                                 1.5 + e.item_stats.crit_damage
                             } else {
-                                shop::weapon_multiplier(&mut self.crit_rng, e.item_stats)
+                                shop::weapon_multiplier(&mut self.state.crit_rng, e.item_stats)
                             }
                         } else {
                             1.
@@ -1573,8 +1560,6 @@ impl World {
                 }
             }
         }
-        self.entities
-            .retain(|e| !matches!(e.kind, Kind::Minion | Kind::Neutral) || e.hp > 0.);
     }
 }
 

@@ -1107,7 +1107,7 @@ impl Shop {
     }
 }
 
-impl World {
+impl Room<'_> {
     pub(super) fn acquisition_value(&self, item: BasicItem) -> u64 {
         self.shop.cost(item)
     }
@@ -1186,18 +1186,18 @@ impl World {
         // missing health when the completed item grants the same HP.
         let mut delta = EffectDelta::default();
         for used in &consumed {
-            for &(stat, value) in &self.shop.offers[used.kind as usize].bonuses {
+            for &(stat, value) in &self.state.shop.offers[used.kind as usize].bonuses {
                 delta.add(stat, -value);
             }
         }
-        for &(stat, value) in &self.shop.offers[item as usize].bonuses {
+        for &(stat, value) in &self.state.shop.offers[item as usize].bonuses {
             delta.add(stat, value);
         }
         apply_item_delta(h, delta);
         h.gold -= price as u32;
         h.inventory.push(granted);
-        attack_items::refresh(h, &self.shop);
-        h.item_stats.boot_speed = self.shop.boot_speed(&h.inventory);
+        attack_items::refresh(h, &self.state.shop);
+        h.item_stats.boot_speed = self.state.shop.boot_speed(&h.inventory);
         Ok(Some(Purchase {
             actor: h.id,
             paid: price as u32,
@@ -1234,7 +1234,7 @@ pub struct ItemSale {
     pub refund: u32,
     pub balance: u32,
 }
-impl World {
+impl Room<'_> {
     pub(super) fn flask_available(&self, index: usize) -> bool {
         self.shop.flask.is_some() && self.tick >= self.entities[index].item_stats.flask_ready
     }
@@ -1260,15 +1260,15 @@ impl World {
             return Err("flask not held");
         }
         let h = &mut self.entities[index];
-        if self.winner.is_some()
+        if self.state.winner.is_some()
             || h.kind != Kind::Hero
             || h.hp <= 0.
-            || self.tick < h.item_stats.flask_ready
+            || self.state.tick < h.item_stats.flask_ready
         {
             return Err("cannot activate flask");
         }
-        h.item_stats.flask_ready = self.tick.saturating_add(rule.cooldown);
-        h.status.flask_until = self.tick.saturating_add(rule.duration);
+        h.item_stats.flask_ready = self.state.tick.saturating_add(rule.cooldown);
+        h.status.flask_until = self.state.tick.saturating_add(rule.duration);
         h.status.flask_barrier = rule.barrier;
         h.status.flask_heal_per_tick = rule.heal / rule.duration as f32;
         h.status.flask_energy_per_tick = h.max_energy * rule.energy_fraction / rule.duration as f32;
@@ -1280,10 +1280,10 @@ impl World {
         let rule = self.shop.sprint.ok_or("sprint definition unavailable")?;
         let index = self.index(actor).ok_or("unknown actor")?;
         let h = &mut self.entities[index];
-        if self.winner.is_some()
+        if self.state.winner.is_some()
             || h.kind != Kind::Hero
             || h.hp <= 0.
-            || self.tick < h.item_stats.sprint_ready
+            || self.state.tick < h.item_stats.sprint_ready
             || !h
                 .inventory
                 .iter()
@@ -1292,8 +1292,8 @@ impl World {
             return Err("cannot activate sprint");
         }
         h.item_stats.sprint_speed = rule.speed;
-        h.item_stats.sprint_until = self.tick.saturating_add(rule.duration);
-        h.item_stats.sprint_ready = self.tick.saturating_add(rule.cooldown);
+        h.item_stats.sprint_until = self.state.tick.saturating_add(rule.duration);
+        h.item_stats.sprint_ready = self.state.tick.saturating_add(rule.cooldown);
         Ok(())
     }
 
@@ -1335,8 +1335,8 @@ impl World {
             slots.remove_held(sold)?;
         }
         h.inventory.remove(offset);
-        attack_items::refresh(h, &self.shop);
-        h.item_stats.boot_speed = self.shop.boot_speed(&h.inventory);
+        attack_items::refresh(h, &self.state.shop);
+        h.item_stats.boot_speed = self.state.shop.boot_speed(&h.inventory);
         h.gold = balance;
         apply_item_delta(h, delta);
         let sale = ItemSale {

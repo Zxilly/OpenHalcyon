@@ -99,7 +99,7 @@ impl Charges {
         }
     }
 }
-impl World {
+impl Room<'_> {
     pub fn visible_enemy_cams(&self, actor: u32) -> Vec<u32> {
         let Some(i) = self.index(actor) else {
             return Vec::new();
@@ -170,20 +170,21 @@ impl World {
         };
         let id = self.next_id;
         let next = id.checked_add(1).ok_or("entity id exhausted")?;
-        let c = &mut self.vision_charges[i];
+        let state = &mut *self.state;
+        let c = &mut state.vision_charges[i];
         match kind {
             VisionDeviceKind::ScoutCam => {
-                c.recharge(self.tick);
-                if c.spent >= self.shop.vision.charges {
+                c.recharge(state.tick);
+                if c.spent >= state.shop.vision.charges {
                     return Err("no scout cam charge");
                 }
                 if c.spent == 0 {
-                    c.next = self.tick + 180 * TICK_HZ;
+                    c.next = state.tick + 180 * TICK_HZ;
                 }
                 c.spent += 1;
             }
             VisionDeviceKind::ScoutTrap => {
-                if c.trap_ready > self.tick {
+                if c.trap_ready > state.tick {
                     return Err("trap cooldown");
                 }
                 let hero = &mut self.entities[i];
@@ -197,11 +198,11 @@ impl World {
                     .unwrap()
                     .remove_held(hero.inventory[index])?;
                 hero.inventory.remove(index);
-                c.trap_ready = self.tick + self.shop.vision.cooldown;
+                c.trap_ready = state.tick + state.shop.vision.cooldown;
             }
         }
         let hero = &self.entities[i];
-        self.next_id = next;
+        self.state.next_id = next;
         let device = VisionDevice {
             id,
             owner: hero.id,
@@ -243,9 +244,10 @@ impl World {
         Ok(())
     }
     pub(super) fn advance_devices(&mut self) {
-        let tick = self.tick;
-        self.vision_devices.retain_mut(|v| match v.kind {
-            VisionDeviceKind::ScoutCam => tick < v.born + self.shop.vision.life,
+        let state = &mut *self.state;
+        let tick = state.tick;
+        state.vision_devices.retain_mut(|v| match v.kind {
+            VisionDeviceKind::ScoutCam => tick < v.born + state.shop.vision.life,
             VisionDeviceKind::ScoutTrap => {
                 if let Some(due) = v.detonate {
                     if tick < due {
@@ -256,23 +258,23 @@ impl World {
                         if e.kind == Kind::Hero
                             && e.hp > 0.
                             && e.team != v.team
-                            && e.position.dist(v.point) <= self.shop.vision.blast
+                            && e.position.dist(v.point) <= state.shop.vision.blast
                         {
                             e.status.reveal_until =
-                                e.status.reveal_until.max(tick + self.shop.vision.reveal);
+                                e.status.reveal_until.max(tick + state.shop.vision.reveal);
                         }
                     }
                     return false;
                 }
-                if tick >= v.born + self.shop.vision.arm
+                if tick >= v.born + state.shop.vision.arm
                     && self.entities.iter().any(|e| {
                         e.kind == Kind::Hero
                             && e.hp > 0.
                             && e.team != v.team
-                            && e.position.dist(v.point) <= self.shop.vision.trigger
+                            && e.position.dist(v.point) <= state.shop.vision.trigger
                     })
                 {
-                    v.detonate = Some(tick + self.shop.vision.detonate);
+                    v.detonate = Some(tick + state.shop.vision.detonate);
                 }
                 true
             }

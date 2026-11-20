@@ -83,7 +83,7 @@ pub(super) struct LongShot {
     pub range: f32,
     pub cooldown: f32,
 }
-impl super::World {
+impl super::Room<'_> {
     /// Applies a trusted seat's already authenticated, named talent. Numeric wire slots
     /// do not identify a talent by themselves. Callers should clear on unequip.
     pub fn set_named_talent(

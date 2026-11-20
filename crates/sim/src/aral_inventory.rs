@@ -1,5 +1,7 @@
 //! ARAL items occupy native slots independently of the shop's modifier ledger.
-use crate::{HeldItem, World};
+#[cfg(test)]
+use crate::World;
+use crate::{HeldItem, Room};
 
 pub const ARAL_ITEM_CAPACITY: usize = 8;
 
@@ -87,7 +89,7 @@ impl AralInventory {
     }
 }
 
-impl World {
+impl Room<'_> {
     /// A validated active connection may swap two occupied native ARAL positions.
     pub fn reorder_aral_items(&mut self, actor: u32, indices: [u8; 2]) -> bool {
         let Some(index) = self.index(actor) else {
@@ -97,7 +99,7 @@ impl World {
             return false;
         };
         let [left, right] = indices.map(usize::from);
-        if self.winner.is_some()
+        if self.state.winner.is_some()
             || left == right
             || ![left, right]
                 .into_iter()

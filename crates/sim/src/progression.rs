@@ -13,7 +13,7 @@ impl Entity {
     }
 }
 
-impl World {
+impl Room<'_> {
     /// The measured XP threshold attribute in modeled native scene layouts.
     pub fn native_xp_required(&self, level: u8) -> Option<f32> {
         self.layout.native_xp_required(level)
@@ -29,7 +29,7 @@ impl World {
     }
 
     pub(super) fn award_xp(&mut self, i: usize, xp: f32, events: &mut Vec<Event>) {
-        let layout = &self.layout;
+        let layout = &self.state.layout;
         let e = &mut self.entities[i];
         let native = layout.native_xp_required(e.level).is_some();
         if e.kind != Kind::Hero || (!native && e.level >= 12) || !xp.is_finite() || xp <= 0.0 {
@@ -123,14 +123,14 @@ impl World {
         }
         let is_outer_tower = self.is_outer_tower(t);
         let t = &mut self.entities[i];
-        let absorbed = if t.status.barrier_until > self.tick {
+        let absorbed = if t.status.barrier_until > self.state.tick {
             n.min(t.status.barrier)
         } else {
             0.
         };
         t.status.barrier -= absorbed;
         let remaining = n - absorbed;
-        let flask_absorbed = if self.tick < t.status.flask_until {
+        let flask_absorbed = if self.state.tick < t.status.flask_until {
             remaining.min(t.status.flask_barrier)
         } else {
             0.
@@ -147,7 +147,7 @@ impl World {
             let minion = self
                 .index(src)
                 .is_some_and(|j| self.entities[j].kind == Kind::Minion);
-            let damage = &mut self.team_scores[usize::from(team)].structure_damage;
+            let damage = &mut self.state.team_scores[usize::from(team)].structure_damage;
             let bucket = if t.kind == Kind::Tower {
                 &mut damage.towers
             } else {
@@ -162,7 +162,7 @@ impl World {
         let t = &mut self.entities[i];
         t.hp -= amount;
         if t.kind == Kind::Armory {
-            t.respawn = self.tick
+            t.respawn = self.state.tick
                 + if t.hp == 0. {
                     armory::REBUILD
                 } else {
@@ -173,7 +173,7 @@ impl World {
         if team != t.team
             && let Some(score) = src
                 .checked_sub(1)
-                .and_then(|seat| self.scores.get_mut(seat as usize))
+                .and_then(|seat| self.state.scores.get_mut(seat as usize))
         {
             score.hit(t.kind, amount, school, t.hp == 0.);
         }
@@ -194,14 +194,15 @@ impl World {
         let kind = t.kind;
         let enemy = t.team != team;
         if enemy && team < 2 {
-            let scoring = &mut self.team_scores[usize::from(team)];
+            let state = &mut *self.state;
+            let scoring = &mut state.team_scores[usize::from(team)];
             match kind {
                 Kind::Tower => {
                     scoring.structure_kills.towers += 1;
                     if is_outer_tower {
                         scoring
                             .first_enemy_outer_tower_kill_seconds
-                            .get_or_insert(self.tick as f64 / TICK_HZ as f64);
+                            .get_or_insert(state.tick as f64 / TICK_HZ as f64);
                     }
                 }
                 Kind::Crystal => scoring.structure_kills.crystals += 1,
@@ -209,7 +210,7 @@ impl World {
                     scoring.armories_destroyed += 1;
                     scoring
                         .first_enemy_armory_kill_seconds
-                        .get_or_insert(self.tick as f64 / TICK_HZ as f64);
+                        .get_or_insert(state.tick as f64 / TICK_HZ as f64);
                 }
                 _ => {}
             }
@@ -219,15 +220,16 @@ impl World {
                 .stats
                 .physiology
                 .map_or((0, 0.), |p| (p.gold_bounty as u32, p.xp_bounty)),
-            Kind::Hero => (250 + if self.first_blood { 0 } else { 125 }, 90.),
+            Kind::Hero => (250 + if self.state.first_blood { 0 } else { 125 }, 90.),
             Kind::Tower => (300, 60.),
             Kind::Crystal | Kind::Armory => (0, 0.),
             Kind::Minion => {
                 let template = EntityTemplate::from_raw(t.type_id);
-                let measured = if matches!(self.layout, Layout::SoloMid { .. }) {
-                    self.solo_lane_rewards
+                let measured = if matches!(self.state.layout, Layout::SoloMid { .. }) {
+                    self.state
+                        .solo_lane_rewards
                         .and_then(|table| table.for_template(template?))
-                } else if matches!(self.layout, Layout::Aral { .. })
+                } else if matches!(self.state.layout, Layout::Aral { .. })
                     && template.is_some_and(EntityTemplate::is_aral_lane_minion)
                 {
                     // All three recorded templates pay twice their unit base before proximity sharing.
@@ -254,9 +256,9 @@ impl World {
         if kind == Kind::Armory {
             return;
         }
-        t.respawn = self.tick + RESPAWN + (self.tick / 60).min(900);
+        t.respawn = self.state.tick + RESPAWN + (self.state.tick / 60).min(900);
         if enemy
-            && matches!(self.layout, Layout::Aral { .. })
+            && matches!(self.state.layout, Layout::Aral { .. })
             && let Some(killer) = src
                 .checked_sub(1)
                 .and_then(|s| self.entities.get_mut(s as usize))
@@ -267,8 +269,8 @@ impl World {
             && killer.status.double_down.is_none()
             && killer.team == team
         {
-            let instance = self.next_id;
-            self.next_id += 1;
+            let instance = self.state.next_id;
+            self.state.next_id += 1;
             killer.status.double_down = Some(instance);
             events.push(Event::DoubleDown {
                 source: src,
@@ -321,7 +323,7 @@ impl World {
             };
             if amount > 0 {
                 a.gold += amount;
-                let income = &mut self.scores[(a.id - 1) as usize].gold_income;
+                let income = &mut self.state.scores[(a.id - 1) as usize].gold_income;
                 if a.id == src {
                     income.last_hit_bounties += u64::from(amount);
                 } else {

@@ -9,7 +9,7 @@ enum Priority {
     Crystal,
 }
 
-impl World {
+impl Room<'_> {
     pub(super) fn choose_target(&self, e: &Entity) -> Option<&Entity> {
         let sensor = if matches!(e.kind, Kind::Tower | Kind::Crystal) {
             e.stats.range.min(e.stats.sight())

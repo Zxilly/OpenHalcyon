@@ -1,7 +1,7 @@
 //! Bevy owns persistent spell components. An ordinal orders impacts and checkpoints
 //! independently of archetype moves and handle reuse. One room-local scratch list
 //! is reused by both systems and contains only the current phase's scheduled work.
-use super::{Event, World, arcane_fire::Pulse, bulwark::Field};
+use super::{Event, Room, arcane_fire::Pulse, bulwark::Field};
 use bevy_ecs::component::Mutable;
 use bevy_ecs::prelude::{Commands, Component, Entity, In, InMut, Query};
 
@@ -11,7 +11,7 @@ struct CastOrder(u64);
 pub(super) trait TimedSpell: Component<Mutability = Mutable> {
     fn expired_before_step(&self, tick: u64) -> bool;
     fn begin_impact(&mut self) -> Self;
-    fn advance(&mut self, world: &mut World, events: &mut Vec<Event>) -> bool;
+    fn advance(&mut self, world: &mut Room<'_>, events: &mut Vec<Event>) -> bool;
 }
 
 type Agenda = Vec<(u64, Entity)>;
@@ -76,7 +76,7 @@ fn schedule<T: TimedSpell>(
     }
     jobs.sort_unstable_by_key(|(order, _)| *order);
 }
-impl World {
+impl Room<'_> {
     fn resolve_spells<T: TimedSpell>(
         &mut self,
         jobs: &mut Agenda,
@@ -84,7 +84,7 @@ impl World {
     ) -> bool {
         self.entities
             .ecs
-            .run_system_cached_with(schedule::<T>, (self.tick, &mut *jobs))
+            .run_system_cached_with(schedule::<T>, (self.state.tick, &mut *jobs))
             .expect("registered spell scheduling system");
         let mut active = false;
         for &(_, id) in jobs.iter() {
@@ -143,7 +143,7 @@ mod tests {
         fn begin_impact(&mut self) -> Self {
             *self
         }
-        fn advance(&mut self, world: &mut World, _: &mut Vec<Event>) -> bool {
+        fn advance(&mut self, world: &mut Room<'_>, _: &mut Vec<Event>) -> bool {
             assert_eq!(world.entities.spells::<Self>().count(), 1);
             if self.0 == 0 {
                 let ecs = &mut world.entities.ecs;
@@ -160,7 +160,7 @@ mod tests {
     }
     #[test]
     fn impact_can_see_and_replace_itself_without_overwriting_the_new_generation() {
-        let mut w = World::new(7, 10);
+        let mut w = crate::World::new(7, 10);
         w.entities.spawn_spell(ReplacementProbe(0));
         let mut jobs = Agenda::new();
         w.resolve_spells::<ReplacementProbe>(&mut jobs, &mut Vec::new());

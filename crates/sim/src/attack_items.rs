@@ -115,7 +115,7 @@ pub(super) fn refresh(hero: &mut Entity, shop: &Shop) {
     hero.item_stats.attack_passives = equipped;
 }
 
-impl World {
+impl Room<'_> {
     pub(crate) fn basic_hit(
         &mut self,
         source: u32,
@@ -143,10 +143,11 @@ impl World {
         let armor = victim.stats.armor;
         let shield = victim.stats.shield;
         let hero = &mut self.entities[i];
-        let r = self.shop.attacks;
+        let r = self.state.shop.attacks;
         let passive = &mut hero.item_stats.attack_passives;
-        let bonus_weapon = if passive.bow && r.interval > 0 && self.tick >= passive.bow_ready {
-            passive.bow_ready = self.tick + r.interval;
+        let bonus_weapon = if passive.bow && r.interval > 0 && self.state.tick >= passive.bow_ready
+        {
+            passive.bow_ready = self.state.tick + r.interval;
             mitigated(
                 r.bow_base + r.bow_ratio * hero.item_stats.bonus_weapon,
                 armor,

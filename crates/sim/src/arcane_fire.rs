@@ -50,7 +50,7 @@ pub(super) struct Pulse {
     next: u64,
     end: u64,
 }
-impl World {
+impl Room<'_> {
     pub(super) fn adagio_heal_order(&self, i: usize) -> Option<Command> {
         self.abilities.fire.as_ref()?;
         let hero = &self.entities[i];
@@ -118,7 +118,7 @@ impl World {
                 || t.team == team
                 || !matches!(t.kind, Kind::Hero | Kind::Minion | Kind::Neutral)
                 || t.position.dist(pos) > radius
-                || !self.layout.clear(pos, t.position)
+                || !self.state.layout.clear(pos, t.position)
             {
                 continue;
             }
@@ -143,7 +143,7 @@ impl crate::persistent_spells::TimedSpell for Pulse {
     fn begin_impact(&mut self) -> Self {
         *self
     }
-    fn advance(&mut self, world: &mut World, events: &mut Vec<Event>) -> bool {
+    fn advance(&mut self, world: &mut Room<'_>, events: &mut Vec<Event>) -> bool {
         let Some(j) = world.index(self.target) else {
             return false;
         };

@@ -49,7 +49,13 @@ fn room(hero: &str) -> World {
     e.energy = 900.;
     w
 }
-fn cast(w: &mut World, slot: AbilitySlot, target: CastTarget, delay: u64, events: &mut Vec<Event>) {
+fn cast(
+    w: &mut Room<'_>,
+    slot: AbilitySlot,
+    target: CastTarget,
+    delay: u64,
+    events: &mut Vec<Event>,
+) {
     w.command(1, Command::Learn(slot)).unwrap();
     w.command(1, Command::Cast { slot, target }).unwrap();
     w.tick += delay;

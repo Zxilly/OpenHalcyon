@@ -56,7 +56,7 @@ impl Rules {
     }
 }
 impl Field {
-    fn sample(&mut self, w: &mut World, center: Position, events: &mut Vec<Event>) {
+    fn sample(&mut self, w: &mut Room<'_>, center: Position, events: &mut Vec<Event>) {
         for j in 0..w.entities.len() {
             let t = &w.entities[j];
             if t.hp <= 0.
@@ -79,8 +79,8 @@ impl Field {
             let hit = crossed && w.tick >= state.ready;
             let target = &mut w.entities[j];
             if inside || hit {
-                let until = w.tick + self.linger;
-                let previous = if target.status.bulwark_slow_until > w.tick {
+                let until = w.state.tick + self.linger;
+                let previous = if target.status.bulwark_slow_until > w.state.tick {
                     target.status.bulwark_slow_factor
                 } else {
                     1.
@@ -89,7 +89,7 @@ impl Field {
                 target.status.bulwark_slow_factor = previous.min(self.slow);
             }
             if hit {
-                state.ready = w.tick + self.immunity;
+                state.ready = w.state.tick + self.immunity;
                 let amount = shop::mitigated(self.damage, target.stats.shield, self.pierce);
                 w.hurt(
                     self.source,
@@ -116,7 +116,7 @@ impl crate::persistent_spells::TimedSpell for Field {
             ..self.clone()
         }
     }
-    fn advance(&mut self, w: &mut World, events: &mut Vec<Event>) -> bool {
+    fn advance(&mut self, w: &mut Room<'_>, events: &mut Vec<Event>) -> bool {
         let Some(i) = w.index(self.source) else {
             return false;
         };
@@ -132,7 +132,7 @@ impl crate::persistent_spells::TimedSpell for Field {
         true
     }
 }
-impl World {
+impl Room<'_> {
     pub(super) fn bulwark_reaches(&self, i: usize, p: Position) -> bool {
         let e = &self.entities[i];
         let Some(r) = e.ability_ranks[AbilitySlot::B as usize].checked_sub(1) else {

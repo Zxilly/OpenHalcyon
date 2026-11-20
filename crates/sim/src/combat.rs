@@ -433,7 +433,7 @@ struct Rules {
     windup: u64,
     cooldown: u64,
 }
-impl World {
+impl Room<'_> {
     pub(super) fn yates_is_leaping(&self, i: usize) -> bool {
         self.entities[i].type_id == EntityTemplate::Yates.as_raw()
             && self.entities[i]
@@ -686,7 +686,7 @@ impl World {
         e.cast = Some(Cast {
             slot,
             target,
-            release: self.tick + rules.windup,
+            release: self.state.tick + rules.windup,
         });
         Ok(())
     }
@@ -706,13 +706,13 @@ impl World {
         }
         let e = &mut self.entities[i];
         if s == Skill::Chakram {
-            e.status.stamina_spent = 100. - chakram::stamina(e, self.tick) + rule.cost;
-            e.status.stamina_spent_at = self.tick;
+            e.status.stamina_spent = 100. - chakram::stamina(e, self.state.tick) + rule.cost;
+            e.status.stamina_spent_at = self.state.tick;
         } else {
             e.energy -= rule.cost;
         }
         e.cooldown[c.slot.idx()] =
-            self.tick + (rule.cooldown as f32 / (1. + e.item_stats.cooldown)).ceil() as u64;
+            self.state.tick + (rule.cooldown as f32 / (1. + e.item_stats.cooldown)).ceil() as u64;
         let src = e.id;
         let team = e.team;
         let origin = e.position;
@@ -772,7 +772,7 @@ impl World {
                         || target.team == team
                         || target.hp <= 0.
                         || target.position.dist(origin) > radius
-                        || !self.layout.clear(origin, target.position)
+                        || !self.state.layout.clear(origin, target.position)
                     {
                         continue;
                     }
@@ -806,12 +806,13 @@ impl World {
                 }
             }
             Skill::WinterSpire => {
-                let a = self
+                let state = &mut *self.state;
+                let a = state
                     .abilities
                     .winter_spire
                     .as_ref()
                     .expect("validated learned Winter Spire");
-                let first = self.tick
+                let first = state.tick
                     + ((a.first_delay[r] * TICK_HZ as f32).round() as u64)
                         .saturating_sub(rule.windup);
                 let second = first + (a.shatter_delay[r] * TICK_HZ as f32).round() as u64;
@@ -876,21 +877,23 @@ impl World {
             Skill::Twirl => {
                 let e = &mut self.entities[i];
                 let duration = self
+                    .state
                     .abilities
                     .ringo_b
                     .as_ref()
                     .map_or(60, |b| (b.duration[r] * TICK_HZ as f32).ceil() as u64);
-                e.status.haste_until = self.tick + duration;
-                e.status.twirl_rank = self.abilities.ringo_b.as_ref().map(|_| r);
-                e.next_attack = self.tick;
+                e.status.haste_until = self.state.tick + duration;
+                e.status.twirl_rank = self.state.abilities.ringo_b.as_ref().map(|_| r);
+                e.next_attack = self.state.tick;
             }
             Skill::Hellfire => {
+                let state = &mut *self.state;
                 let j = aimed.unwrap();
                 let travel =
                     (origin.dist(self.entities[j].position) * TICK_HZ as f32 / 12.).ceil() as u64;
-                if let Some(c) = &self.abilities.ringo_c {
+                if let Some(c) = &state.abilities.ringo_c {
                     let cp = self.entities[i].item_stats.crystal;
-                    let impact = self.tick + travel;
+                    let impact = state.tick + travel;
                     let base = SpellEffect {
                         due: impact,
                         src,
@@ -948,44 +951,47 @@ impl World {
                 );
             }
             Skill::Agent => {
-                if let Some(f) = &self.abilities.fire {
-                    self.entities[i].next_attack = self.tick;
+                if let Some(f) = &self.state.abilities.fire {
+                    self.entities[i].next_attack = self.state.tick;
                     let s = &mut self.entities[aimed.unwrap()].status;
                     s.agent_source = src;
                     s.agent_burn_bonus = f.agent.at(r, cp, 0.);
                 }
                 let t = &mut self.entities[aimed.unwrap()];
-                t.status.empowered = self.abilities.empower[r] as u8;
-                if let Some(o) = &self.abilities.other {
+                t.status.empowered = self.state.abilities.empower[r] as u8;
+                if let Some(o) = &self.state.abilities.other {
                     t.status.empower_damage = o.agent.at(r, cp, 0.)
                         + if t.id == src {
                             o.self_agent.at(r, cp, 0.)
                         } else {
                             0.
                         };
-                    t.status.agent_crystal_until =
-                        Some(self.tick + (o.agent_duration[r] * TICK_HZ as f32).round() as u64);
+                    t.status.agent_crystal_until = Some(
+                        self.state.tick + (o.agent_duration[r] * TICK_HZ as f32).round() as u64,
+                    );
                 } else {
                     t.status.empower_damage = 25. + r as f32 * 10.;
                 }
             }
             Skill::Sigil if self.abilities.sigil.is_some() => self.start_sigil(i, r, point),
             Skill::Sigil => {
+                let state = &mut *self.state;
                 let bonus = bonus_hp;
-                let heal = self.abilities.sigil_heal[r] + bonus * self.abilities.sigil_hp;
+                let heal = state.abilities.sigil_heal[r] + bonus * state.abilities.sigil_hp;
                 for sec in 0..3 {
                     self.entities.spawn_spell(SpellEffect {
-                        due: self.tick + 1 + sec * TICK_HZ,
+                        due: state.tick + 1 + sec * TICK_HZ,
                         src,
                         team,
                         area: Area::Circle(
                             point,
-                            self.abilities
+                            state
+                                .abilities
                                 .other
                                 .as_ref()
                                 .map_or(2.5, |o| o.sigil_radius[r]),
                         ),
-                        damage: self
+                        damage: state
                             .abilities
                             .other
                             .as_ref()
@@ -1027,9 +1033,10 @@ impl World {
                 };
                 self.entities[i].status.channel_until =
                     self.tick + 1 + (f32::from(hits - 1) * pulse).round() as u64;
+                let state = &mut *self.state;
                 for n in 0..hits {
                     self.entities.spawn_spell(SpellEffect {
-                        due: self.tick + 1 + (f32::from(n) * pulse).round() as u64,
+                        due: state.tick + 1 + (f32::from(n) * pulse).round() as u64,
                         src,
                         team,
                         area,
@@ -1047,10 +1054,11 @@ impl World {
                     team,
                     area: Area::Circle(point, 2.),
                     damage: self
+                        .state
                         .abilities
                         .other
                         .as_ref()
-                        .map_or(self.abilities.wind_dmg[r], |o| o.karas.at(r, cp, 0.)),
+                        .map_or(self.state.abilities.wind_dmg[r], |o| o.karas.at(r, cp, 0.)),
                     heal: 0.,
                     channel: 0,
                 });
@@ -1162,7 +1170,7 @@ pub(super) fn line_distance(p: Position, a: Position, b: Position) -> f32 {
         y: a.y + dy * t,
     })
 }
-impl World {
+impl Room<'_> {
     pub(super) fn predicted_hp(&self, e: &Entity, at: u64) -> f32 {
         let incoming: f32 = self
             .entities
@@ -1215,7 +1223,7 @@ impl crate::persistent_spells::TimedSpell for SpellEffect {
     fn begin_impact(&mut self) -> Self {
         *self
     }
-    fn advance(&mut self, world: &mut World, events: &mut Vec<Event>) -> bool {
+    fn advance(&mut self, world: &mut Room<'_>, events: &mut Vec<Event>) -> bool {
         if world.winner.is_some() {
             return false;
         }
