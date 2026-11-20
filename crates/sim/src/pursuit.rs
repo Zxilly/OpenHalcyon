@@ -83,11 +83,13 @@ impl Room<'_> {
         if t.hp <= 0. {
             return;
         }
-        t.status.stun_until = t.status.stun_until.max(self.state.tick + p.stun);
-        t.winding = None;
-        t.cast = None;
-        t.status.channel = 0;
-        t.status.channel_until = 0;
+        if !t.status.blocks_movement_impairment(self.state.tick) {
+            t.status.stun_until = t.status.stun_until.max(self.state.tick + p.stun);
+            t.winding = None;
+            t.cast = None;
+            t.status.channel = 0;
+            t.status.channel_until = 0;
+        }
         let amount = shop::mitigated(p.damage, t.stats.shield, pierce);
         self.hurt(src, team, j, amount, DamageSchool::Crystal, events);
     }

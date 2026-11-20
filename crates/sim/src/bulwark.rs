@@ -78,7 +78,7 @@ impl Field {
             state.inside = inside;
             let hit = crossed && w.tick >= state.ready;
             let target = &mut w.entities[j];
-            if inside || hit {
+            if (inside || hit) && !target.status.blocks_movement_impairment(w.state.tick) {
                 let until = w.state.tick + self.linger;
                 let previous = if target.status.bulwark_slow_until > w.state.tick {
                     target.status.bulwark_slow_factor

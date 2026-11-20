@@ -9,7 +9,7 @@ pub enum AbilitySlot {
     C,
 }
 impl AbilitySlot {
-    fn idx(self) -> usize {
+    pub(super) fn idx(self) -> usize {
         self as usize
     }
 }
@@ -44,12 +44,14 @@ enum Skill {
     Splashdown,
     Waterwall,
     Verse,
+    Skedaddle,
 }
 fn skill(hero: u16, slot: AbilitySlot) -> Option<Skill> {
     use AbilitySlot::*;
     use Skill::*;
     Some(match (EntityTemplate::from_raw(hero)?, slot) {
         (EntityTemplate::Idris, B) => Chakram,
+        (EntityTemplate::Gwen, B) => Skedaddle,
         (EntityTemplate::Catherine, B) => Stormguard,
         (EntityTemplate::Catherine, C) => BlastTremor,
         (EntityTemplate::Catherine, A) => Pursuit,
@@ -138,6 +140,8 @@ pub(super) struct Status {
     pub(super) stamina_spent_at: u64,
     pub(super) stun_until: u64,
     pub(super) root_until: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) skedaddle: Option<super::skedaddle::Active>,
     pub(super) reim_heading: Option<f32>,
     pub(super) water_speed_until: u64,
     pub(super) water_speed_bonus: Option<f32>,
@@ -252,6 +256,8 @@ pub(super) struct AbilityBook {
     pub(super) pursuit: Option<super::pursuit::Pursuit>,
     pub(super) overwhelm: Option<super::overwhelm::Overwhelm>,
     chill_winds: Option<super::native_combat::ChillWinds>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) skedaddle: Option<super::skedaddle::Rules>,
     winter_spire: Option<super::native_combat::WinterSpire>,
     other: Option<super::native_combat::OtherSpells>,
     pub(super) lorelai: Option<super::native_combat::LorelaiRanks>,
@@ -292,6 +298,7 @@ impl Default for AbilityBook {
             pursuit: None,
             overwhelm: None,
             chill_winds: None,
+            skedaddle: None,
             winter_spire: None,
             other: None,
             lorelai: None,
@@ -405,6 +412,7 @@ impl AbilityBook {
             pursuit: super::pursuit::Pursuit::load(data)?,
             overwhelm: super::overwhelm::Overwhelm::load(data)?,
             chill_winds: super::native_combat::ChillWinds::load(data)?,
+            skedaddle: super::skedaddle::Rules::load(data)?,
             winter_spire: super::native_combat::WinterSpire::load(data)?,
             other: super::native_combat::OtherSpells::load(data)?,
             lorelai: super::native_combat::LorelaiRanks::load(data)?,
@@ -490,6 +498,7 @@ impl Room<'_> {
             Skill::Twirl => self.abilities.twirl.at(rank, 1),
             Skill::Hellfire => self.abilities.hellfire.at(rank, 22),
             Skill::Verse => self.abilities.verse.as_ref().unwrap().cast(rank),
+            Skill::Skedaddle => self.abilities.skedaddle.as_ref().unwrap().cast(rank),
             Skill::Gift => (7., 26., 4, self.abilities.gift_cd[rank]),
             Skill::Agent => (7., 24., 3, 10.),
             Skill::Sigil if self.abilities.sigil.is_some() => (
@@ -521,6 +530,7 @@ impl Room<'_> {
     fn modeled_skill(&self, hero: u16, slot: AbilitySlot) -> Option<Skill> {
         skill(hero, slot).filter(|s| match s {
             Skill::Verse => self.abilities.verse.is_some(),
+            Skill::Skedaddle => self.abilities.skedaddle.is_some(),
             Skill::WinterSpire => self.abilities.winter_spire.is_some(),
             Skill::Bulwark => self.abilities.bulwark.is_some(),
             Skill::Stormguard => self.abilities.stormguard.is_some(),
@@ -622,6 +632,7 @@ impl Room<'_> {
         let point = match (s, target) {
             (
                 Skill::Verse
+                | Skill::Skedaddle
                 | Skill::Bulwark
                 | Skill::Stormguard
                 | Skill::Pursuit
@@ -769,6 +780,7 @@ impl Room<'_> {
         };
         match s {
             Skill::Verse => unreachable!("Verse releases its paid channel separately"),
+            Skill::Skedaddle => self.release_skedaddle(i, r, events),
             Skill::Bulwark => self.create_bulwark(i, r, events),
             Skill::Stormguard => self.raise_stormguard(i, r),
             Skill::BlastTremor => self.blast_tremor(i, r, point, events),
@@ -810,7 +822,10 @@ impl Room<'_> {
                     {
                         continue;
                     }
-                    target.status.root_until = target.status.root_until.max(end);
+                    let rooted = !target.status.blocks_movement_impairment(self.state.tick);
+                    if rooted {
+                        target.status.root_until = target.status.root_until.max(end);
+                    }
                     let raw = if target.kind == Kind::Minion {
                         damage * 0.5
                     } else {
@@ -825,7 +840,8 @@ impl Room<'_> {
                         (DamageSchool::Crystal, ImpactEffect::ChillWinds),
                         events,
                     );
-                    if matches!(self.layout, Layout::Aral { .. })
+                    if rooted
+                        && matches!(self.layout, Layout::Aral { .. })
                         && end - self.tick == TICK_HZ
                         && self.entities[j].hp > 0.
                     {
@@ -908,9 +924,14 @@ impl Room<'_> {
                     ),
                     None => (65. + r as f32 * 30., 1.5, 0.7),
                 };
-                self.entities[j].status.slow_until =
-                    self.tick + (duration * TICK_HZ as f32).ceil() as u64;
-                self.entities[j].status.slow_factor = factor;
+                if !self.entities[j]
+                    .status
+                    .blocks_movement_impairment(self.state.tick)
+                {
+                    self.entities[j].status.slow_until =
+                        self.tick + (duration * TICK_HZ as f32).ceil() as u64;
+                    self.entities[j].status.slow_factor = factor;
+                }
                 let dmg = shop::mitigated(
                     raw * self.entities[i].long_shot.map_or(1., |t| t.damage),
                     self.entities[j].stats.shield,
@@ -1363,7 +1384,11 @@ impl crate::persistent_spells::TimedSpell for SpellEffect {
                 } else {
                     shop::mitigated(raw, e.stats.shield, pierce)
                 };
-                if let Area::Suppression { slow, ticks, .. } = self.area {
+                if let Area::Suppression { slow, ticks, .. } = self.area
+                    && !world.entities[i]
+                        .status
+                        .blocks_movement_impairment(world.state.tick)
+                {
                     world.entities[i].status.slow_factor = slow;
                     world.entities[i].status.slow_until = world.tick + ticks;
                 }

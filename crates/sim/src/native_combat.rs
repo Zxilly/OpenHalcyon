@@ -103,6 +103,7 @@ impl super::Room<'_> {
         let Some((id, level)) = equipped else {
             e.long_shot = None;
             e.mobile_bulwark_bonus = None;
+            e.speed_loader = None;
             return Ok(());
         };
         let talent = data.talent_definition(id).ok_or("unknown talent")?;
@@ -135,6 +136,12 @@ impl super::Room<'_> {
                 }
                 e.mobile_bulwark_bonus = Some(bonus);
                 e.long_shot = None;
+            }
+            ModeledTalent::SpeedLoader => {
+                if level.get() != 1 {
+                    return Err("unsupported Speed Loader level");
+                }
+                e.speed_loader = Some(level);
             }
         }
         Ok(())

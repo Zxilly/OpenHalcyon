@@ -236,8 +236,10 @@ impl Room<'_> {
                     t.status.barrier_until = t.status.barrier_until.max(barrier_end);
                 }
             } else if matches!(t.kind, Kind::Hero | Kind::Minion | Kind::Neutral) {
-                t.status.slow_until = slow_end;
-                t.status.slow_factor = slow;
+                if !t.status.blocks_movement_impairment(self.state.tick) {
+                    t.status.slow_until = slow_end;
+                    t.status.slow_factor = slow;
+                }
                 let amount = shop::mitigated(dmg, t.stats.shield, pierce);
                 self.hurt(src, team, j, amount, DamageSchool::Crystal, events);
             }

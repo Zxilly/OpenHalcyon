@@ -258,7 +258,7 @@ impl crate::persistent_spells::TimedSpell for Water {
             }
             match self.pool {
                 Pool::Fish { rank, stun } if e.team != self.team => {
-                    if elapsed == 0 {
+                    if elapsed == 0 && !e.status.blocks_movement_impairment(world.state.tick) {
                         e.status.stun_until = e.status.stun_until.max(world.state.tick + stun);
                         e.winding = None;
                         e.cast = None;
@@ -298,7 +298,9 @@ impl crate::persistent_spells::TimedSpell for Water {
                     };
                     e.status.water_speed_until = world.state.tick + 1;
                 }
-                Pool::Splash { slow_factor, .. } => {
+                Pool::Splash { slow_factor, .. }
+                    if !e.status.blocks_movement_impairment(world.state.tick) =>
+                {
                     e.status.water_slow_factor = if e.status.water_slow_until > world.state.tick {
                         e.status.water_slow_factor.min(slow_factor)
                     } else {

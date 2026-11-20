@@ -59,6 +59,9 @@ native_labels! {
         NonDecayingSlowAmount => "NonDecaying Slow Amount",
         BulwarkSlowDuration => "Slow Duration",
         ImmunityDuration => "Immunity Duration",
+        SkedaddleImmunityDuration => "CC Immunity Duration",
+        SkedaddleSpeed => "Speed Boost Amount",
+        SkedaddleDuration => "Speed Boost Duration",
         BubbleDuration => "BubbleDuration",
         BurnRange => "BurnRange",
         BaseHealthThreshold => "Base_Health_Threshold",
@@ -136,16 +139,18 @@ native_labels! {
 pub enum ModeledTalent {
     LongShot,
     MobileBulwark,
+    SpeedLoader,
 }
 impl ModeledTalent {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::LongShot => "Talent_Ringo_LongShot",
             Self::MobileBulwark => "Talent_Lyra_MobileBulwark",
+            Self::SpeedLoader => "Talent_Gwen_SpeedLoader",
         }
     }
     pub fn parse(id: &str) -> Option<Self> {
-        [Self::LongShot, Self::MobileBulwark]
+        [Self::LongShot, Self::MobileBulwark, Self::SpeedLoader]
             .into_iter()
             .find(|t| t.as_str() == id)
     }
@@ -153,6 +158,7 @@ impl ModeledTalent {
         match self {
             Self::LongShot => crate::EntityTemplate::Ringo,
             Self::MobileBulwark => crate::EntityTemplate::Lyra,
+            Self::SpeedLoader => crate::EntityTemplate::Gwen,
         }
     }
 }

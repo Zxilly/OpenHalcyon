@@ -81,7 +81,9 @@ impl Room<'_> {
                 continue;
             }
             let amount = shop::mitigated(damage, t.stats.shield, pierce);
-            if self.has_arcane_fire(t.id, source) {
+            if self.has_arcane_fire(t.id, source)
+                && !t.status.blocks_movement_impairment(self.state.tick)
+            {
                 let t = &mut self.entities[j];
                 t.status.stun_until = t.status.stun_until.max(stun_end);
                 t.winding = None;

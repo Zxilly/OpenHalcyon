@@ -122,7 +122,7 @@ impl Room<'_> {
             {
                 continue;
             }
-            if i == j {
+            if i == j && !t.status.blocks_movement_impairment(self.state.tick) {
                 t.status.slow_factor = slow;
                 t.status.slow_until = slow_end;
             }

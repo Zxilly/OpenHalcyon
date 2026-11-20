@@ -43,6 +43,7 @@ mod solo_side;
 mod world_rules;
 pub use world_rules::WorldRules;
 mod sigil;
+mod skedaddle;
 mod twister;
 mod yates;
 use combat::{AbilityBook, Cast, SpellEffect, Status};
@@ -145,6 +146,14 @@ pub enum Event {
     VisionDeployed {
         device: VisionDevice,
         instance: u32,
+    },
+    Skedaddle {
+        source: u32,
+        immunity_instance: u32,
+        speed_instance: u32,
+        immunity_seconds: f32,
+        speed_seconds: f32,
+        talent_reset: bool,
     },
     ChillWindsRoot {
         source: u32,
@@ -405,6 +414,8 @@ impl Stats {
 pub struct Entity {
     mobile_bulwark_bonus: Option<f32>,
     long_shot: Option<native_combat::LongShot>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    speed_loader: Option<std::num::NonZeroU8>,
     pub id: u32,
     pub team: u8,
     pub kind: Kind,
@@ -727,6 +738,7 @@ impl Room<'_> {
             .ok_or_else(|| format!("missing manifest entry {name}"))?;
         hero.mobile_bulwark_bonus = None;
         hero.long_shot = None;
+        hero.speed_loader = None;
         hero.stats = Stats::load(id, unit, data);
         hero.energy = unit.energy;
         hero.max_energy = unit.energy;
@@ -812,6 +824,7 @@ impl Room<'_> {
         self.entities.push(Entity {
             mobile_bulwark_bonus: None,
             long_shot: None,
+            speed_loader: None,
             id,
             team,
             kind,
@@ -1032,6 +1045,7 @@ impl Room<'_> {
         let pos = e.position.advance(
             waypoint,
             (e.stats.speed
+                + skedaddle::speed(&e.status, state.tick)
                 + e.status
                     .water_speed_bonus
                     .filter(|_| e.status.water_speed_until > state.tick)
@@ -1521,7 +1535,11 @@ impl Room<'_> {
                             attack_target: Some(id),
                         });
                     }
-                    if crystal {
+                    if crystal
+                        && !self.entities[j]
+                            .status
+                            .blocks_movement_impairment(self.state.tick)
+                    {
                         self.entities[j].status.slow_until = self.tick + 20;
                         self.entities[j].status.slow_factor = 0.4;
                     }
