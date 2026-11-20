@@ -10,6 +10,8 @@ fn effect_phase_cost() {
     )
     .unwrap();
     let mut w = World::from_data(23, 6, &data).unwrap();
+    // Preserve the original A/B-only content in the pre-migration replay checkpoint.
+    std::sync::Arc::make_mut(&mut w.abilities).verse = None;
     w.use_six_human_roster().unwrap();
     for (i, name) in [(0, "Lyra"), (1, "Adagio"), (2, "Lyra"), (3, "Adagio")] {
         w.select_hero(i, name, &data).unwrap();

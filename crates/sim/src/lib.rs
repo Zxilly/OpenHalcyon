@@ -6,6 +6,7 @@ mod ai;
 mod aral;
 mod arcane_fire;
 mod fixed_tick;
+mod verse;
 pub use actors::Actors;
 mod persistent_spells;
 mod vision_devices;

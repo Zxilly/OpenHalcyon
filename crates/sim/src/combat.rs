@@ -43,6 +43,7 @@ enum Skill {
     FishFood,
     Splashdown,
     Waterwall,
+    Verse,
 }
 fn skill(hero: u16, slot: AbilitySlot) -> Option<Skill> {
     use AbilitySlot::*;
@@ -63,6 +64,7 @@ fn skill(hero: u16, slot: AbilitySlot) -> Option<Skill> {
         (EntityTemplate::Ringo, A) => Achilles,
         (EntityTemplate::Ringo, B) => Twirl,
         (EntityTemplate::Ringo, C) => Hellfire,
+        (EntityTemplate::Adagio, C) => Verse,
         (EntityTemplate::Adagio, A) => Gift,
         (EntityTemplate::Adagio, B) => Agent,
         (EntityTemplate::Lyra, B) => Bulwark,
@@ -78,6 +80,8 @@ pub(super) struct Cast {
     slot: AbilitySlot,
     target: CastTarget,
     release: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) verse: Option<verse::Channel>,
 }
 /// These controllers are only armed by Catherine and Yates. Lane units keep a single empty
 /// slot. The serialized fields stay in their original order for replay checkpoints.
@@ -237,6 +241,8 @@ pub(super) struct AbilityBook {
     extra_casts: [ExtraCast; Skill::Waterwall as usize + 1],
     pub(super) sigil: Option<super::sigil::Rules>,
     pub(super) twister: Option<super::twister::Rules>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) verse: Option<super::verse::Rules>,
     pub(super) fire: Option<super::arcane_fire::Rules>,
     pub(super) bulwark: Option<super::bulwark::Rules>,
     pub(super) stormguard: Option<super::catherine::Stormguard>,
@@ -276,6 +282,7 @@ impl Default for AbilityBook {
             extra_casts: Default::default(),
             sigil: None,
             twister: None,
+            verse: None,
             fire: None,
             bulwark: None,
             stormguard: None,
@@ -388,6 +395,7 @@ impl AbilityBook {
             extra_casts,
             sigil: super::sigil::Rules::load(data)?,
             twister: super::twister::Rules::load(data)?,
+            verse: super::verse::Rules::load(data)?,
             fire: super::arcane_fire::Rules::load(data)?,
             bulwark: super::bulwark::Rules::load(data)?,
             stormguard: super::catherine::Stormguard::load(data)?,
@@ -481,6 +489,7 @@ impl Room<'_> {
             Skill::Achilles => self.abilities.achilles.at(rank, 4),
             Skill::Twirl => self.abilities.twirl.at(rank, 1),
             Skill::Hellfire => self.abilities.hellfire.at(rank, 22),
+            Skill::Verse => self.abilities.verse.as_ref().unwrap().cast(rank),
             Skill::Gift => (7., 26., 4, self.abilities.gift_cd[rank]),
             Skill::Agent => (7., 24., 3, 10.),
             Skill::Sigil if self.abilities.sigil.is_some() => (
@@ -494,17 +503,24 @@ impl Room<'_> {
             Skill::Wind => (7., 24., 5, 8.),
             Skill::Strike => (7., 36., 7, 20.),
         };
-        let extra = &self.abilities.extra_casts[s as usize];
-        let seconds = extra.cooldown.as_ref().map_or(seconds, |r| r[rank]);
+        let extra = self.abilities.extra_casts.get(s as usize);
+        let seconds = extra
+            .and_then(|r| r.cooldown.as_ref())
+            .map_or(seconds, |r| r[rank]);
         Rules {
-            range: extra.range.as_ref().map_or(range, |r| r[rank]),
-            cost: extra.cost.as_ref().map_or(cost, |r| r[rank]),
+            range: extra
+                .and_then(|r| r.range.as_ref())
+                .map_or(range, |r| r[rank]),
+            cost: extra
+                .and_then(|r| r.cost.as_ref())
+                .map_or(cost, |r| r[rank]),
             windup,
             cooldown: (seconds * TICK_HZ as f32).ceil() as u64,
         }
     }
     fn modeled_skill(&self, hero: u16, slot: AbilitySlot) -> Option<Skill> {
         skill(hero, slot).filter(|s| match s {
+            Skill::Verse => self.abilities.verse.is_some(),
             Skill::WinterSpire => self.abilities.winter_spire.is_some(),
             Skill::Bulwark => self.abilities.bulwark.is_some(),
             Skill::Stormguard => self.abilities.stormguard.is_some(),
@@ -605,7 +621,8 @@ impl Room<'_> {
         }
         let point = match (s, target) {
             (
-                Skill::Bulwark
+                Skill::Verse
+                | Skill::Bulwark
                 | Skill::Stormguard
                 | Skill::Pursuit
                 | Skill::Overwhelm
@@ -677,13 +694,25 @@ impl Room<'_> {
         if self.entities[i].cast.is_some() {
             return Err("cast in progress");
         }
-        let (_, _, rules) = self.castable(i, slot, target)?;
+        let (skill, rank, rules) = self.castable(i, slot, target)?;
+        let fortification =
+            (skill == Skill::Verse).then(|| self.abilities.verse.as_ref().unwrap().fortified[rank]);
         let e = &mut self.entities[i];
         e.winding = None;
         e.order = Command::Stop;
         e.status.channel = 0;
         e.status.channel_until = 0;
+        // Verse grants protection immediately. A cancelled channel has already used its cast.
+        if fortification.is_some() {
+            e.energy -= rules.cost;
+            e.cooldown[slot.idx()] = self.state.tick
+                + (rules.cooldown as f32 / (1. + e.item_stats.cooldown)).ceil() as u64;
+        }
         e.cast = Some(Cast {
+            verse: fortification.map(|v| verse::Channel {
+                rank,
+                fortified: v.min(e.hp),
+            }),
             slot,
             target,
             release: self.state.tick + rules.windup,
@@ -697,6 +726,10 @@ impl Room<'_> {
             return;
         }
         self.entities[i].cast = None;
+        if let Some(channel) = c.verse {
+            self.release_verse(i, channel.rank, events);
+            return;
+        }
         let Ok((s, r, rule)) = self.castable(i, c.slot, c.target) else {
             return;
         };
@@ -735,6 +768,7 @@ impl Room<'_> {
             _ => origin,
         };
         match s {
+            Skill::Verse => unreachable!("Verse releases its paid channel separately"),
             Skill::Bulwark => self.create_bulwark(i, r, events),
             Skill::Stormguard => self.raise_stormguard(i, r),
             Skill::BlastTremor => self.blast_tremor(i, r, point, events),

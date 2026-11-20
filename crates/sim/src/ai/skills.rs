@@ -14,6 +14,9 @@ impl Room<'_> {
                 .then_some(Command::Cast { slot, target })
         };
         let specific = match EntityTemplate::from_raw(hero.type_id) {
+            Some(EntityTemplate::Adagio) => {
+                cast(self.verse_reaches(caster, enemy.position), C, SelfCast)
+            }
             Some(EntityTemplate::Lyra) => self
                 .sigil_order(caster, enemy)
                 .or_else(|| cast(self.bulwark_reaches(caster, enemy.position), B, SelfCast)),

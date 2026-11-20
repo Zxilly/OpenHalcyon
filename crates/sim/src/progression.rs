@@ -136,7 +136,13 @@ impl Room<'_> {
             0.
         };
         t.status.flask_barrier -= flask_absorbed;
-        let amount = (remaining - flask_absorbed).min(t.hp);
+        let remaining = remaining - flask_absorbed;
+        let mut amount = remaining.min(t.hp);
+        if let Some(channel) = t.cast.as_mut().and_then(|c| c.verse.as_mut()) {
+            let saved = channel.fortified.min(remaining * 0.5);
+            channel.fortified -= saved;
+            amount = (remaining - saved).min(t.hp);
+        }
         if amount <= 0. {
             return;
         }

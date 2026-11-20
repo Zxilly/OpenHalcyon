@@ -13,6 +13,8 @@ fn overlapping_bulwark_and_fire_match_baseline() {
     )
     .unwrap();
     let mut world = World::from_data(23, 6, &data).unwrap();
+    // Preserve the original A/B-only content in the pre-migration replay checkpoint.
+    std::sync::Arc::make_mut(&mut world.abilities).verse = None;
     world.use_six_human_roster().unwrap();
     for (seat, name) in [(0, "Lyra"), (1, "Adagio"), (2, "Lyra"), (3, "Adagio")] {
         world.select_hero(seat, name, &data).unwrap();
