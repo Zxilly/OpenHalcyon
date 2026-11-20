@@ -13,7 +13,7 @@ pub(super) struct Rules {
     linger: [f32; 5],
     immunity: [f32; 5],
 }
-#[derive(Debug, Serialize)]
+#[derive(bevy_ecs::prelude::Component, Debug, Serialize)]
 pub(super) struct Field {
     origin: Position,
     mobile: bool,
@@ -103,6 +103,23 @@ impl Field {
         }
     }
 }
+impl crate::persistent_spells::TimedSpell for Field {
+    fn advance(&mut self, w: &mut World, events: &mut Vec<Event>) -> bool {
+        let Some(i) = w.index(self.source) else {
+            return false;
+        };
+        if w.tick >= self.end || w.entities[i].hp <= 0. {
+            return false;
+        }
+        let center = if self.mobile {
+            w.entities[i].position
+        } else {
+            self.origin
+        };
+        self.sample(w, center, events);
+        true
+    }
+}
 impl World {
     pub(super) fn bulwark_reaches(&self, i: usize, p: Position) -> bool {
         let e = &self.entities[i];
@@ -133,33 +150,11 @@ impl World {
             targets: BTreeMap::new(),
         };
         field.sample(self, pos, events);
-        self.bulwarks.push(field);
-    }
-    pub(super) fn advance_bulwarks(&mut self, events: &mut Vec<Event>) {
-        if self.bulwarks.is_empty() {
-            return;
-        }
-        let mut fields = std::mem::take(&mut self.bulwarks);
-        fields.retain_mut(|f| {
-            let Some(i) = self.index(f.source) else {
-                return false;
-            };
-            if self.tick >= f.end || self.entities[i].hp <= 0. {
-                return false;
-            }
-            let center = if f.mobile {
-                self.entities[i].position
-            } else {
-                f.origin
-            };
-            f.sample(self, center, events);
-            true
-        });
-        self.bulwarks = fields;
+        self.spells.spawn(field);
     }
     pub(super) fn bulwark_blocks_leap(&self, i: usize, destination: Position) -> bool {
         let e = &self.entities[i];
-        self.bulwarks.iter().any(|f| {
+        self.spells.iter::<Field>().any(|f| {
             if f.team == e.team || self.tick >= f.end {
                 return false;
             }
@@ -235,21 +230,21 @@ mod tests {
         assert!(w.command(2, leap).is_err());
         w.entities[1].position.x = 8.;
         w.tick = 9;
-        w.advance_bulwarks(&mut out);
+        w.advance_persistent_spells(&mut out);
         assert_eq!(w.entities[1].hp, hp - 92.);
         assert!(w.command(2, leap).is_err());
         w.entities[0].position.x = 3.;
         w.tick = 57;
-        w.advance_bulwarks(&mut out);
+        w.advance_persistent_spells(&mut out);
         assert_eq!(w.entities[3].hp, outside);
         w.entities[1].position.x = 5.5;
         w.tick = 58;
-        w.advance_bulwarks(&mut out);
+        w.advance_persistent_spells(&mut out);
         assert_eq!(w.entities[1].hp, hp - 184.);
         assert_eq!(w.entities[3].hp, outside);
         w.tick = 68;
-        w.advance_bulwarks(&mut out);
-        assert!(w.bulwarks.is_empty());
+        w.advance_persistent_spells(&mut out);
+        assert!(w.spells.iter::<Field>().next().is_none());
         w.command(2, leap).unwrap();
         // The named, home-authorized level ten extends three seconds to eight.
         w.set_named_talent(
@@ -267,10 +262,10 @@ mod tests {
         w.command(1, cmd).unwrap();
         w.tick = 76;
         w.advance_cast(0, &mut out);
-        assert_eq!(w.bulwarks[0].end, 236);
+        assert_eq!(w.spells.iter::<Field>().next().unwrap().end, 236);
         w.entities[0].position.x = 12.;
         w.tick = 77;
-        w.advance_bulwarks(&mut out);
+        w.advance_persistent_spells(&mut out);
         assert_eq!(w.entities[3].hp, outside - 92.);
         w.set_named_talent(1, None, &d).unwrap();
         assert!(w.entities[0].mobile_bulwark_bonus.is_none());

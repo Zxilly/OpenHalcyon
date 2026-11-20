@@ -4,6 +4,7 @@ use halcyon_data::EntityTemplate;
 mod ai;
 mod aral;
 mod arcane_fire;
+mod persistent_spells;
 mod vision_devices;
 pub use vision_devices::{VisionDevice, VisionDeviceKind};
 mod aral_inventory;
@@ -457,8 +458,7 @@ pub struct World {
     chakrams: Vec<chakram::Chakram>,
     sigils: Vec<sigil::Field>,
     twisters: Vec<twister::Dash>,
-    arcane_fire: Vec<arcane_fire::Pulse>,
-    bulwarks: Vec<bulwark::Field>,
+    spells: persistent_spells::Spells,
     water: Vec<lorelai::Water>,
     nav_budget: u8,
     native_navigation: Option<Box<native_navigation::NativeNavigation>>,
@@ -524,8 +524,8 @@ impl World {
                     &self.water,
                     &self.sigils,
                     &self.twisters,
-                    &self.arcane_fire,
-                    &self.bulwarks,
+                    self.spells.snapshot::<arcane_fire::Pulse>(),
+                    self.spells.snapshot::<bulwark::Field>(),
                 ),
             ),
         )
@@ -724,8 +724,7 @@ impl World {
             chakrams: Vec::new(),
             sigils: Vec::new(),
             twisters: Vec::new(),
-            arcane_fire: Vec::new(),
-            bulwarks: Vec::new(),
+            spells: Default::default(),
             water: Vec::new(),
             nav_budget: 0,
             native_navigation: None,
@@ -1104,8 +1103,7 @@ impl World {
         self.advance_effects(events);
         self.advance_chakrams(events);
         self.advance_water(events);
-        self.advance_bulwarks(events);
-        self.advance_arcane_fire(events);
+        self.advance_persistent_spells(events);
         self.advance_twisters(events);
         self.advance_sigils(events);
         if self.winner.is_some() {
@@ -1761,3 +1759,5 @@ mod tests {
         panic!("crystal survived");
     }
 }
+#[cfg(test)]
+mod effects_replay;

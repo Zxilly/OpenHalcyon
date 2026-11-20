@@ -6,6 +6,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+bevy_ecs = { version = "0.20.1", default-features = false, features = ["std"] }
 halcyon-data = { path = "../data" }
 serde = { version = "1", features = ["derive", "rc"] }
 serde_json.workspace = true

@@ -38,7 +38,7 @@ impl Rules {
         }))
     }
 }
-#[derive(Clone, Copy, Debug, Serialize)]
+#[derive(bevy_ecs::prelude::Component, Clone, Copy, Debug, Serialize)]
 pub(super) struct Pulse {
     src: u32,
     team: u8,
@@ -71,8 +71,8 @@ impl World {
             })
     }
     pub(super) fn has_arcane_fire(&self, target: u32, caster: u32) -> bool {
-        self.arcane_fire
-            .iter()
+        self.spells
+            .iter::<Pulse>()
             .any(|p| !p.heal && p.target == target && p.src == caster && self.tick < p.end)
     }
     pub(super) fn gift_of_fire(&mut self, i: usize, j: usize, r: usize, events: &mut Vec<Event>) {
@@ -111,9 +111,7 @@ impl World {
         let slow_end = self.tick + (a.slow_time[r] * TICK_HZ as f32).round() as u64;
         self.entities[i].next_attack = self.tick;
         self.heal(src, j, burst, events);
-        self.arcane_fire
-            .retain(|p| !(p.heal && p.src == src && p.target == heal.target));
-        self.arcane_fire.push(heal);
+        self.spells.refresh_fire(heal);
         for t in &mut self.entities {
             if t.hp <= 0.
                 || t.team == team
@@ -127,43 +125,94 @@ impl World {
                 t.status.slow_factor = slow;
                 t.status.slow_until = slow_end;
             }
-            self.arcane_fire
-                .retain(|p| p.heal || p.src != src || p.target != t.id);
-            self.arcane_fire.push(Pulse {
+            self.spells.refresh_fire(Pulse {
                 target: t.id,
                 ..burn
             });
         }
     }
-    pub(super) fn advance_arcane_fire(&mut self, events: &mut Vec<Event>) {
-        if self.arcane_fire.is_empty() {
-            return;
+}
+impl Pulse {
+    pub(super) fn same_application(&self, other: &Self) -> bool {
+        self.heal == other.heal && self.src == other.src && self.target == other.target
+    }
+}
+impl crate::persistent_spells::TimedSpell for Pulse {
+    fn advance(&mut self, world: &mut World, events: &mut Vec<Event>) -> bool {
+        let Some(j) = world.index(self.target) else {
+            return false;
+        };
+        if world.entities[j].hp <= 0. || world.tick > self.end {
+            return false;
         }
-        let mut active = std::mem::take(&mut self.arcane_fire);
-        active.retain_mut(|p| {
-            let Some(j) = self.index(p.target) else {
-                return false;
-            };
-            if self.entities[j].hp <= 0. || self.tick > p.end {
-                return false;
+        if world.tick >= self.next {
+            if self.heal {
+                world.heal(self.src, j, self.amount, events)
+            } else {
+                let dmg = shop::mitigated(self.amount, world.entities[j].stats.shield, self.pierce);
+                world.hurt(self.src, self.team, j, dmg, DamageSchool::Crystal, events)
             }
-            if self.tick >= p.next {
-                if p.heal {
-                    self.heal(p.src, j, p.amount, events)
-                } else {
-                    let dmg = shop::mitigated(p.amount, self.entities[j].stats.shield, p.pierce);
-                    self.hurt(p.src, p.team, j, dmg, DamageSchool::Crystal, events)
-                }
-                p.next += p.period;
-            }
-            self.tick < p.end
-        });
-        self.arcane_fire = active;
+            self.next += self.period;
+        }
+        world.tick < self.end
     }
 }
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn refreshed_application_runs_last_and_final_pulses_expire_in_order() {
+        let mut world = World::new(29, 10);
+        let pulse = Pulse {
+            src: 1,
+            team: 0,
+            target: 2,
+            heal: false,
+            amount: 2.,
+            pierce: 0.,
+            period: 2,
+            next: 2,
+            end: 4,
+        };
+        world.spells.refresh_fire(pulse);
+        world.spells.refresh_fire(Pulse { src: 3, ..pulse });
+        world.spells.refresh_fire(Pulse {
+            amount: 4.,
+            ..pulse
+        });
+        world.entities[1].stats.shield = 0.;
+        for tick in [2, 4] {
+            world.tick = tick;
+            let mut events = Vec::new();
+            world.advance_persistent_spells(&mut events);
+            let impacts: Vec<_> = events
+                .into_iter()
+                .filter_map(|e| match e {
+                    Event::Damage {
+                        source,
+                        target: 2,
+                        amount,
+                        ..
+                    } => Some((source, amount)),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(impacts, [(3, 2.), (1, 4.)]);
+        }
+        assert!(world.spells.iter::<Pulse>().next().is_none());
+        world.spells.refresh_fire(Pulse {
+            next: 6,
+            end: 8,
+            ..pulse
+        });
+        world.entities[1].hp = 0.;
+        world.tick = 6;
+        let mut events = Vec::new();
+        world.advance_persistent_spells(&mut events);
+        assert!(events.is_empty());
+        assert!(world.spells.iter::<Pulse>().next().is_none());
+    }
+
     #[test]
     #[ignore = "requires original delivery and supplemental combat data"]
     fn gift_resets_attacks_burns_and_heals_and_empowered_hits_use_the_casters_fire() {
@@ -214,7 +263,7 @@ mod tests {
         assert!(!w.has_arcane_fire(4, 1));
         for t in 5..=64 {
             w.tick = t;
-            w.advance_arcane_fire(&mut events);
+            w.advance_persistent_spells(&mut events);
         }
         assert_eq!(w.entities[0].hp, 882.);
         assert_eq!(w.entities[1].hp, 1952.);
