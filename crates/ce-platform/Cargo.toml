@@ -6,6 +6,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+halcyon-data = { path = "../data" }
 async-trait = "0.1"
 axum.workspace = true
 chrono = "0.4"

@@ -79,6 +79,7 @@ pub struct Config {
 }
 
 pub struct Platform {
+    game_data: Option<Arc<halcyon_data::GameData>>,
     app: AppState,
     config: Config,
     tokens: Tokens,
@@ -94,6 +95,7 @@ pub struct Platform {
     peers: Option<halcyon_peer_play::PeerPlay>,
     talents: talents::Catalog,
     skins: Value,
+    archived_manifests: bool,
 }
 
 fn now() -> u64 {
@@ -139,6 +141,7 @@ impl Platform {
                 .ok_or(Error::Config("manifest is missing returnValue"))
         };
         Ok(Arc::new(Self {
+            game_data: None,
             app,
             config,
             tokens: Tokens::new(secret)?,
@@ -157,7 +160,36 @@ impl Platform {
                 serde_json::to_value(Empty {})?,
             )?)?,
             skins: load("official_getSkinManifest.json", Value::from("{}"))?,
+            archived_manifests: manifests.is_some(),
         }))
+    }
+
+    /// Attach the same immutable pack used by the match host before routing requests.
+    pub fn configure_game_data(
+        platform: &mut Arc<Self>,
+        data: Option<Arc<halcyon_data::GameData>>,
+    ) -> Result<(), Error> {
+        let this = Arc::get_mut(platform).ok_or(Error::Config(
+            "configure content before sharing the platform",
+        ))?;
+        if let Some(data) = data.as_deref() {
+            this.talents.add_supplement(data);
+            if !this.archived_manifests
+                && let Some(catalog) = data.cosmetics()
+            {
+                #[derive(Serialize)]
+                struct SkinManifest<'a> {
+                    skins: &'a [halcyon_data::skins::OfficialSkin],
+                    themes: &'a [halcyon_data::skins::Theme],
+                }
+                this.skins = Value::String(serde_json::to_string(&SkinManifest {
+                    skins: &catalog.official_skins,
+                    themes: &catalog.official_themes,
+                })?);
+            }
+        }
+        this.game_data = data;
+        Ok(())
     }
 
     /// Opt in to the native client's state subscription.
@@ -724,6 +756,12 @@ impl Platform {
             chat_pass: grant.to_string(),
             chat_user: p.player_id,
         });
+        let reference = self
+            .game_data
+            .as_deref()
+            .and_then(halcyon_data::GameData::references);
+        let constants = reference.map(|r| &r.constants);
+        let flags = constants.map(|c| &c.official_session_constants.features_enabled);
         Ok(serde_json::to_value(SessionBootstrap {
             state,
             player_uuid: p.player_id,
@@ -734,7 +772,10 @@ impl Platform {
             country: "US",
             platform_time: now(),
             enable_state_updates: self.native_state_updates,
-            missed_state_update_messages_threshold: -1,
+            missed_state_update_messages_threshold: constants.map_or(-1, |c| {
+                c.official_session_meta
+                    .missed_state_update_messages_threshold
+            }),
             notify_url: format!("ws://{origin}/ws/{grant}"),
             notify_fallback_url: format!("http://{origin}/lp/{grant}"),
             chat,
@@ -746,12 +787,20 @@ impl Platform {
             experiment_details: [],
             ask_registration_consent: false,
             bucket_incrementer: 3000,
-            failover_threshold: 4000,
+            failover_threshold: constants
+                .map_or(4000, |c| c.official_session_meta.failover_threshold),
             support_urls: SupportUrls {
                 static_content_url: "",
             },
             constants: SessionConstants {
-                features_enabled: in_game_chat.then_some(FeatureFlags { in_game_chat: true }),
+                features_enabled: (in_game_chat || flags.is_some()).then_some(FeatureFlags {
+                    in_game_chat,
+                    leaderboards: flags.map(|f| f.leaderboards),
+                    leaderboards_always_query_offline_friends: flags
+                        .map(|f| f.leaderboards_always_query_offline_friends),
+                    live_events: flags.map(|f| f.live_events),
+                }),
+                experiments: constants.map(|c| &c.official_session_constants.experiments),
             },
             player_config,
             extras,
@@ -825,7 +874,7 @@ struct SessionBootstrap<'a> {
     country: &'static str,
     platform_time: u64,
     enable_state_updates: bool,
-    missed_state_update_messages_threshold: i8,
+    missed_state_update_messages_threshold: i32,
     notify_url: String,
     notify_fallback_url: String,
     #[serde(flatten)]
@@ -841,7 +890,7 @@ struct SessionBootstrap<'a> {
     bucket_incrementer: u32,
     failover_threshold: u32,
     support_urls: SupportUrls,
-    constants: SessionConstants,
+    constants: SessionConstants<'a>,
     player_config: Option<Value>,
     #[serde(flatten)]
     extras: Option<&'a Value>,
@@ -857,15 +906,24 @@ struct SupportUrls {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct SessionConstants {
+struct SessionConstants<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     features_enabled: Option<FeatureFlags>,
+    #[serde(flatten)]
+    experiments:
+        Option<&'a std::collections::BTreeMap<String, std::collections::BTreeMap<String, Value>>>,
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct FeatureFlags {
     in_game_chat: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    leaderboards: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    leaderboards_always_query_offline_friends: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    live_events: Option<bool>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]

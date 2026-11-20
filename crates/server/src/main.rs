@@ -207,6 +207,8 @@ async fn serve(c: Config) -> Result<()> {
             c.manifests_dir.as_deref(),
         )?,
     };
+    let mut ce = ce;
+    Platform::configure_game_data(&mut ce, rooms.game_data().cloned())?;
     let mut ce = match c.content_file {
         Some(path) => ce.with_content(&path).await?,
         None => ce,

@@ -209,6 +209,9 @@ struct Room {
     last_roster: Instant,
 }
 impl Rooms {
+    pub fn game_data(&self) -> Option<&Arc<GameData>> {
+        self.0.data.as_ref()
+    }
     pub fn new(
         bind_ip: IpAddr,
         advertised_host: String,

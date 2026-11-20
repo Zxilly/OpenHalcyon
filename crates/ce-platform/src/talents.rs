@@ -66,6 +66,24 @@ impl Definition {
 }
 
 impl Catalog {
+    pub(super) fn add_supplement(&mut self, data: &halcyon_data::GameData) {
+        for talent in data.extra.combat_content().talents() {
+            let (Some(id), Some(hero)) = (&talent.official_id, &talent.hero) else {
+                continue;
+            };
+            self.definitions
+                .entry(id.clone())
+                .or_insert_with(|| Definition {
+                    public: PublicTalent {
+                        id: id.clone(),
+                        def: format!("*{}*", talent.id),
+                        hero: format!("*{hero}*"),
+                    },
+                    // The pack's cost sample does not identify an account level.
+                    level_row: None,
+                });
+        }
+    }
     pub fn parse(value: Value) -> Result<Self, Error> {
         let invalid = || Error::Config("invalid public talent template");
         let mut definitions = BTreeMap::new();

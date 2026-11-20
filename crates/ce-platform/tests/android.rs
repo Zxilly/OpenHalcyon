@@ -36,6 +36,93 @@ async fn rpc(router: &Router, method: &str, args: impl serde::Serialize) -> Valu
     let resp = router.clone().oneshot(req).await.unwrap();
     serde_json::from_slice(&to_bytes(resp.into_body(), 1024 * 1024).await.unwrap()).unwrap()
 }
+
+#[tokio::test]
+#[ignore = "requires the 147219 operator data and archived public manifests"]
+async fn supplement_serves_native_manifests_and_local_session_settings() {
+    let delivery = std::path::PathBuf::from(std::env::var_os("HALCYON_DELIVERY").unwrap());
+    let extra = std::path::PathBuf::from(std::env::var_os("HALCYON_DATA_EXTRA").unwrap());
+    let data = Arc::new(halcyon_data::GameData::load_with_extra(&delivery, Some(&extra)).unwrap());
+    let archived = |name: &str| -> Value {
+        let path = delivery.parent().unwrap().join(name);
+        let mut envelope: Value =
+            serde_json::from_reader(std::fs::File::open(path).unwrap()).unwrap();
+        envelope["returnValue"].take()
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("platform.sqlite");
+    let app = AppState::open(
+        PlatformConfig {
+            database_path: path.clone(),
+            public_address: "localhost:8443".into(),
+            seats_per_match: 10,
+        },
+        Arc::new(Host),
+    )
+    .unwrap();
+    let mut platform = Platform::new(
+        app,
+        Config {
+            authority: "localhost:8443".into(),
+            notify_authority: "localhost:2112".into(),
+        },
+        &[72; 32],
+        &path,
+        None,
+    )
+    .unwrap();
+    Platform::configure_game_data(&mut platform, Some(data.clone())).unwrap();
+    Platform::configure_native_state_updates(&mut platform, true).unwrap();
+    let router = platform.rpc();
+    let guest = rpc(
+        &router,
+        RpcMethod::CreateGuestPlayer.as_str(),
+        android_guest("device", "0"),
+    )
+    .await;
+    let session = rpc(
+        &router,
+        RpcMethod::StartSessionForPlayer.as_str(),
+        (&guest["returnValue"]["playerUUID"],),
+    )
+    .await;
+    assert_eq!(session["code"], 0);
+    let token = &session["sessionToken"];
+    let settings = &session["returnValue"];
+    let constants = &data.references().unwrap().constants;
+    assert_eq!(settings["platformUrl"], "https://localhost:8443");
+    assert_eq!(
+        settings["failoverThreshold"],
+        constants.official_session_meta.failover_threshold
+    );
+    assert_eq!(settings["enableStateUpdates"], true);
+    assert_eq!(
+        settings["constants"]["featuresEnabled"]["inGameChat"],
+        false
+    );
+    for (experiment, flags) in &constants.official_session_constants.experiments {
+        assert_eq!(
+            settings["constants"][experiment],
+            serde_json::to_value(flags).unwrap()
+        );
+    }
+    let skins = rpc(&router, RpcMethod::GetSkinManifest.as_str(), (token,)).await;
+    let actual: Value = serde_json::from_str(skins["returnValue"].as_str().unwrap()).unwrap();
+    let expected: Value =
+        serde_json::from_str(archived("official_getSkinManifest.json").as_str().unwrap()).unwrap();
+    assert_eq!(actual, expected);
+    let talents = rpc(&router, RpcMethod::GetTalentsData.as_str(), (token,)).await;
+    let actual = talents["returnValue"].as_object().unwrap();
+    let expected = archived("official_getTalentsData.json");
+    assert_eq!(actual.len(), expected.as_object().unwrap().len());
+    for (id, row) in actual {
+        for field in ["id", "def", "hero"] {
+            assert_eq!(row[field], expected[id][field], "{id} {field}");
+        }
+        assert_eq!(row["level"], 0);
+        assert_eq!(row["fragments"], 0);
+    }
+}
 #[tokio::test]
 async fn android_guest_lobby_notifications_and_recovery() {
     let dir = tempfile::tempdir().unwrap();
