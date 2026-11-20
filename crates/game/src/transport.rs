@@ -169,11 +169,14 @@ impl Drop for Connected {
     }
 }
 async fn connection(mut sock: TcpStream, room: Shared, manager: Rooms) -> io::Result<()> {
-    let (mut admitted, mut ended) = {
+    let (mut admitted, mut handshake_stop, mut ended) = {
         let room = room.lock().unwrap();
-        (room.admission_ready.subscribe(), room.stop.subscribe())
+        (
+            room.admission_ready.subscribe(),
+            room.stop.subscribe(),
+            room.settled.subscribe(),
+        )
     };
-    let mut handshake_stop = ended.clone();
     let mut frames = FrameReader::new();
     let handshake = async {
         timeout(Duration::from_secs(10), admitted.wait_for(|ready| *ready))
@@ -271,32 +274,36 @@ async fn connection(mut sock: TcpStream, room: Shared, manager: Rooms) -> io::Re
                     }
                 }
             }
-            if waiting_for_scene && batch.contains(crate::wire_opcode::ModeName) {
-                let mut state = room.lock().unwrap();
-                let seat = &mut state.seats[seat];
-                if seat.peers[ch]
-                    .as_ref()
-                    .is_some_and(|p| p.generation == generation)
-                {
-                    seat.scene_written = true;
-                }
-                waiting_for_scene = false;
-            }
-            if data_header
-                || registration.is_some_and(|(actor, slot)| batch.declares_actor(actor, slot))
+            let opening_scene = ch == 0 && batch.contains(crate::wire_opcode::ModeName);
+            let declared_actor =
+                registration.is_some_and(|(actor, slot)| batch.declares_actor(actor, slot));
+            if (waiting_for_scene && opening_scene)
+                || data_header
+                || declared_actor
+                || (opening_scene && registration.is_some())
             {
                 let mut state = room.lock().unwrap();
-                if state.seats[seat].peers[ch]
+                let current_peer = state.seats[seat].peers[ch]
                     .as_ref()
-                    .is_some_and(|p| p.generation == generation)
-                {
-                    if ch == 0 {
-                        state.seats[seat].world_actor_written = true;
+                    .is_some_and(|p| p.generation == generation);
+                if waiting_for_scene && opening_scene {
+                    if current_peer {
+                        state.seats[seat].scene_written = true;
                     }
-                    state.world_connected(seat, ch);
+                    waiting_for_scene = false;
                 }
-                registration = None;
-                data_header = false;
+                let dead_reconnect =
+                    opening_scene && registration.is_some() && state.world.entities[seat].hp <= 0.;
+                if data_header || declared_actor || dead_reconnect {
+                    if current_peer {
+                        if ch == 0 {
+                            state.seats[seat].world_actor_written = true;
+                        }
+                        state.world_connected(seat, ch);
+                    }
+                    registration = None;
+                    data_header = false;
+                }
             }
             // Large initial catalogs are sent once. Keep steady-state buffers small.
             if bytes.capacity() > 32 * 1024 {
@@ -443,8 +450,9 @@ pub(super) async fn serve(
     }
     drop(listener);
     let final_flush = allows_final_flush(room.lock().unwrap().reason);
-    // Settlement and room capacity are independent of any socket's flush deadline.
-    manager.finished(&room);
+    // Commit match settlement before closing client sockets so immediate CE polls see PostMatch.
+    manager.finished(&room).await;
+    room.lock().unwrap().settled.send_replace(true);
     close_clients(&mut tasks, final_flush).await;
 }
 
@@ -808,5 +816,140 @@ mod tests {
             second.into_records()
         );
         assert!(other.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn stalled_control_peer_allows_authenticated_replacement_while_healthy_peer_rejects() {
+        let rooms = Rooms::new("127.0.0.1".parse().unwrap(), "127.0.0.1".into(), 1, None);
+        let id = Uuid::new_v4();
+        let player = Uuid::new_v4();
+        let hosted = rooms
+            .reserve(Reservation {
+                talent_levels: Vec::new(),
+                match_id: id,
+                players: vec![player],
+                teams: vec![0],
+                mode: "5v5_bots_solo".into(),
+                difficulty: None,
+            })
+            .unwrap();
+        let shared = rooms.room(id).unwrap();
+        let cipher = MatchCipher::new(&id.to_string());
+
+        let first = identified(&hosted.address, player, &cipher).await;
+        // Healthy ch == 0 socket still rejects concurrent duplicate attaches.
+        let mut rejected = TcpStream::connect(&hosted.address).await.unwrap();
+        let port = rejected.peer_addr().unwrap().port();
+        rejected
+            .write_all(&halcyon_protocol::hello_with_port("127.0.0.1", port).unwrap())
+            .await
+            .unwrap();
+        let mut ack = [0; 5];
+        rejected.read_exact(&mut ack).await.unwrap();
+        assert_eq!(ack, ACK_FRAME);
+        rejected
+            .write_all(
+                &cipher
+                    .encode(&Message::known(
+                        crate::Opcode::PlayerUuid,
+                        player.to_string().as_bytes(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            timeout(Duration::from_secs(2), rejected.read(&mut [0; 1]))
+                .await
+                .unwrap()
+                .unwrap(),
+            0
+        );
+
+        let first_gen = {
+            let room = shared.lock().unwrap();
+            let peer = room.seats[0].peers[0].as_ref().unwrap();
+            peer.stalled.send_replace(true);
+            peer.generation
+        };
+        let replacement = identified(&hosted.address, player, &cipher).await;
+        let replacement_gen = shared.lock().unwrap().seats[0].peers[0]
+            .as_ref()
+            .unwrap()
+            .generation;
+        assert!(replacement_gen > first_gen);
+        // Late detach from the superseded generation must not drop the replacement peer.
+        shared.lock().unwrap().detach(0, 0, first_gen);
+        assert_eq!(
+            shared.lock().unwrap().seats[0].peers[0]
+                .as_ref()
+                .unwrap()
+                .generation,
+            replacement_gen
+        );
+        drop(first);
+        drop(replacement);
+    }
+
+    #[tokio::test]
+    async fn finish_handler_commits_before_client_tcp_eof() {
+        let rooms = Rooms::new("127.0.0.1".parse().unwrap(), "127.0.0.1".into(), 1, None);
+        let committed = Arc::new(AtomicBool::new(false));
+        let flag = committed.clone();
+        rooms.set_finish_handler(Arc::new(move |_id, _result| {
+            std::thread::sleep(Duration::from_millis(80));
+            flag.store(true, Ordering::Release);
+        }));
+        let player = Uuid::new_v4();
+        let id = Uuid::new_v4();
+        let hosted = rooms
+            .reserve(Reservation {
+                talent_levels: Vec::new(),
+                match_id: id,
+                players: vec![player],
+                teams: vec![0],
+                mode: "5v5_pvp_casual".into(),
+                difficulty: None,
+            })
+            .unwrap();
+        let room = rooms.room(id).unwrap();
+        let cipher = MatchCipher::new(&id.to_string());
+        let target = {
+            let mut r = room.lock().unwrap();
+            let crystal = r
+                .world
+                .entities
+                .iter()
+                .find(|e| e.kind == halcyon_sim::Kind::Crystal && e.team == 1)
+                .unwrap();
+            let (cid, pos) = (crystal.id, crystal.position);
+            r.world.entities[0].position = pos;
+            r.seats[0].locked = true;
+            r.phase(crate::RoomPhase::Running);
+            cid
+        };
+        let data = identified(&hosted.address, player, &cipher).await;
+        {
+            let mut r = room.lock().unwrap();
+            r.world.entities.find_mut(|e| e.id == target).unwrap().hp = 0.1;
+            r.world.tick = 15;
+            r.world
+                .command(1, halcyon_sim::Command::Attack(target))
+                .unwrap();
+            for _ in 0..5 {
+                r.tick();
+            }
+            assert_eq!(r.reason, Some(crate::RoomEndReason::Completed));
+        }
+        let messages = final_frames(data, &cipher).await;
+        assert!(
+            committed.load(Ordering::Acquire),
+            "client observed TCP EOF before finish handler committed"
+        );
+        let opcodes: Vec<_> = messages.iter().map(|m| m.opcode).collect();
+        assert!(opcodes.ends_with(&[
+            crate::wire_opcode::StatisticsReport,
+            crate::wire_opcode::TickSyncC
+        ]));
     }
 }

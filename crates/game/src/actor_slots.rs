@@ -352,4 +352,111 @@ mod tests {
         assert_eq!(slots.minion(9999), Some(52));
         assert_eq!(slots.minion(1053), Some(53));
     }
+
+    #[tokio::test]
+    async fn fog_and_disconnected_solo_deaths_recycle_minion_slots_without_exhaustion() {
+        use crate::{Peer, Rooms};
+        use halcyon_platform::{MatchHost, Reservation};
+        use halcyon_sim::{Event, Position};
+        use tokio::sync::{mpsc, watch};
+        use uuid::Uuid;
+
+        let rooms = Rooms::new("127.0.0.1".parse().unwrap(), "127.0.0.1".into(), 1, None);
+        let match_id = Uuid::new_v4();
+        rooms
+            .reserve(Reservation {
+                talent_levels: Vec::new(),
+                match_id,
+                players: vec![Uuid::new_v4()],
+                teams: vec![0],
+                mode: "5v5_bots_solo".into(),
+                difficulty: None,
+            })
+            .unwrap();
+        let shared = rooms.room(match_id).unwrap();
+        let mut room = shared.lock().unwrap();
+        room.world.use_solo_mid_lane().unwrap();
+        room.seats[0].control_world = true;
+        room.seats[0].world_actor_written = true;
+        room.seats[0]
+            .preamble
+            .observe(&Message::known(crate::Opcode::RequestScene, [0; 6]), 1500);
+        room.seats[0].preamble.observe(
+            &Message::known(crate::Opcode::SceneOwner, [0, 0, 5, 220, 1, 0]),
+            1500,
+        );
+        room.seats[0]
+            .preamble
+            .observe(&Message::known(crate::Opcode::SceneConfirmed, [0; 6]), 1500);
+        let (tx, mut rx) = mpsc::channel(32);
+        room.seats[0].peers[0] = Some(Peer {
+            generation: 1,
+            tx,
+            stalled: watch::channel(false).0,
+        });
+        while room.world.tick < 900 {
+            room.world.step();
+        }
+        let minion = room
+            .world
+            .entities
+            .iter()
+            .find(|e| e.kind == Kind::Minion && e.team == 1)
+            .unwrap()
+            .id;
+        let home_pos = room.world.entities[0].position;
+        // Move enemy minion into vision so `replicate` allocates a slot for it, then saturate
+        // every remaining free slot in `solo_slots`.
+        room.world
+            .entities
+            .find_mut(|e| e.id == minion)
+            .unwrap()
+            .position = home_pos;
+        room.replicate(&[]);
+        let _ = rx.try_recv().unwrap();
+        let mut dummy = 50_000_u32;
+        while room.solo_slots.minion(dummy).is_some() {
+            dummy += 1;
+        }
+        assert!(dummy > 50_000);
+        assert_eq!(room.solo_slots.minion(90_001), None);
+
+        // Move the enemy minion into fog and kill it there (no 0x0430 emitted).
+        room.world
+            .entities
+            .find_mut(|e| e.id == minion)
+            .unwrap()
+            .position = Position { x: 80.0, y: 80.0 };
+        room.replicate(&[]);
+        while rx.try_recv().is_ok() {}
+        room.world.entities.find_mut(|e| e.id == minion).unwrap().hp = 0.0;
+        room.replicate(&[Event::Death {
+            id: minion,
+            killer: 2,
+        }]);
+        if let Ok(batch) = rx.try_recv() {
+            assert!(
+                batch
+                    .into_records()
+                    .iter()
+                    .all(|m| !m.is(crate::Opcode::ActorDeath)),
+                "fog death must not emit 0x0430"
+            );
+        }
+        let recycled = room
+            .solo_slots
+            .minion(90_001)
+            .expect("fog death must release minion slot");
+        room.solo_slots.released(90_001);
+
+        // Allocate the same remaining slot and verify death releases it even with no gameplay peer
+        // (disconnected or between solo_opening and SceneConfirmed).
+        assert_eq!(room.solo_slots.minion(90_002), Some(recycled));
+        room.seats[0].peers[0] = None;
+        room.replicate(&[Event::Death {
+            id: 90_002,
+            killer: 1,
+        }]);
+        assert_eq!(room.solo_slots.minion(90_003), Some(recycled));
+    }
 }

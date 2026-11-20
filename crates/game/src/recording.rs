@@ -154,7 +154,7 @@ fn sanitize(m: &mut Message) -> bool {
                         .is_some_and(EntityTemplate::is_solo_lane_minion)
                         && matches!(
                             m.body[116..122],
-                            [52..=199, 0, 0, 1, 1, 1] | [52..=199, 0, 0, 1, 4, 2]
+                            [52..=199, 0, 0, 1, 0..=2, 1] | [52..=199, 0, 0, 1, 3..=5, 2]
                         ))
                     || super::aral_spawn::recordable(&m.body)) => {}
         Some(crate::Opcode::EntityState)
@@ -575,5 +575,64 @@ mod tests {
             budget: Arc::new(AtomicU64::new(MATCH_LIMIT)),
         };
         assert!(!r.record(2, vec![Message::position(3, 0., 0.)]));
+    }
+
+    #[test]
+    fn retains_mask_zero_solo_lane_minions_across_all_three_lanes() {
+        let mut world = halcyon_sim::World::new(7, 1);
+        world.use_solo_mid_lane().unwrap();
+        let mut slots = crate::actor_slots::ActorSlots::from_roster(&world.entities);
+        for _ in 0..19 * halcyon_sim::TICK_HZ {
+            world.step();
+        }
+        let mut routes_seen = std::collections::BTreeSet::new();
+        for entity in world
+            .entities
+            .iter()
+            .filter(|e| e.kind == halcyon_sim::Kind::Minion)
+        {
+            let mut damaged = entity.clone();
+            damaged.hp -= 10.0;
+            let mut message = slots
+                .declaration_at(&world, &damaged, &[], None, false)
+                .unwrap();
+            assert_eq!(message.body[117], 0);
+            routes_seen.insert((message.body[120], message.body[121]));
+            assert!(
+                sanitize(&mut message),
+                "expected route {} team {} minion snapshot to be recorded",
+                message.body[120],
+                message.body[121]
+            );
+        }
+        assert_eq!(
+            routes_seen,
+            [(0, 1), (1, 1), (2, 1), (3, 2), (4, 2), (5, 2)]
+                .into_iter()
+                .collect()
+        );
+        let mut bad = slots
+            .declaration_at(
+                &world,
+                &{
+                    let mut m = world
+                        .entities
+                        .iter()
+                        .find(|e| e.kind == halcyon_sim::Kind::Minion && e.team == 0)
+                        .unwrap()
+                        .clone();
+                    m.hp -= 10.0;
+                    m
+                },
+                &[],
+                None,
+                false,
+            )
+            .unwrap();
+        for (route, team) in [(3, 1), (0, 2), (6, 1)] {
+            bad.body[120] = route;
+            bad.body[121] = team;
+            assert!(!sanitize(&mut bad));
+        }
     }
 }

@@ -1729,6 +1729,176 @@ mod tests {
             );
         }
     }
+
+    #[tokio::test]
+    async fn dead_hero_aral_reconnect_clears_afk_and_sets_world_actor_written() {
+        let rooms = Rooms::new("127.0.0.1".parse().unwrap(), "127.0.0.1".into(), 1, None);
+        let id = Uuid::new_v4();
+        let players: Vec<_> = (0..SEATS).map(|_| Uuid::new_v4()).collect();
+        let address = rooms
+            .reserve(Reservation {
+                talent_levels: Vec::new(),
+                match_id: id,
+                players: players.clone(),
+                teams: vec![0, 1, 0, 1, 0, 1],
+                mode: "casual_aral".into(),
+                difficulty: None,
+            })
+            .unwrap()
+            .address;
+        let room = rooms.room(id).unwrap();
+        let cipher = MatchCipher::new(&id.to_string());
+        let mut clients = Vec::with_capacity(SEATS);
+        for player in &players {
+            let mut socket = TcpStream::connect(&address).await.unwrap();
+            socket
+                .write_all(&hello("localhost").unwrap())
+                .await
+                .unwrap();
+            let mut ack = [0; 5];
+            socket.read_exact(&mut ack).await.unwrap();
+            assert_eq!(ack, ACK_FRAME);
+            socket
+                .write_all(
+                    &cipher
+                        .encode(&Message::known(
+                            crate::Opcode::PlayerUuid,
+                            player.to_string().as_bytes(),
+                        ))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            until(&mut socket, &cipher, crate::wire_opcode::SnapshotAral).await;
+            clients.push(socket);
+        }
+        room.lock().unwrap().phase_start =
+            Instant::now() - Duration::from_secs(DRAFT_SECONDS as u64);
+        for (seat, socket) in clients.iter_mut().enumerate() {
+            until(socket, &cipher, crate::wire_opcode::BeginLoading).await;
+            request_scene(socket, &cipher, 1500 + seat as u32, true).await;
+            ready(socket, &cipher).await;
+        }
+        for socket in &mut clients {
+            until(socket, &cipher, crate::wire_opcode::TickSyncA).await;
+        }
+
+        // Disconnect seat 0 and verify witness seat 1 observes AFK.
+        clients[0].shutdown().await.unwrap();
+        timeout(Duration::from_secs(2), async {
+            while room.lock().unwrap().seats[0].peers[0].is_some() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        let afk = until(&mut clients[1], &cipher, crate::wire_opcode::PlayerAfk).await;
+        assert_eq!(afk.actor_flags().unwrap().actor, 1500);
+
+        // Kill hero 0 via authoritative combat while disconnected.
+        {
+            let mut r = room.lock().unwrap();
+            let pos = r.world.entities[0].position;
+            r.world.entities[1].position = pos;
+            r.world.entities[0].hp = 0.1;
+            r.world.command(2, halcyon_sim::Command::Attack(1)).unwrap();
+            while r.world.entities[0].hp > 0.0 {
+                r.tick();
+            }
+        }
+
+        // Reconnect seat 0 while dead: opening omits 1500 EntitySpawn, yet write completion
+        // marks world_actor_written and clears AFK immediately.
+        let mut returned = TcpStream::connect(&address).await.unwrap();
+        returned
+            .write_all(&hello("localhost").unwrap())
+            .await
+            .unwrap();
+        let mut ack = [0; 5];
+        returned.read_exact(&mut ack).await.unwrap();
+        assert_eq!(ack, ACK_FRAME);
+        returned
+            .write_all(
+                &cipher
+                    .encode(&Message::known(
+                        crate::Opcode::PlayerUuid,
+                        players[0].to_string().as_bytes(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        until(&mut returned, &cipher, crate::wire_opcode::BeginLoading).await;
+        returned
+            .write_all(
+                &cipher
+                    .encode(&Message::known(crate::Opcode::RequestScene, [0; 6]))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        returned
+            .write_all(
+                &cipher
+                    .encode(&Message::known(
+                        crate::Opcode::SceneOwner,
+                        [0, 0, 5, 220, 1, 0],
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        loop {
+            let msg = next(&mut returned, &cipher).await;
+            if msg.is(crate::Opcode::EntitySpawn) {
+                let actor = u32::from_be_bytes(msg.body[8..12].try_into().unwrap());
+                assert_ne!(actor, 1500, "dead hero must not spawn in aral::opening");
+            }
+            if msg.is(crate::Opcode::SceneOwner) {
+                break;
+            }
+        }
+        timeout(Duration::from_secs(2), async {
+            while !room.lock().unwrap().seats[0].world_actor_written {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+        let reconnected = until(
+            &mut clients[1],
+            &cipher,
+            crate::wire_opcode::PlayerReconnected,
+        )
+        .await;
+        assert_eq!(reconnected.actor_flags().unwrap().actor, 1500);
+        ready(&mut returned, &cipher).await;
+        until(&mut returned, &cipher, crate::wire_opcode::TickSyncA).await;
+
+        // Advance simulation until hero 0 respawns; verify 0x03F3 + 0x0432 arrive on reconnect stream.
+        {
+            let mut r = room.lock().unwrap();
+            while r.world.entities[0].hp <= 0.0 {
+                r.tick();
+            }
+        }
+        let mut saw_spawn = false;
+        let mut saw_respawn = false;
+        timeout(Duration::from_secs(4), async {
+            while !(saw_spawn && saw_respawn) {
+                let msg = next(&mut returned, &cipher).await;
+                if msg.is(crate::Opcode::EntitySpawn) && msg.body[8..12] == 1500u32.to_be_bytes() {
+                    saw_spawn = true;
+                }
+                if msg.is(crate::Opcode::ActorRespawn) && msg.body[..4] == 1500u32.to_be_bytes() {
+                    assert!(saw_spawn);
+                    saw_respawn = true;
+                }
+            }
+        })
+        .await
+        .unwrap();
+    }
 }
 
 #[cfg(test)]

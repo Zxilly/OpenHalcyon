@@ -57,7 +57,7 @@ impl Paths {
             };
             let actor = &world.entities[index];
             let last = &mut self.0[index];
-            let Some(&slot) = registered.get(&id).filter(|&&s| s == 14 + index as u8) else {
+            let Some(&slot) = registered.get(&id).filter(|&&s| (14..=23).contains(&s)) else {
                 *last = None;
                 continue;
             };
@@ -120,7 +120,7 @@ fn authoritative_goal(slot: u8, destination: Position) -> Message {
 pub(super) fn recordable(message: &Message) -> bool {
     matches!(
         message.fields(),
-        Ok(Fields::ServerMove { selector: 15..=23, values: [x, y, z], flag: 1, remaining: [] })
+        Ok(Fields::ServerMove { selector: 14..=23, values: [x, y, z], flag: 1, remaining: [] })
             if y == SOLO_HEIGHT && x.abs() <= 512. && z.abs() <= 512.
     )
 }
@@ -248,5 +248,78 @@ mod tests {
             &mut out,
         );
         assert_eq!(out[0].known_opcode(), Some(Opcode::EntityFloat));
+    }
+
+    #[test]
+    fn alternating_team_roster_routes_all_nine_bots_using_registered_slots() {
+        let mut world = World::new(73, 1);
+        world.assign_teams(&[]).unwrap();
+        world.use_solo_mid_lane().unwrap();
+        let mut slots = crate::actor_slots::ActorSlots::from_roster(&world.entities);
+        let mut registered = HashMap::new();
+        for actor in world.entities.iter().take(10) {
+            let spawn = slots.declaration(&world, actor, &[], None).unwrap();
+            registered.insert(actor.id, spawn.body[745]);
+        }
+        let expected_slots: Vec<u8> = (2..=10).map(|id| registered[&id]).collect();
+        assert_eq!(expected_slots, [19, 15, 20, 16, 21, 17, 22, 18, 23]);
+
+        // Place every bot within the viewer's sight so real SoloBotPath steps cover all nine.
+        let origin = Position { x: 0.0, y: 0.0 };
+        world.entities[0].position = origin;
+        for i in 1..10 {
+            world.entities[i].position = Position {
+                x: (i as f32) * 0.5,
+                y: 0.0,
+            };
+        }
+        let visible: HashSet<u32> = (1..=10).collect();
+        let mut projection = Paths::default();
+        let mut seen_slots = HashSet::new();
+        for _ in 0..20 {
+            let events = world.step();
+            let mut out = Vec::new();
+            projection.append(
+                &world,
+                &world.entities[0],
+                &visible,
+                &registered,
+                &events,
+                &mut out,
+            );
+            for message in out {
+                assert_eq!(message.known_opcode(), Some(Opcode::EntityFloat));
+                seen_slots.insert(message.body[0]);
+            }
+            if seen_slots.len() == 9 {
+                break;
+            }
+        }
+        assert_eq!(seen_slots, expected_slots.into_iter().collect());
+
+        // Non-hero slots outside 14..=23 remain excluded even if present in the map.
+        for bad_slot in [13_u8, 24] {
+            let mut bad_projection = Paths::default();
+            let mut out = Vec::new();
+            let bad_registered = HashMap::from([(2, bad_slot)]);
+            let waypoint = Position {
+                x: origin.x + 2.0,
+                y: origin.y,
+            };
+            bad_projection.append(
+                &world,
+                &world.entities[0],
+                &visible,
+                &bad_registered,
+                &[Event::SoloBotPath {
+                    id: 2,
+                    waypoint,
+                    goal: waypoint,
+                    target: None,
+                }],
+                &mut out,
+            );
+            assert!(out.is_empty(), "slot {bad_slot} must not emit bot path");
+        }
     }
 }

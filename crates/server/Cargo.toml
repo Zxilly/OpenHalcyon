@@ -35,6 +35,7 @@ uuid.workspace = true
 
 [dev-dependencies]
 halcyon-community = { path = "../community" }
+halcyon-game = { path = "../game", features = ["test-hooks"] }
 halcyon-matchmaking = { path = "../matchmaking" }
 halcyon-federation = { path = "../federation", features = ["test-hooks"] }
 halcyon-protocol = { path = "../protocol" }

@@ -129,32 +129,28 @@ fn install_room_settlement(local: Res<LocalServices>, network: Option<Res<Federa
     let worker = network.map(|n| n.worker.clone());
     let completion = state.clone();
     rooms.set_finish_handler(Arc::new(move |id, result| {
-        let completion = completion.clone();
-        let worker = worker.clone();
-        tokio::task::spawn_blocking(move || {
-            if let Some(worker) = worker {
-                match worker.finish(id, result.clone()) {
-                    Ok(true) => return,
-                    Ok(false) => {}
-                    Err(e) => {
-                        tracing::error!(%id,%e,"recording federated outcome");
-                        return;
-                    }
+        if let Some(worker) = &worker {
+            match worker.finish(id, result.clone()) {
+                Ok(true) => return,
+                Ok(false) => {}
+                Err(e) => {
+                    tracing::error!(%id, %e, "recording federated outcome");
+                    return;
                 }
             }
-            let reason = result["reason"].as_str();
-            let aborted = [RoomEndReason::AdminTerminated, RoomEndReason::Error]
-                .into_iter()
-                .any(|r| reason == Some(r.as_str()));
-            let outcome = if aborted {
-                completion.abort_match(id)
-            } else {
-                completion.finish_match(id, result)
-            };
-            if let Err(error) = outcome {
-                tracing::error!(%id,%error,"could not persist room outcome");
-            }
-        });
+        }
+        let reason = result["reason"].as_str();
+        let aborted = [RoomEndReason::AdminTerminated, RoomEndReason::Error]
+            .into_iter()
+            .any(|r| reason == Some(r.as_str()));
+        let outcome = if aborted {
+            completion.abort_match(id)
+        } else {
+            completion.finish_match(id, result)
+        };
+        if let Err(error) = outcome {
+            tracing::error!(%id, %error, "could not persist room outcome");
+        }
     }));
 }
 fn clear_room_settlement(local: Res<LocalServices>) {
@@ -369,5 +365,98 @@ mod tests {
             .unwrap()
             .try_lock()
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn install_room_settlement_commits_before_client_tcp_eof() {
+        use halcyon_protocol::{ACK_FRAME, MatchCipher, Message, Opcode, hello_with_port};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpStream;
+
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("settlement.sqlite");
+        let rooms = Rooms::new("127.0.0.1".parse().unwrap(), "127.0.0.1".into(), 1, None);
+        let state = AppState::open(
+            PlatformConfig {
+                database_path: db_path,
+                public_address: "127.0.0.1:8443".into(),
+                seats_per_match: 10,
+            },
+            Arc::new(rooms.clone()),
+        )
+        .unwrap();
+        let mut app = App::new();
+        app.insert_resource(LocalServices {
+            rooms: rooms.clone(),
+            state: state.clone(),
+            authority: "127.0.0.1:8443".into(),
+        })
+        .add_plugins(RoomSettlementPlugin);
+        app.world_mut().run_schedule(StartRoomSettlement);
+
+        let guest = state.create_guest("SettlementGuest".into()).await.unwrap();
+        state
+            .join_with_seats(&guest.session_token, "5v5_bots_solo".into(), 1)
+            .await
+            .unwrap();
+        let match_id = state
+            .profile(&guest.session_token)
+            .await
+            .unwrap()
+            .lobby
+            .unwrap()
+            .match_id
+            .unwrap();
+        state.accept(&guest.session_token, match_id).await.unwrap();
+        let address = state
+            .profile(&guest.session_token)
+            .await
+            .unwrap()
+            .lobby
+            .unwrap()
+            .address
+            .unwrap();
+
+        let mut sock = TcpStream::connect(&address).await.unwrap();
+        sock.write_all(&hello_with_port("127.0.0.1", sock.peer_addr().unwrap().port()).unwrap())
+            .await
+            .unwrap();
+        let mut ack = [0; 5];
+        sock.read_exact(&mut ack).await.unwrap();
+        assert_eq!(ack, ACK_FRAME);
+        let cipher = MatchCipher::new(&match_id.to_string());
+        let mut uuid_body = [0; 70];
+        uuid_body[..36].copy_from_slice(guest.player_id.to_string().as_bytes());
+        sock.write_all(
+            &cipher
+                .encode(&Message::known(Opcode::PlayerUuid, uuid_body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+        let len = sock.read_u16().await.unwrap();
+        let mut frame = vec![0; usize::from(len)];
+        sock.read_exact(&mut frame).await.unwrap();
+
+        rooms
+            .terminate(match_id, "test", "settlement check")
+            .unwrap();
+        let mut tail = Vec::new();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            sock.read_to_end(&mut tail),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(
+            state
+                .profile(&guest.session_token)
+                .await
+                .unwrap()
+                .lobby
+                .is_none(),
+            "aborted match must commit before client observes TCP EOF"
+        );
     }
 }

@@ -91,11 +91,17 @@ impl Rooms {
                 }
             }
             drop(listener);
-            let completed=room.lock().unwrap().reason==Some(crate::RoomEndReason::Completed);
+            let completed = room.lock().unwrap().reason == Some(crate::RoomEndReason::Completed);
+            let mut settled = room.lock().unwrap().settled.subscribe();
             tokio::select! {
                 biased;
                 _=revoked.wait_for(|cancel|*cancel)=>{},
-                _=transport::close_clients(&mut clients,completed)=>{},
+                _=async {
+                    if completed {
+                        let _ = settled.wait_for(|done| *done).await;
+                    }
+                    transport::close_clients(&mut clients,completed).await;
+                }=>{},
             }
             // Dropping the JoinSet also cancels clients when explicitly revoked.
         });
@@ -125,9 +131,14 @@ async fn client(
     manager: Rooms,
     grant: Uuid,
 ) -> io::Result<()> {
-    let cipher = MatchCipher::new(&room.lock().unwrap().id.to_string());
-    let mut ended = room.lock().unwrap().stop.subscribe();
-    let mut handshake_stop = ended.clone();
+    let (cipher, mut handshake_stop, mut ended) = {
+        let room = room.lock().unwrap();
+        (
+            MatchCipher::new(&room.id.to_string()),
+            room.stop.subscribe(),
+            room.settled.subscribe(),
+        )
+    };
     let mut frames = halcyon_protocol::async_frame::FrameReader::new();
     let handshake = timeout(Duration::from_secs(10), async {
         parse_hello(&frames.required(&mut socket).await?)?;

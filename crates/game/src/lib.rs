@@ -188,6 +188,7 @@ struct Room {
     termination: Option<responses::Termination>,
     events: Vec<responses::RoomEvent>,
     stop: watch::Sender<bool>,
+    settled: watch::Sender<bool>,
     generation: u64,
     last_active: Instant,
     phase_start: Instant,
@@ -380,7 +381,7 @@ impl Rooms {
         r.stop.send_replace(true);
         Ok((false, response))
     }
-    fn finished(&self, room: &Shared) {
+    async fn finished(&self, room: &Shared) {
         let (id, result) = {
             let mut r = room.lock().unwrap();
 
@@ -431,8 +432,11 @@ impl Rooms {
                 }),
             )
         };
-        if let Some(f) = self.0.finish.lock().unwrap().clone() {
-            f(id, result);
+        let handler = self.0.finish.lock().unwrap().clone();
+        if let Some(f) = handler
+            && let Err(error) = tokio::task::spawn_blocking(move || f(id, result)).await
+        {
+            tracing::error!(%id, %error, "finish handler task failed");
         }
     }
 }
@@ -524,6 +528,136 @@ impl Rooms {
         }
         rooms.remove(&id);
         Ok(())
+    }
+
+    #[cfg(feature = "test-hooks")]
+    #[doc(hidden)]
+    pub fn advance_solo_loading(&self, id: Uuid) {
+        if let Some(room) = self.room(id) {
+            room.lock().unwrap().phase_start = Instant::now() - std::time::Duration::from_secs(8);
+        }
+    }
+
+    #[cfg(feature = "test-hooks")]
+    #[doc(hidden)]
+    pub fn defeat_hero(&self, id: Uuid, seat: usize) {
+        if let Some(room) = self.room(id) {
+            let mut r = room.lock().unwrap();
+            let victim_team = r.world.entities[seat].team;
+            // Prefer a base/armory tower with no allied wave nearby to take agro cleanly.
+            let tower_pos = r
+                .world
+                .entities
+                .iter()
+                .rev()
+                .find(|e| e.kind == halcyon_sim::Kind::Tower && e.team != victim_team && e.hp > 0.0)
+                .expect("living opposing tower")
+                .position;
+            r.world.entities[seat].position = tower_pos;
+            r.world.entities[seat].hp = 0.1;
+            for _ in 0..60 {
+                if r.world.entities[seat].hp <= 0.0 {
+                    return;
+                }
+                r.tick();
+            }
+            panic!(
+                "defeat_hero did not kill seat {seat} (hp={})",
+                r.world.entities[seat].hp
+            );
+        }
+    }
+
+    #[cfg(feature = "test-hooks")]
+    #[doc(hidden)]
+    pub fn step_room_tick(&self, id: Uuid) {
+        if let Some(room) = self.room(id) {
+            room.lock().unwrap().tick();
+        }
+    }
+
+    #[cfg(feature = "test-hooks")]
+    #[doc(hidden)]
+    pub fn is_hero_alive(&self, id: Uuid, seat: usize) -> bool {
+        self.room(id)
+            .is_some_and(|room| room.lock().unwrap().world.entities[seat].hp > 0.0)
+    }
+
+    #[cfg(feature = "test-hooks")]
+    #[doc(hidden)]
+    pub async fn prepare_crystal_defeat(&self, id: Uuid, attacker_seat: usize) -> Option<u32> {
+        let room = self.room(id)?;
+        let (attacker_id, attacker_team, armory_info) = {
+            let mut r = room.lock().unwrap();
+            let attacker_id = r.world.entities[attacker_seat].id;
+            let attacker_team = r.world.entities[attacker_seat].team;
+            let armory_info = r
+                .world
+                .entities
+                .iter()
+                .find(|e| {
+                    e.kind == halcyon_sim::Kind::Armory && e.team != attacker_team && e.hp > 0.0
+                })
+                .map(|e| (e.id, e.position, e.max_hp));
+            if let Some((armory_id, armory_pos, _)) = armory_info {
+                for i in 0..r.world.entities.len() {
+                    if r.world.entities[i].kind == halcyon_sim::Kind::Tower
+                        && r.world.entities[i].team != attacker_team
+                    {
+                        r.world.entities[i].hp = 0.0;
+                    }
+                }
+                r.world.entities[attacker_seat].hp = r.world.entities[attacker_seat].max_hp;
+                r.world.entities[attacker_seat].position = armory_pos;
+                r.world
+                    .command(attacker_id, Command::Attack(armory_id))
+                    .unwrap();
+            }
+            (attacker_id, attacker_team, armory_info)
+        };
+        if let Some((armory_id, _, max_hp)) = armory_info {
+            let mut damaged = false;
+            let mut breached = false;
+            for _ in 0..80 {
+                {
+                    let mut r = room.lock().unwrap();
+                    let armory = r.world.entities.iter().find(|e| e.id == armory_id);
+                    if armory.is_none_or(|e| e.hp <= 0.0) {
+                        breached = true;
+                        break;
+                    }
+                    // After the first real hit sets `armory.respawn`, lower HP to 0.1 so the
+                    // next attack finishes the breach without `advance_armory` healing it first.
+                    if !damaged && armory.is_some_and(|e| e.hp < max_hp) {
+                        damaged = true;
+                        r.world.entities.find_mut(|e| e.id == armory_id).unwrap().hp = 0.1;
+                    }
+                    r.world.entities[attacker_seat].hp = r.world.entities[attacker_seat].max_hp;
+                    r.tick();
+                }
+                tokio::task::yield_now().await;
+            }
+            assert!(
+                breached,
+                "armory {armory_id} was not breached within 80 ticks"
+            );
+            room.lock()
+                .unwrap()
+                .world
+                .command(attacker_id, Command::Stop)
+                .unwrap();
+        }
+        let mut r = room.lock().unwrap();
+        let crystal = r
+            .world
+            .entities
+            .find_mut(|e| e.kind == halcyon_sim::Kind::Crystal && e.team != attacker_team)?;
+        crystal.hp = 0.1;
+        let wire_crystal = u32::from(wire_id(crystal.id));
+        let pos = crystal.position;
+        r.world.entities[attacker_seat].hp = r.world.entities[attacker_seat].max_hp;
+        r.world.entities[attacker_seat].position = pos;
+        Some(wire_crystal)
     }
     fn allocate(
         &self,
@@ -725,6 +859,7 @@ impl Rooms {
             termination: None,
             events: vec![],
             stop,
+            settled: watch::channel(false).0,
             generation: 0,
             last_active: Instant::now(),
             phase_start: Instant::now(),
@@ -924,8 +1059,13 @@ impl Room {
             && self.seats[idx].peers[1].is_none()
             && (self.seats[idx].peers[0].is_some() || self.phase == crate::RoomPhase::Running);
         let ch = usize::from(game);
-        if self.seats[idx].peers[ch].is_some() {
-            return None;
+        if let Some(existing) = &self.seats[idx].peers[ch] {
+            if ch == 0 && (*existing.stalled.borrow() || existing.tx.is_closed()) {
+                let generation = existing.generation;
+                self.detach(idx, ch, generation);
+            } else {
+                return None;
+            }
         }
         self.last_active = Instant::now();
         self.generation += 1;
@@ -1716,6 +1856,32 @@ impl Room {
         self.stop.send_replace(true);
     }
 
+    fn allocate_entity_declaration(
+        &mut self,
+        index: usize,
+        team: u8,
+        native_solo: bool,
+        legacy_aral: bool,
+        born: bool,
+    ) -> Option<Message> {
+        let e = &self.world.entities[index];
+        if native_solo {
+            self.solo_slots
+                .declaration_at(&self.world, e, &self.picks, self.data.as_deref(), born)
+        } else if legacy_aral {
+            self.aral_slots.declaration(
+                &self.world,
+                e,
+                &self.picks,
+                self.data.as_deref(),
+                team,
+                born,
+            )
+        } else {
+            Some(spawn(e, &self.picks, self.data.as_deref()))
+        }
+    }
+
     fn replicate(&mut self, events: &[Event]) {
         let fallen: HashSet<u32> = events
             .iter()
@@ -1745,60 +1911,114 @@ impl Room {
             HashSet::new()
         };
         for team in 0..2 {
-            let mut peers = self
+            let has_peers = self
                 .seats
                 .iter()
                 .zip(&self.world.entities)
-                .filter(|(_, actor)| usize::from(actor.team) == team)
-                .filter_map(|(seat, _)| seat.gameplay_peer())
-                .peekable();
-            let Some(first) = peers.next() else {
+                .any(|(seat, actor)| {
+                    usize::from(actor.team) == team && seat.gameplay_peer().is_some()
+                });
+            if !has_peers {
                 continue;
+            }
+            let control_seats: Vec<usize> = if control_stream {
+                self.seats
+                    .iter()
+                    .zip(&self.world.entities)
+                    .enumerate()
+                    .filter(|(_, (seat, actor))| {
+                        usize::from(actor.team) == team
+                            && seat.gameplay_peer().is_some()
+                            && seat.peers[1].is_none()
+                            && seat.preamble.confirmed()
+                    })
+                    .map(|(i, _)| i)
+                    .collect()
+            } else {
+                Vec::new()
             };
             let mut out = vec![];
+            let mut per_seat_decls: Vec<(usize, Batch)> = control_seats
+                .iter()
+                .map(|&seat| (seat, Vec::new()))
+                .collect();
+            let mut newly_declared = HashSet::new();
             let mut guard_deaths = Vec::new();
-            let previous = &mut self.visible[team];
-            let current = &mut self.next_visible[team];
+            // Compute new team visibility into `self.next_visible[team]` without aliasing `self`.
+            let mut current = std::mem::take(&mut self.next_visible[team]);
             current.clear();
-            for e in &self.world.entities {
-                if e.hp > 0. && self.world.visible(team as u8, e) {
-                    if !previous.contains(&e.id) {
-                        let message = if native_solo {
-                            self.solo_slots.declaration_at(
-                                &self.world,
-                                e,
-                                &self.picks,
-                                self.data.as_deref(),
-                                born.contains(&e.id),
-                            )
-                        } else if legacy_aral {
-                            self.aral_slots.declaration(
-                                &self.world,
-                                e,
-                                &self.picks,
-                                self.data.as_deref(),
-                                team as u8,
-                                born.contains(&e.id),
-                            )
-                        } else {
-                            Some(spawn(e, &self.picks, self.data.as_deref()))
-                        };
-                        let Some(message) = message else { continue };
+            for idx in 0..self.world.entities.len() {
+                let (id, hp, is_visible) = {
+                    let e = &self.world.entities[idx];
+                    (e.id, e.hp, e.hp > 0. && self.world.visible(team as u8, e))
+                };
+                if !is_visible || hp <= 0. {
+                    continue;
+                }
+                if !control_seats.is_empty() {
+                    let missing = control_seats
+                        .iter()
+                        .filter(|&&seat| !self.scene_views[seat].knows(id))
+                        .count();
+                    if missing == 0 {
+                        current.insert(id);
+                        continue;
+                    }
+                    let Some(message) = self.allocate_entity_declaration(
+                        idx,
+                        team as u8,
+                        native_solo,
+                        legacy_aral,
+                        born.contains(&id),
+                    ) else {
+                        continue;
+                    };
+                    current.insert(id);
+                    let e = &self.world.entities[idx];
+                    if missing == control_seats.len() {
+                        newly_declared.insert(id);
                         out.push(message);
                         messages::append_inventory(&mut out, &self.world, e);
+                    } else {
+                        for (seat, decls) in &mut per_seat_decls {
+                            if !self.scene_views[*seat].knows(id) {
+                                decls.push(message.clone());
+                                messages::append_inventory(decls, &self.world, e);
+                            }
+                        }
                     }
-                    current.insert(e.id);
+                } else {
+                    if !self.visible[team].contains(&id) {
+                        let Some(message) = self.allocate_entity_declaration(
+                            idx,
+                            team as u8,
+                            native_solo,
+                            legacy_aral,
+                            born.contains(&id),
+                        ) else {
+                            continue;
+                        };
+                        newly_declared.insert(id);
+                        out.push(message);
+                        messages::append_inventory(
+                            &mut out,
+                            &self.world,
+                            &self.world.entities[idx],
+                        );
+                    }
+                    current.insert(id);
                 }
             }
             self.solo_structure_snapshot.append(&mut out);
-            if control_stream && !out.is_empty() {
-                for (i, (seat, actor)) in self.seats.iter().zip(&self.world.entities).enumerate() {
-                    if usize::from(actor.team) == team
-                        && seat.peers[1].is_none()
-                        && seat.preamble.confirmed()
-                    {
-                        self.scene_views[i].declarations(&out);
-                    }
+            for (seat, decls) in &mut per_seat_decls {
+                if !decls.is_empty() {
+                    self.solo_structure_snapshot.append(decls);
+                    self.scene_views[*seat].declarations(decls);
+                }
+            }
+            if !out.is_empty() {
+                for &seat in &control_seats {
+                    self.scene_views[seat].declarations(&out);
                 }
             }
             if native_solo
@@ -1810,11 +2030,12 @@ impl Room {
                 self.scene_views[0].append_solo_bot_paths(
                     &self.world,
                     &self.world.entities[0],
-                    current,
+                    &current,
                     events,
                     &mut out,
                 );
             }
+            let previous = &mut self.visible[team];
             let mut has_attack_release = false;
             for ev in events {
                 if legacy_aral
@@ -1836,15 +2057,14 @@ impl Room {
                 }
                 result_frames::append_postgame(&mut out, ev, postgame);
                 if hero_progress::append(&self.world, &mut out, ev, |id| {
-                    previous.contains(&id) && (current.contains(&id) || fallen.contains(&id))
+                    !newly_declared.contains(&id)
+                        && (current.contains(&id)
+                            || (fallen.contains(&id) && previous.contains(&id)))
                 }) {
                     continue;
                 }
                 if let Event::Purchase(receipt) = ev {
-                    if legacy_aral
-                        && current.contains(&receipt.actor)
-                        && !previous.contains(&receipt.actor)
-                    {
+                    if legacy_aral && newly_declared.contains(&receipt.actor) {
                         continue;
                     }
                     if current.contains(&receipt.actor)
@@ -1854,13 +2074,13 @@ impl Room {
                             &mut out,
                             &self.world,
                             receipt,
-                            previous.contains(&receipt.actor),
+                            !newly_declared.contains(&receipt.actor),
                         );
                     }
                     continue;
                 }
                 if let Event::GoldAward { id, amount } = ev {
-                    if legacy_aral && current.contains(id) && !previous.contains(id) {
+                    if legacy_aral && newly_declared.contains(id) {
                         continue;
                     }
                     if current.contains(id) || fallen.contains(id) && previous.contains(id) {
@@ -1878,12 +2098,6 @@ impl Room {
                         current.contains(&actor)
                             || (fallen.contains(&actor) && previous.contains(&actor))
                     });
-                    if native_solo
-                        && out.len() != before
-                        && let Event::Death { id, .. } = ev
-                    {
-                        self.solo_slots.released(*id);
-                    }
                     if legacy_aral && let Event::Death { id, .. } = ev {
                         let death_sent = out.len() != before;
                         if death_sent {
@@ -1908,7 +2122,8 @@ impl Room {
                     }
                 }
             }
-            std::mem::swap(previous, current);
+            *previous = current;
+            self.next_visible[team] = HashSet::new();
             if control_stream {
                 if self.world.tick.is_multiple_of(10 * halcyon_sim::TICK_HZ) {
                     out.push(messages::world_clock(self.world.tick));
@@ -1916,9 +2131,26 @@ impl Room {
             } else if self.world.tick.is_multiple_of(20) {
                 out.push(snapshot(&self.world, &self.players, &self.picks));
             }
+            for (seat, decls) in per_seat_decls {
+                if !decls.is_empty()
+                    && let Some(peer) = self.seats[seat].gameplay_peer()
+                {
+                    peer.send(transport::Delivery::Private(decls));
+                }
+            }
             if out.is_empty() {
                 continue;
             }
+            let mut peers = self
+                .seats
+                .iter()
+                .zip(&self.world.entities)
+                .filter(|(_, actor)| usize::from(actor.team) == team)
+                .filter_map(|(seat, _)| seat.gameplay_peer())
+                .peekable();
+            let Some(first) = peers.next() else {
+                continue;
+            };
             if has_attack_release {
                 npc_attack::deliver(
                     out,
@@ -1960,6 +2192,13 @@ impl Room {
                     if !updates.is_empty() {
                         peer.send(transport::Delivery::Private(updates));
                     }
+                }
+            }
+        }
+        if self.solo_scene() {
+            for ev in events {
+                if let Event::Death { id, .. } = *ev {
+                    self.solo_slots.released(id);
                 }
             }
         }

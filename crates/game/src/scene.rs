@@ -1094,4 +1094,349 @@ mod tests {
         assert_eq!(r.phase, crate::RoomPhase::Running);
         assert!(!r.seats[0].control_world);
     }
+
+    #[tokio::test]
+    async fn dead_hero_solo_reconnect_sets_world_actor_written_and_respawns() {
+        use halcyon_protocol::{ACK_FRAME, MatchCipher, hello};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpStream;
+
+        async fn send(socket: &mut TcpStream, cipher: &MatchCipher, m: Message) {
+            socket.write_all(&cipher.encode(&m).unwrap()).await.unwrap();
+        }
+        async fn login_sock(address: &str, player: Uuid, cipher: &MatchCipher) -> TcpStream {
+            let mut socket = TcpStream::connect(address).await.unwrap();
+            socket
+                .write_all(&hello("127.0.0.1").unwrap())
+                .await
+                .unwrap();
+            let mut ack = [0; 5];
+            socket.read_exact(&mut ack).await.unwrap();
+            assert_eq!(ack, ACK_FRAME);
+            send(
+                &mut socket,
+                cipher,
+                Message::known(crate::Opcode::PlayerUuid, player.to_string().as_bytes()),
+            )
+            .await;
+            socket
+        }
+
+        let rooms = Rooms::new("127.0.0.1".parse().unwrap(), "127.0.0.1".into(), 1, None);
+        let player = Uuid::new_v4();
+        let id = Uuid::new_v4();
+        let cipher = MatchCipher::new(&id.to_string());
+        let hosted = rooms
+            .reserve(Reservation {
+                talent_levels: Vec::new(),
+                match_id: id,
+                players: vec![player],
+                teams: vec![0],
+                mode: "5v5_bots_solo".into(),
+                difficulty: None,
+            })
+            .unwrap();
+        let shared = rooms.room(id).unwrap();
+        let mut socket = login_sock(&hosted.address, player, &cipher).await;
+        read_until(&mut socket, &cipher, crate::wire_opcode::Snapshot5V5).await;
+        send(
+            &mut socket,
+            &cipher,
+            Message::known(crate::Opcode::LockSelection, [0; 6]),
+        )
+        .await;
+        read_until(&mut socket, &cipher, crate::wire_opcode::LockSelection).await;
+        shared.lock().unwrap().phase_start = Instant::now() - Duration::from_secs(8);
+        read_until(&mut socket, &cipher, crate::wire_opcode::BeginLoading).await;
+        send(
+            &mut socket,
+            &cipher,
+            Message::known(crate::Opcode::RequestScene, [0; 6]),
+        )
+        .await;
+        send(
+            &mut socket,
+            &cipher,
+            Message::known(crate::Opcode::SceneOwner, [0, 0, 5, 220, 1, 0]),
+        )
+        .await;
+        read_until(&mut socket, &cipher, crate::wire_opcode::SceneReadiness).await;
+        send(
+            &mut socket,
+            &cipher,
+            Message::known(crate::Opcode::SceneConfirmed, [0; 6]),
+        )
+        .await;
+        read_until(&mut socket, &cipher, crate::wire_opcode::TickSyncA).await;
+
+        drop(socket);
+        timeout(Duration::from_secs(2), async {
+            while shared.lock().unwrap().seats[0].peers[0].is_some() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        {
+            let mut room = shared.lock().unwrap();
+            let tower_pos = room
+                .world
+                .entities
+                .iter()
+                .find(|e| e.kind == halcyon_sim::Kind::Tower && e.team == 1)
+                .unwrap()
+                .position;
+            room.world.entities[0].position = tower_pos;
+            room.world.entities[0].hp = 0.1;
+            while room.world.entities[0].hp > 0.0 {
+                room.tick();
+            }
+        }
+
+        let mut socket = login_sock(&hosted.address, player, &cipher).await;
+        read_until(&mut socket, &cipher, crate::wire_opcode::BeginLoading).await;
+        send(
+            &mut socket,
+            &cipher,
+            Message::known(crate::Opcode::RequestScene, [0; 6]),
+        )
+        .await;
+        send(
+            &mut socket,
+            &cipher,
+            Message::known(crate::Opcode::SceneOwner, [0, 0, 5, 220, 1, 0]),
+        )
+        .await;
+        let opening = read_until(&mut socket, &cipher, crate::wire_opcode::SceneReadiness).await;
+        assert!(
+            opening.iter().all(
+                |m| !m.is(crate::Opcode::EntitySpawn) || m.body[8..12] != 1500u32.to_be_bytes()
+            ),
+            "dead hero must not be spawned in solo_opening"
+        );
+        // Wait briefly for the server write-completion path to record the flushed ModeName.
+        timeout(Duration::from_secs(2), async {
+            loop {
+                let ready = {
+                    let r = shared.lock().unwrap();
+                    r.seats[0].scene_written && r.seats[0].world_actor_written
+                };
+                if ready {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(!shared.lock().unwrap().scene_views[0].knows(1));
+        send(
+            &mut socket,
+            &cipher,
+            Message::known(crate::Opcode::SceneConfirmed, [0; 6]),
+        )
+        .await;
+        read_until(&mut socket, &cipher, crate::wire_opcode::TickSyncA).await;
+
+        // Advance simulation ticks while draining the TCP stream so 240 ticks of updates
+        // do not overflow the 16-batch peer output queue before respawn.
+        let mut saw_spawn = false;
+        let mut saw_respawn = false;
+        timeout(Duration::from_secs(4), async {
+            while !(saw_spawn && saw_respawn) {
+                if shared.lock().unwrap().world.entities[0].hp <= 0.0 {
+                    shared.lock().unwrap().tick();
+                }
+                while let Ok(Ok(body)) = timeout(
+                    Duration::from_millis(5),
+                    crate::transport::frame(&mut socket),
+                )
+                .await
+                {
+                    let msg = cipher.decode_owned(body).unwrap();
+                    if msg.is(crate::Opcode::EntitySpawn)
+                        && msg.body[8..12] == 1500u32.to_be_bytes()
+                    {
+                        saw_spawn = true;
+                    }
+                    if msg.is(crate::Opcode::ActorRespawn) && msg.body[..4] == 1500u32.to_be_bytes()
+                    {
+                        assert!(saw_spawn, "EntitySpawn must precede ActorRespawn");
+                        saw_respawn = true;
+                    }
+                }
+            }
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn solo_fog_reentry_emits_no_duplicate_declarations_or_additive_modifiers() {
+        use halcyon_protocol::{ACK_FRAME, MatchCipher, hello};
+        use halcyon_sim::{BasicItem, Event, Position};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpStream;
+
+        async fn send(socket: &mut TcpStream, cipher: &MatchCipher, m: Message) {
+            socket.write_all(&cipher.encode(&m).unwrap()).await.unwrap();
+        }
+
+        let rooms = Rooms::new("127.0.0.1".parse().unwrap(), "127.0.0.1".into(), 1, None);
+        let player = Uuid::new_v4();
+        let id = Uuid::new_v4();
+        let cipher = MatchCipher::new(&id.to_string());
+        let hosted = rooms
+            .reserve(Reservation {
+                talent_levels: Vec::new(),
+                match_id: id,
+                players: vec![player],
+                teams: vec![0],
+                mode: "5v5_bots_solo".into(),
+                difficulty: None,
+            })
+            .unwrap();
+        let shared = rooms.room(id).unwrap();
+        let mut socket = TcpStream::connect(&hosted.address).await.unwrap();
+        socket
+            .write_all(&hello("127.0.0.1").unwrap())
+            .await
+            .unwrap();
+        let mut ack = [0; 5];
+        socket.read_exact(&mut ack).await.unwrap();
+        assert_eq!(ack, ACK_FRAME);
+        send(
+            &mut socket,
+            &cipher,
+            Message::known(crate::Opcode::PlayerUuid, player.to_string().as_bytes()),
+        )
+        .await;
+        read_until(&mut socket, &cipher, crate::wire_opcode::Snapshot5V5).await;
+        send(
+            &mut socket,
+            &cipher,
+            Message::known(crate::Opcode::LockSelection, [0; 6]),
+        )
+        .await;
+        read_until(&mut socket, &cipher, crate::wire_opcode::LockSelection).await;
+        shared.lock().unwrap().phase_start = Instant::now() - Duration::from_secs(8);
+        read_until(&mut socket, &cipher, crate::wire_opcode::BeginLoading).await;
+        send(
+            &mut socket,
+            &cipher,
+            Message::known(crate::Opcode::RequestScene, [0; 6]),
+        )
+        .await;
+        send(
+            &mut socket,
+            &cipher,
+            Message::known(crate::Opcode::SceneOwner, [0, 0, 5, 220, 1, 0]),
+        )
+        .await;
+        read_until(&mut socket, &cipher, crate::wire_opcode::SceneReadiness).await;
+        send(
+            &mut socket,
+            &cipher,
+            Message::known(crate::Opcode::SceneConfirmed, [0; 6]),
+        )
+        .await;
+        read_until(&mut socket, &cipher, crate::wire_opcode::TickSyncA).await;
+        // Run the first authoritative tick so `initial_structures` and `solo_structure_snapshot` start.
+        shared.lock().unwrap().tick();
+        send(&mut socket, &cipher, Message::clock(5.0)).await;
+        read_until(&mut socket, &cipher, crate::wire_opcode::ClockSync).await;
+
+        let (home_pos, away_crystal_pos, enemy_pos) = {
+            let mut r = shared.lock().unwrap();
+            let home_pos = r.world.entities[0].position;
+            let away_crystal_pos = r
+                .world
+                .entities
+                .iter()
+                .find(|e| e.id == 2007 - 1499)
+                .unwrap()
+                .position;
+            r.world.entities[1].gold = 600;
+            r.world.purchase(2, BasicItem::WeaponBlade).unwrap();
+            r.world.entities[1].position = away_crystal_pos;
+            // First sight of enemy hero 1501 (already declared in initial solo_opening) and away crystal 2007.
+            r.world.entities[0].position = away_crystal_pos;
+            r.replicate(&[Event::Move {
+                id: 2,
+                position: away_crystal_pos,
+            }]);
+            (home_pos, away_crystal_pos, away_crystal_pos)
+        };
+        send(&mut socket, &cipher, Message::clock(11.0)).await;
+        let first_sight = read_until(&mut socket, &cipher, crate::wire_opcode::ClockSync).await;
+        assert!(
+            first_sight.iter().all(|m| {
+                !(m.is(crate::Opcode::EntitySpawn) && m.body[8..12] == 1501u32.to_be_bytes())
+                    && !m.is(crate::Opcode::StatModifier)
+                    && !m.is(crate::Opcode::ItemGrant)
+            }),
+            "enemy hero declared at solo_opening must not re-declare on first sighting"
+        );
+        assert!(
+            first_sight
+                .iter()
+                .any(|m| { m.is(crate::Opcode::Position) && m.body[..4] == 1501u32.to_be_bytes() }),
+            "enemy hero entering vision must still receive 0x042E movement"
+        );
+        assert_eq!(
+            first_sight
+                .iter()
+                .filter(|m| m.is(crate::Opcode::Snapshot) && m.body[8..12] == 2007u32.to_be_bytes())
+                .count(),
+            1
+        );
+        assert_eq!(
+            first_sight
+                .iter()
+                .filter(|m| {
+                    m.is(crate::Opcode::EntityData) && m.body[..4] == 2007u32.to_be_bytes()
+                })
+                .count(),
+            4
+        );
+
+        // Return to fog, then re-enter vision of both 1501 and 2007.
+        {
+            let mut r = shared.lock().unwrap();
+            r.world.entities[0].position = home_pos;
+            r.replicate(&[]);
+            assert!(!r.visible[0].contains(&2));
+            assert!(!r.visible[0].contains(&(2007 - 1499)));
+
+            let moved = Position {
+                x: enemy_pos.x + 1.0,
+                y: enemy_pos.y,
+            };
+            r.world.entities[0].position = away_crystal_pos;
+            r.world.entities[1].position = moved;
+            r.replicate(&[Event::Move {
+                id: 2,
+                position: moved,
+            }]);
+        }
+        send(&mut socket, &cipher, Message::clock(22.0)).await;
+        let reentry = read_until(&mut socket, &cipher, crate::wire_opcode::ClockSync).await;
+        assert!(
+            reentry.iter().all(|m| !matches!(
+                m.opcode,
+                crate::wire_opcode::EntitySpawn
+                    | crate::wire_opcode::Snapshot
+                    | crate::wire_opcode::StatModifier
+                    | crate::wire_opcode::ItemGrant
+                    | crate::wire_opcode::EntityData
+            )),
+            "fog re-entry emitted duplicate declarations/modifiers: {:?}",
+            reentry.iter().map(|m| m.opcode).collect::<Vec<_>>()
+        );
+        assert!(
+            reentry
+                .iter()
+                .any(|m| m.is(crate::Opcode::Position) && m.body[..4] == 1501u32.to_be_bytes())
+        );
+    }
 }

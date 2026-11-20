@@ -13,8 +13,7 @@ battlefield and HUD. Moving the touchscreen joystick sent both movement
 opcodes on the original TCP connection. The native Solo opening uses measured
 hero and structure positions. The host now simulates all three lanes, their
 18 turrets and six armories using recorded slots and minion routes. A device run verified movement
-from its starting pad and later ended in a native crash. Native reentry and
-the victory screen remain open. [CE compatibility](docs/protocol-coverage.md) · [Solo lanes](docs/solo-lane.md)
+from its starting pad and later ended in a native crash. Pure-Rust unit and single-socket E2E tests now cover Solo bot slot routing, unconditional minion slot recycling, dead-hero reconnect, fog re-entry deduplication, stalled-peer replacement, and settlement completion before client TCP EOF (`crates/server/tests/solo_lifecycle.rs`). Live Android 147219 crash reproduction, on-device reconnect, and the on-device post-match UI remain unverified. [CE compatibility](docs/protocol-coverage.md) · [Solo lanes](docs/solo-lane.md)
 
 The Rust game host runs a match through crystal destruction and settlement.
 An integration test starts three independent server processes, signs two CE
