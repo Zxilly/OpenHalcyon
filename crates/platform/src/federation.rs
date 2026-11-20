@@ -247,7 +247,7 @@ impl AppState {
             let ticket = Uuid::new_v4().to_string();
             roster.claim(tx, &ticket)?;
             tx.execute(
-                "INSERT INTO federated_queue(ticket, player, pool, mode, seats, enqueue_schema, difficulty) VALUES(?, ?, ?, ?, ?, 1, ?)",
+                "INSERT INTO federated_queue(ticket, player, pool, mode, seats, enqueue_schema, difficulty, queued_at_ms) VALUES(?, ?, ?, ?, ?, 1, ?, CAST(unixepoch('subsec')*1000 AS INTEGER))",
                 params![ticket, id, pool.to_string(), mode, seats, difficulty.map(BotDifficulty::as_str)],
             )?;
             if !estimates.is_empty() {

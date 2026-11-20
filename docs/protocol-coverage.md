@@ -215,3 +215,11 @@ The native rejection request carries the session and a room UUID. Ten UUID reque
 All 109 archived menu logouts and the independent Android relay logout returned a floating-point TTL of 5.0 and an empty envelope session token. In the timestamped archive, the absolute expiry was 599.9–600.0 seconds after observation. OpenHalcyon sets expiry to the local time plus 600 seconds. The 12 archived non-menu logouts (seven playing, four post-match, one matched-partners) had integer TTLs; the host retains the underlying match-state projection in these cases.
 
 All 1,008 archived RPC snapshots containing both version fields had two distinct non-nil UUIDv4 strings. OpenHalcyon links each successfully issued state response to the previous RPC version known for that player, including logout. When no earlier local response is available, the host generates a separate initial predecessor. This is a local compatibility choice; the archive does not identify the origin of the first predecessor. Notification cursors follow their own transport contract.
+
+### Menu and queue polling clocks
+
+Across 133 menu session starts, 422 menu updates and 131 menu lobby exits the integer TTL was 100. The absolute expiry was 599.7–600.0 seconds after observation. The host uses a fresh 600-second expiry on each menu snapshot. Menu logout uses the same expiry and its separate floating-point TTL of 5.0.
+
+In the historical traffic, all 100 pending-auto updates trace back to 17 successful queue joins. For each join, successive polls returned the same absolute expiry, 3599.894–3599.932 seconds after the join was recorded, and integer TTL 10. Each home persists the local or pooled enqueue time in its ticket transaction. A party shares one time, and reloading or projecting a pooled ticket preserves it. An older waiting ticket with no historical entry time receives a timestamp at its first upgraded open. This clock supplies the CE field and has no role in matchmaking cancellation or acceptance deadlines.
+
+Protocol §2.6 describes a two-cursor GET to the notification URL, while §4 identifies the WebSocket transport. The 139 archived session starts advertise separate WebSocket and HTTP long-poll URLs. The host serves upgrades on the former and HTTP queries on the latter. The archive does not establish that an Android client sends a non-upgrade GET to the WebSocket path.

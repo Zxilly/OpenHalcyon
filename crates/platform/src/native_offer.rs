@@ -15,6 +15,24 @@ pub struct NativeOffer {
 }
 
 pub(super) fn initialize(tx: &rusqlite::Transaction<'_>) -> Result<()> {
+    // These timestamps describe the native queue view. The authoritative
+    // matchmaking ticket and the offer's acceptance deadline remain separate.
+    for (table, waiting) in [
+        ("tickets", "match_id IS NULL"),
+        ("federated_queue", "phase IN ('pending','queued')"),
+    ] {
+        let exists: bool = tx.query_row(
+            "SELECT EXISTS (SELECT 1 FROM pragma_table_info(?) WHERE name='queued_at_ms')",
+            [table],
+            |row| row.get(0),
+        )?;
+        if !exists {
+            tx.execute_batch(&format!(
+                "ALTER TABLE {table} ADD COLUMN queued_at_ms INTEGER;
+                 UPDATE {table} SET queued_at_ms=CAST(unixepoch('subsec')*1000 AS INTEGER) WHERE {waiting}"
+            ))?;
+        }
+    }
     tx.execute_batch(
         "CREATE TABLE IF NOT EXISTS native_rejections(
         player TEXT NOT NULL, room TEXT NOT NULL, ticket TEXT,

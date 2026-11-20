@@ -213,10 +213,15 @@ impl AppState {
                 if let Some(batch) = &batch {
                     roster.claim(tx, batch)?;
                 }
+                let queued_at_ms: i64 = tx.query_row(
+                    "SELECT CAST(unixepoch('subsec')*1000 AS INTEGER)",
+                    [],
+                    |row| row.get(0),
+                )?;
                 for participant in roster.players {
                     tx.execute(
-                        "INSERT INTO tickets(player, mode, batch, seat_limit, difficulty) VALUES(?, ?, ?, ?, ?)",
-                        params![participant, mode, batch, seats, difficulty],
+                        "INSERT INTO tickets(player, mode, batch, seat_limit, difficulty, queued_at_ms) VALUES(?, ?, ?, ?, ?, ?)",
+                        params![participant, mode, batch, seats, difficulty, queued_at_ms],
                     )?;
                     event(tx, &participant, json!({"type":"queued", "mode":mode}))?;
                 }

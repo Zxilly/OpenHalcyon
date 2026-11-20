@@ -308,10 +308,9 @@ async fn dispatch(s: &Platform, m: &str, params: &[Value]) -> Result<(String, Va
         let token = s
             .tokens
             .sign(profile.player_id, &guest.session_token, Scope::Session)?;
-        return Ok((
-            token,
-            s.start_session(&guest.session_token, &profile).await?,
-        ));
+        let mut snapshot = s.start_session(&guest.session_token, &profile).await?;
+        s.stamp_state_version(profile.player_id, &mut snapshot)?;
+        return Ok((token, snapshot));
     }
     let token = arg(params, 0)?;
     if m == "getPlayerForGuestAccount" {
@@ -541,7 +540,6 @@ async fn dispatch(s: &Platform, m: &str, params: &[Value]) -> Result<(String, Va
                 .await?;
             if snapshot["state"] == "menus" {
                 snapshot["ttl"] = json!(5.0);
-                snapshot["expiry"] = json!(expiry_in(600));
             }
             s.stamp_state_version(id, &mut snapshot)?;
             return Ok((String::new(), snapshot));
@@ -622,7 +620,12 @@ fn state(p: &PlayerProfile) -> Value {
         Some("finished" | "post_match") => ("post_match", 100),
         _ => ("menus", 100),
     };
-    let mut v = json!({"state":name,"ttl":ttl,"expiry":expiry_in(ttl),"version":Uuid::new_v4(),
+    let expiry = match (name, l.and_then(|l| l.queued_at_ms)) {
+        ("menus", _) => expiry_in(600),
+        ("pending_auto", Some(joined)) => joined as f64 / 1000.0 + 3600.0,
+        _ => expiry_in(ttl),
+    };
+    let mut v = json!({"state":name,"ttl":ttl,"expiry":expiry,"version":Uuid::new_v4(),
         "lastVersion":Uuid::nil(),"numPlayers":1,"notify":matches!(name,"pending_auto"|"match_pending")});
     if let Some(l) = l
         && matches!(name, "playing" | "spectating")

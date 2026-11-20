@@ -300,6 +300,10 @@ async fn android_guest_lobby_notifications_and_recovery() {
     );
     let exit = rpc(&r, "exitLobby", json!([resumed["sessionToken"]])).await;
     assert_eq!(exit["returnValue"]["state"], "menus");
+    assert_eq!(exit["returnValue"]["ttl"], 100);
+    let delta = exit["returnValue"]["expiry"].as_f64().unwrap()
+        - chrono::Utc::now().timestamp_millis() as f64 / 1000.;
+    assert!((595.0..=600.1).contains(&delta));
     let before = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
@@ -377,6 +381,22 @@ async fn linked_identity_and_game_currency_survive_transport_retries() {
     )
     .await;
     assert_eq!(denied["code"], -1);
+    let direct = rpc(
+        &r,
+        "authenticate",
+        json!([{"username":"local@example.test","password":"fixture-only"}]),
+    )
+    .await;
+    assert_eq!(direct["code"], 0);
+    for field in ["version", "lastVersion"] {
+        let version: uuid::Uuid =
+            serde_json::from_value(direct["returnValue"][field].clone()).unwrap();
+        assert_eq!(version.get_version_num(), 4);
+    }
+    assert_ne!(
+        direct["returnValue"]["version"],
+        direct["returnValue"]["lastVersion"]
+    );
     let login = rpc(
         &r,
         "getPlayerFromPlatform",
@@ -707,6 +727,19 @@ async fn aral_offer_projection_is_private_read_only_and_survives_reopen() {
     assert_eq!(
         ranked["returnValue"],
         json!({"success":true,"ttl":100,"state":"pending_auto","numPlayers":1})
+    );
+    let expiry = rpc(&r, "update", json!([tokens[6]])).await["returnValue"]["expiry"].clone();
+    let stamp = chrono::Utc::now().timestamp_millis() as f64 / 1000.;
+    assert!((3595.0..=3600.1).contains(&(expiry.as_f64().unwrap() - stamp)));
+    let repeat = rpc(&r, "update", json!([tokens[6]])).await;
+    assert_eq!(repeat["returnValue"]["ttl"], 10);
+    assert_eq!(repeat["returnValue"]["expiry"], expiry);
+    drop(r);
+    drop(app);
+    let (app, r) = open();
+    assert_eq!(
+        rpc(&r, "update", json!([tokens[6]])).await["returnValue"]["expiry"],
+        expiry
     );
     assert_eq!(rpc(&r, "exitLobby", json!([tokens[6]])).await["code"], 0);
     for t in &tokens[..6] {

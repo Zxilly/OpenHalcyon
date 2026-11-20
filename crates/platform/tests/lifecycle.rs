@@ -852,3 +852,94 @@ async fn public_match_routes_dispatch_to_the_selected_home_authority() {
         ["join", "accept", "chat", "cancel"]
     );
 }
+
+#[tokio::test]
+async fn legacy_waiting_tickets_gain_one_persistent_timestamp_on_migration() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("queue.sqlite");
+    let cfg = PlatformConfig {
+        database_path: db.clone(),
+        public_address: "localhost:8000".into(),
+        seats_per_match: 2,
+    };
+    let open = || AppState::open(cfg.clone(), Arc::new(Host::default())).unwrap();
+    let state = open();
+    let local = state
+        .create_guest("Local".into())
+        .await
+        .unwrap()
+        .session_token;
+    let peer = state
+        .create_guest("Remote".into())
+        .await
+        .unwrap()
+        .session_token;
+    let pool = Uuid::new_v4();
+    state.join(&local, "duo".into()).await.unwrap();
+    let ticket = state
+        .federated_join(&peer, pool, "duo".into(), 2)
+        .await
+        .unwrap()
+        .ticket;
+    let before = state
+        .profile(&peer)
+        .await
+        .unwrap()
+        .lobby
+        .unwrap()
+        .queued_at_ms
+        .unwrap();
+    state
+        .federated_join(&peer, pool, "duo".into(), 2)
+        .await
+        .unwrap();
+    state
+        .federated_project(ticket, "queued", None, None, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        state
+            .profile(&peer)
+            .await
+            .unwrap()
+            .lobby
+            .unwrap()
+            .queued_at_ms,
+        Some(before)
+    );
+    drop(state);
+    // Recreate the previous queue schemas while retaining their live ticket rows.
+    rusqlite::Connection::open(&db)
+        .unwrap()
+        .execute_batch(
+            "ALTER TABLE tickets DROP COLUMN queued_at_ms;
+         ALTER TABLE federated_queue DROP COLUMN queued_at_ms;",
+        )
+        .unwrap();
+    let state = open();
+    let local_stamp = state
+        .profile(&local)
+        .await
+        .unwrap()
+        .lobby
+        .unwrap()
+        .queued_at_ms
+        .unwrap();
+    let peer_stamp = state
+        .profile(&peer)
+        .await
+        .unwrap()
+        .lobby
+        .unwrap()
+        .queued_at_ms
+        .unwrap();
+    drop(state);
+    let state = open();
+    for (key, stamp) in [(local, local_stamp), (peer, peer_stamp)] {
+        for _ in 0..2 {
+            let lobby = state.profile(&key).await.unwrap().lobby.unwrap();
+            assert_eq!(lobby.phase, "queued");
+            assert_eq!(lobby.queued_at_ms, Some(stamp));
+        }
+    }
+}
