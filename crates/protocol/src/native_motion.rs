@@ -21,7 +21,7 @@ impl ForcedMove {
     pub fn message(self) -> Message {
         let mut body = [0; 21];
         body[..4].copy_from_slice(&self.actor.to_be_bytes());
-        for (bytes, value) in body[4..20].chunks_exact_mut(4).zip([
+        for (bytes, value) in body[4..20].as_chunks_mut::<4>().0.iter_mut().zip([
             self.speed,
             self.destination[0],
             self.destination[1],
@@ -58,10 +58,12 @@ impl Message {
     /// Native enabled bounce applied to an affected actor.
     pub fn actor_bounce(actor: u32, height: f32, duration: f32) -> Self {
         let mut body = [0; 16];
-        for (bytes, word) in
-            body.chunks_exact_mut(4)
-                .zip([actor, height.to_bits(), duration.to_bits(), 1])
-        {
+        for (bytes, word) in body.as_chunks_mut::<4>().0.iter_mut().zip([
+            actor,
+            height.to_bits(),
+            duration.to_bits(),
+            1,
+        ]) {
             bytes.copy_from_slice(&word.to_be_bytes());
         }
         Self::known(Opcode::AutoActorBounce, body)

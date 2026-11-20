@@ -6,6 +6,8 @@ use halcyon_sim::{
 
 use super::{Batch, Message, Room, messages::wire_id, transport::Delivery};
 
+mod amael;
+pub(super) use amael::recordable as recordable_amael;
 mod chakram_motion;
 mod chill_winds;
 mod projectile;
@@ -328,6 +330,14 @@ pub(super) fn publish_before_impacts(room: &mut Room, events: &[Event]) {
             Event::MobileBulwarkStart { .. } | Event::MobileBulwarkEnd { .. }
         ) {
             super::mobile_bulwark::publish(room, event);
+        }
+        if let Event::AmaelKick {
+            source,
+            target,
+            instance,
+        } = *event
+        {
+            amael::publish(room, source, target, instance);
         }
         if let Event::TwisterDash {
             source,

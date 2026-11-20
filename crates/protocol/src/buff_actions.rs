@@ -16,6 +16,7 @@ pub struct BuffPrefix {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u16)]
 pub enum BuffDefinition {
+    RevealToBestowersTeam = 62,
     WeaponInfusion = 283,
     CrystalInfusion = 284,
     Rebooting = 683,
