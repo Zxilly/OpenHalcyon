@@ -102,6 +102,12 @@ impl Recorder {
 }
 fn sanitize(m: &mut Message) -> bool {
     match m.known_opcode() {
+        Some(crate::Opcode::ActorUndead) if matches!(m.body.as_slice(), [0, 0, 5, 220..=225]) => {}
+        Some(crate::Opcode::EntityProp)
+            if matches!(m.fields(), Ok(halcyon_protocol::Fields::BuffApplication(buff))
+            if buff.prefix.definition==683 && buff.prefix.duration_bits==0x4300 && buff.prefix.target==buff.prefix.source
+            && (1500..=1505).contains(&buff.prefix.target) && buff.extras.is_none() && buff.suffix.is_empty()) =>
+            {}
         Some(crate::Opcode::PlayerInfo) if matches!(m.body.len(), 216 | 222) => {
             super::messages::redact_player_info(&mut m.body);
         }
