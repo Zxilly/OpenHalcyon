@@ -1265,10 +1265,13 @@ name = "halcyon-peer-play"
 version = "1.0.0-draft.1"
 dependencies = [
  "anyhow",
+ "diesel",
+ "diesel_migrations",
  "halcyon-federation",
  "halcyon-game",
  "halcyon-matchmaking",
  "halcyon-platform",
+ "halcyon-storage",
  "http",
  "rcgen",
  "rusqlite",

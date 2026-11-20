@@ -6,8 +6,8 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-diesel = { version = "=2.3.4", default-features = false, features = ["sqlite"] }
-diesel_migrations = { version = "2.3", default-features = false, features = ["sqlite"] }
+diesel.workspace = true
+diesel_migrations.workspace = true
 libsqlite3-sys = { version = "0.35", features = ["bundled"] }
 thiserror.workspace = true
 uuid.workspace = true
