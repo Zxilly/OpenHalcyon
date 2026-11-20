@@ -98,7 +98,7 @@ impl World {
             x: start.x + (aim.x - start.x) * scale,
             y: start.y + (aim.y - start.y) * scale,
         };
-        e.status.flail = Some(Shot {
+        e.status.captain_effects.arm().flail = Some(Shot {
             position: start,
             end,
             speed: a.speed[r],
@@ -109,7 +109,12 @@ impl World {
         });
     }
     pub(super) fn advance_flail(&mut self, i: usize, events: &mut Vec<Event>) {
-        let Some(mut s) = self.entities[i].status.flail.take() else {
+        let Some(mut s) = self.entities[i]
+            .status
+            .captain_effects
+            .active_mut()
+            .and_then(|state| state.flail.take())
+        else {
             return;
         };
         let e = &self.entities[i];
@@ -128,7 +133,7 @@ impl World {
             }
             self.place_spell_actor(j, next, events);
             if next.dist(origin) > s.offset + 0.001 {
-                self.entities[i].status.flail = Some(s)
+                self.entities[i].status.captain_effects.arm().flail = Some(s)
             }
             return;
         }
@@ -177,11 +182,11 @@ impl World {
             if self.entities[j].hp > 0. {
                 self.entities[j].order = Command::Stop;
                 self.entities[j].winding = None;
-                self.entities[i].status.flail = Some(s);
+                self.entities[i].status.captain_effects.arm().flail = Some(s);
             }
         } else if next != s.end {
             s.position = next;
-            self.entities[i].status.flail = Some(s);
+            self.entities[i].status.captain_effects.arm().flail = Some(s);
         }
     }
     pub(super) fn land_mandate(
@@ -237,7 +242,13 @@ impl World {
                 self.hurt(src, team, j, amount, DamageSchool::Crystal, events);
             }
         }
-        if self.entities[i].status.overwhelm.is_some() {
+        if self.entities[i]
+            .status
+            .captain_effects
+            .read()
+            .overwhelm
+            .is_some()
+        {
             self.advance_overwhelm(i, events)
         }
     }

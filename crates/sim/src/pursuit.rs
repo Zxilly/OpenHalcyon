@@ -70,7 +70,13 @@ impl World {
         events: &mut Vec<Event>,
     ) {
         let e = &mut self.entities[i];
-        e.status.pursuit.as_mut().unwrap().armed_until = 0;
+        e.status
+            .captain_effects
+            .arm()
+            .pursuit
+            .as_mut()
+            .unwrap()
+            .armed_until = 0;
         e.next_attack = e.next_attack.max(self.tick + p.lock);
         let (src, team, pierce) = (e.id, e.team, e.item_stats.shield_pierce);
         let t = &mut self.entities[j];

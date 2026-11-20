@@ -78,7 +78,7 @@ impl World {
     pub(super) fn raise_stormguard(&mut self, i: usize, r: usize) {
         let a = self.abilities.stormguard.as_ref().unwrap();
         let e = &mut self.entities[i];
-        e.status.stormguard = Some(Bubble {
+        e.status.captain_effects.arm().stormguard = Some(Bubble {
             until: self.tick + ticks(a.duration[r]),
             next_pulse: self.tick + TICK_HZ,
             damage: a.burn.at(r, e.item_stats.crystal, 0.),
@@ -91,15 +91,23 @@ impl World {
     }
     pub(super) fn advance_stormguard(&mut self, i: usize, events: &mut Vec<Event>) {
         let e = &mut self.entities[i];
-        let Some(b) = e.status.stormguard else { return };
+        let Some(b) = e.status.captain_effects.read().stormguard else {
+            return;
+        };
         if self.tick > b.until {
-            e.status.stormguard = None;
+            e.status.captain_effects.arm().stormguard = None;
             return;
         }
         if self.tick < b.next_pulse {
             return;
         }
-        e.status.stormguard.as_mut().unwrap().next_pulse += TICK_HZ;
+        e.status
+            .captain_effects
+            .arm()
+            .stormguard
+            .as_mut()
+            .unwrap()
+            .next_pulse += TICK_HZ;
         let (src, team, pos, pierce) = (e.id, e.team, e.position, e.item_stats.shield_pierce);
         for j in 0..self.entities.len() {
             let target = &self.entities[j];
@@ -127,7 +135,12 @@ impl World {
         amount: f32,
     ) -> (f32, Option<Reflection>) {
         let e = &mut self.entities[i];
-        let Some(b) = e.status.stormguard.as_mut() else {
+        let Some(b) = e
+            .status
+            .captain_effects
+            .active_mut()
+            .and_then(|state| state.stormguard.as_mut())
+        else {
             return (amount, None);
         };
         if e.hp <= 0. || self.tick >= b.until || amount <= b.threshold {

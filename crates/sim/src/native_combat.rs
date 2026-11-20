@@ -459,7 +459,16 @@ mod tests {
             |event| matches!(event,Event::Damage{source:1,target:2,amount,..} if *amount==75.)
         ));
         assert_eq!(w.entities[1].status.stun_until, 19);
-        assert_eq!(w.entities[0].status.pursuit.unwrap().armed_until, 0);
+        assert_eq!(
+            w.entities[0]
+                .status
+                .captain_effects
+                .read()
+                .pursuit
+                .unwrap()
+                .armed_until,
+            0
+        );
         assert_eq!(w.entities[0].position, origin);
         w.entities[1].position = origin;
         let next: Vec<_> = (0..30).flat_map(|_| w.step()).collect();

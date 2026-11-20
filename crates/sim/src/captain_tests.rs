@@ -1,6 +1,28 @@
 use super::*;
 use std::path::Path;
 
+#[test]
+fn ordinary_damage_keeps_captain_state_unallocated_and_checkpoint_stable() {
+    let mut world = World::new(29, 6);
+    world.hurt(2, 1, 0, 10., DamageSchool::Weapon, &mut Vec::new());
+    assert!(
+        world.entities[0]
+            .status
+            .captain_effects
+            .active_mut()
+            .is_none()
+    );
+    let checkpoint = world.state_digest();
+    world.entities[0].status.captain_effects.arm();
+    assert_eq!(checkpoint, world.state_digest());
+    println!(
+        "entity={} status={} active_captain={}",
+        size_of::<Entity>(),
+        size_of::<combat::Status>(),
+        size_of::<combat::CaptainState>(),
+    );
+}
+
 fn room(hero: &str) -> World {
     let data = GameData::load_with_extra(
         std::env::var_os("HALCYON_DELIVERY").unwrap(),
@@ -57,7 +79,7 @@ fn wolf_maw_hits_the_first_body_once_pulls_over_time_and_cannot_reach_an_ally() 
     assert!((w.entities[3].position.x - 1.2).abs() < 0.001);
     assert_eq!(w.entities[1].hp, hp);
     assert_eq!(w.entities[2].hp, hp);
-    assert!(w.entities[0].status.flail.is_none());
+    assert!(w.entities[0].status.captain_effects.read().flail.is_none());
 }
 #[test]
 #[ignore = "requires original delivery and supplemental combat data"]
@@ -189,11 +211,25 @@ fn iron_mandate_checks_landing_ground_and_releases_overdue_overwhelm_after_landi
     }
     assert_eq!(w.entities[1].status.stun_until, 0);
     assert_eq!(w.entities[0].position.x, 16.);
-    assert!(w.entities[0].status.overwhelm.is_some());
+    assert!(
+        w.entities[0]
+            .status
+            .captain_effects
+            .read()
+            .overwhelm
+            .is_some()
+    );
     w.step();
     assert_eq!(w.entities[0].position, landing);
     assert_eq!(w.entities[1].status.stun_until, 58);
-    assert!(w.entities[0].status.overwhelm.is_none());
+    assert!(
+        w.entities[0]
+            .status
+            .captain_effects
+            .read()
+            .overwhelm
+            .is_none()
+    );
 }
 #[test]
 #[ignore = "requires original delivery and supplemental combat data"]

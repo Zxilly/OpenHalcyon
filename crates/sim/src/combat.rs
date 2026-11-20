@@ -79,7 +79,46 @@ pub(super) struct Cast {
     target: CastTarget,
     release: u64,
 }
-#[derive(Clone, Copy, Default, Debug, Serialize)]
+/// These controllers are only armed by Catherine and Yates. Lane units keep a single empty
+/// slot. The serialized fields stay in their original order for replay checkpoints.
+#[derive(Clone, Debug, Default)]
+pub(super) struct CaptainEffects(Option<Box<CaptainState>>);
+
+#[derive(Clone, Copy, Debug, Default, Serialize)]
+pub(super) struct CaptainState {
+    pub(super) stormguard: Option<super::catherine::Bubble>,
+    pub(super) flail: Option<super::yates::Shot>,
+    pub(super) overwhelm: Option<super::overwhelm::Charge>,
+    pub(super) pursuit: Option<super::pursuit::PursuitAttack>,
+}
+
+impl CaptainEffects {
+    pub(super) fn read(&self) -> &CaptainState {
+        static EMPTY: CaptainState = CaptainState {
+            stormguard: None,
+            flail: None,
+            overwhelm: None,
+            pursuit: None,
+        };
+        self.0.as_deref().unwrap_or(&EMPTY)
+    }
+
+    pub(super) fn active_mut(&mut self) -> Option<&mut CaptainState> {
+        self.0.as_deref_mut()
+    }
+
+    pub(super) fn arm(&mut self) -> &mut CaptainState {
+        self.0.get_or_insert_with(Default::default)
+    }
+}
+
+impl Serialize for CaptainEffects {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.read().serialize(serializer)
+    }
+}
+
+#[derive(Clone, Default, Debug, Serialize)]
 pub(super) struct Status {
     pub(super) sigil_speed: f32,
     pub(super) sigil_speed_until: u64,
@@ -88,10 +127,8 @@ pub(super) struct Status {
     pub(super) bulwark_slow_factor: f32,
     pub(super) silence_until: u64,
     pub(super) reveal_until: u64,
-    pub(super) stormguard: Option<super::catherine::Bubble>,
-    pub(super) flail: Option<super::yates::Shot>,
-    pub(super) overwhelm: Option<super::overwhelm::Charge>,
-    pub(super) pursuit: Option<super::pursuit::PursuitAttack>,
+    #[serde(flatten)]
+    pub(super) captain_effects: CaptainEffects,
     pub(super) double_down: Option<u32>,
     pub(super) stamina_spent: f32,
     pub(super) stamina_spent_at: u64,
@@ -700,12 +737,14 @@ impl World {
             Skill::IronMandate => self.land_mandate(i, r, point, events),
             Skill::Pursuit => {
                 let rules = self.abilities.pursuit.as_ref().unwrap();
-                self.entities[i].status.pursuit = Some(rules.arm(r, self.tick, cp));
+                self.entities[i].status.captain_effects.arm().pursuit =
+                    Some(rules.arm(r, self.tick, cp));
                 self.entities[i].next_attack = self.tick;
             }
             Skill::Overwhelm => {
                 let rules = self.abilities.overwhelm.as_ref().unwrap();
-                self.entities[i].status.overwhelm = Some(rules.charge(r, self.tick, cp));
+                self.entities[i].status.captain_effects.arm().overwhelm =
+                    Some(rules.charge(r, self.tick, cp));
             }
             Skill::ChillWinds => {
                 let b = self

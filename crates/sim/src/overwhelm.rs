@@ -53,7 +53,7 @@ impl World {
     }
     pub(super) fn advance_overwhelm(&mut self, i: usize, events: &mut Vec<Event>) {
         let source = &self.entities[i];
-        let Some(charge) = source.status.overwhelm else {
+        let Some(charge) = source.status.captain_effects.read().overwhelm else {
             return;
         };
         if charge.due > self.tick {
@@ -65,7 +65,7 @@ impl World {
             source.position,
             source.item_stats.shield_pierce,
         );
-        self.entities[i].status.overwhelm = None;
+        self.entities[i].status.captain_effects.arm().overwhelm = None;
         for j in 0..self.entities.len() {
             let e = &mut self.entities[j];
             if e.team == team

@@ -556,7 +556,7 @@ impl World {
                     e.respawn,
                     e.cast,
                     e.cooldown,
-                    e.status,
+                    &e.status,
                     &e.path,
                     e.last_seen,
                     e.bonus_hp,
@@ -1004,6 +1004,8 @@ impl World {
                     .filter(|_| e.status.water_speed_until > self.tick)
                     .unwrap_or(0.)
                 + e.status
+                    .captain_effects
+                    .read()
                     .pursuit
                     .filter(|p| self.tick < p.speed_until)
                     .map_or(0., |p| p.speed)
@@ -1221,13 +1223,32 @@ impl World {
                     self.award_xp(i, 0.45, events);
                 }
             }
-            if self.entities[i].status.stormguard.is_some() {
+            if self.entities[i]
+                .status
+                .captain_effects
+                .read()
+                .stormguard
+                .is_some()
+            {
                 self.advance_stormguard(i, events);
             }
-            if self.entities[i].status.flail.is_some() {
+            if self.entities[i]
+                .status
+                .captain_effects
+                .read()
+                .flail
+                .is_some()
+            {
                 self.advance_flail(i, events);
             }
-            if self.entities[i].status.overwhelm.is_some() && !self.yates_is_leaping(i) {
+            if self.entities[i]
+                .status
+                .captain_effects
+                .read()
+                .overwhelm
+                .is_some()
+                && !self.yates_is_leaping(i)
+            {
                 self.advance_overwhelm(i, events);
             }
             let hero = &self.entities[i];
@@ -1361,7 +1382,7 @@ impl World {
                         self.entities[i].winding = None;
                         continue;
                     }
-                    let pursuit = e.status.pursuit.filter(|p| {
+                    let pursuit = e.status.captain_effects.read().pursuit.filter(|p| {
                         p.armed_until > self.tick
                             && matches!(t.kind, Kind::Hero | Kind::Minion | Kind::Neutral)
                     });
