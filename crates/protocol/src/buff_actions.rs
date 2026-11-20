@@ -101,7 +101,45 @@ pub struct BuffMutation<'a> {
     pub padding: &'a [u8],
 }
 
+/// Native ActionModifyBuffStack. `instance` identifies a buff on this actor.
+/// Preserve the full unsigned count and any capture-format suffix.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BuffStack<'a> {
+    pub target: u32,
+    pub instance: u32,
+    pub count: u32,
+    pub suffix: &'a [u8],
+}
+
+impl BuffStack<'_> {
+    pub fn to_message(self) -> io::Result<Message> {
+        if !matches!(self.suffix.len(), 0 | 2) {
+            return Err(invalid("unsupported buff stack suffix length"));
+        }
+        let mut body = Vec::with_capacity(12 + self.suffix.len());
+        body.extend(self.target.to_be_bytes());
+        body.extend(self.instance.to_be_bytes());
+        body.extend(self.count.to_be_bytes());
+        body.extend(self.suffix);
+        Ok(Message::new(0x443, body))
+    }
+}
+
 impl Message {
+    /// Reads the Android native prefix and the observed extended capture form.
+    pub fn buff_stack(&self) -> Option<BuffStack<'_>> {
+        if self.opcode != 0x443 || !matches!(self.body.len(), 12 | 14) {
+            return None;
+        }
+        let word = |i| u32::from_be_bytes(self.body[i..i + 4].try_into().unwrap());
+        Some(BuffStack {
+            target: word(0),
+            instance: word(4),
+            count: word(8),
+            suffix: &self.body[12..],
+        })
+    }
+
     /// Distinguishes a duration update, explicit cancellation and timeout.
     pub fn buff_mutation(&self) -> Option<BuffMutation<'_>> {
         BuffMutation::decode(self.opcode, &self.body)
@@ -155,6 +193,42 @@ impl<'a> BuffMutation<'a> {
 mod tests {
     use super::*;
     use crate::Fields;
+
+    #[test]
+    fn buff_stack_preserves_both_native_shapes_and_the_existing_word_view() {
+        let bytes = [
+            0, 0, 5, 220, 0x12, 0x34, 0x56, 0x78, 0, 0, 3, 32, 0xAB, 0xCD,
+        ];
+        for len in [12, 14] {
+            let msg = Message::new(0x443, &bytes[..len]);
+            let change = msg.buff_stack().unwrap();
+            assert_eq!(
+                change,
+                BuffStack {
+                    target: 1500,
+                    instance: 0x12345678,
+                    count: 800,
+                    suffix: &bytes[12..len]
+                }
+            );
+            assert_eq!(change.to_message().unwrap(), msg);
+            assert!(matches!(msg.fields(), Ok(Fields::ActionWords(_))));
+            let zero = BuffStack { count: 0, ..change }.to_message().unwrap();
+            assert_eq!(zero.buff_stack().unwrap().count, 0);
+            assert!(
+                BuffStack {
+                    suffix: &[0],
+                    ..change
+                }
+                .to_message()
+                .is_err()
+            );
+        }
+        for n in [11, 13, 15] {
+            assert!(Message::new(0x443, vec![0; n]).buff_stack().is_none());
+        }
+        assert!(Message::new(0x444, bytes).buff_stack().is_none());
+    }
 
     #[test]
     fn all_four_lengths_preserve_references_half_bits_and_unknown_words() {

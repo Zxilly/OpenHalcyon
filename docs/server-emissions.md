@@ -44,8 +44,8 @@ The host paths are in [room dispatch](../crates/game/src/lib.rs), [transport](..
 | `041D` | 109,869 | A | ActionModifyActorResource · Simulated resource deltas including earned gold and purchase debits |
 | `041E` | 16,559 | A | ActionImpactHealth · Applied damage or healing with visible participants |
 | `041F` | 42 | H | ActionModifyGameModeVar · Six initial keys after the authenticated native ARAL or Solo scene request. [Wire order](game-wire.md#initial-game-mode-variables) |
-| `0421` | 22 | R | ActionCreateZoneOfControl |
-| `0423` | 22 | R | ActionDestroyZoneOfControl |
+| `0421` | 22 | R | [ActionCreateZoneOfControl](aral-orbit.md#actor-anchored-zones) |
+| `0423` | 22 | R | [ActionDestroyZoneOfControl](aral-orbit.md#actor-anchored-zones) |
 | `0424` | 2,268 | E | ActionRequestModifyBasicAttackTarget · Accepted ARAL basic attack target |
 | `0425` | 5 | R | ActionModifyBasicAttackTarget |
 | `0428` | 2,000 | R | ActionModifyCooldown |
@@ -65,10 +65,10 @@ The host paths are in [room dispatch](../crates/game/src/lib.rs), [transport](..
 | `043C` | 1,351 | R | ActionCancelAbility |
 | `043D` | 425 | A | ActionGrantItem · Acquired or restored held item instance |
 | `043E` | 44,346 | A | [ARAL Waterwall on an ally (issuer) and Chakram self-application (issuer and registered teammates)](native-abilities.md) |
-| `043F` | 17,018 | R | ActionApplyBuff |
+| `043F` | 17,018 | R | [ActionApplyBuff opening and equipment instances](aral-item-activation.md#extended-applications-at-match-opening-and-on-purchase) |
 | `0440` | 60 | R | ActionShowFlyoutText |
 | `0441` | 385 | R | ActionModifyBuffDuration |
-| `0443` | 1,831 | R | ActionModifyBuffStack |
+| `0443` | 1,831 | R | [ActionModifyBuffStack and observed instance counts](aral-item-activation.md#extended-applications-at-match-opening-and-on-purchase) |
 | `0445` | 1,398 | R | ActionCancelBuff |
 | `0446` | 18 | R | ActionTimeoutBuff |
 | `0447` | 41 | R | ActionDecrementBuffStack |

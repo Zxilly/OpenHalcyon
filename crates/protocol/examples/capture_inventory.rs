@@ -114,6 +114,24 @@ impl Stream {
                         }
                         e.typed += 1;
                     }
+                    Ok(Fields::ActionWords(_)) if m.opcode == 0x443 => {
+                        let stack = m
+                            .buff_stack()
+                            .ok_or_else(|| invalid("unsupported buff stack body"))?;
+                        if stack.to_message()? != m {
+                            return Err(invalid("buff stack did not reproduce original"));
+                        }
+                        e.typed += 1;
+                    }
+                    Ok(Fields::ActionWords(_)) if matches!(m.opcode, 0x421 | 0x423) => {
+                        let zone = m
+                            .zone_action()
+                            .ok_or_else(|| invalid("unsupported zone action body"))?;
+                        if zone.to_message()? != m {
+                            return Err(invalid("zone action did not reproduce original"));
+                        }
+                        e.typed += 1;
+                    }
                     Ok(Fields::BuffAction { .. }) => {
                         let action = m
                             .buff_mutation()

@@ -9,6 +9,8 @@ use std::io::{self, Read, Write};
 
 mod tower_aggro;
 pub use tower_aggro::TowerAggro;
+mod zone;
+pub use zone::ZoneAction;
 mod solo_structure;
 pub use solo_structure::SoloStructure;
 mod surrender;
@@ -23,7 +25,9 @@ mod aral;
 pub use aral::AralRoster;
 mod abilities;
 mod buff_actions;
-pub use buff_actions::{BuffApplication, BuffChange, BuffExtras, BuffMutation, BuffPrefix};
+pub use buff_actions::{
+    BuffApplication, BuffChange, BuffExtras, BuffMutation, BuffPrefix, BuffStack,
+};
 mod hud;
 pub use hud::{HudQuickMessage, MapPing};
 mod gold;
