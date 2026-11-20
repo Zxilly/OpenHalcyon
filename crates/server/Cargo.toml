@@ -10,6 +10,8 @@ anyhow = "1"
 argon2 = "0.5"
 axum.workspace = true
 axum-server = { version = "0.8", features = ["tls-rustls-no-provider"] }
+bevy_app.workspace = true
+bevy_ecs.workspace = true
 chrono = "0.4"
 clap = { version = "4", features = ["derive"] }
 halcyon-admin = { path = "../admin" }

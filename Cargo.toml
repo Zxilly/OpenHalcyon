@@ -13,6 +13,8 @@ disallowed_macros = "deny"
 
 [workspace.dependencies]
 axum = { version = "0.8", features = ["ws"] }
+bevy_app = { version = "0.20.1", default-features = false, features = ["std"] }
+bevy_ecs = { version = "0.20.1", default-features = false, features = ["std"] }
 bytes = "1"
 diesel = { version = "~2.3.4", default-features = false, features = ["sqlite"] }
 diesel_migrations = { version = "2.3", default-features = false, features = ["sqlite"] }
