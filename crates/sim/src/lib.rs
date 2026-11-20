@@ -279,6 +279,13 @@ pub enum Event {
         id: u32,
         position: Position,
     },
+    /// Legal navigation segment taken by a native Solo bot hero.
+    SoloBotPath {
+        id: u32,
+        waypoint: Position,
+        goal: Position,
+        target: Option<u32>,
+    },
     Attack {
         source: u32,
         target: u32,
@@ -1141,9 +1148,20 @@ impl Room<'_> {
             }
             e.position = pos;
             if e.kind == Kind::Hero
-                && let Some(map) = &mut self.state.native_navigation
+                && let Some(map) = &mut state.native_navigation
             {
                 map.moved(e.id, pos);
+            }
+            if e.kind == Kind::Hero && e.bot && matches!(state.layout, Layout::SoloMid { .. }) {
+                events.push(Event::SoloBotPath {
+                    id: e.id,
+                    waypoint,
+                    goal: p,
+                    target: match e.order {
+                        Command::Attack(id) => Some(id),
+                        _ => None,
+                    },
+                });
             }
             events.push(Event::Move {
                 id: e.id,

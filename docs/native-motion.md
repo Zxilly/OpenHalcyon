@@ -19,8 +19,26 @@ the horizontal position differs from the ordered destination. None of the
 `0430` or `0431`. Idris accounts for eight records. Six arrived within
 0.470 seconds, during which X moved from 13.4 to 11.7. His preceding
 targeted plays used selectors 14 and 15 and occurred 0.819–1.289 seconds
-before the position updates. The host still needs a way to distinguish
-this series from ordinary movement before it can emit it.
+before the position updates.
+
+The complete ARAL records contain 1,450 opponent, 1,090 ally and eight
+own-controller views of this action. Resolve each slot through the preceding
+spawn and pair it with the first following same-actor `042E`. Within 51 ms,
+2,476 pairs exist; the two X/Z values always differ, with a median separation
+of 2.56 world units. Only 243 actions repeat the preceding `03F8` destination.
+This distinguishes a forced goal from the actor's current coordinate. The
+original conditions and cadence for choosing a forced goal remain open.
+
+OpenHalcyon uses `03F9` for a narrow Solo bot navigation policy. After the
+confirmed local control connection receives a bot move order, a different
+visible waypoint for the same route, or a new route after pursuit ends, can
+replace that order with a forced goal. The bot must take a real step on the
+new segment. A recipient needs declarations for the bot and any pursued target.
+Hidden actors, hidden waypoints, expired prior orders and reconnects start a
+fresh route. The host uses the Solo flat height observed in all 24 archived
+records and sends the goal before the same tick's independent position update.
+Ordinary orders use `03F8`; this policy is specific to the hosted Solo bot
+scene.
 
 ## Solo stop timing
 

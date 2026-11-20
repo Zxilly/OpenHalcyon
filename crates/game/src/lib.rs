@@ -27,6 +27,7 @@ mod registry;
 mod result_frames;
 mod ringo;
 mod scene;
+mod solo_bot_paths;
 mod structure_effects;
 mod surrender;
 mod tick_latency;
@@ -1782,6 +1783,20 @@ impl Room {
                         self.scene_views[i].declarations(&out);
                     }
                 }
+            }
+            if native_solo
+                && usize::from(self.world.entities[0].team) == team
+                && self.seats[0].world_actor_written
+                && self.seats[0].preamble.confirmed()
+                && self.seats[0].peers[1].is_none()
+            {
+                self.scene_views[0].append_solo_bot_paths(
+                    &self.world,
+                    &self.world.entities[0],
+                    current,
+                    events,
+                    &mut out,
+                );
             }
             let mut has_attack_release = false;
             for ev in events {

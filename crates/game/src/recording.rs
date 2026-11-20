@@ -128,6 +128,7 @@ fn sanitize(m: &mut Message) -> bool {
             | crate::Opcode::ItemActivated
             | crate::Opcode::SellItem,
         ) => return super::aral_item_actions::recordable(m),
+        Some(crate::Opcode::EntityAct2) if super::solo_bot_paths::recordable(m) => {}
         // Audited outbound gameplay opcodes only. Unknown and control messages stay out.
         Some(crate::Opcode::Snapshot)
             if m.body.len() == 122

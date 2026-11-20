@@ -9,6 +9,7 @@ use super::Batch;
 
 #[derive(Default)]
 pub(super) struct View {
+    solo_bot_paths: super::solo_bot_paths::Paths,
     pub(super) guard_links: super::aral_guard::State,
     pub(super) chakrams: [Option<u32>; 6],
     pub(super) reflex_effects: [Option<u32>; 6],
@@ -39,6 +40,17 @@ impl View {
         } else {
             false
         }
+    }
+    pub fn append_solo_bot_paths(
+        &mut self,
+        world: &World,
+        viewer: &halcyon_sim::Entity,
+        visible: &std::collections::HashSet<u32>,
+        events: &[halcyon_sim::Event],
+        out: &mut Batch,
+    ) {
+        self.solo_bot_paths
+            .append(world, viewer, visible, &self.actors, events, out);
     }
     pub fn knows(&self, actor: u32) -> bool {
         self.actors.contains_key(&actor)
