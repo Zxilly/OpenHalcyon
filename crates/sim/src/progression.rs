@@ -102,6 +102,21 @@ impl World {
         (school, effect): (DamageSchool, ImpactEffect),
         events: &mut Vec<Event>,
     ) {
+        let (applied, reflection) = self.stormguard_reflection(i, n);
+        self.apply_damage(src, team, i, applied, (school, effect), events);
+        if let Some(reflected) = reflection {
+            self.reflect_stormguard(i, reflected, events);
+        }
+    }
+    pub(super) fn apply_damage(
+        &mut self,
+        src: u32,
+        team: u8,
+        i: usize,
+        n: f32,
+        (school, effect): (DamageSchool, ImpactEffect),
+        events: &mut Vec<Event>,
+    ) {
         let t = &self.entities[i];
         if t.hp <= 0. || n <= 0. {
             return;

@@ -134,9 +134,13 @@ impl NativeNavigation {
     }
 
     pub(super) fn can_project(&self, destination: Position) -> bool {
+        self.project(destination).is_some()
+    }
+
+    pub(super) fn project(&self, destination: Position) -> Option<Position> {
         self.walk
             .nearest_ground(horizontal(destination), PROJECT_RADIUS)
-            .is_some()
+            .map(point)
     }
 
     pub(super) fn ground_segment(&self, start: Position, end: Position) -> bool {

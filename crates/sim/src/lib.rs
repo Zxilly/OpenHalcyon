@@ -8,6 +8,9 @@ mod armory;
 mod bot_diagnostics;
 pub use aral_inventory::{ARAL_ITEM_CAPACITY, AralInventory, AralItem};
 pub use bot_diagnostics::{BotDiagnostics, BotHeroDiagnostics};
+#[cfg(test)]
+mod captain_tests;
+mod catherine;
 mod chakram;
 mod combat;
 mod layout;
@@ -25,6 +28,7 @@ mod score;
 mod shop;
 mod solo_route;
 mod solo_side;
+mod yates;
 use combat::{AbilityBook, Cast, SpellEffect, Status};
 pub use combat::{AbilitySlot, CastTarget};
 use halcyon_data::{GameData, Unit};
@@ -808,6 +812,7 @@ impl World {
     }
     pub fn visible(&self, team: u8, e: &Entity) -> bool {
         e.team == team
+            || (e.hp > 0. && e.status.reveal_until > self.tick)
             || (e.hp > 0.
                 && self.entities.iter().any(|a| {
                     a.team == team
@@ -1176,7 +1181,13 @@ impl World {
                     self.award_xp(i, 0.45, events);
                 }
             }
-            if self.entities[i].status.overwhelm.is_some() {
+            if self.entities[i].status.stormguard.is_some() {
+                self.advance_stormguard(i, events);
+            }
+            if self.entities[i].status.flail.is_some() {
+                self.advance_flail(i, events);
+            }
+            if self.entities[i].status.overwhelm.is_some() && !self.yates_is_leaping(i) {
                 self.advance_overwhelm(i, events);
             }
             let hero = &self.entities[i];

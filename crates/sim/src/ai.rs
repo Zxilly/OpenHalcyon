@@ -106,6 +106,19 @@ impl World {
                         target: CastTarget::SelfCast,
                     };
                 }
+                if e.type_id == EntityTemplate::Catherine.as_raw() {
+                    for (slot, target) in [
+                        (AbilitySlot::B, CastTarget::SelfCast),
+                        (AbilitySlot::C, CastTarget::Point(t.position)),
+                    ] {
+                        if (slot != AbilitySlot::B
+                            || e.position.dist(t.position) <= t.stats.range.max(e.stats.range) + 1.)
+                            && self.can_cast(i, slot, target)
+                        {
+                            return Command::Cast { slot, target };
+                        }
+                    }
+                }
                 if e.type_id == EntityTemplate::Yates.as_raw()
                     && self.overwhelm_reaches(i, t.position)
                     && self.can_cast(i, AbilitySlot::B, CastTarget::SelfCast)
@@ -114,6 +127,14 @@ impl World {
                         slot: AbilitySlot::B,
                         target: CastTarget::SelfCast,
                     };
+                }
+                if e.type_id == EntityTemplate::Yates.as_raw() {
+                    for slot in [AbilitySlot::A, AbilitySlot::C] {
+                        let target = CastTarget::Point(t.position);
+                        if self.can_cast(i, slot, target) {
+                            return Command::Cast { slot, target };
+                        }
+                    }
                 }
                 if e.type_id == lorelai::HERO
                     && let Some(cmd) = self.lorelai_action(i, t.position)

@@ -31,6 +31,10 @@ enum Skill {
     Wind,
     Strike,
     Chakram,
+    Stormguard,
+    BlastTremor,
+    WolfMaw,
+    IronMandate,
     Pursuit,
     Overwhelm,
     ChillWinds,
@@ -44,7 +48,11 @@ fn skill(hero: u16, slot: AbilitySlot) -> Option<Skill> {
     use Skill::*;
     Some(match (EntityTemplate::from_raw(hero)?, slot) {
         (EntityTemplate::Idris, B) => Chakram,
+        (EntityTemplate::Catherine, B) => Stormguard,
+        (EntityTemplate::Catherine, C) => BlastTremor,
         (EntityTemplate::Catherine, A) => Pursuit,
+        (EntityTemplate::Yates, A) => WolfMaw,
+        (EntityTemplate::Yates, C) => IronMandate,
         (EntityTemplate::Yates, B) => Overwhelm,
         (EntityTemplate::Reim, A) => WinterSpire,
         (EntityTemplate::Reim, B) => ChillWinds,
@@ -71,6 +79,10 @@ pub(super) struct Cast {
 }
 #[derive(Clone, Copy, Default, Debug, Serialize)]
 pub(super) struct Status {
+    pub(super) silence_until: u64,
+    pub(super) reveal_until: u64,
+    pub(super) stormguard: Option<super::catherine::Bubble>,
+    pub(super) flail: Option<super::yates::Shot>,
     pub(super) overwhelm: Option<super::overwhelm::Charge>,
     pub(super) pursuit: Option<super::pursuit::PursuitAttack>,
     pub(super) double_down: Option<u32>,
@@ -177,6 +189,10 @@ impl ExtraCast {
 #[derive(Clone, Debug, Serialize)]
 pub(super) struct AbilityBook {
     extra_casts: [ExtraCast; Skill::Waterwall as usize + 1],
+    pub(super) stormguard: Option<super::catherine::Stormguard>,
+    pub(super) tremor: Option<super::catherine::Tremor>,
+    pub(super) flail: Option<super::yates::Flail>,
+    pub(super) leap: Option<super::yates::Leap>,
     pub(super) pursuit: Option<super::pursuit::Pursuit>,
     pub(super) overwhelm: Option<super::overwhelm::Overwhelm>,
     chill_winds: Option<super::native_combat::ChillWinds>,
@@ -208,6 +224,10 @@ impl Default for AbilityBook {
     fn default() -> Self {
         Self {
             extra_casts: Default::default(),
+            stormguard: None,
+            tremor: None,
+            flail: None,
+            leap: None,
             pursuit: None,
             overwhelm: None,
             chill_winds: None,
@@ -284,6 +304,10 @@ impl AbilityBook {
         for (skill, hero, slot, ranks) in [
             (Skill::Chakram, "Idris", "B", 5),
             (Skill::WinterSpire, "Reim", "A", 5),
+            (Skill::Stormguard, "Catherine", "B", 5),
+            (Skill::BlastTremor, "Catherine", "C", 3),
+            (Skill::WolfMaw, "Yates", "A", 5),
+            (Skill::IronMandate, "Yates", "C", 3),
             (Skill::Pursuit, "Catherine", "A", 5),
             (Skill::Overwhelm, "Yates", "B", 5),
             (Skill::ChillWinds, "Reim", "B", 5),
@@ -307,6 +331,10 @@ impl AbilityBook {
         }
         Ok(Self {
             extra_casts,
+            stormguard: super::catherine::Stormguard::load(data)?,
+            tremor: super::catherine::Tremor::load(data)?,
+            flail: super::yates::Flail::load(data)?,
+            leap: super::yates::Leap::load(data)?,
             pursuit: super::pursuit::Pursuit::load(data)?,
             overwhelm: super::overwhelm::Overwhelm::load(data)?,
             chill_winds: super::native_combat::ChillWinds::load(data)?,
@@ -347,9 +375,29 @@ struct Rules {
     cooldown: u64,
 }
 impl World {
+    pub(super) fn yates_is_leaping(&self, i: usize) -> bool {
+        self.entities[i].type_id == EntityTemplate::Yates.as_raw()
+            && self.entities[i]
+                .cast
+                .is_some_and(|c| c.slot == AbilitySlot::C)
+    }
     fn rules(&self, s: Skill, rank: usize) -> Rules {
         let (range, cost, windup, seconds) = match s {
             Skill::WinterSpire => (0., 0., 2, 0.),
+            Skill::Stormguard => (0., 0., 1, 0.),
+            Skill::BlastTremor => (
+                0.,
+                0.,
+                self.abilities.tremor.as_ref().unwrap().windup(rank),
+                0.,
+            ),
+            Skill::WolfMaw => (0., 0., 1, 0.),
+            Skill::IronMandate => (
+                0.,
+                0.,
+                self.abilities.leap.as_ref().unwrap().windup(rank),
+                0.,
+            ),
             Skill::Pursuit | Skill::Overwhelm | Skill::ChillWinds => (0., 0., 1, 0.),
             Skill::Chakram => (8.5, 10., 4, 8.),
             Skill::FishFood => (
@@ -387,6 +435,10 @@ impl World {
     fn modeled_skill(&self, hero: u16, slot: AbilitySlot) -> Option<Skill> {
         skill(hero, slot).filter(|s| match s {
             Skill::WinterSpire => self.abilities.winter_spire.is_some(),
+            Skill::Stormguard => self.abilities.stormguard.is_some(),
+            Skill::BlastTremor => self.abilities.tremor.is_some(),
+            Skill::WolfMaw => self.abilities.flail.is_some(),
+            Skill::IronMandate => self.abilities.leap.is_some(),
             Skill::Pursuit => self.abilities.pursuit.is_some(),
             Skill::Overwhelm => self.abilities.overwhelm.is_some(),
             Skill::ChillWinds => self.abilities.chill_winds.is_some(),
@@ -435,6 +487,9 @@ impl World {
         target: CastTarget,
     ) -> Result<(Skill, usize, Rules), &'static str> {
         let e = &self.entities[i];
+        if e.status.silence_until > self.tick {
+            return Err("silenced");
+        }
         let s = self
             .modeled_skill(e.type_id, slot)
             .ok_or("ability unavailable")?;
@@ -458,7 +513,8 @@ impl World {
         }
         let point = match (s, target) {
             (
-                Skill::Pursuit
+                Skill::Stormguard
+                | Skill::Pursuit
                 | Skill::Overwhelm
                 | Skill::ChillWinds
                 | Skill::Twirl
@@ -483,7 +539,9 @@ impl World {
                 t.position
             }
             (
-                Skill::Sigil
+                Skill::BlastTremor
+                | Skill::Sigil
+                | Skill::WolfMaw
                 | Skill::Suppress
                 | Skill::Wind
                 | Skill::Strike
@@ -493,11 +551,20 @@ impl World {
                 | Skill::Splashdown,
                 CastTarget::Point(p),
             ) if self.layout.walkable(p) => p,
+            (Skill::IronMandate, CastTarget::Point(p))
+                if self
+                    .native_navigation
+                    .as_ref()
+                    .map_or_else(|| self.layout.walkable(p), |map| map.can_project(p)) =>
+            {
+                p
+            }
             _ => return Err("invalid cast target"),
         };
-        if (s == Skill::Chakram && e.position.dist(point) < 0.001)
+        if (matches!(s, Skill::BlastTremor | Skill::WolfMaw | Skill::Chakram)
+            && e.position.dist(point) < 0.001)
             || point.dist(e.position) > r.range
-            || !self.layout.clear(e.position, point)
+            || (s != Skill::IronMandate && !self.layout.clear(e.position, point))
         {
             return Err("cast out of range");
         }
@@ -566,6 +633,10 @@ impl World {
             _ => origin,
         };
         match s {
+            Skill::Stormguard => self.raise_stormguard(i, r),
+            Skill::BlastTremor => self.blast_tremor(i, r, point, events),
+            Skill::WolfMaw => self.launch_flail(i, r, point),
+            Skill::IronMandate => self.land_mandate(i, r, point, events),
             Skill::Pursuit => {
                 let rules = self.abilities.pursuit.as_ref().unwrap();
                 self.entities[i].status.pursuit = Some(rules.arm(r, self.tick, cp));
