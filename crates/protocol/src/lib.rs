@@ -1004,7 +1004,21 @@ pub fn hello_with_port(address: &str, port: u16) -> io::Result<Vec<u8>> {
     frame[132..].copy_from_slice(&u32::from(port).to_be_bytes());
     Ok(frame)
 }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HelloEndpoint<'a> {
+    pub address: &'a str,
+    pub port_word: u32,
+}
+impl HelloEndpoint<'_> {
+    pub fn port(self) -> Option<u16> {
+        self.port_word.try_into().ok()
+    }
+}
 pub fn parse_hello(payload: &[u8]) -> io::Result<&str> {
+    Ok(parse_hello_endpoint(payload)?.address)
+}
+
+pub fn parse_hello_endpoint(payload: &[u8]) -> io::Result<HelloEndpoint<'_>> {
     if payload.len() != 134 || payload[..2] != Opcode::Hello.raw().to_be_bytes() {
         return Err(invalid("invalid hello frame"));
     }
@@ -1014,7 +1028,10 @@ pub fn parse_hello(payload: &[u8]) -> io::Result<&str> {
     {
         return Err(invalid("invalid hello address field"));
     }
-    Ok(std::str::from_utf8(address).unwrap())
+    Ok(HelloEndpoint {
+        address: std::str::from_utf8(address).unwrap(),
+        port_word: u32::from_be_bytes(payload[130..134].try_into().unwrap()),
+    })
 }
 
 pub struct MatchCipher(BlowfishLE);

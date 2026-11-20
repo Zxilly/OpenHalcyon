@@ -2,7 +2,7 @@
 #[path = "support/fixed_bodies.rs"]
 mod fixed_bodies;
 use halcyon_protocol::{
-    ACK_FRAME, AndroidLayout, Fields, MAX_PAYLOAD, MatchCipher, parse_hello, read_frame,
+    ACK_FRAME, AndroidLayout, Fields, MAX_PAYLOAD, MatchCipher, parse_hello_endpoint, read_frame,
 };
 use serde::Deserialize;
 use std::{
@@ -17,6 +17,7 @@ use uuid::Uuid;
 #[derive(Deserialize)]
 struct Meta {
     match_id: String,
+    real_port: Option<u16>,
     #[serde(default)]
     build: Option<serde_json::Value>,
     #[serde(default)]
@@ -29,6 +30,7 @@ struct Counts {
     opaque: u64,
     errors: u64,
     short_android: u64,
+    sizes: BTreeMap<usize, u64>,
     min: usize,
     max: usize,
 }
@@ -37,6 +39,8 @@ struct Stream {
     pending: Vec<u8>,
     reencoded: Vec<u8>,
     hello: bool,
+    hello_len: usize,
+    hello_port: Option<u16>,
 }
 fn invalid(msg: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, msg)
@@ -64,11 +68,13 @@ impl Stream {
             let frame = read_frame(&mut whole)?.ok_or(invalid("missing complete frame"))?;
             if !self.hello {
                 if direction == 0 {
-                    parse_hello(&frame)?;
+                    let endpoint = parse_hello_endpoint(&frame)?;
+                    self.hello_port = endpoint.port();
                 } else if frame != ACK_FRAME[2..] {
                     return Err(invalid("invalid server handshake"));
                 }
                 self.hello = true;
+                self.hello_len = n;
             } else {
                 let m = cipher.decode_owned(frame)?;
                 self.reencoded.clear();
@@ -85,6 +91,7 @@ impl Stream {
                 };
                 e.max = e.max.max(m.body.len());
                 e.frames += 1;
+                *e.sizes.entry(n).or_default() += 1;
                 if direction == 1
                     && AndroidLayout::for_opcode(m.opcode)
                         .split_body(&m.body)
@@ -215,7 +222,7 @@ fn fill(reader: &mut impl Read, mut target: &mut [u8]) -> io::Result<usize> {
     Ok(size - target.len())
 }
 
-fn inspect(path: &Path, ops: &mut [BTreeMap<u16, Counts>; 2]) -> io::Result<bool> {
+fn inspect(path: &Path, ops: &mut [BTreeMap<u16, Counts>; 2], sizes: bool) -> io::Result<bool> {
     let f = File::open(path.join("match_meta.json"))?;
     if f.metadata()?.len() > 16 << 20 {
         return Err(invalid("oversized metadata"));
@@ -275,12 +282,37 @@ fn inspect(path: &Path, ops: &mut [BTreeMap<u16, Counts>; 2]) -> io::Result<bool
         tails[0],
         tails[1]
     );
+    if clean && sizes {
+        if let Some(port) = meta.real_port {
+            if streams[0].hello_port != Some(port) {
+                return Err(invalid("hello port differs from archive metadata"));
+            }
+            println!("hello_port_check\tok");
+        }
+        for (direction, opcode, stream) in [
+            ("C2S", halcyon_protocol::Opcode::Hello, &streams[0]),
+            ("S2C", halcyon_protocol::Opcode::Heartbeat, &streams[1]),
+        ] {
+            println!(
+                "handshake\t{direction}\t{}\t{}\t1",
+                opcode.raw(),
+                stream.hello_len
+            );
+        }
+    }
     Ok(clean)
 }
 fn main() -> io::Result<()> {
     let args: Vec<_> = env::args_os().skip(1).collect();
-    let [root] = args.as_slice() else {
-        return Err(invalid("usage: capture_inventory <archive-directory>"));
+    let (args, sizes) = if args.last().is_some_and(|a| a == "--sizes") {
+        (&args[..args.len() - 1], true)
+    } else {
+        (args.as_slice(), false)
+    };
+    let [root] = args else {
+        return Err(invalid(
+            "usage: capture_inventory <archive-directory> [--sizes]",
+        ));
     };
     let root = Path::new(root);
     let mut dirs = vec![];
@@ -305,7 +337,7 @@ fn main() -> io::Result<()> {
             continue;
         }
         inspected += 1;
-        match inspect(d, &mut ops) {
+        match inspect(d, &mut ops, sizes) {
             Ok(clean) => bad |= !clean,
             Err(error) => {
                 println!("error={error}");
@@ -323,6 +355,15 @@ fn main() -> io::Result<()> {
         let mut total = 0;
         for (op, c) in &values {
             total += c.frames;
+            if sizes {
+                println!(
+                    "registry\t{op}\t{}",
+                    halcyon_protocol::Opcode::try_from(*op).is_ok()
+                );
+                for (size, count) in &c.sizes {
+                    println!("size\t{direction}\t{op}\t{size}\t{count}");
+                }
+            }
             println!(
                 "{direction}\t0x{op:04X}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
                 c.frames, c.typed, c.opaque, c.errors, c.short_android, c.min, c.max

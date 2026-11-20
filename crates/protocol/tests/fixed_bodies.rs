@@ -85,3 +85,17 @@ fn tracked_fire_reproduces_independent_native_and_padded_bytes() {
     assert!(invalid.write_body(&mut untouched).is_err());
     assert_eq!(untouched, [0x71; 22]);
 }
+
+#[test]
+fn hello_suffix_preserves_the_endpoint_port_word() {
+    let mut payload = [0; 134];
+    payload[..2].copy_from_slice(&halcyon_protocol::Opcode::Hello.raw().to_be_bytes());
+    payload[2..3].copy_from_slice(b"x");
+    payload[130..134].copy_from_slice(&[0, 0, 0x12, 0x34]);
+    let ep = halcyon_protocol::parse_hello_endpoint(&payload).unwrap();
+    assert_eq!((ep.address, ep.port()), ("x", Some(0x1234)));
+    payload[130] = 0x12;
+    let ep = halcyon_protocol::parse_hello_endpoint(&payload).unwrap();
+    assert_eq!((ep.port_word, ep.port()), (0x12001234, None));
+    assert_eq!(halcyon_protocol::parse_hello(&payload).unwrap(), "x");
+}

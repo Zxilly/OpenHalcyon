@@ -13,9 +13,14 @@ use std::{
 struct Counts {
     typed: u64,
     opaque: u64,
+    sizes: BTreeMap<usize, u64>,
 }
 
-fn inspect(path: &Path, inventory: &mut BTreeMap<u16, Counts>) -> io::Result<()> {
+fn inspect(
+    path: &Path,
+    inventory: &mut BTreeMap<u16, Counts>,
+    entities: &mut BTreeMap<u32, (u32, u32, u32, usize)>,
+) -> io::Result<()> {
     let mut reader = ReplayReader::new(BufReader::new(fs::File::open(path)?));
     let mut original = BufReader::new(fs::File::open(path)?);
     let mut encoded = Vec::new();
@@ -59,7 +64,21 @@ fn inspect(path: &Path, inventory: &mut BTreeMap<u16, Counts>) -> io::Result<()>
         AndroidLayout::for_opcode(message.opcode)
             .split_body(&message.body)
             .map_err(context)?;
+        *counts.sizes.entry(message.body.len() + 2).or_default() += 1;
         match message.fields().map_err(context)? {
+            Fields::Spawn {
+                entity,
+                template,
+                skin,
+                team,
+                ..
+            } => {
+                counts.typed += 1;
+                entities
+                    .entry(entity)
+                    .or_insert((template, skin, team, message.body.len() + 2));
+            }
+
             Fields::Opaque(_) => counts.opaque += 1,
             _ => counts.typed += 1,
         }
@@ -69,16 +88,21 @@ fn inspect(path: &Path, inventory: &mut BTreeMap<u16, Counts>) -> io::Result<()>
 
 fn main() -> io::Result<()> {
     let args: Vec<_> = env::args_os().skip(1).collect();
-    let [directory] = args.as_slice() else {
+    let (args, reference) = match args.as_slice() {
+        [dir, flag, path] if flag == "--empirical" => (std::slice::from_ref(dir), Some(path)),
+        args => (args, None),
+    };
+    let [directory] = args else {
         return Err(io::Error::other(
-            "usage: replay_inventory <chunk-directory>",
+            "usage: replay_inventory <chunk-directory> [--empirical <entities.json>]",
         ));
     };
     let mut inventory: BTreeMap<u16, Counts> = READ_SIZES
         .iter()
         .map(|&(op, _)| (op, Counts::default()))
         .collect();
-    let mut chunks = 0;
+    let mut chunks = Vec::new();
+    let mut entities = BTreeMap::new();
     for entry in fs::read_dir(directory)? {
         let entry = entry?;
         let path = entry.path();
@@ -87,12 +111,51 @@ fn main() -> io::Result<()> {
                 .extension()
                 .is_some_and(|ext| ext.eq_ignore_ascii_case("vgr"))
         {
-            inspect(&path, &mut inventory)?;
-            chunks += 1;
+            chunks.push(path);
         }
     }
-    if chunks == 0 {
+    if chunks.is_empty() {
         return Err(io::Error::other("directory contains no .vgr chunks"));
+    }
+    chunks.sort_by_cached_key(|p| {
+        p.file_stem()
+            .and_then(|s| s.to_str())
+            .and_then(|s| s.rsplit_once('.'))
+            .and_then(|(_, n)| n.parse::<u64>().ok())
+    });
+    for chunk in chunks {
+        inspect(&chunk, &mut inventory, &mut entities)?;
+    }
+    if let Some(reference) = reference {
+        #[derive(serde::Deserialize)]
+        struct Row {
+            eid: u32,
+            entity_type_id: u32,
+            skin_hash_hex: String,
+            team: u32,
+            payload_len: usize,
+        }
+        let rows: Vec<Row> = serde_json::from_reader(BufReader::new(fs::File::open(reference)?))?;
+        let mut expected = BTreeMap::new();
+        for r in rows {
+            let skin = r
+                .skin_hash_hex
+                .strip_prefix("0x")
+                .and_then(|h| u32::from_str_radix(h, 16).ok())
+                .ok_or_else(|| io::Error::other("invalid reference skin hash"))?;
+            if expected
+                .insert(r.eid, (r.entity_type_id, skin, r.team, r.payload_len))
+                .is_some()
+            {
+                return Err(io::Error::other("duplicate reference actor"));
+            }
+        }
+        if expected != entities {
+            return Err(io::Error::other(
+                "replay spawn reference disagrees with decoded actors",
+            ));
+        }
+        println!("entity_checks\t{}", entities.len());
     }
     let mut out = BufWriter::new(io::stdout().lock());
     writeln!(
@@ -100,6 +163,16 @@ fn main() -> io::Result<()> {
         "opcode\tandroid_reader_bytes\trecords_with_fields\topaque_records"
     )?;
     for (opcode, counts) in inventory {
+        if reference.is_some() && counts.typed + counts.opaque > 0 {
+            writeln!(
+                out,
+                "registry\t{opcode}\t{}",
+                halcyon_protocol::Opcode::try_from(opcode).is_ok()
+            )?;
+            for (size, count) in &counts.sizes {
+                writeln!(out, "size\tVGR\t{opcode}\t{size}\t{count}")?;
+            }
+        }
         let size = match AndroidLayout::for_opcode(opcode) {
             AndroidLayout::Fixed { frame_bytes } => frame_bytes.to_string(),
             AndroidLayout::Clock => "clock".into(),
