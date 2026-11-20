@@ -12,6 +12,7 @@ mod aral_item_actions;
 mod aral_spawn;
 mod commands;
 mod compact;
+mod draft_5v5;
 mod hero_progress;
 mod messages;
 mod native_abilities;
@@ -151,6 +152,7 @@ struct FederationOrigin {
 struct Room {
     free_aral_reroll: bool,
     federation: Option<FederationOrigin>,
+    draft_5v5: Option<draft_5v5::Draft5v5>,
     scene_views: Vec<tower_aggro::View>,
     ringo_attacks: ringo::AttackHistory,
     solo_slots: actor_slots::ActorSlots,
@@ -786,7 +788,15 @@ impl Rooms {
                     PlatformError::HostUnavailable
                 })?;
             }
+        } else if req.players.len() == 10
+            && !six_humans
+            && known_queue.map(KnownQueue::mode) != Some(NativeMode::SoloBots)
+        {
+            world
+                .use_sovereigns_rise_5v5(self.0.data.as_deref())
+                .map_err(|_| PlatformError::HostUnavailable)?;
         }
+        let draft_5v5 = draft_5v5::Draft5v5::for_room(known_queue, &world);
         world.set_bot_difficulty(req.difficulty);
         let mut picks = Vec::with_capacity(hero_seats);
         for i in 0..hero_seats {
@@ -822,6 +832,7 @@ impl Rooms {
         let mut room = Room {
             free_aral_reroll: self.free_aral_reroll(),
             federation,
+            draft_5v5,
             ringo_attacks: Default::default(),
             scene_views: (0..req.players.len()).map(|_| Default::default()).collect(),
             solo_slots: actor_slots::ActorSlots::from_roster(&world.entities),
@@ -1132,28 +1143,39 @@ impl Room {
         } else if game {
             world_header(&self.world, &self.players, &self.picks, &self.queue, idx)
         } else {
-            setup(
+            let mut out = setup(
                 &self.world,
                 &self.players,
                 &self.catalog,
                 idx,
                 &self.queue,
                 &self.picks,
-            )
+            );
+            if let Some(d) = self.draft_5v5.as_ref().filter(|d| d.is_ranked()) {
+                out.push(d.ranked_packet(&self.world, &self.picks).encode());
+            }
+            out
         };
         if !game
-            && legacy_aral
+            && !self.solo_scene()
             && matches!(
                 self.phase,
                 crate::RoomPhase::Loading | crate::RoomPhase::Running
             )
+            && (legacy_aral || self.draft_5v5.is_some())
         {
             self.seats[idx].loading_roster_sent = true;
             batch.extend(scene::begin_loading(self));
         }
         if game {
             batch.extend(self.spawn_view(Some(self.world.entities[idx].team)));
-            if self.seats.iter().all(|s| s.peers[1].is_some()) {
+            let ready_for_5v5 =
+                self.world.is_5v5_enabled()
+                    && self.phase == crate::RoomPhase::Loading
+                    && self.seats.iter().enumerate().all(|(seat_idx, s)| {
+                        self.world.entities[seat_idx].bot || s.peers[1].is_some()
+                    });
+            if self.seats.iter().all(|s| s.peers[1].is_some()) || ready_for_5v5 {
                 self.phase(crate::RoomPhase::Running);
             }
         }
@@ -1179,6 +1201,7 @@ impl Room {
         }
         out.extend(self.recommended_paths(team));
         out.extend(aral::talent_snapshot(self));
+        messages::append_5v5_camp_markers(&mut out, &self.world, team.map_or(0, |t| t + 1));
         out
     }
     fn detach(&mut self, i: usize, ch: usize, generation: u64) {
@@ -1232,16 +1255,54 @@ impl Room {
             );
             roster.body[4..8].copy_from_slice(&7f32.to_be_bytes());
         }
+        let ranked_045b = (!legacy)
+            .then(|| {
+                self.draft_5v5
+                    .as_ref()
+                    .filter(|d| d.is_ranked())
+                    .map(|d| d.ranked_packet(&self.world, &self.picks).encode())
+            })
+            .flatten();
         for (i, s) in self.seats.iter().enumerate() {
             if except != Some(i)
                 && let Some(p) = &s.peers[0]
             {
                 let mut batch = vec![roster.clone()];
+                if let Some(pkt) = &ranked_045b {
+                    batch.push(pkt.clone());
+                }
                 batch.extend(echo.cloned());
                 p.send(transport::Delivery::Private(batch));
             }
         }
         roster
+    }
+    fn enter_5v5_loading(&mut self, actor_seat: usize, out: &mut Vec<Message>) {
+        if !self.world.is_5v5_enabled()
+            && !self.solo_scene()
+            && !self.legacy_aral()
+            && !halcyon_data::three_per_side(&self.queue)
+            && self.world.tick == 0
+        {
+            if let Err(err) = self.world.use_sovereigns_rise_5v5(self.data.as_deref()) {
+                tracing::warn!(%err, "failed to install 5v5 Sovereign's Rise state");
+            } else {
+                self.solo_slots = actor_slots::ActorSlots::from_roster(&self.world.entities);
+            }
+        }
+        self.phase(crate::RoomPhase::Loading);
+        let loading_batch = scene::begin_loading(self);
+        for (idx, seat) in self.seats.iter_mut().enumerate() {
+            if seat.peers[0].is_some() {
+                seat.loading_roster_sent = true;
+            }
+            if idx != actor_seat
+                && let Some(peer) = &seat.peers[0]
+            {
+                peer.send(transport::Delivery::Private(loading_batch.clone()));
+            }
+        }
+        out.extend(loading_batch);
     }
     fn validated_skin(&self, hero: &str, requested: u32) -> u32 {
         if let Some(skin) = self
@@ -1353,6 +1414,52 @@ impl Room {
             );
         }
         let mut out = vec![];
+        if ch == 0
+            && self.phase == crate::RoomPhase::HeroSelect
+            && !legacy
+            && !solo_scene
+            && self.known_queue != Some(KnownQueue::Ranked)
+            && let Some(action) = halcyon_protocol::draft::DraftAction::decode(&m)
+            && let Some(mut draft) = self.draft_5v5.take()
+        {
+            if let halcyon_protocol::draft::DraftAction::SelectSkin { skin_id, .. } = action
+                && !self.seats[i].loading_roster_sent
+            {
+                self.picks[i].skin = self.validated_skin(&self.picks[i].name, skin_id);
+            }
+            let outcome = draft.handle_action(
+                i,
+                action,
+                &mut self.world,
+                &mut self.seats,
+                &mut self.picks,
+                self.data.as_deref(),
+            );
+            let ranked_msg = draft
+                .is_ranked()
+                .then(|| draft.ranked_packet(&self.world, &self.picks).encode());
+            self.draft_5v5 = Some(draft);
+            if let Ok(outcome) = outcome {
+                if outcome.state_changed {
+                    let roster = self.roster_with_echo(Some(i), outcome.echo.then_some(&m));
+                    out.push(roster);
+                    if let Some(pkt) = ranked_msg {
+                        out.push(pkt);
+                    }
+                }
+                if outcome.echo {
+                    out.push(m);
+                }
+                if outcome.start_loading {
+                    self.enter_5v5_loading(i, &mut out);
+                }
+                if sync_after_pick {
+                    out.push(Message::known(crate::Opcode::EndMatch, [0, 0, 0, 0, 8, 0]));
+                    self.seats[i].draft_sync_sent = true;
+                }
+            }
+            return Ok(out);
+        }
         match m.fields()? {
             _ if game && m.is(crate::Opcode::RequestCancelAbility) => {
                 out = native_abilities::receive(self, i, ch, m);
@@ -1565,19 +1672,7 @@ impl Room {
             Fields::HeroSelection { template, choice }
                 if ch == 0 && !legacy && !self.seats[i].locked =>
             {
-                let name = if template == u32::from(halcyon_data::EntityTemplate::Ringo.as_raw()) {
-                    Some("Ringo".to_owned())
-                } else {
-                    self.data.as_ref().and_then(|d| {
-                        d.manifest
-                            .iter()
-                            .find(|e| {
-                                u32::from(e.entity_type_id) == template
-                                    && e.path.starts_with("build://Characters/")
-                            })
-                            .map(|e| e.name.trim_matches('*').to_owned())
-                    })
-                };
+                let name = draft_5v5::hero_name_for_template(self.data.as_deref(), template);
                 if let Some(name) = name {
                     let valid = if let Some(d) = &self.data {
                         self.world.select_hero(i, &name, d).is_ok()
@@ -1760,6 +1855,7 @@ impl Room {
             scene::initial_structures(self);
         }
         let events = self.world.step();
+        let (observer_camps, team_camps) = self.drain_5v5_camp_messages();
         self.solo_structure_snapshot.observe(&events);
         if legacy {
             if self.world.winner.is_none() {
@@ -1771,6 +1867,9 @@ impl Room {
         }
         self.publish_aral_items(&events);
         self.tick_observers(&events);
+        if !observer_camps.is_empty() {
+            self.publish_observers(&observer_camps);
+        }
         for event in &events {
             match *event {
                 Event::Death { id, killer } if (1..=10).contains(&id) => {
@@ -1789,7 +1888,7 @@ impl Room {
             }
         }
         native_abilities::publish_before_impacts(self, &events);
-        self.replicate(&events);
+        self.replicate_with_camps(&events, &team_camps);
         if legacy || self.solo_scene() {
             npc_projectile::publish(self, &events);
         }
@@ -1882,7 +1981,34 @@ impl Room {
         }
     }
 
+    fn drain_5v5_camp_messages(&mut self) -> (Batch, [Batch; 2]) {
+        let mut obs = Vec::new();
+        let mut teams: [Batch; 2] = [Vec::new(), Vec::new()];
+        if !self.world.is_5v5_enabled() {
+            return (obs, teams);
+        }
+        for t in self.world.take_5v5_camp_transitions() {
+            let msg = Message::camp_visibility(
+                t.actor_id,
+                t.viewer_index,
+                halcyon_protocol::CampVisibilityState::from_wire(t.state as u8),
+            );
+            match t.viewer_index {
+                0 => obs.push(msg),
+                1 => teams[0].push(msg),
+                2 => teams[1].push(msg),
+                _ => {}
+            }
+        }
+        (obs, teams)
+    }
+
+    #[cfg(test)]
     fn replicate(&mut self, events: &[Event]) {
+        self.replicate_with_camps(events, &[Vec::new(), Vec::new()]);
+    }
+
+    fn replicate_with_camps(&mut self, events: &[Event], team_camps: &[Batch; 2]) {
         let fallen: HashSet<u32> = events
             .iter()
             .filter_map(|event| match event {
@@ -2131,6 +2257,7 @@ impl Room {
             } else if self.world.tick.is_multiple_of(20) {
                 out.push(snapshot(&self.world, &self.players, &self.picks));
             }
+            out.extend(team_camps[team].iter().cloned());
             for (seat, decls) in per_seat_decls {
                 if !decls.is_empty()
                     && let Some(peer) = self.seats[seat].gameplay_peer()

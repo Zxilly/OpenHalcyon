@@ -14,7 +14,7 @@ pub(super) struct Observer {
     viewer: Uuid,
     address: String,
     stop: watch::Sender<bool>,
-    live: Option<mpsc::Sender<Batch>>,
+    pub(super) live: Option<mpsc::Sender<Batch>>,
     expires: Instant,
 }
 impl Rooms {

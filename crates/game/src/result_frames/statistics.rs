@@ -4,7 +4,7 @@ use halcyon_protocol::{Message, PlayerStatistics, StatisticsReport, TeamStatisti
 use halcyon_sim::{Kind, World};
 use std::io;
 
-pub(super) fn snapshot(world: &World) -> io::Result<Message> {
+pub(crate) fn snapshot(world: &World) -> io::Result<Message> {
     let mut players = Vec::new();
     // Match the player-info stream: each actual hero in reserved seat order, including bots.
     for hero in world.entities.iter().filter(|e| e.kind == Kind::Hero) {
@@ -70,6 +70,12 @@ pub(super) fn snapshot(world: &World) -> io::Result<Message> {
                 score.structure_kills.towers + score.structure_kills.crystals,
             )
             .unwrap_or(u8::MAX),
+            first_blackclaw_capture_time: score.first_blackclaw_capture_seconds.unwrap_or(0.)
+                as f32,
+            first_ghostwing_capture_time: score.first_ghostwing_capture_seconds.unwrap_or(0.)
+                as f32,
+            blackclaw_captures: u8::try_from(score.blackclaw_captures).unwrap_or(u8::MAX),
+            ghostwing_captures: u8::try_from(score.ghostwing_captures).unwrap_or(u8::MAX),
             ..Default::default()
         }
     });

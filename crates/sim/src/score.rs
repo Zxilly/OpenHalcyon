@@ -63,6 +63,14 @@ pub struct TeamScore {
     pub structure_kills_at_five: Option<StructureKills>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub structure_kills_at_ten: Option<StructureKills>,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub blackclaw_captures: u32,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub ghostwing_captures: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub first_blackclaw_capture_seconds: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub first_ghostwing_capture_seconds: Option<f64>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Serialize)]

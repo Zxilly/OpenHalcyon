@@ -152,6 +152,7 @@ fn advance(ecs: &mut Ecs) {
         }
         room.spawn_tick_waves(events);
         room.team_upkeep(events);
+        room.advance_5v5(events);
         match diagnostics {
             Some(d) => room.resolve_actor_turns::<true>(events, Some(d)),
             None => room.resolve_actor_turns::<false>(events, None),

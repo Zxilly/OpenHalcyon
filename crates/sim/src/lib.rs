@@ -29,6 +29,10 @@ mod effects_replay;
 mod layout;
 pub use layout::SOLO_CRYSTAL_START_INSTANCES;
 mod lorelai;
+pub mod map_5v5;
+pub use map_5v5::{
+    CampKind5v5, CampVisibilityState5v5, CampVisibilityTransition5v5, Hero5v5Status,
+};
 mod native_camps;
 mod native_combat;
 mod native_learn;
@@ -140,6 +144,7 @@ pub enum Command {
     ActivateSprintBoots {
         instance: u32,
     },
+    Recall,
     Stop,
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -354,6 +359,28 @@ pub enum Event {
     Level {
         id: u32,
         level: u8,
+    },
+    RecallComplete {
+        id: u32,
+        position: Position,
+    },
+    RecallInterrupted {
+        id: u32,
+    },
+    CampBuffApplied {
+        actor: u32,
+        source: u32,
+        template: u16,
+    },
+    GhostwingCaptured {
+        team: u8,
+    },
+    BlackclawCaptured {
+        team: u8,
+    },
+    BlackclawUnleashed {
+        id: u32,
+        team: u8,
     },
     End {
         winner: u8,
@@ -593,6 +620,7 @@ pub struct RoomState {
     nav_budget: u8,
     native_navigation: Option<Box<native_navigation::NativeNavigation>>,
     native_camps: Option<Vec<native_camps::NativeCampUnit>>,
+    map_5v5: Option<Box<map_5v5::Map5v5State>>,
     first_blood: bool,
     scores: [PlayerScore; 10],
     team_scores: [TeamScore; 2],
@@ -676,6 +704,9 @@ impl Room<'_> {
         }
         if let Some(camps) = &self.native_camps {
             serde_json::to_writer(&mut hash, camps).expect("finite camp placements");
+        }
+        if let Some(map_5v5) = &self.map_5v5 {
+            map_5v5.digest(&mut hash);
         }
         if let Some(difficulty) = self.bot_difficulty {
             hash.update(difficulty.as_str().as_bytes());
@@ -863,6 +894,7 @@ impl Room<'_> {
                 nav_budget: 0,
                 native_navigation: None,
                 native_camps: None,
+                map_5v5: None,
                 first_blood: false,
                 scores: Default::default(),
                 team_scores: Default::default(),
@@ -958,7 +990,7 @@ impl Room<'_> {
                 e.team == team
                     && e.hp > 0.
                     && e.position.dist(p) <= e.stats.sight()
-                    && self.layout.clear(e.position, p)
+                    && (self.map_5v5.is_some() || self.layout.clear(e.position, p))
                     && self
                         .native_navigation
                         .as_ref()
@@ -968,7 +1000,9 @@ impl Room<'_> {
     pub fn visible(&self, team: u8, e: &Entity) -> bool {
         e.team == team
             || (e.hp > 0.
-                && (self.device_sight(team, e.position) || self.sigil_sight(team, e.position)))
+                && (self.device_sight(team, e.position)
+                    || self.sigil_sight(team, e.position)
+                    || self.has_5v5_true_sight(team, e)))
             || (e.hp > 0. && e.status.reveal_until > self.tick)
             || (e.hp > 0.
                 && self.entities.any_unordered(|a| {
@@ -976,7 +1010,7 @@ impl Room<'_> {
                         && a.hp > 0.
                         && (a.position.x - e.position.x).abs() <= a.stats.sight()
                         && a.position.dist(e.position) <= a.stats.sight()
-                        && self.combat_clear(a, e)
+                        && (self.map_5v5.is_some() || self.combat_clear(a, e))
                         && self
                             .native_navigation
                             .as_ref()
@@ -1011,7 +1045,8 @@ impl Room<'_> {
         }
         match cmd {
             Command::MoveTo(p)
-                if !self.layout.walkable(p)
+                if !(self.map_5v5.is_some() && map_5v5::in_5v5_bounds(p))
+                    && !self.layout.walkable(p)
                     && !self
                         .native_navigation
                         .as_ref()
@@ -1019,25 +1054,44 @@ impl Room<'_> {
             {
                 return Err("outside lane");
             }
+            Command::Recall => return self.begin_recall(i),
             Command::Buy(item) => return self.buy(i, item).map(|_| ()),
             Command::Sell { instance } => {
                 return self.sell_item(self.entities[i].id, instance).map(|_| ());
             }
             Command::DeployVisionTotem { instance, point } => {
+                self.interrupt_recall_from_command(i);
                 return self.deploy_device(i, instance, Some(point));
             }
-            Command::DeployScoutTrap { instance } => return self.deploy_device(i, instance, None),
-            Command::HitScoutCam { device } => return self.hit_device(i, device),
-            Command::ConsumeInfusion { instance } => return self.consume_infusion(i, instance),
-            Command::ActivateReflexBlock { instance } => return self.activate_reflex(i, instance),
+            Command::DeployScoutTrap { instance } => {
+                self.interrupt_recall_from_command(i);
+                return self.deploy_device(i, instance, None);
+            }
+            Command::HitScoutCam { device } => {
+                self.interrupt_recall_from_command(i);
+                return self.hit_device(i, device);
+            }
+            Command::ConsumeInfusion { instance } => {
+                self.interrupt_recall_from_command(i);
+                return self.consume_infusion(i, instance);
+            }
+            Command::ActivateReflexBlock { instance } => {
+                self.interrupt_recall_from_command(i);
+                return self.activate_reflex(i, instance);
+            }
             Command::ActivateHealingFlask { instance } => {
+                self.interrupt_recall_from_command(i);
                 return self.activate_healing_flask(self.entities[i].id, instance);
             }
             Command::ActivateSprintBoots { instance } => {
+                self.interrupt_recall_from_command(i);
                 return self.activate_sprint_boots(self.entities[i].id, instance);
             }
             Command::Learn(slot) => return self.learn(i, slot),
-            Command::Cast { slot, target } => return self.begin_cast(i, slot, target),
+            Command::Cast { slot, target } => {
+                self.interrupt_recall_from_command(i);
+                return self.begin_cast(i, slot, target);
+            }
             Command::Attack(id) => {
                 let t = self
                     .index(id)
@@ -1046,8 +1100,12 @@ impl Room<'_> {
                 if t.team == e.team || t.hp <= 0. || !self.visible(e.team, t) {
                     return Err("invalid target");
                 }
+                self.interrupt_recall_from_command(i);
             }
-            _ => {}
+            Command::MoveTo(_) => {
+                self.interrupt_recall_from_command(i);
+            }
+            Command::Stop => {}
         }
         self.entities[i].cast = None;
         self.entities[i].status.channel = 0;
@@ -1102,6 +1160,21 @@ impl Room<'_> {
                         solo_side::steer(e.position, marker)
                     }
                 }
+                Layout::SoloMid { .. } if state.map_5v5.is_some() => {
+                    if e.kind == Kind::Minion
+                        && e.order == Command::MoveTo(p)
+                        && p == state.layout.objective(1 - e.team)
+                    {
+                        if e.solo_side == 0 {
+                            Some(solo_route::march(e, p))
+                        } else {
+                            let marker = solo_side::march(e, p);
+                            solo_side::steer(e.position, marker)
+                        }
+                    } else {
+                        Some(p)
+                    }
+                }
                 Layout::SoloMid { .. } => solo_side::steer(e.position, p),
                 Layout::Aral { .. } => state.layout.clear(e.position, p).then_some(p),
             }
@@ -1109,6 +1182,9 @@ impl Room<'_> {
         let Some(waypoint) = next else {
             return;
         };
+        let move_5v5 = self.move_speed_5v5_bonus(self.entities[i].id);
+        let state = &mut *self.state;
+        let e = &mut self.entities[i];
         let twirl = state.abilities.ringo_b.as_ref().zip(
             e.status
                 .twirl_rank
@@ -1139,6 +1215,7 @@ impl Room<'_> {
         let pos = e.position.advance(
             waypoint,
             (e.stats.speed
+                + move_5v5
                 + skedaddle::speed(&e.status, state.tick)
                 + e.status
                     .water_speed_bonus
@@ -1486,6 +1563,7 @@ impl Room<'_> {
             }
             match self.entities[i].order {
                 Command::Stop
+                | Command::Recall
                 | Command::Buy(_)
                 | Command::Sell { .. }
                 | Command::DeployVisionTotem { .. }
@@ -1522,7 +1600,7 @@ impl Room<'_> {
                     {
                         let p = t.position;
                         self.entities[i].winding = None;
-                        if self.entities[i].kind == Kind::Neutral {
+                        if self.entities[i].kind == Kind::Neutral && self.map_5v5.is_none() {
                             self.entities[i].order = Command::Stop;
                             continue;
                         }
@@ -1583,8 +1661,13 @@ impl Room<'_> {
                         } else {
                             1.
                         };
+                        let weapon_mult = if e.kind == Kind::Hero {
+                            self.hero_5v5_weapon_multiplier(source, t.kind)
+                        } else {
+                            1.
+                        };
                         shop::mitigated(
-                            e.stats.weapon * multiplier + bonus,
+                            (e.stats.weapon * multiplier + bonus) * weapon_mult,
                             t.stats.armor,
                             e.item_stats.armor_pierce,
                         )
@@ -1681,8 +1764,14 @@ impl Room<'_> {
                         ));
                     } else if item_attack {
                         self.basic_hit(source, team, j, damage, school, events);
+                        if self.entities[i].kind == Kind::Hero {
+                            self.on_5v5_basic_hit(source, j);
+                        }
                     } else {
                         self.hurt(source, team, j, damage, school, events);
+                        if self.entities[i].kind == Kind::Hero {
+                            self.on_5v5_basic_hit(source, j);
+                        }
                     }
                     if let Some(p) = pursuit {
                         self.pursuit_impact(i, j, p, events);

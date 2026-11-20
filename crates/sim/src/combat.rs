@@ -1412,12 +1412,25 @@ impl crate::persistent_spells::TimedSpell for SpellEffect {
         if let Area::BasicTarget(id, school) = self.area {
             if let Some(i) = world.index(id) {
                 world.basic_hit(self.src, self.team, i, self.damage, school, events);
+                if world
+                    .index(self.src)
+                    .is_some_and(|s| world.entities[s].kind == Kind::Hero)
+                {
+                    world.on_5v5_basic_hit(self.src, i);
+                }
             }
             return false;
         }
         if let Area::Target(id, school) = self.area {
             if let Some(i) = world.index(id) {
-                world.hurt(self.src, self.team, i, self.damage, school, events)
+                world.hurt(self.src, self.team, i, self.damage, school, events);
+                if matches!(school, DamageSchool::Weapon)
+                    && world
+                        .index(self.src)
+                        .is_some_and(|s| world.entities[s].kind == Kind::Hero)
+                {
+                    world.on_5v5_basic_hit(self.src, i);
+                }
             }
             return false;
         }

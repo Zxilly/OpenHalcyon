@@ -90,6 +90,9 @@ impl Room<'_> {
 
     /// A close neutral interaction uses the walk mesh, independently of brushes.
     pub(super) fn combat_clear(&self, source: &Entity, target: &Entity) -> bool {
+        if self.map_5v5.is_some() {
+            return true;
+        }
         if (source.kind == Kind::Neutral || target.kind == Kind::Neutral)
             && let Some(map) = &self.native_navigation
         {
