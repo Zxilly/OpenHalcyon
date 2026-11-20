@@ -25,6 +25,8 @@ pub(super) struct Dash {
     team: u8,
     goal: Position,
     step: f32,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    announce: bool,
     damage: f32,
     pierce: f32,
     hit: Vec<u32>,
@@ -34,11 +36,19 @@ impl Room<'_> {
         let state = &mut *self.state;
         let rules = state.abilities.twister.as_ref().unwrap();
         let e = &self.entities[i];
+        let goal = e.position.advance(point, rules.distance[r]);
+        let aral = matches!(state.layout, Layout::Aral { .. });
+        let distance = if aral {
+            e.position.dist(goal)
+        } else {
+            rules.distance[r]
+        };
         self.entities.spawn_spell(Dash {
             source: e.id,
             team: e.team,
-            goal: e.position.advance(point, rules.distance[r]),
-            step: rules.distance[r] / (rules.duration[r] * TICK_HZ as f32),
+            goal,
+            announce: aral,
+            step: distance / (rules.duration[r] * TICK_HZ as f32),
             damage: rules.damage.at(r, e.item_stats.crystal, 0.),
             pierce: e.item_stats.shield_pierce,
             hit: Vec::new(),
@@ -68,6 +78,13 @@ impl crate::persistent_spells::TimedSpell for Dash {
         let next = start.advance(self.goal, self.step);
         if !world.spell_motion_clear(start, next) || world.bulwark_blocks_leap(i, next) {
             return false;
+        }
+        if std::mem::take(&mut self.announce) && start != next {
+            events.push(Event::TwisterDash {
+                source: self.source,
+                goal: self.goal,
+                speed: self.step * TICK_HZ as f32,
+            });
         }
         let radius = e.stats.physiology.map_or(0., |p| p.collision_radius);
         world.place_spell_actor(i, next, events);
@@ -150,6 +167,7 @@ mod tests {
             w.tick = t;
             w.advance_spell_family::<Dash>(&mut ev);
         }
+        assert_eq!(ev.iter().filter(|e| matches!(e,Event::TwisterDash{source:1,goal,speed} if *goal==p && (*speed-21.875).abs()<0.001)).count(),1);
         assert_eq!(w.entities[0].position, p);
         assert_eq!(w.entities[0].energy, 140.);
         assert_eq!(w.entities[1].hp, 900.);

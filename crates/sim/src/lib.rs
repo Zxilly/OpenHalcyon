@@ -175,6 +175,11 @@ pub enum Event {
         instance: u32,
         attack_target: Option<u32>,
     },
+    TwisterDash {
+        source: u32,
+        goal: Position,
+        speed: f32,
+    },
     WinterSpireProjectile {
         source: u32,
         id: u32,

@@ -89,3 +89,18 @@ the lane region X −69.44 to 52.15 and Z −2.13 to 14.30. The remaining one,
 near (−73.25, 21.23), has a different elevation. The host projects the flat
 profile inside the measured region. It omits the elevated and ambiguous
 stationary cases.
+
+### ARAL Karas Twister
+
+All 16 Karas 0403 records in the seven played streams follow a same-actor
+0416 point release with selector 1. The witness was an opponent. Offsets
++4/+8/+12/+16 are **speed, destination X, height, destination Z** for this
+profile. Height is always the float with bits 3d192e1f and the final byte
+is zero. Distance from the preceding caster correction to this destination
+divided by speed was 0.31978–0.32000 seconds. Thirteen paths were seven
+units long; the other three were approximately 5.807, 4 and 1. The supplied
+Twister rules give seven units and 0.32 seconds. The host uses its own
+legal destination and scales speed to actual distance. On its first legal
+dash step it sends the motion to opponents with the caster registered and
+visible, and to authorized observers with the same declaration. An
+interrupted dash that never moves has no announcement.

@@ -277,11 +277,51 @@ fn deliver_registered(
     }
 }
 
+fn twister_message(source: u32, goal: Position, speed: f32) -> Message {
+    let mut body = Vec::with_capacity(21);
+    body.extend(u32::from(wire_id(source)).to_be_bytes());
+    for v in [speed, goal.x, f32::from_bits(0x3d192e1f), goal.y] {
+        body.extend(v.to_be_bytes());
+    }
+    body.push(0);
+    Message::known(crate::Opcode::AutoMoveTo, body)
+}
+
+pub(super) fn recordable_twister(m: &Message) -> bool {
+    let b = &m.body;
+    if !m.is(crate::Opcode::AutoMoveTo) || !matches!(b.len(), 21 | 22) {
+        return false;
+    }
+    let word = |k| u32::from_be_bytes(b[k..k + 4].try_into().unwrap());
+    (1500..1506).contains(&word(0))
+        && f32::from_bits(word(4)) > 0.
+        && [4, 8, 16]
+            .iter()
+            .all(|k| f32::from_bits(word(*k)).is_finite())
+        && word(12) == 0x3d192e1f
+        && b[20..].iter().all(|b| *b == 0)
+}
+
 pub(super) fn publish_before_impacts(room: &mut Room, events: &[Event]) {
     if !room.legacy_aral() {
         return;
     }
     for event in events {
+        if let Event::TwisterDash {
+            source,
+            goal,
+            speed,
+        } = *event
+            && let Some(i) = source.checked_sub(1)
+            && let Some(actor) = room.world.entities.get(i as usize)
+            && actor.id == source
+            && actor.type_id == EntityTemplate::Karas.as_raw()
+        {
+            let message = twister_message(source, goal, speed);
+            let team = 1 - actor.team;
+            deliver_registered(room, source, team, None, std::slice::from_ref(&message));
+            room.publish_observer_actors(&[source], std::slice::from_ref(&message));
+        }
         if let Event::ChakramLaunch {
             source,
             id,
@@ -535,6 +575,25 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn twister_writes_speed_before_destination_and_only_accepts_the_flat_aral_profile() {
+        let mut m = twister_message(
+            3,
+            Position {
+                x: -5.930279,
+                y: 4.824222,
+            },
+            21.875313,
+        );
+        assert!(recordable_twister(&m));
+        assert_eq!(u32::from_be_bytes(m.body[0..4].try_into().unwrap()), 1502);
+        assert_eq!(&m.body[4..8], &21.875313f32.to_be_bytes());
+        assert_eq!(&m.body[8..12], &(-5.930279f32).to_be_bytes());
+        assert_eq!(&m.body[12..16], &0x3d192e1fu32.to_be_bytes());
+        assert_eq!(&m.body[16..20], &4.824222f32.to_be_bytes());
+        m.body[20] = 1;
+        assert!(!recordable_twister(&m));
+    }
     #[tokio::test]
     async fn learns_once_and_only_confirms_the_registered_caster_after_release() {
         let rooms = Rooms::new("127.0.0.1".parse().unwrap(), "127.0.0.1".into(), 1, None);
