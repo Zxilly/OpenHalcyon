@@ -19,28 +19,22 @@ pub(crate) struct PlayerHandle {
     pub handle: String,
 }
 
-#[derive(Clone, Copy, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Copy, Serialize, strum::EnumString, strum::IntoStaticStr)]
+#[serde(into = "&'static str")]
 pub(crate) enum PartyNotice {
-    #[serde(rename = "quintPartyStateUpdate")]
+    #[strum(serialize = "quintPartyStateUpdate")]
     StateUpdate,
-    #[serde(rename = "quintPartyJoinRequest")]
+    #[strum(serialize = "quintPartyJoinRequest")]
     JoinRequest,
-    #[serde(rename = "quintPartyPlayerLeft")]
+    #[strum(serialize = "quintPartyPlayerLeft")]
     PlayerLeft,
-    #[serde(rename = "quintPartyMemberKick")]
+    #[strum(serialize = "quintPartyMemberKick")]
     MemberKick,
 }
 
 impl PartyNotice {
-    pub fn from_wire(text: &str) -> Option<Self> {
-        Some(match text {
-            "quintPartyStateUpdate" => Self::StateUpdate,
-            "quintPartyJoinRequest" => Self::JoinRequest,
-            "quintPartyPlayerLeft" => Self::PlayerLeft,
-            "quintPartyMemberKick" => Self::MemberKick,
-            _ => return None,
-        })
+    pub fn as_str(self) -> &'static str {
+        self.into()
     }
 }
 

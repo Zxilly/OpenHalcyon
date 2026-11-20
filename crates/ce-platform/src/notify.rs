@@ -170,32 +170,15 @@ enum TypedNotification {
 #[derive(serde::Serialize)]
 struct PartyNotification {
     code: u8,
-    #[serde(flatten)]
-    marker: PartyMarker,
+    #[serde(flatten, serialize_with = "serialize_party_marker")]
+    notice: PartyNotice,
 }
 
-#[derive(serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-enum PartyMarker {
-    #[serde(rename = "quintPartyStateUpdate")]
-    StateUpdate(Empty),
-    #[serde(rename = "quintPartyJoinRequest")]
-    JoinRequest(Empty),
-    #[serde(rename = "quintPartyPlayerLeft")]
-    PlayerLeft(Empty),
-    #[serde(rename = "quintPartyMemberKick")]
-    MemberKick(Empty),
-}
-
-impl From<PartyNotice> for PartyMarker {
-    fn from(notice: PartyNotice) -> Self {
-        match notice {
-            PartyNotice::StateUpdate => Self::StateUpdate(Empty {}),
-            PartyNotice::JoinRequest => Self::JoinRequest(Empty {}),
-            PartyNotice::PlayerLeft => Self::PlayerLeft(Empty {}),
-            PartyNotice::MemberKick => Self::MemberKick(Empty {}),
-        }
-    }
+fn serialize_party_marker<S: serde::Serializer>(
+    notice: &PartyNotice,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    serializer.collect_map([(notice, Empty {})])
 }
 
 async fn update(
@@ -235,11 +218,8 @@ async fn update(
             code: 0,
             friends_list_update: true,
         })
-    } else if let Some(notice) = kind.and_then(PartyNotice::from_wire) {
-        NotificationText::Party(PartyNotification {
-            code: 0,
-            marker: notice.into(),
-        })
+    } else if let Some(notice) = kind.and_then(|raw| raw.parse::<PartyNotice>().ok()) {
+        NotificationText::Party(PartyNotification { code: 0, notice })
     } else {
         let profile = s.app.profile(key).await.map_err(platform_status)?;
         let mut state = s

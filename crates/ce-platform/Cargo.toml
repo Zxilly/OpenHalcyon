@@ -17,6 +17,7 @@ halcyon-platform = { path = "../platform" }
 jsonwebtoken = { version = "10", default-features = false, features = ["rust_crypto", "use_pem"] }
 rusqlite = { version = "0.37", features = ["bundled"] }
 serde.workspace = true
+strum = { version = "0.27", features = ["derive"] }
 serde_json.workspace = true
 sha2 = "0.10"
 subtle = "2"

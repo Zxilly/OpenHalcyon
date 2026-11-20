@@ -86,23 +86,23 @@ pub(crate) async fn execute(
                 // Keep the recipient's cursor contiguous while withdrawing stale replays.
                 tx.execute(
                     "UPDATE events SET body=json_object('type','party_refresh')
-                     WHERE json_extract(body,'$.party')=? AND (
-                        (json_extract(body,'$.type')='quintPartyJoinRequest'
+                     WHERE json_extract(body,'$.party')=?1 AND (
+                        (json_extract(body,'$.type')=?2
                          AND NOT EXISTS (SELECT 1 FROM community_invites i
                              WHERE i.group_id=?1 AND i.player=events.player)) OR
-                        (json_extract(body,'$.type') IN ('quintPartyStateUpdate','quintPartyPlayerLeft')
+                        (json_extract(body,'$.type') IN (?3,?4)
                          AND NOT EXISTS (SELECT 1 FROM community_members m
                              WHERE m.group_id=?1 AND m.player=events.player)))",
-                    [&old.id],
+                    params![old.id, PartyNotice::JoinRequest.as_str(), PartyNotice::StateUpdate.as_str(), PartyNotice::PlayerLeft.as_str()],
                 )?;
             }
             if resolves_invites {
                 tx.execute(
                     "UPDATE events SET body=json_object('type','party_refresh')
-                     WHERE player=? AND json_extract(body,'$.type')='quintPartyJoinRequest'
+                     WHERE player=?1 AND json_extract(body,'$.type')=?2
                        AND NOT EXISTS (SELECT 1 FROM community_invites i WHERE i.player=events.player
                            AND i.group_id=json_extract(events.body,'$.party'))",
-                    [&id],
+                    params![id, PartyNotice::JoinRequest.as_str()],
                 )?;
             }
             if let (Some(group), Some(target), false) = (&after, invite_target, existing_invite) {

@@ -1,4 +1,5 @@
 use crate::{Community, CommunityError, Result, economy::add_item, ensure_player};
+use halcyon_protocol::ce::RpcMethod;
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::Deserialize;
 use std::collections::BTreeMap;
@@ -67,7 +68,8 @@ impl Community {
         recipe: Recipe,
     ) -> Result<()> {
         recipe.validate()?;
-        if operation == "guildCollectJoinBonus" && recipe.limit != Some(1) {
+        let method = RpcMethod::from_wire(&operation);
+        if method == RpcMethod::GuildCollectJoinBonus && recipe.limit != Some(1) {
             return Err(CommunityError::Invalid(
                 "guild join bonus must have a one-claim limit",
             ));
@@ -75,7 +77,7 @@ impl Community {
         self.run(move |tx| {
             let player = player.to_string();
             ensure_player(tx, &player)?;
-            if matches!(operation.as_str(), "guildRedeemChest" | "guildCollectJoinBonus") {
+            if matches!(method, RpcMethod::GuildRedeemChest | RpcMethod::GuildCollectJoinBonus) {
                 let member = tx.query_row(
                     "SELECT EXISTS(SELECT 1 FROM community_members WHERE player=? AND kind='guild')",
                     [&player], |row| row.get::<_, bool>(0),
@@ -98,7 +100,7 @@ impl Community {
                 }
                 return Ok(());
             }
-            if operation == "guildCollectJoinBonus" && tx.query_row(
+            if method == RpcMethod::GuildCollectJoinBonus && tx.query_row(
                 "SELECT EXISTS(SELECT 1 FROM community_redemptions WHERE player=? AND operation=?)",
                 params![player, operation], |row| row.get::<_, bool>(0),
             )? {

@@ -397,6 +397,26 @@ async fn configured_guild_rewards_require_membership_and_bonus_is_lifetime() {
         reward: BTreeMap::from([("crest".into(), 1)]),
         limit: Some(1),
     };
+    // These two operator-defined methods share an SKU but have independent receipts
+    // and limits. Neither requires guild membership.
+    for (operation, receipt) in [("communityWeekOne", 10), ("communityWeekTwo", 11)] {
+        for _ in 0..2 {
+            store
+                .redeem(
+                    organizer,
+                    operation.to_owned(),
+                    "basic".into(),
+                    [receipt; 32],
+                    reward.clone(),
+                )
+                .await
+                .unwrap();
+        }
+    }
+    assert_eq!(
+        store.execute(organizer, Action::Inventory).await.unwrap()["items"][0]["count"],
+        2
+    );
     let claim = |receipt, sku: &str| {
         store.redeem(
             joiner,

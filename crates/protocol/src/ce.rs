@@ -3,8 +3,11 @@ mod queue;
 pub use queue::{KnownQueue, NativeMode};
 use serde::Serialize;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Serialize, serde::Deserialize, strum::IntoStaticStr,
+)]
 #[serde(rename_all = "snake_case")]
+#[strum(serialize_all = "snake_case", const_into_str)]
 pub enum LobbyState {
     Menus,
     PendingAuto,
@@ -17,15 +20,7 @@ pub enum LobbyState {
 
 impl LobbyState {
     pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Menus => "menus",
-            Self::PendingAuto => "pending_auto",
-            Self::MatchPending => "match_pending",
-            Self::MatchedPartners => "matched_partners",
-            Self::Playing => "playing",
-            Self::Spectating => "spectating",
-            Self::PostMatch => "post_match",
-        }
+        self.into_str()
     }
 }
 
