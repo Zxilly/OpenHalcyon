@@ -31,6 +31,8 @@ mod live;
 pub use live::LiveFields;
 mod mutations;
 mod native_motion;
+mod projectile;
+pub use projectile::{ProjectileAction, ProjectileFire};
 pub use mutations::{AttributeChange, ResourceChange};
 mod metadata;
 mod opcode;
@@ -301,12 +303,8 @@ impl Message {
                 actor: number(0)?,
                 remaining: &b[4..],
             },
-            0x40d if matches!(b.len(), 17 | 22) => Fields::Projectile {
-                reference0: number(0)?,
-                reference1: number(4)?,
-                value: float(8)?,
-                remaining: &b[12..],
-            },
+            0x40d..=0x410 => ProjectileAction::decode(self.opcode, b)
+                .map_or(Fields::Opaque(b), Fields::Projectile),
             0x415 if matches!(b.len(), 9 | 14) => Fields::AbilityAction {
                 actor: number(0)?,
                 reference: number(4)?,
@@ -654,12 +652,7 @@ pub enum Fields<'a> {
         actor: u32,
         remaining: &'a [u8],
     },
-    Projectile {
-        reference0: u32,
-        reference1: u32,
-        value: f32,
-        remaining: &'a [u8],
-    },
+    Projectile(ProjectileAction<'a>),
     AbilityAction {
         actor: u32,
         reference: u32,
@@ -1049,8 +1042,6 @@ mod tests {
             (0x406, 8, false, 0),
             (0x407, 4, false, 0),
             (0x409, 4, false, 1),
-            (0x40e, 6, true, 2),
-            (0x410, 4, false, 1),
             (0x416, 4, false, 1),
             (0x419, 6, false, 0),
             (0x41f, 2, false, 0),
@@ -1265,15 +1256,12 @@ mod tests {
                 remaining: &[0]
             }
         );
-        assert_eq!(
-            Message::new(0x40d, b).fields().unwrap(),
-            Fields::Projectile {
-                reference0: 65536,
-                reference1: 2,
-                value: 0.5,
-                remaining: &b[12..]
-            }
-        );
+        let m = Message::new(0x40d, b);
+        let Fields::Projectile(ProjectileAction::FireTracked(f)) = m.fields().unwrap() else {
+            panic!()
+        };
+        assert_eq!((f.projectile, f.profile_word, f.values), (65536, 2, [0.5]));
+        assert_eq!(f.padding, &b[17..]);
         assert_eq!(
             Message::new(0x415, &b[..14]).fields().unwrap(),
             Fields::AbilityAction {

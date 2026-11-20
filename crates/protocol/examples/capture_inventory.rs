@@ -114,6 +114,12 @@ impl Stream {
                         }
                         e.typed += 1;
                     }
+                    Ok(Fields::Projectile(action)) => {
+                        if action.message().as_ref() != Some(&m) {
+                            return Err(invalid("projectile fields did not reproduce original"));
+                        }
+                        e.typed += 1;
+                    }
                     Ok(Fields::Opaque(_)) => e.opaque += 1,
                     Ok(_) => e.typed += 1,
                     Err(_) => e.errors += 1,

@@ -29,10 +29,10 @@ The host paths are in [room dispatch](../crates/game/src/lib.rs), [transport](..
 | `0407` | 25 | R | ActionCancelAutoOrbit |
 | `0409` | 67 | R | ActionTeleportTo |
 | `040B` | 1,111 | A | ActionEntityDestroy · Delayed removal of eligible ARAL lane minions |
-| `040D` | 4,751 | R | ActionFireProjectile |
-| `040E` | 383 | R | ActionFireProjectile |
-| `040F` | 585 | R | ActionFireProjectile |
-| `0410` | 376 | R | ActionDetonateProjectile |
+| `040D` | 4,751 | R | [ActionFireProjectile](native-projectiles.md) |
+| `040E` | 383 | R | [ActionFireProjectile](native-projectiles.md) |
+| `040F` | 585 | R | [ActionFireProjectile](native-projectiles.md) |
+| `0410` | 376 | R | [ActionDetonateProjectile](native-projectiles.md) |
 | `0412` | 842 | E | ActionRequestActivateAbility · Accepted Idris B or Lorelai A/B point request on its originating connection |
 | `0414` | 48 | R | ActionRequestCancelAbility_Client |
 | `0415` | 9,106 | A | ActionPlayAbility · Released Lorelai C with visible caster and ally target |
