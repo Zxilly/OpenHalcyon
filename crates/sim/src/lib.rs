@@ -829,7 +829,7 @@ impl Room<'_> {
         id
     }
     fn index(&self, id: u32) -> Option<usize> {
-        self.entities.binary_search_by_key(&id, |e| e.id).ok()
+        self.entities.gameplay_index(id)
     }
     pub fn sees_position(&self, team: u8, p: Position) -> bool {
         (self.device_sight(team, p) || self.sigil_sight(team, p))

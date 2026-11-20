@@ -32,6 +32,7 @@ impl<T> std::ops::DerefMut for Storage<'_, T> {
 #[derive(Default, bevy_ecs::resource::Resource)]
 pub(super) struct ActorMetadata {
     order: Vec<Handle>,
+    gameplay_ids: Vec<u32>,
     scan: Option<(usize, bevy_ecs::query::QueryState<&'static Entity>)>,
     pub(super) spells: super::persistent_spells::Spells,
 }
@@ -41,6 +42,7 @@ impl Default for Actors<'static> {
             ecs: Storage::Owned(Box::default()),
             meta: Storage::Owned(Box::new(ActorMetadata {
                 order: Vec::with_capacity(50),
+                gameplay_ids: Vec::with_capacity(50),
                 scan: None,
                 spells: Default::default(),
             })),
@@ -216,6 +218,7 @@ impl Actors<'_> {
         self.get(0)
     }
     pub fn push(&mut self, e: Entity) {
+        self.meta.gameplay_ids.push(e.id);
         self.meta.order.push(self.ecs.spawn(e).id());
         self.refresh_scan();
     }
@@ -230,6 +233,27 @@ impl Actors<'_> {
             _ => {}
         }
     }
+    pub(super) fn gameplay_index(&self, id: u32) -> Option<usize> {
+        // Actor IDs are public: a caller can change one without a structural edit.
+        // Recheck the live record before accepting an indexed hit. Preserve the
+        // sorted search's last duplicate if an adjacent record acquired this ID.
+        if let Ok(i) = self.meta.gameplay_ids.binary_search(&id)
+            && self[i].id == id
+            && self.get(i + 1).is_none_or(|next| next.id != id)
+        {
+            return Some(i);
+        }
+        self.binary_search_by_key(&id, |e| e.id).ok()
+    }
+    fn rebuild_gameplay_ids(&mut self) {
+        let meta = &mut *self.meta;
+        meta.gameplay_ids.clear();
+        meta.gameplay_ids.extend(
+            meta.order
+                .iter()
+                .map(|handle| self.ecs.get::<Entity>(*handle).unwrap().id),
+        );
+    }
     pub fn binary_search_by_key<B: Ord>(
         &self,
         b: &B,
@@ -243,6 +267,7 @@ impl Actors<'_> {
         self.meta
             .order
             .sort_unstable_by_key(|id| f(self.ecs.get(*id).expect("live actor handle")));
+        self.rebuild_gameplay_ids();
     }
     pub fn retain(&mut self, mut keep: impl FnMut(&Entity) -> bool) {
         self.meta.order.retain(|id| {
@@ -252,9 +277,11 @@ impl Actors<'_> {
                 self.ecs.despawn(*id);
                 false
             }
-        })
+        });
+        self.rebuild_gameplay_ids();
     }
     pub fn truncate(&mut self, len: usize) {
+        self.meta.gameplay_ids.truncate(len);
         let start = len.min(self.len());
         for id in self.meta.order.drain(start..) {
             self.ecs.despawn(id);
@@ -269,6 +296,27 @@ mod tests {
 
     #[derive(Component)]
     struct Marker;
+    #[test]
+    fn gameplay_index_checks_public_edits_sorted_rebuild_and_generation_reuse() {
+        let mut world = crate::World::new(7, 2);
+        let actors = &mut world.entities;
+        actors.truncate(4);
+        actors[1].id = 3;
+        assert_eq!(actors.gameplay_index(2), None);
+        assert_eq!(actors.gameplay_index(3), Some(2));
+        actors[3].id = 9;
+        assert_eq!(actors.gameplay_index(9), Some(3));
+        actors[0].id = 7;
+        actors.sort_unstable_by_key(|e| e.id);
+        assert_eq!(actors.gameplay_index(7), Some(2));
+        actors.retain(|e| e.id != 3);
+        let old = actors.meta.order[1];
+        let e = actors[1].clone();
+        actors.truncate(1);
+        actors.push(e);
+        assert_ne!(actors.meta.order[1], old);
+        assert_eq!(actors.gameplay_index(9), Some(1));
+    }
     #[test]
     fn unordered_scan_observes_archetype_changes_and_current_actor_values() {
         let mut room = crate::World::new(7, 4);
