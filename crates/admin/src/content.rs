@@ -1,5 +1,6 @@
 use super::{Admin, Json, Path, Problem, Query, Result, State};
 use axum::extract::rejection::{PathRejection, QueryRejection};
+use halcyon_protocol::Opcode;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use strum::{EnumIter, IntoEnumIterator};
@@ -7,6 +8,7 @@ use strum::{EnumIter, IntoEnumIterator};
 #[derive(Clone, Copy, Deserialize, Serialize, EnumIter)]
 #[serde(rename_all = "kebab-case")]
 pub(super) enum Collection {
+    OpcodeRegistry,
     Heroes,
     Abilities,
     Units,
@@ -45,7 +47,11 @@ pub(super) async fn installed(State(state): State<Admin>) -> Json<Installed> {
         installed: reference.is_some(),
         rules_content_digest: data.map(|data| data.content_digest.clone()),
         reference_digest: reference.map(|r| r.digest.clone()),
-        collections: reference.map_or_else(Vec::new, |_| Collection::iter().collect()),
+        collections: Collection::iter()
+            .filter(|collection| {
+                reference.is_some() || matches!(collection, Collection::OpcodeRegistry)
+            })
+            .collect(),
     })
 }
 
@@ -129,6 +135,23 @@ pub(super) async fn browse(
     if !(1..=50).contains(&f.limit) || f.q.len() > 128 || f.language.len() > 32 {
         return Err(Problem::invalid());
     }
+    if matches!(collection, Collection::OpcodeRegistry) {
+        #[derive(Serialize)]
+        struct RegisteredOpcode {
+            name: Opcode,
+            value: u16,
+        }
+        return f.page_matching(
+            Opcode::ALL.iter().map(|&name| {
+                let value = name.raw();
+                (format!("0x{value:04X}"), RegisteredOpcode { name, value })
+            }),
+            |row, needle| {
+                row.name.as_str().to_ascii_lowercase().contains(needle)
+                    || row.value.to_string() == needle
+            },
+        );
+    }
     let data = state.rooms.game_data().ok_or_else(Problem::not_found)?;
     let r = data.references().ok_or_else(Problem::not_found)?;
     let combat = data.extra.combat_content();
@@ -136,6 +159,7 @@ pub(super) async fn browse(
     let maps = || data.native_maps().ok_or_else(Problem::not_found);
     let items = || data.item_catalog().ok_or_else(Problem::not_found);
     match collection {
+        Collection::OpcodeRegistry => unreachable!("built-in collection handled above"),
         Collection::Heroes => {
             #[derive(Serialize)]
             struct HeroDetail<'a> {

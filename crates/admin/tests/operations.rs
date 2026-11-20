@@ -500,7 +500,12 @@ async fn content_get(app: &Router, path: &str, session: Option<&str>) -> (Status
 #[tokio::test]
 async fn content_routes_require_login_and_validate_filters_before_querying() {
     let (app, _) = service();
-    for endpoint in ["/content", "/content/heroes", "/content/unknown?limit=99"] {
+    for endpoint in [
+        "/content",
+        "/content/heroes",
+        "/content/opcode-registry",
+        "/content/unknown?limit=99",
+    ] {
         assert_eq!(
             content_get(&app, endpoint, None).await.0,
             StatusCode::UNAUTHORIZED
@@ -513,7 +518,10 @@ async fn content_routes_require_login_and_validate_filters_before_querying() {
     assert_eq!(install["installed"], false);
     assert!(install["rulesContentDigest"].is_null());
     assert!(install["referenceDigest"].is_null());
-    assert!(install["collections"].as_array().unwrap().is_empty());
+    assert_eq!(
+        install["collections"].as_array().unwrap(),
+        &["opcode-registry"]
+    );
     assert_eq!(
         content_get(&app, "/content/heroes", session).await.0,
         StatusCode::NOT_FOUND
@@ -522,6 +530,7 @@ async fn content_routes_require_login_and_validate_filters_before_querying() {
         "/content/unknown",
         "/content/heroes?limit=0",
         "/content/heroes?limit=51",
+        "/content/opcode-registry?limit=51",
         "/content/heroes?limit=bad",
         "/content/heroes?offset=-1",
         "/content/heroes?unknown=1",
@@ -538,6 +547,48 @@ async fn content_routes_require_login_and_validate_filters_before_querying() {
         content_get(&app, &oversized_query, session).await.0,
         StatusCode::BAD_REQUEST
     );
+}
+
+#[tokio::test]
+async fn builtin_opcode_registry_lists_the_full_canonical_catalog_without_data() {
+    use halcyon_protocol::Opcode;
+
+    let (app, _) = service();
+    let token = content_admin_cookie(&app).await;
+    let session = Some(token.as_str());
+    assert_eq!(
+        content_get(&app, "/content/opcodes", session).await.0,
+        StatusCode::NOT_FOUND
+    );
+    let mut offset = 0;
+    for expected in Opcode::ALL.chunks(50) {
+        let url = format!("/content/opcode-registry?offset={offset}&limit=50");
+        let (status, result) = content_get(&app, &url, session).await;
+        assert_eq!(status, StatusCode::OK);
+        let entries = result["items"].as_array().unwrap();
+        assert_eq!(entries.len(), expected.len());
+        for (entry, op) in entries.iter().zip(expected) {
+            assert_eq!(entry["key"], format!("0x{:04X}", op.raw()));
+            assert_eq!(entry["data"]["name"], op.as_str());
+            assert_eq!(entry["data"]["value"], op.raw());
+        }
+        offset += expected.len();
+        if offset < Opcode::ALL.len() {
+            assert_eq!(result["nextOffset"], offset);
+        } else {
+            assert!(result["nextOffset"].is_null());
+        }
+    }
+    assert_eq!(offset, 173);
+    for q in ["actionmodifycooldown", "0x0428", "1064"] {
+        let url = format!("/content/opcode-registry?q={q}");
+        let (status, result) = content_get(&app, &url, session).await;
+        assert_eq!(status, StatusCode::OK);
+        let entries = result["items"].as_array().unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0]["data"]["name"], "ActionModifyCooldown");
+        assert_eq!(entries[0]["data"]["value"], 0x0428);
+    }
 }
 
 #[tokio::test]
@@ -558,6 +609,7 @@ async fn content_catalog_queries_the_complete_operator_supplement() {
         data.references().unwrap().digest
     );
     let expected = [
+        "opcode-registry",
         "heroes",
         "abilities",
         "units",

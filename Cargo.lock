@@ -1474,6 +1474,7 @@ dependencies = [
  "halcyon-data",
  "halcyon-game",
  "halcyon-platform",
+ "halcyon-protocol",
  "hmac",
  "serde",
  "serde_json",

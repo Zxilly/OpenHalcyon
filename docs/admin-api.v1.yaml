@@ -24,7 +24,7 @@ paths:
       summary: 查看本实例加载的补充数据和可查询目录
       responses:
         '200':
-          description: 已安装状态、规则内容摘要、参考资料摘要和目录名称
+          description: 补充包安装状态、规则内容摘要、参考资料摘要和可用目录。opcode-registry 始终可用。
           content:
             application/json:
               schema:
@@ -46,14 +46,19 @@ paths:
           required: true
           schema:
             type: string
-            enum: [heroes, abilities, units, talents, items, stores, skins, themes, skin-assets, lobby-manifests, levels, camps, meshes, languages, messages, assets, opcodes, replay-entities, stats, session-constants]
+            enum: [opcode-registry, heroes, abilities, units, talents, items, stores, skins, themes, skin-assets, lobby-manifests, levels, camps, meshes, languages, messages, assets, opcodes, replay-entities, stats, session-constants]
         - {name: q, in: query, schema: {type: string, maxLength: 128}}
         - {name: language, in: query, schema: {type: string, default: en}}
         - {name: offset, in: query, schema: {type: integer, minimum: 0, default: 0}}
         - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 50, default: 20}}
       responses:
         '200':
-          description: 按名称过滤后的已安装记录。翻译条目标明实际使用的语言。
+          description: |
+            翻译条目标明实际使用的语言。
+            opcode-registry 以数值升序返回内置协议目录，每行 key 为大写四位十六进制值，
+            data.name 为规范名称，data.value 为无符号 16 位十进制整数。q 按名称或十六进制值
+            忽略大小写匹配子串，也接受完整十进制值。此目录无需安装补充包。
+            opcodes 返回已安装参考包中的观测记录。
           content:
             application/json:
               schema:
@@ -512,6 +517,7 @@ components:
         channel: {enum: [control, game]}
         generation: {type: integer, minimum: 1, description: 对局内连接序号，每次成功认证时递增}
         opcode: {type: string, pattern: '^0x[0-9A-F]{4}$'}
+        opcodeName: {type: string, description: 已注册操作码的规范名称，未知操作码时省略。}
         actor: {type: string, description: 管理操作的发起账号}
     Termination:
       type: object

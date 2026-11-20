@@ -53,10 +53,6 @@ async function openContent() {
   const request = ++content.request;
   const catalog = await api("/content");
   if (request !== content.request) return;
-  if (!catalog.installed) {
-    select("#content-status").textContent = "No supplemental game data installed.";
-    return;
-  }
   const form = select("#content-filter");
   form.elements.collection.replaceChildren(...catalog.collections.map((id) => new Option(id.replaceAll("-", " "), id)));
   form.hidden = false;
