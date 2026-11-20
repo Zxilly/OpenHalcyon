@@ -155,6 +155,7 @@ fn advance(ecs: &mut Ecs) {
         room.team_upkeep(events);
         crate::item_actives::advance_active_effects(room, events);
         crate::item_passives::advance_passives(room, events);
+        room.advance_5v5(events);
         match diagnostics {
             Some(d) => room.resolve_actor_turns::<true>(events, Some(d)),
             None => room.resolve_actor_turns::<false>(events, None),

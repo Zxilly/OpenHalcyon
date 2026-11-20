@@ -41,6 +41,10 @@ mod layout;
 pub use layout::SOLO_CRYSTAL_START_INSTANCES;
 mod lorelai;
 pub mod map_3v3;
+pub mod map_5v5;
+pub use map_5v5::{
+    CampKind5v5, CampVisibilityState5v5, CampVisibilityTransition5v5, Hero5v5Status,
+};
 pub mod map_blitz;
 pub use map_blitz::BlitzTalentSlot;
 mod native_camps;
@@ -160,6 +164,7 @@ pub enum Command {
         instance: u32,
         target: ItemTarget,
     },
+    Recall,
     Stop,
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -400,6 +405,28 @@ pub enum Event {
         total: u32,
     },
     BlitzSuddenDeath,
+    RecallComplete {
+        id: u32,
+        position: Position,
+    },
+    RecallInterrupted {
+        id: u32,
+    },
+    CampBuffApplied {
+        actor: u32,
+        source: u32,
+        template: u16,
+    },
+    GhostwingCaptured {
+        team: u8,
+    },
+    BlackclawCaptured {
+        team: u8,
+    },
+    BlackclawUnleashed {
+        id: u32,
+        team: u8,
+    },
     End {
         winner: u8,
     },
@@ -648,6 +675,7 @@ pub struct RoomState {
     native_camps: Option<Vec<native_camps::NativeCampUnit>>,
     halcyon_fold: Option<Box<map_3v3::FoldState>>,
     blitz: Option<Box<map_blitz::BlitzState>>,
+    map_5v5: Option<Box<map_5v5::Map5v5State>>,
     first_blood: bool,
     scores: [PlayerScore; 10],
     team_scores: [TeamScore; 2],
@@ -741,6 +769,9 @@ impl Room<'_> {
         }
         if let Some(blitz) = &self.blitz {
             serde_json::to_writer(&mut hash, blitz).expect("finite blitz state");
+        }
+        if let Some(map_5v5) = &self.map_5v5 {
+            map_5v5.digest(&mut hash);
         }
         if let Some(difficulty) = self.bot_difficulty {
             hash.update(difficulty.as_str().as_bytes());
@@ -969,6 +1000,7 @@ impl Room<'_> {
                 native_camps: None,
                 halcyon_fold: None,
                 blitz: None,
+                map_5v5: None,
                 first_blood: false,
                 scores: Default::default(),
                 team_scores: Default::default(),
@@ -1066,7 +1098,7 @@ impl Room<'_> {
                 e.team == team
                     && e.hp > 0.
                     && e.position.dist(p) <= e.stats.sight()
-                    && self.layout.clear(e.position, p)
+                    && (self.map_5v5.is_some() || self.layout.clear(e.position, p))
                     && self
                         .native_navigation
                         .as_ref()
@@ -1082,6 +1114,7 @@ impl Room<'_> {
         }
         let revealed = self.device_sight(team, e.position)
             || self.sigil_sight(team, e.position)
+            || self.has_5v5_true_sight(team, e)
             || e.status.reveal_until > self.tick;
         if e.hero_kit
             .as_deref()
@@ -1095,7 +1128,7 @@ impl Room<'_> {
                     && a.hp > 0.
                     && (a.position.x - e.position.x).abs() <= a.stats.sight()
                     && a.position.dist(e.position) <= a.stats.sight()
-                    && self.combat_clear(a, e)
+                    && (self.map_5v5.is_some() || self.combat_clear(a, e))
                     && self
                         .native_navigation
                         .as_ref()
@@ -1133,7 +1166,8 @@ impl Room<'_> {
         }
         match cmd {
             Command::MoveTo(p)
-                if !self.layout.walkable(p)
+                if !(self.map_5v5.is_some() && map_5v5::in_5v5_bounds(p))
+                    && !self.layout.walkable(p)
                     && !self
                         .native_navigation
                         .as_ref()
@@ -1141,28 +1175,47 @@ impl Room<'_> {
             {
                 return Err("outside lane");
             }
+            Command::Recall => return self.begin_recall(i),
             Command::Buy(item) => return self.buy(i, item).map(|_| ()),
             Command::Sell { instance } => {
                 return self.sell_item(self.entities[i].id, instance).map(|_| ());
             }
             Command::DeployVisionTotem { instance, point } => {
+                self.interrupt_recall_from_command(i);
                 return self.deploy_device(i, instance, Some(point));
             }
-            Command::DeployScoutTrap { instance } => return self.deploy_device(i, instance, None),
-            Command::HitScoutCam { device } => return self.hit_device(i, device),
-            Command::ConsumeInfusion { instance } => return self.consume_infusion(i, instance),
-            Command::ActivateReflexBlock { instance } => return self.activate_reflex(i, instance),
+            Command::DeployScoutTrap { instance } => {
+                self.interrupt_recall_from_command(i);
+                return self.deploy_device(i, instance, None);
+            }
+            Command::HitScoutCam { device } => {
+                self.interrupt_recall_from_command(i);
+                return self.hit_device(i, device);
+            }
+            Command::ConsumeInfusion { instance } => {
+                self.interrupt_recall_from_command(i);
+                return self.consume_infusion(i, instance);
+            }
+            Command::ActivateReflexBlock { instance } => {
+                self.interrupt_recall_from_command(i);
+                return self.activate_reflex(i, instance);
+            }
             Command::ActivateHealingFlask { instance } => {
+                self.interrupt_recall_from_command(i);
                 return self.activate_healing_flask(self.entities[i].id, instance);
             }
             Command::ActivateSprintBoots { instance } => {
+                self.interrupt_recall_from_command(i);
                 return self.activate_sprint_boots(self.entities[i].id, instance);
             }
             Command::ActivateItem { instance, target } => {
                 return self.activate_item(i, instance, target);
             }
             Command::Learn(slot) => return self.learn(i, slot),
-            Command::Cast { slot, target } => return self.begin_cast(i, slot, target),
+            Command::Cast { slot, target } => {
+                self.interrupt_recall_from_command(i);
+                return self.begin_cast(i, slot, target);
+            }
             Command::Attack(id) => {
                 let t = self
                     .index(id)
@@ -1177,8 +1230,12 @@ impl Room<'_> {
                 {
                     return Err("invalid target");
                 }
+                self.interrupt_recall_from_command(i);
             }
-            _ => {}
+            Command::MoveTo(_) => {
+                self.interrupt_recall_from_command(i);
+            }
+            Command::Stop => {}
         }
         self.entities[i].cast = None;
         self.entities[i].status.channel = 0;
@@ -1215,6 +1272,7 @@ impl Room<'_> {
         } else {
             hero_kit::KitStatBonus::default()
         };
+        let move_5v5 = self.move_speed_5v5_bonus(self.entities[i].id);
         let steering_active = self.steering_active();
         if steering_active {
             self.entities.prepare_steering_if_needed(self.state.tick);
@@ -1241,6 +1299,21 @@ impl Room<'_> {
                     } else {
                         let marker = solo_side::march(e, p);
                         solo_side::steer(e.position, marker)
+                    }
+                }
+                Layout::SoloMid { .. } if state.map_5v5.is_some() => {
+                    if e.kind == Kind::Minion
+                        && e.order == Command::MoveTo(p)
+                        && p == state.layout.objective(1 - e.team)
+                    {
+                        if e.solo_side == 0 {
+                            Some(solo_route::march(e, p))
+                        } else {
+                            let marker = solo_side::march(e, p);
+                            solo_side::steer(e.position, marker)
+                        }
+                    } else {
+                        Some(p)
                     }
                 }
                 Layout::SoloMid { .. } => solo_side::steer(e.position, p),
@@ -1289,6 +1362,7 @@ impl Room<'_> {
             1.
         };
         let move_speed = (e.stats.speed
+            + move_5v5
             + skedaddle::speed(&e.status, state.tick)
             + e.status
                 .water_speed_bonus
@@ -1318,6 +1392,8 @@ impl Room<'_> {
         let mut ground_ok = |pt: Position| -> bool {
             if let Some(map) = &state.native_navigation {
                 map.has_ground(pt)
+            } else if state.map_5v5.is_some() {
+                map_5v5::in_5v5_bounds(pt)
             } else {
                 state.layout.walkable(pt)
             }
@@ -1750,6 +1826,7 @@ impl Room<'_> {
             }
             match self.entities[i].order {
                 Command::Stop
+                | Command::Recall
                 | Command::Buy(_)
                 | Command::Sell { .. }
                 | Command::DeployVisionTotem { .. }
@@ -1806,7 +1883,7 @@ impl Room<'_> {
                     {
                         let p = t.position;
                         self.entities[i].winding = None;
-                        if self.entities[i].kind == Kind::Neutral {
+                        if self.entities[i].kind == Kind::Neutral && self.map_5v5.is_none() {
                             self.entities[i].order = Command::Stop;
                             continue;
                         }
@@ -1908,10 +1985,19 @@ impl Room<'_> {
                         } else {
                             1.
                         };
-                        let raw = if kit_atk.damage_amp == 0. {
-                            eff_wp * multiplier + bonus
+                        let buff_mult = if e.kind == Kind::Hero {
+                            if basic_crystal {
+                                self.hero_5v5_crystal_multiplier(source, t.kind)
+                            } else {
+                                self.hero_5v5_weapon_multiplier(source, t.kind)
+                            }
                         } else {
-                            (eff_wp * multiplier + bonus) * (1. + kit_atk.damage_amp)
+                            1.
+                        };
+                        let raw = if kit_atk.damage_amp == 0. {
+                            (eff_wp * multiplier + bonus) * buff_mult
+                        } else {
+                            (eff_wp * multiplier + bonus) * buff_mult * (1. + kit_atk.damage_amp)
                         };
                         let dmg = if basic_crystal {
                             shop::mitigated(
@@ -2030,8 +2116,14 @@ impl Room<'_> {
                         ));
                     } else if impact_basic {
                         self.basic_hit(source, team, j, damage, school, events);
+                        if self.entities[i].kind == Kind::Hero {
+                            self.on_5v5_basic_hit(source, j);
+                        }
                     } else {
                         self.hurt_basic(source, team, j, damage, school, events);
+                        if self.entities[i].kind == Kind::Hero {
+                            self.on_5v5_basic_hit(source, j);
+                        }
                     }
                     if let Some(p) = pursuit {
                         self.pursuit_impact(i, j, p, events);

@@ -65,7 +65,12 @@ mod metadata;
 mod opcode;
 mod outbound;
 pub use outbound::{OUTBOUND_LAYOUTS, OutboundAction, OutboundLayout, OutboundOperands};
+pub mod draft;
 mod skin;
+pub use draft::{
+    DraftAction, DraftBuildPath, DraftPosition, RankedDraftSeat, RankedDraftStatePacket,
+    RankedWirePhase,
+};
 mod static_actions;
 pub use metadata::{AndroidLayout, READ_SIZES};
 pub use opcode::{Opcode, UnknownOpcodeName, wire_opcode};
@@ -153,6 +158,9 @@ impl Message {
             state,
         }
         .message(Opcode::CampVisibility, CampVisibilityBody::BODY_LEN)
+    }
+    pub fn draft_action(&self) -> Option<DraftAction> {
+        DraftAction::decode(self)
     }
     /// The charge operand is an unsigned wire word; its interpretation depends on the mode.
     pub fn modify_ability_charges(owner: u32, ability_slot: u32, operand: u32, mode: u8) -> Self {

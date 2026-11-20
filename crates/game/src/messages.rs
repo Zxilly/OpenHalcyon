@@ -270,6 +270,54 @@ pub(super) fn redact_player_info(body: &mut [u8]) {
     }
 }
 
+pub(super) fn camp_marker_spawn(
+    actor_id: u32,
+    template_raw: u16,
+    slot: u8,
+    pos: halcyon_sim::Position,
+) -> Message {
+    let mut body = [0u8; 122];
+    body[..4].copy_from_slice(&u32::from(template_raw).to_be_bytes());
+    body[4..8].copy_from_slice(&0x4dd5_b7d0_u32.to_be_bytes());
+    body[8..12].copy_from_slice(&actor_id.to_be_bytes());
+    body[12..16].copy_from_slice(&pos.x.to_be_bytes());
+    body[16..20].copy_from_slice(&0x3d75_be29_u32.to_be_bytes());
+    body[20..24].copy_from_slice(&pos.y.to_be_bytes());
+    body[32..36].copy_from_slice(&1.0_f32.to_be_bytes());
+    body[88..96].fill(1);
+    body[96] = 15;
+    body[112..116].copy_from_slice(&u32::MAX.to_be_bytes());
+    body[116..122].copy_from_slice(&[slot, 0, 0, 1, 255, 0]);
+    Message::known(crate::Opcode::EntitySpawn, body)
+}
+
+pub(super) fn append_5v5_camp_markers(out: &mut Vec<Message>, world: &World, viewer_index: u8) {
+    if !world.is_5v5_enabled() {
+        return;
+    }
+    for (idx, (actor_id, template_raw, pos)) in
+        world.camp_5v5_declarations().into_iter().enumerate()
+    {
+        let slot = if actor_id == halcyon_sim::map_5v5::BLACKCLAW_PIT_MARKER {
+            38
+        } else if actor_id == halcyon_sim::map_5v5::GHOSTWING_PIT_MARKER {
+            39
+        } else {
+            40 + u8::try_from(idx).unwrap_or(0)
+        };
+        out.push(camp_marker_spawn(actor_id, template_raw, slot, pos));
+    }
+    for (actor_id, _, _, vis) in world.camp_5v5_markers() {
+        if let Some(state) = vis.get(usize::from(viewer_index)).copied().flatten() {
+            out.push(Message::camp_visibility(
+                actor_id,
+                viewer_index,
+                halcyon_protocol::CampVisibilityState::from_wire(state as u8),
+            ));
+        }
+    }
+}
+
 pub(super) fn world_clock(tick: u64) -> Message {
     Message::known(
         crate::Opcode::SyncWorldClock,

@@ -326,6 +326,7 @@ fn sanitize(m: &mut Message) -> bool {
                 && m.body[4..]
                     .iter()
                     .all(|slot| usize::from(*slot) < halcyon_sim::ARAL_ITEM_CAPACITY) => {}
+        Some(crate::Opcode::CampVisibility) if m.body.len() == 6 => {}
         Some(
             crate::Opcode::MatchSettings
             | crate::Opcode::HeroSpawn

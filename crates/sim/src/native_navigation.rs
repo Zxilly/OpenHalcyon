@@ -128,7 +128,13 @@ impl NativeNavigation {
     }
 
     pub(super) fn at_fountain(&self, actor: &Entity) -> bool {
-        contains(&self.fountains[usize::from(actor.team)], actor.position)
+        self.in_spawn_stage(actor.team, actor.position)
+    }
+
+    pub(super) fn in_spawn_stage(&self, team: u8, pos: Position) -> bool {
+        self.fountains
+            .get(usize::from(team))
+            .is_some_and(|area| contains(area, pos))
     }
 
     pub(super) fn at_shop(&self, actor: &Entity) -> bool {
@@ -389,6 +395,23 @@ impl Room<'_> {
                 .as_ref()
                 .is_some_and(|map| map.at_shop(actor))
             || self.at_jungle_shop(actor)
+            || self
+                .map_5v5
+                .as_ref()
+                .is_some_and(|map| map.at_river_shop(self.tick, actor.position))
+    }
+}
+
+#[cfg(test)]
+impl NativeNavigation {
+    pub(crate) fn first_brush_center(&self) -> Option<Position> {
+        self.brushes.iter().find_map(|b| {
+            let [a, p, c] = *b.triangles.first()?;
+            Some(Position {
+                x: (a[0] + p[0] + c[0]) / 3.0,
+                y: (a[1] + p[1] + c[1]) / 3.0,
+            })
+        })
     }
 }
 

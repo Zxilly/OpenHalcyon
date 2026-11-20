@@ -12,6 +12,22 @@ impl Preferences {
         row[13] = self.position.unwrap_or(u8::MAX);
         row[14] = self.build.unwrap_or(u8::MAX);
     }
+
+    pub(super) fn set_position(&mut self, value: Option<u8>) {
+        self.position = value;
+    }
+
+    pub(super) fn set_build(&mut self, value: Option<u8>) {
+        self.build = value;
+    }
+
+    pub(super) fn position_raw(self) -> u8 {
+        self.position.unwrap_or(u8::MAX)
+    }
+
+    pub(super) fn build_raw(self) -> u8 {
+        self.build.unwrap_or(u8::MAX)
+    }
 }
 
 pub(super) enum Choice {

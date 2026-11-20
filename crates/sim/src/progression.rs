@@ -194,6 +194,13 @@ impl Room<'_> {
         );
     }
     fn hurt_with_origin(&mut self, mut spec: DamageSpec, events: &mut Vec<Event>) {
+        if matches!(spec.school, DamageSchool::Crystal)
+            && spec.src != self.entities[spec.target_idx].id
+        {
+            let mult =
+                self.hero_5v5_crystal_multiplier(spec.src, self.entities[spec.target_idx].kind);
+            spec.amount *= mult;
+        }
         let (applied, reflection) = self.stormguard_reflection(spec.target_idx, spec.amount);
         let idx = spec.target_idx;
         spec.amount = applied;
@@ -235,7 +242,8 @@ impl Room<'_> {
             origin,
         } = spec;
         let t = &self.entities[i];
-        if t.hp <= 0. || n <= 0. || self.solo_structure_protected(t) {
+        if t.hp <= 0. || n <= 0. || self.solo_structure_protected(t) || self.is_5v5_resetting(t.id)
+        {
             return;
         }
         let passive_rules = self.state.shop.effect_rules.passive;
@@ -322,51 +330,64 @@ impl Room<'_> {
                 bucket.others += f64::from(amount);
             }
         }
-        let t = &mut self.entities[i];
-        t.hp -= amount;
-        if t.kind == Kind::Armory {
-            t.respawn = self.state.tick
-                + if t.hp == 0. {
-                    armory::REBUILD
-                } else {
-                    armory::REGENERATE
-                };
-        }
-        let id = t.id;
-        if team != t.team
-            && let Some(score) = src
-                .checked_sub(1)
-                .and_then(|seat| self.state.scores.get_mut(seat as usize))
-        {
-            score.hit(t.kind, amount, school, t.hp == 0.);
-        }
-        events.push(Event::Damage {
-            effect,
-            source: src,
-            target: id,
-            amount,
-            hp: t.hp,
-        });
+        let (id, post_kind, post_order) = {
+            let t = &mut self.entities[i];
+            t.hp -= amount;
+            if t.kind == Kind::Armory {
+                t.respawn = self.state.tick
+                    + if t.hp == 0. {
+                        armory::REBUILD
+                    } else {
+                        armory::REGENERATE
+                    };
+            }
+            let id = t.id;
+            if team != t.team
+                && let Some(score) = src
+                    .checked_sub(1)
+                    .and_then(|seat| self.state.scores.get_mut(seat as usize))
+            {
+                score.hit(t.kind, amount, school, t.hp == 0.);
+            }
+            events.push(Event::Damage {
+                effect,
+                source: src,
+                target: id,
+                amount,
+                hp: t.hp,
+            });
+            (id, t.kind, t.order)
+        };
         ctx.hp_loss = amount;
         item_passives::on_damage_landed(self, ctx, events);
+        self.on_5v5_damage(src, id, events);
         if self.entities[i].hp > 0. {
-            let t = &mut self.entities[i];
-            if t.kind == Kind::Neutral && team < 2 && t.order == Command::Stop {
-                t.order = Command::Attack(src);
+            if post_kind == Kind::Neutral && team < 2 && post_order == Command::Stop {
+                self.entities[i].order = Command::Attack(src);
             }
             return;
         }
         let aral = matches!(self.state.layout, Layout::Aral { .. });
         let tick = self.state.tick;
-        let t = &mut self.entities[i];
-        if aral && reboot::on_lethal(t, src, tick, &mut self.state.next_id, events) {
+        if aral
+            && reboot::on_lethal(
+                &mut self.entities[i],
+                src,
+                tick,
+                &mut self.state.next_id,
+                events,
+            )
+        {
             return;
         }
+        let t = &mut self.entities[i];
         if t.kind == Kind::Hero {
             item_actives::clear_ephemeral_on_death(t);
         }
         let pos = t.position;
         let kind = t.kind;
+        let dead_level = t.level;
+        let dead_type_id = t.type_id;
         let enemy = t.team != team;
         if enemy && team < 2 {
             let state = &mut *self.state;
@@ -390,58 +411,83 @@ impl Room<'_> {
                 _ => {}
             }
         }
-        let (bounty, xp) = match kind {
-            Kind::Neutral => t
-                .stats
-                .physiology
-                .map_or((0, 0.), |p| (p.gold_bounty as u32, p.xp_bounty)),
-            Kind::Hero => (250 + if self.state.first_blood { 0 } else { 125 }, 90.),
-            Kind::Tower => (300, 60.),
-            Kind::Crystal | Kind::Armory => (0, 0.),
-            Kind::Minion => {
-                let template = EntityTemplate::from_raw(t.type_id);
-                let measured = if matches!(self.state.layout, Layout::SoloMid { .. }) {
-                    self.state
-                        .solo_lane_rewards
-                        .and_then(|table| table.for_template(template?))
-                } else if matches!(self.state.layout, Layout::Aral { .. })
-                    && template.is_some_and(EntityTemplate::is_aral_lane_minion)
-                {
-                    // All three recorded templates pay twice their unit base before proximity sharing.
-                    t.stats
-                        .physiology
-                        .map(|p| ((2. * p.gold_bounty) as u32, 2. * p.xp_bounty))
-                } else {
-                    None
-                };
-                measured.unwrap_or(match template {
-                    Some(EntityTemplate::MinionRange5v5) => (25, 6.),
-                    Some(EntityTemplate::MinionSiege5v5) => (60, 12.),
-                    Some(EntityTemplate::MinionCaptain5v5) => (100, 12.),
-                    _ => (35, 6.),
-                })
+        let (bounty, xp) = {
+            let t = &self.entities[i];
+            match kind {
+                Kind::Neutral => t
+                    .stats
+                    .physiology
+                    .map_or((0, 0.), |p| (p.gold_bounty as u32, p.xp_bounty)),
+                Kind::Hero => (250 + if self.state.first_blood { 0 } else { 125 }, 90.),
+                Kind::Tower => (300, 60.),
+                Kind::Crystal | Kind::Armory => (0, 0.),
+                Kind::Minion => {
+                    let template = EntityTemplate::from_raw(t.type_id);
+                    let measured = if matches!(self.state.layout, Layout::SoloMid { .. }) {
+                        self.state
+                            .solo_lane_rewards
+                            .and_then(|table| table.for_template(template?))
+                    } else if matches!(self.state.layout, Layout::Aral { .. })
+                        && template.is_some_and(EntityTemplate::is_aral_lane_minion)
+                    {
+                        // All three recorded templates pay twice their unit base before proximity sharing.
+                        t.stats
+                            .physiology
+                            .map(|p| ((2. * p.gold_bounty) as u32, 2. * p.xp_bounty))
+                    } else {
+                        None
+                    };
+                    measured.unwrap_or(match template {
+                        Some(EntityTemplate::MinionRange5v5) => (25, 6.),
+                        Some(EntityTemplate::MinionSiege5v5) => (60, 12.),
+                        Some(EntityTemplate::MinionCaptain5v5) => (100, 12.),
+                        _ => (35, 6.),
+                    })
+                }
             }
         };
-        t.order = Command::Stop;
-        t.winding = None;
-        t.cast = None;
-        t.status = Default::default();
-        events.push(Event::Death { id, killer: src });
-        if kind != Kind::Armory {
-            t.respawn = self.state.tick
+        let dead_team = {
+            let respawn_tick = self.state.tick
                 + match self.state.layout {
                     Layout::HalcyonFold { .. } => crate::map_3v3::respawn_ticks(self.state.tick),
                     Layout::Blitz { .. } => crate::map_blitz::respawn_ticks(self.state.tick),
                     _ => RESPAWN + (self.state.tick / 60).min(900),
                 };
-        }
+            let t = &mut self.entities[i];
+            t.order = Command::Stop;
+            t.winding = None;
+            t.cast = None;
+            t.status = Default::default();
+            events.push(Event::Death { id, killer: src });
+            if kind != Kind::Armory {
+                t.respawn = respawn_tick;
+            }
+            t.team
+        };
         self.entities.forget_target(i);
         if self.hero_kit_enabled() || self.entities[i].hero_kit.is_some() {
             self.kit_on_death(i);
         }
+        if self.handle_5v5_neutral_death(
+            crate::map_5v5::NeutralDeath5v5 {
+                dead_id: id,
+                dead_pos: pos,
+                dead_level,
+                dead_type_id,
+                killer_id: src,
+                killer_team: team,
+                bounty,
+                xp,
+            },
+            events,
+        ) && kind == Kind::Neutral
+        {
+            return;
+        }
         if kind == Kind::Armory {
             return;
         }
+        let _ = dead_team;
         if enemy
             && matches!(self.state.layout, Layout::Aral { .. })
             && let Some(killer) = src
