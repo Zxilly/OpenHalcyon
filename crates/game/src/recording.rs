@@ -103,9 +103,7 @@ impl Recorder {
 fn sanitize(m: &mut Message) -> bool {
     match m.known_opcode() {
         Some(crate::Opcode::PlayerInfo) if matches!(m.body.len(), 216 | 222) => {
-            if m.body[212] == 0 {
-                m.body[..128].fill(0);
-            }
+            super::messages::redact_player_info(&mut m.body);
         }
         Some(crate::Opcode::Snapshot5V5) if m.body.len() == 2590 => {
             for row in m.body[..16 * 161].as_chunks_mut::<161>().0 {

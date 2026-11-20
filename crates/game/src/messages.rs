@@ -239,6 +239,13 @@ pub(super) fn info(
     Message::known(crate::Opcode::PlayerInfo, b)
 }
 
+/// Remove the private human handle and admission identity from a player-info body.
+pub(super) fn redact_player_info(body: &mut [u8]) {
+    if body[212] == 0 {
+        body[..128].fill(0);
+    }
+}
+
 /// Replay chunks contain both roster forms before the first world spawn.
 pub(super) fn world_header(
     world: &World,

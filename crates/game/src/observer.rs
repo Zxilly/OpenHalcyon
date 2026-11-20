@@ -159,8 +159,15 @@ async fn client(
         let revoked = o.stop.subscribe();
         o.live = Some(tx);
         let mut b = vec![r.observer_snapshot()];
-        b.extend(r.spawn_view(None));
         let mut scene = tower_aggro::ObserverScene::new(&r);
+        if scene.is_some() {
+            // Seat-scoped setters address player-info actors, including defeated heroes.
+            b.extend(super::scene::players(&r).map(|mut info| {
+                super::messages::redact_player_info(&mut info.body);
+                info
+            }));
+        }
+        b.extend(r.spawn_view(None));
         let mut view = tower_aggro::View::default();
         if let Some(scene) = &mut scene {
             scene.prepare(

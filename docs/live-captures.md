@@ -185,6 +185,8 @@ Seven archived ARAL streams contain 40 server-side `0x0485` one-byte path announ
 
 The host accepts those four values from the authenticated world connection and derives the actor from its seat. A valid Solo choice following the flushed native opening can complete the world handoff just like the existing movement or clock inputs. The requester receives an announcement and actor-tagged setter. Other admitted ARAL seats receive changes for both teams. Other supported rooms share changes within the selecting team. Reconnect and observer snapshots replay the latest actor-tagged state; repeated requests receive confirmation without another peer broadcast. These path bytes are retained independently of shop contents and the end report's item-build classification.
 
+On late observer attachment to a hosted native ARAL or Solo scene, the scoreboard is followed by full player-info records before world declarations and retained build setters. The roster includes defeated seats. Human handle and identity bytes are cleared using the replay privacy rule. The late-observer ordering is a host restoration policy verified over encrypted loopback TCP. The original ARAL observations above come from player connections.
+
 The four ARAL client attack-target selections (0x0424) were followed by identical six-byte server bodies 20, 44, 46 and 51 ms later. The authenticated ARAL seat receives that confirmation after its simulator accepts a living, visible opponent. A friendly, hidden or absent target produces no confirmation.
 
 ### ARAL talent equipment

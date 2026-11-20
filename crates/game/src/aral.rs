@@ -981,6 +981,17 @@ mod tests {
                 crate::wire_opcode::RequestEquipTalent | crate::wire_opcode::EquipTalent
             ));
         }
+        let selection = Message::known(crate::Opcode::RequestRecommendedBuildPath, [2]);
+        clients[0]
+            .write_all(&cipher.encode(&selection).unwrap())
+            .await
+            .unwrap();
+        until(
+            &mut clients[0],
+            &cipher,
+            crate::wire_opcode::SetRecommendedBuildPath,
+        )
+        .await;
         let (observer_address, grant) = rooms.observe(room_id, Uuid::new_v4()).unwrap();
         let mut observer = TcpStream::connect(observer_address).await.unwrap();
         observer
@@ -1001,6 +1012,21 @@ mod tests {
             )
             .await
             .unwrap();
+        let scoreboard = next(&mut observer, &cipher).await;
+        assert!(scoreboard.is(crate::Opcode::SnapshotAral));
+        for actor in 1500_u32..1506 {
+            let frame = next(&mut observer, &cipher).await;
+            assert!(frame.is(crate::Opcode::PlayerInfo));
+            assert_eq!(&frame.body[..128], &[0; 128]);
+            assert_eq!(&frame.body[160..164], &actor.to_be_bytes());
+        }
+        let path = until(
+            &mut observer,
+            &cipher,
+            crate::wire_opcode::SetRecommendedBuildPath,
+        )
+        .await;
+        assert_eq!(&path.body[..5], &[0, 0, 5, 220, 2]);
         let restored = until(&mut observer, &cipher, crate::wire_opcode::EquipTalent).await;
         assert_eq!(
             restored.fields().unwrap(),
