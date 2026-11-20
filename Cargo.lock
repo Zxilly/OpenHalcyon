@@ -1094,6 +1094,7 @@ dependencies = [
  "bytes",
  "ciborium",
  "halcyon-matchmaking",
+ "halcyon-protocol",
  "http-body-util",
  "hyper",
  "hyper-util",

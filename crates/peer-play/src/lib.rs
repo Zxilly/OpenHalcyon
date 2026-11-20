@@ -57,6 +57,20 @@ pub struct PeerPlay {
     done: watch::Receiver<bool>,
 }
 impl PeerPlay {
+    pub async fn player_action(
+        &self,
+        session: &str,
+        room: Uuid,
+        call: halcyon_platform::player_actions::ActionCall,
+    ) -> halcyon_platform::Result<halcyon_platform::player_actions::ActionReply> {
+        let player = self.inner.platform.playing_player(session, room).await?;
+        self.inner
+            .fed
+            .player_action(room, player, call)
+            .await
+            .map_err(|_| PlatformError::HostUnavailable)
+    }
+
     pub fn start(
         federation: Federation,
         platform: AppState,
@@ -70,6 +84,11 @@ impl PeerPlay {
         ensure!(!config.rules_digest.is_empty(), "empty rules digest");
         observation::attach(&federation, rooms.clone());
         chat::attach(&federation, &platform, config.pool_id);
+        let action_rooms = rooms.clone();
+        let action_pool = config.pool_id;
+        federation.attach_actions(move |home, room, player, call| {
+            action_rooms.room_action(room, player, Some((action_pool, home)), call)
+        });
         let journal = Journal::open(&config.database, config.pool_id, config.node_id)?;
         // A reader of the home journal may restart without the game service.
         // Only a locally recorded room missing from this host can be lost.

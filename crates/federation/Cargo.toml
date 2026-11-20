@@ -9,6 +9,7 @@ repository.workspace = true
 test-hooks = []
 
 [dependencies]
+halcyon-protocol = { path = "../protocol" }
 anyhow = "1"
 axum.workspace = true
 bytes.workspace = true

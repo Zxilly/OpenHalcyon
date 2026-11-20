@@ -38,6 +38,18 @@ impl Platform {
 
 #[async_trait::async_trait]
 impl PublicMatches for Platform {
+    async fn player_action(
+        &self,
+        session: &str,
+        id: Uuid,
+        call: halcyon_platform::player_actions::ActionCall,
+    ) -> halcyon_platform::Result<halcyon_platform::player_actions::ActionReply> {
+        match &self.peers {
+            Some(peers) => peers.player_action(session, id, call).await,
+            None => self.app.player_action(session, id, call).await,
+        }
+    }
+
     async fn enqueue(
         &self,
         session: &str,

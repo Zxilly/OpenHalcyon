@@ -8,6 +8,7 @@ mod capacity;
 mod membership;
 pub use capacity::Capacity;
 pub use membership::{MemberChange, Members, PoolAdmin};
+mod actions;
 mod chat;
 mod net;
 pub use chat::MatchChat;

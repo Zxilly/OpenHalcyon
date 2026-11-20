@@ -1190,7 +1190,7 @@ async fn local_friend_spectates_read_only_and_revokes_on_exit() {
     )
     .unwrap();
     let platform = Platform::new(
-        app,
+        app.clone(),
         CeConfig {
             authority: "localhost:8443".into(),
             notify_authority: "localhost:2112".into(),
@@ -1396,43 +1396,70 @@ async fn local_friend_spectates_read_only_and_revokes_on_exit() {
     until(&mut other_stream, &cipher, wire_opcode::Snapshot5V5).await;
     assert_ne!(next["returnValue"]["spectatorId"], credential.to_string());
     assert_eq!(rooms.detail(id).unwrap()["phase"], "running");
+    let route = format!("/api/v1/matches/{id}/actions");
+    let router = platform.public_api();
+    for (token, name, expected) in [
+        (player, "LocalOperator", axum::http::StatusCode::OK),
+        (watcher, "LocalViewer", axum::http::StatusCode::CONFLICT),
+    ] {
+        let secret = Uuid::new_v4().to_string();
+        rpc(
+            &rpc_router,
+            RpcMethod::LinkAccount.as_str(),
+            (token, name, &secret),
+        )
+        .await;
+        let guest = app.login_account(name, secret).await.unwrap();
+        let context = rest(
+            &router,
+            "GET",
+            &route,
+            Some(&guest.session_token),
+            Value::Null,
+            expected,
+        )
+        .await;
+        if expected == axum::http::StatusCode::OK {
+            assert_eq!(context["nextSequence"], 1);
+        }
+    }
 }
 
 #[path = "support/process_pool.rs"]
 mod process_pool;
 
+async fn rest(
+    router: &Router,
+    method: &str,
+    uri: &str,
+    token: Option<&str>,
+    body: Value,
+    expected: axum::http::StatusCode,
+) -> Value {
+    let mut req = Request::builder()
+        .method(method)
+        .uri(uri)
+        .header("Content-Type", "application/json");
+    if let Some(token) = token {
+        req = req.header("Authorization", format!("Bearer {token}"));
+    }
+    let res = router
+        .clone()
+        .oneshot(req.body(Body::from(body.to_string())).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(res.status(), expected, "{method} {uri}");
+    let bytes = to_bytes(res.into_body(), 1 << 20).await.unwrap();
+    if bytes.is_empty() {
+        Value::Null
+    } else {
+        serde_json::from_slice(&bytes).unwrap()
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn public_and_ce_players_share_a_pool_and_cross_home_match_chat() {
     use axum::http::StatusCode;
-    async fn rest(
-        router: &Router,
-        method: &str,
-        uri: &str,
-        token: Option<&str>,
-        body: Value,
-        expected: StatusCode,
-    ) -> Value {
-        let mut req = Request::builder()
-            .method(method)
-            .uri(uri)
-            .header("Content-Type", "application/json");
-        if let Some(token) = token {
-            req = req.header("Authorization", format!("Bearer {token}"));
-        }
-        let res = router
-            .clone()
-            .oneshot(req.body(Body::from(body.to_string())).unwrap())
-            .await
-            .unwrap();
-        assert_eq!(res.status(), expected, "{method} {uri}");
-        let bytes = to_bytes(res.into_body(), 1 << 20).await.unwrap();
-        if bytes.is_empty() {
-            Value::Null
-        } else {
-            serde_json::from_slice(&bytes).unwrap()
-        }
-    }
-
     let tmp = tempfile::tempdir().unwrap();
     let (cfg, listeners) = pool::configs(tmp.path());
     let host = cfg[2].node_id;
@@ -1857,6 +1884,144 @@ async fn public_and_ce_players_share_a_pool_and_cross_home_match_chat() {
     );
     assert_eq!(admin_match(operator(0)).await.0, StatusCode::NOT_FOUND);
 
+    // The three committed players reach Running through their ordinary game sockets.
+    let match_id = Uuid::parse_str(&id).unwrap();
+    let address = node(&cluster, 0)
+        .app
+        .profile(token(0))
+        .await
+        .unwrap()
+        .lobby
+        .unwrap()
+        .address
+        .unwrap();
+    let cipher = MatchCipher::new(&id);
+    let players: Vec<Uuid> = expected
+        .iter()
+        .map(|(id, _)| serde_json::from_value(id.clone()).unwrap())
+        .collect();
+    let mut controls = Vec::new();
+    let mut games = Vec::new();
+    for player in &players {
+        let mut c = login(&address, *player, &cipher).await;
+        until(&mut c, &cipher, wire_opcode::Snapshot5V5).await;
+        c.write_all(
+            &cipher
+                .encode(&Message::new(wire_opcode::HeroLock, [0; 6]))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+        until(&mut c, &cipher, wire_opcode::HeroLock).await;
+        controls.push(c);
+    }
+    for player in &players {
+        let mut g = login(&address, *player, &cipher).await;
+        until(&mut g, &cipher, wire_opcode::EntitySpawn).await;
+        games.push(g);
+    }
+    use halcyon_protocol::player_actions::{
+        ActionCall, ActionDecision, ActionReply, ActionRequest, PlayerAction,
+    };
+    let route = format!("/api/v1/matches/{id}/actions");
+    rest(
+        a,
+        "GET",
+        &route,
+        None,
+        Value::Null,
+        StatusCode::UNAUTHORIZED,
+    )
+    .await;
+    rest(
+        a,
+        "GET",
+        &route,
+        Some(token(2)),
+        Value::Null,
+        StatusCode::CONFLICT,
+    )
+    .await;
+    rest(
+        b,
+        "GET",
+        &route,
+        Some(token(0)),
+        Value::Null,
+        StatusCode::UNAUTHORIZED,
+    )
+    .await;
+    assert!(matches!(
+        node(&cluster, 1)
+            .raft
+            .player_action(match_id, players[0], ActionCall::Inspect)
+            .await
+            .unwrap(),
+        ActionReply::Decision(ActionDecision::Unavailable)
+    ));
+    // This validation queue starts without gold. Missing inventory is an authoritative rejection.
+    let instance = 40000;
+    let other = rest(
+        b,
+        "GET",
+        &route,
+        Some(token(1)),
+        Value::Null,
+        StatusCode::OK,
+    )
+    .await;
+    assert_eq!(other["items"].as_array().unwrap().len(), 0);
+    let sale = ActionRequest {
+        sequence: 1,
+        expires_at_ms: chrono::Utc::now().timestamp_millis() + 25_000,
+        action: PlayerAction::Sell { instance },
+    };
+    let payload = serde_json::to_value(sale).unwrap();
+    let call = || {
+        rest(
+            a,
+            "POST",
+            &route,
+            Some(token(0)),
+            payload.clone(),
+            StatusCode::CONFLICT,
+        )
+    };
+    tokio::join!(call(), call());
+    let used = serde_json::to_value(ActionRequest {
+        action: PlayerAction::ConsumeInfusion { instance },
+        ..sale
+    })
+    .unwrap();
+    rest(
+        a,
+        "POST",
+        &route,
+        Some(token(0)),
+        used,
+        StatusCode::CONFLICT,
+    )
+    .await;
+    rest(
+        b,
+        "POST",
+        &route,
+        Some(token(1)),
+        payload,
+        StatusCode::CONFLICT,
+    )
+    .await;
+    let after = rest(
+        a,
+        "GET",
+        &route,
+        Some(token(0)),
+        Value::Null,
+        StatusCode::OK,
+    )
+    .await;
+    assert_eq!(after["nextSequence"], 2);
+    assert_eq!(after["items"].as_array().unwrap().len(), 0);
     let chat = format!("/api/v1/matches/{id}/chat");
     rest(
         a,

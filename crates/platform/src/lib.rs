@@ -71,9 +71,19 @@ pub struct HostedMatch {
 /// Persist a native request to close this exact spectator grant.
 pub type SpectatorExit = Arc<dyn Fn(Uuid) -> Result<()> + Send + Sync>;
 
+pub use halcyon_data::player_actions;
+
 /// Implementations must make repeated reservations for the same match id idempotent.
 pub trait MatchHost: Send + Sync + 'static {
     fn reserve(&self, reservation: Reservation) -> Result<HostedMatch>;
+    fn local_action(
+        &self,
+        _room: Uuid,
+        _player: Uuid,
+        _call: player_actions::ActionCall,
+    ) -> Result<player_actions::ActionReply> {
+        Err(PlatformError::HostUnavailable)
+    }
 
     /// Issue or refresh an isolated read-only credential for this viewer.
     fn spectate(&self, _match_id: Uuid, _viewer: Uuid) -> Result<HostedSpectator> {
@@ -459,6 +469,7 @@ impl AppState {
     }
 }
 
+mod action_api;
 pub fn router(state: AppState) -> Router {
     router_with_matches(state.clone(), Arc::new(state))
 }
@@ -467,6 +478,15 @@ pub fn router(state: AppState) -> Router {
 /// with the same opaque bearer token regardless of the configured authority.
 #[async_trait::async_trait]
 pub trait PublicMatches: Send + Sync {
+    async fn player_action(
+        &self,
+        _token: &str,
+        _room: Uuid,
+        _call: player_actions::ActionCall,
+    ) -> Result<player_actions::ActionReply> {
+        Err(PlatformError::HostUnavailable)
+    }
+
     async fn enqueue(
         &self,
         token: &str,
@@ -487,6 +507,12 @@ pub fn router_with_matches(state: AppState, matches: Arc<dyn PublicMatches>) -> 
         .route("/api/v1/queue", post(queue).delete(leave))
         .route("/api/v1/matches/{id}/accept", post(accept))
         .route("/api/v1/matches/{id}/chat", post(chat))
+        .route(
+            "/api/v1/matches/{id}/actions",
+            get(action_api::inspect)
+                .post(action_api::execute)
+                .layer(axum::extract::DefaultBodyLimit::max(1024)),
+        )
         .route("/api/v1/events", get(poll))
         .route("/api/v1/events/ws", get(websocket))
         .layer(Extension(matches))
@@ -495,6 +521,15 @@ pub fn router_with_matches(state: AppState, matches: Arc<dyn PublicMatches>) -> 
 
 #[async_trait::async_trait]
 impl PublicMatches for AppState {
+    async fn player_action(
+        &self,
+        token: &str,
+        room: Uuid,
+        call: player_actions::ActionCall,
+    ) -> Result<player_actions::ActionReply> {
+        let player = self.playing_player(token, room).await?;
+        self.host.local_action(room, player, call)
+    }
     async fn enqueue(
         &self,
         token: &str,

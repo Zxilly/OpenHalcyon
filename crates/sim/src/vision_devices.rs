@@ -100,6 +100,22 @@ impl Charges {
     }
 }
 impl World {
+    pub fn visible_enemy_cams(&self, actor: u32) -> Vec<u32> {
+        let Some(i) = self.index(actor) else {
+            return Vec::new();
+        };
+        let e = &self.entities[i];
+        self.vision_devices
+            .iter()
+            .filter(|v| {
+                v.kind == VisionDeviceKind::ScoutCam
+                    && v.team != e.team
+                    && self.tick < v.born + self.shop.vision.stealth
+                    && self.sees_position(e.team, v.point)
+            })
+            .map(|v| v.id)
+            .collect()
+    }
     pub fn vision_devices(&self) -> &[VisionDevice] {
         &self.vision_devices
     }
@@ -134,12 +150,9 @@ impl World {
             .as_ref()
             .ok_or("ARAL inventory unavailable")?;
         let (kind, point) = if let Some(p) = point {
-            if !slots
-                .slots()
-                .iter()
-                .flatten()
-                .any(|s| s.instance == instance && s.template == AralStarter::VisionTotem.grant().template)
-            {
+            if !slots.slots().iter().flatten().any(|s| {
+                s.instance == instance && s.template == AralStarter::VisionTotem.grant().template
+            }) {
                 return Err("vision totem not held");
             }
             if !self.layout.walkable(p)

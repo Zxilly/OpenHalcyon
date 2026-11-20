@@ -157,6 +157,61 @@ paths:
         '409': {$ref: '#/components/responses/Conflict'}
         '500': {$ref: '#/components/responses/Unavailable'}
         '503': {$ref: '#/components/responses/HostUnavailable'}
+  /api/v1/matches/{id}/actions:
+    parameters:
+      - $ref: '#/components/parameters/MatchId'
+    get:
+      operationId: getPlayerActionContext
+      summary: Inspect your running seat's item actions
+      description: Returns this player's held item instances and IDs of currently visible, exposed enemy Scout Cams. Range and cooldown are checked on use. The home routes reads to the active room host.
+      responses:
+        '200':
+          description: Current private action context
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [nextSequence, x, z, items, visibleEnemyCams]
+                properties:
+                  x: {type: number, format: float, description: Your own current world X coordinate.}
+                  z: {type: number, format: float, description: Your own current world Z coordinate.}
+                  nextSequence: {type: integer, minimum: 1}
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      required: [template, instance]
+                      properties:
+                        template: {type: integer, minimum: 1}
+                        instance: {type: integer, minimum: 1}
+                  visibleEnemyCams: {type: array, items: {type: integer, minimum: 1}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '503': {$ref: '#/components/responses/HostUnavailable'}
+    post:
+      operationId: submitPlayerItemAction
+      summary: Apply one item action to your own running seat
+      description: |
+        Fetch nextSequence before starting. Each applied or world-rejected action consumes
+        its sequence. Send the identical JSON values, including the original deadline,
+        when retrying after a connection failure. The host remembers the 16 latest outcomes
+        per seat and permanently rejects older sequences. Match completion closes the endpoint.
+        An expired request is rejected even if it previously succeeded. Fetch context to reconcile.
+        A remote home sends directly to the current host over the authenticated pool connection.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/PlayerItemActionRequest'}
+      responses:
+        '204': {description: Applied or acknowledged an identical successful retry}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '413': {$ref: '#/components/responses/PayloadTooLarge'}
+        '415': {$ref: '#/components/responses/UnsupportedMedia'}
+        '422': {$ref: '#/components/responses/InvalidJsonData'}
+        '503': {$ref: '#/components/responses/HostUnavailable'}
   /api/v1/matches/{id}/chat:
     parameters:
       - $ref: '#/components/parameters/MatchId'
@@ -287,6 +342,36 @@ components:
         application/json:
           schema: {$ref: '#/components/schemas/Error'}
   schemas:
+    PlayerItemActionRequest:
+      type: object
+      additionalProperties: false
+      required: [sequence, expiresAtMs, action]
+      properties:
+        sequence: {type: integer, minimum: 1, maximum: 9007199254740991}
+        expiresAtMs: {type: integer, format: int64, description: Unix milliseconds. Must be in the future and at most 30 seconds ahead of host time.}
+        action:
+          oneOf:
+            - type: object
+              additionalProperties: false
+              required: [kind, instance]
+              properties:
+                kind: {enum: [consumeInfusion, deployScoutTrap, sell]}
+                instance: {type: integer, minimum: 1, maximum: 4294967295}
+            - type: object
+              additionalProperties: false
+              required: [kind, instance, x, z]
+              properties:
+                kind: {const: deployVisionTotem}
+                instance: {type: integer, minimum: 1, maximum: 4294967295}
+                x: {type: number, format: float}
+                z: {type: number, format: float}
+            - type: object
+              additionalProperties: false
+              required: [kind, device]
+              properties:
+                kind: {const: hitScoutCam}
+                device: {type: integer, minimum: 1, maximum: 4294967295}
+
     Error:
       type: object
       required: [error]

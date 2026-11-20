@@ -195,7 +195,7 @@ async fn cross_home_aral_equips_only_committed_numeric_entitlements() {
         .with_content(&content_path)
         .await
         .unwrap();
-        member.rpc = platform.rpc();
+        member.rpc = platform.rpc().merge(platform.public_api());
         cluster.push(Some(member));
     }
     let (leader, _) = elected(&cluster, 1).await;
@@ -273,6 +273,7 @@ async fn cross_home_aral_equips_only_committed_numeric_entitlements() {
     assert_eq!(allocation.tickets.len(), 6);
     assert_eq!(pool.tickets().len(), 6);
 
+    let (action_home, action_player, action_session, _) = guests[0].clone();
     let mut sockets = Vec::new();
     let cipher = MatchCipher::new(&allocation.id.to_string());
     for (home, player, token, expected) in guests {
@@ -369,6 +370,67 @@ async fn cross_home_aral_equips_only_committed_numeric_entitlements() {
             level,
         });
         assert_eq!(received, expected.into_iter().collect::<Vec<_>>());
+    }
+    {
+        use axum::http::StatusCode;
+        use halcyon_protocol::player_actions::{ActionRequest, PlayerAction};
+        let member = node(&cluster, action_home);
+        let secret = Uuid::new_v4().to_string();
+        rpc(
+            &member.rpc,
+            RpcMethod::LinkAccount.as_str(),
+            (&action_session, "LocalActionAccount", &secret),
+        )
+        .await;
+        let public_guest = member
+            .app
+            .login_account("LocalActionAccount", secret)
+            .await
+            .unwrap();
+        assert_eq!(action_player, public_guest.player_id);
+        let router = &node(&cluster, action_home).rpc;
+        let token = Some(public_guest.session_token.as_str());
+        let route = format!("/api/v1/matches/{}/actions", allocation.id);
+        let private = rest(router, "GET", &route, token, Value::Null, StatusCode::OK).await;
+        let req = ActionRequest {
+            sequence: private["nextSequence"].as_u64().unwrap(),
+            expires_at_ms: chrono::Utc::now().timestamp_millis() + 25_000,
+            action: PlayerAction::DeployVisionTotem {
+                instance: 2001,
+                x: private["x"].as_f64().unwrap() as f32,
+                z: private["z"].as_f64().unwrap() as f32,
+            },
+        };
+        let payload = serde_json::to_value(req).unwrap();
+        let call = || {
+            rest(
+                router,
+                "POST",
+                &route,
+                token,
+                payload.clone(),
+                StatusCode::NO_CONTENT,
+            )
+        };
+        tokio::join!(call(), call());
+        let next = rest(router, "GET", &route, token, Value::Null, StatusCode::OK).await;
+        assert_eq!(next["nextSequence"], req.sequence + 1);
+        // The retry spent no second charge. A second, fresh placement succeeds; a third fails.
+        for (offset, code) in [(1, StatusCode::NO_CONTENT), (2, StatusCode::CONFLICT)] {
+            rest(
+                router,
+                "POST",
+                &route,
+                token,
+                serde_json::to_value(ActionRequest {
+                    sequence: req.sequence + offset,
+                    ..req
+                })
+                .unwrap(),
+                code,
+            )
+            .await;
+        }
     }
     for member in cluster.into_iter().flatten() {
         member.stop().await;

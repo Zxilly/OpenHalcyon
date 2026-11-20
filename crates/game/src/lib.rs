@@ -17,6 +17,7 @@ mod native_cooldown;
 mod npc_attack;
 mod npc_projectile;
 mod observer;
+mod player_actions;
 mod point_move;
 mod recording;
 mod result_frames;
@@ -92,6 +93,7 @@ impl Peer {
 }
 #[derive(Default)]
 struct Seat {
+    action_receipts: player_actions::Receipts,
     locked: bool,
     draft_sync_sent: bool,
     recommended_path: Option<u8>,
@@ -415,6 +417,14 @@ fn now() -> String {
     Utc::now().to_rfc3339()
 }
 impl MatchHost for Rooms {
+    fn local_action(
+        &self,
+        room: Uuid,
+        player: Uuid,
+        call: halcyon_protocol::player_actions::ActionCall,
+    ) -> halcyon_platform::Result<halcyon_protocol::player_actions::ActionReply> {
+        Ok(self.room_action(room, player, None, call))
+    }
     fn spectate(
         &self,
         match_id: Uuid,

@@ -26,6 +26,7 @@ pub struct Federation {
     pub(crate) membership_lock: Arc<tokio::sync::Mutex<()>>,
     pub(crate) net: Transport,
     pub(crate) offers: crate::capacity::Offers,
+    pub(crate) actions: crate::actions::Actions,
     pub(crate) chats: crate::chat::Chats,
     pub(crate) observers: crate::observation::Observers,
     stop: watch::Sender<bool>,
@@ -89,6 +90,7 @@ impl Federation {
             store,
             net,
             offers: Default::default(),
+            actions: Default::default(),
             chats: Default::default(),
             observers: Default::default(),
             stop,
@@ -345,7 +347,7 @@ impl Federation {
             128
         } else if path == "/internal/rtt" {
             16
-        } else if path == "/internal/chat" {
+        } else if matches!(path, "/internal/chat" | "/internal/player-action") {
             1024
         } else {
             MAX_BODY
@@ -402,6 +404,7 @@ impl Federation {
         }
         if parts.method == Method::POST {
             match path {
+                "/internal/player-action" => return cbor(&self.action_here(peer, decode(&body)?)?),
                 "/internal/chat" => {
                     self.chat_here(peer, decode(&body)?).await?;
                     return cbor(&());

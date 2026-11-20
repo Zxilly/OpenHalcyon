@@ -12,6 +12,7 @@ pub mod async_frame;
 mod fixed_body;
 pub use fixed_body::{DeathBody, ImpactBody, MoveCmd, PositionBody, VisibilityBody};
 pub mod ce;
+pub mod player_actions;
 pub use actor_flags::{ActorFlagChange, ActorFlags};
 mod tower_aggro;
 pub use tower_aggro::TowerAggro;

@@ -51,6 +51,8 @@ The four archived sales involve one opponent and three allies. Hourglass, Blazin
 
 ## ARAL vision devices
 
+The home-authenticated player item action endpoint submits these commands to the current room host. Its private context returns the caller’s inventory and exposed enemy cameras visible to the caller’s team. [Player API](player-api.yaml)
+
 A local actor command deploys a held Scout Trap at the hero’s feet or spends a charge on that hero’s starter Vision Totem to place a Scout Cam. All 48 original cam activations used mode 1 with an all-ones target and a matching instance in a preceding `044A`. All 29 trap activations used mode 2 with an all-ones target, two zero coordinate words and a preceding `0448`. Both used `044C`. Instance 2001 belongs separately to each hero. The server allocates every deployed object a fresh world actor ID and records its owner and team.
 
 The server joins the equipped item’s template to its mode and checks ownership, range, inventory or charges before deployment. A camera provides 10 units of allied sight for 150 seconds, becomes hidden after two seconds, and takes five visible enemy hits. Its item definition gives 7.5 placement range and two charges. The host follows the bilingual description’s 180-second sequential recharge. The separate active field named Cooldown is 150 seconds. A trap grants six units of allied sight, arms after two seconds, triggers within 1.9 units of an enemy hero and detonates 1.3 seconds later. Enemies within 3.2 units are revealed for five seconds. Trap damage falloff and damage school remain unresolved. Sight requires the local map visibility check. A room bounds live devices at 256, with admission checked before spending an instance or charge.
