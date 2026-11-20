@@ -16,6 +16,7 @@ tokio-util = { version = "0.7", features = ["codec"] }
 md-5 = "0.10"
 
 [dev-dependencies]
+stats_alloc = "0.1"
 tokio.workspace = true
 syn = { version = "2", features = ["full", "visit"] }
 serde_json.workspace = true
