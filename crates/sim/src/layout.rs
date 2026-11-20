@@ -1,6 +1,6 @@
 use super::*;
 
-/// The validation map and the measured mid-lane subset of the Android Solo map.
+/// The validation map and the measured lanes of the Android Solo map.
 #[derive(Default, Serialize)]
 pub(super) enum Layout {
     #[default]
@@ -87,14 +87,15 @@ impl Layout {
         match self {
             Self::Aral { .. } => (-95.0..=95.).contains(&p.x) && (-7.0..=21.).contains(&p.y),
             Self::Validation => nav::walkable(p),
-            Self::SoloMid { .. } => (-101.0..=101.).contains(&p.x) && (-6.0..=6.).contains(&p.y),
+            Self::SoloMid { .. } => solo_side::walkable(p),
         }
     }
 
     pub fn clear(&self, a: Position, b: Position) -> bool {
         match self {
             Self::Validation => nav::clear(a, b),
-            Self::SoloMid { .. } | Self::Aral { .. } => self.walkable(a) && self.walkable(b),
+            Self::SoloMid { .. } => solo_side::clear(a, b),
+            Self::Aral { .. } => self.walkable(a) && self.walkable(b),
         }
     }
 }
@@ -119,7 +120,7 @@ impl World {
         }
     }
 
-    /// The native Solo replay has independent, staggered home/away mid lanes.
+    /// The native Solo replay has three staggered lanes for each team.
     pub(super) fn spawn_solo_mid_wave(&mut self, events: &mut Vec<Event>) {
         let Some(elapsed) = self.tick.checked_sub(19 * TICK_HZ) else {
             return;
@@ -141,9 +142,30 @@ impl World {
             let id = self.spawn(team, Kind::Minion, stat, self.layout.wave(team, 0), false);
             events.push(Event::Spawn { id });
         }
+        let slot = (offset / TICK_HZ) as usize;
+        if slot < 4 {
+            let side_stat = if wave.is_multiple_of(4) {
+                [4, 4, 5, 7]
+            } else {
+                [4, 4, 6, 5]
+            };
+            for team in 0..2 {
+                for side in [-1, 1] {
+                    let id = self.spawn(
+                        team,
+                        Kind::Minion,
+                        side_stat[slot],
+                        solo_side::anchor(team, side),
+                        false,
+                    );
+                    self.entities.last_mut().unwrap().solo_side = side;
+                    events.push(Event::Spawn { id });
+                }
+            }
+        }
     }
 
-    /// Install the measured Solo mid-lane coordinates after team assignment and before the opening tick.
+    /// Install the measured Solo lane coordinates after team assignment and before the opening tick.
     pub fn use_solo_mid_lane(&mut self) -> Result<(), String> {
         if self.tick != 0 {
             return Err("Solo layout requires an unstarted world".into());
@@ -175,7 +197,8 @@ impl World {
                 .starting_balance = e.gold;
             e.position = self.layout.home(e);
         }
-        // Preserve the original actor namespace, including gaps for other lanes.
+        self.spawn_solo_armories();
+        // Preserve the original actor namespace, including gaps between static actors.
         for (wire, team, kind, stats, x) in [
             (2006, 0, Kind::Crystal, self.stats[2], 75.),
             (2007, 1, Kind::Crystal, self.stats[3], 75.),
@@ -189,6 +212,29 @@ impl World {
             self.next_id = wire - 1499;
             self.spawn_with_stats(team, kind, stats, point(team, x, 0.), false);
         }
+        for (wire, team, tier, x, z) in [
+            (2008, 0, 0, 21.30, -57.50),
+            (2010, 0, 0, 21.30, 57.50),
+            (2011, 1, 0, 21.30, -57.50),
+            (2013, 1, 0, 21.30, 57.50),
+            (2046, 0, 1, 49.24, -37.84),
+            (2051, 0, 2, 63., -22.41),
+            (2074, 0, 1, 49.24, 37.84),
+            (2079, 0, 2, 63., 22.41),
+            (2088, 1, 1, 49.24, -37.84),
+            (2093, 1, 2, 63., -22.41),
+            (2116, 1, 1, 49.24, 37.84),
+            (2121, 1, 2, 63., 22.41),
+        ] {
+            self.next_id = wire - 1499;
+            let stats = [
+                self.stats[1],
+                self.solo_inner_towers[0],
+                self.solo_inner_towers[1],
+            ][tier];
+            self.spawn_with_stats(team, Kind::Tower, stats, point(team, x, z), false);
+        }
+        self.entities.sort_unstable_by_key(|e| e.id);
         self.next_id = 2122 - 1499;
         Ok(())
     }
@@ -311,7 +357,9 @@ mod tests {
                 .iter()
                 .filter_map(|ev| {
                     if let Event::Spawn { id } = ev {
-                        Some(*id)
+                        w.index(*id)
+                            .filter(|i| w.entities[*i].solo_side == 0)
+                            .map(|_| *id)
                     } else {
                         None
                     }
@@ -353,6 +401,7 @@ mod tests {
         let mut w = World::new(17, 0);
         w.use_solo_mid_lane().unwrap();
         let mut wave_seen = false;
+        let mut side_towers_fired = std::collections::BTreeSet::new();
         let mut tiers_fired = std::collections::BTreeSet::new();
         while w.winner.is_none() && w.tick < 200_000 {
             let events = w.step();
@@ -361,6 +410,9 @@ mod tests {
                     && let Some(i) = w.index(*source)
                     && w.entities[i].kind == Kind::Tower
                 {
+                    if w.entities[i].position.y.abs() > 6. {
+                        side_towers_fired.insert(w.entities[i].position.y.is_sign_positive());
+                    }
                     tiers_fired.insert(w.entities[i].type_id);
                 }
             }
@@ -371,7 +423,7 @@ mod tests {
                         Event::Spawn { id } => w
                             .index(*id)
                             .map(|i| &w.entities[i])
-                            .filter(|e| e.kind == Kind::Minion),
+                            .filter(|e| e.kind == Kind::Minion && e.solo_side == 0),
                         _ => None,
                     })
                     .collect();
@@ -388,6 +440,7 @@ mod tests {
             }
         }
         assert!(wave_seen);
+        assert_eq!(side_towers_fired.len(), 2);
         assert_eq!(tiers_fired, [339, 340, 341].into_iter().collect());
         let winner = w.winner.expect("bot teams must reach a crystal victory");
         assert_eq!(w.team_scores()[winner as usize].structure_kills.crystals, 1);

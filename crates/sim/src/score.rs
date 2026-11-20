@@ -47,6 +47,9 @@ pub struct TeamMilestone {
 #[serde(rename_all = "camelCase")]
 pub struct TeamScore {
     pub structure_damage: StructureDamage,
+    pub armories_destroyed: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub first_enemy_armory_kill_seconds: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub first_enemy_outer_tower_kill_seconds: Option<f64>,
     pub hero_kills: u32,
@@ -91,7 +94,7 @@ impl PlayerScore {
                     DamageSchool::True => self.true_damage_to_heroes += hp,
                 }
             }
-            Kind::Tower | Kind::Crystal => self.damage_to_structures += hp,
+            Kind::Armory | Kind::Tower | Kind::Crystal => self.damage_to_structures += hp,
             Kind::Minion if lethal => self.lane_last_hits += 1,
             Kind::Minion => {}
         }

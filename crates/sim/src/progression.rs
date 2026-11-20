@@ -128,6 +128,14 @@ impl World {
         }
         let t = &mut self.entities[i];
         t.hp -= amount;
+        if t.kind == Kind::Armory {
+            t.respawn = self.tick
+                + if t.hp == 0. {
+                    armory::REBUILD
+                } else {
+                    armory::REGENERATE
+                };
+        }
         let id = t.id;
         if team != t.team
             && let Some(score) = src
@@ -159,13 +167,19 @@ impl World {
                     }
                 }
                 Kind::Crystal => scoring.structure_kills.crystals += 1,
+                Kind::Armory => {
+                    scoring.armories_destroyed += 1;
+                    scoring
+                        .first_enemy_armory_kill_seconds
+                        .get_or_insert(self.tick as f64 / TICK_HZ as f64);
+                }
                 _ => {}
             }
         }
         let (bounty, xp) = match kind {
             Kind::Hero => (250 + if self.first_blood { 0 } else { 125 }, 90.),
             Kind::Tower => (300, 60.),
-            Kind::Crystal => (0, 0.),
+            Kind::Crystal | Kind::Armory => (0, 0.),
             Kind::Minion => match t.type_id {
                 335 => (25, 6.),
                 337 => (60, 12.),
@@ -178,8 +192,11 @@ impl World {
         t.cast = None;
         t.status = Default::default();
         t.last_seen = None;
-        t.respawn = self.tick + RESPAWN + (self.tick / 60).min(900);
         events.push(Event::Death { id, killer: src });
+        if kind == Kind::Armory {
+            return;
+        }
+        t.respawn = self.tick + RESPAWN + (self.tick / 60).min(900);
         if kind == Kind::Crystal {
             self.winner = Some(team);
             events.push(Event::End { winner: team });

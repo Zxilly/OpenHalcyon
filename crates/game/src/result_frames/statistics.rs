@@ -61,6 +61,7 @@ pub(super) fn snapshot(world: &World) -> io::Result<Message> {
             average_level_at_ten: ten.average_level as f32,
             hero_kills_at_five: u8::try_from(five.hero_kills).unwrap_or(u8::MAX),
             hero_kills_at_ten: u8::try_from(ten.hero_kills).unwrap_or(u8::MAX),
+            first_armory_kill_time: score.first_enemy_armory_kill_seconds.unwrap_or(0.) as f32,
             first_outer_turret_kill_time: score.first_enemy_outer_tower_kill_seconds.unwrap_or(0.)
                 as f32,
             structure_kills_at_ten: u8::try_from(ten_kills.towers + ten_kills.crystals)

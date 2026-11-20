@@ -415,15 +415,21 @@ mod tests {
                     if matches!(template, 295 | 296 | 339..=341) {
                         full_structures.push(template);
                         if reconnect {
-                            let expected = match template {
-                                339 => (2060u32, 26, 3800f32),
-                                340 => (2009, 9, 3000.),
-                                341 => (2065, 27, 5000.),
-                                _ => unreachable!(),
+                            let actor = u32::from_be_bytes(m.body[8..12].try_into().unwrap());
+                            let expected = match actor {
+                                2008 => (8, 3000f32),
+                                2009 => (9, 3000.),
+                                2010 => (10, 3000.),
+                                2046 => (24, 4000.),
+                                2051 => (25, 5000.),
+                                2060 => (26, 3800.),
+                                2065 => (27, 5000.),
+                                2074 => (28, 4000.),
+                                2079 => (29, 5000.),
+                                _ => panic!("unexpected friendly tower {actor}"),
                             };
-                            assert_eq!(m.body[8..12], expected.0.to_be_bytes());
-                            assert_eq!(m.body[745], expected.1);
-                            assert_eq!(m.body[42..46], expected.2.to_be_bytes());
+                            assert_eq!(m.body[745], expected.0);
+                            assert_eq!(m.body[42..46], expected.1.to_be_bytes());
                         }
                     }
                     let id = u16::from_be_bytes(m.body[10..12].try_into().unwrap());
@@ -441,7 +447,10 @@ mod tests {
             if reconnect {
                 assert!(hero_ids.len() < 10 && hero_ids.contains(&1500));
                 full_structures.sort_unstable();
-                assert_eq!(full_structures, [339, 340, 341]);
+                assert_eq!(
+                    full_structures,
+                    [339, 339, 339, 340, 340, 340, 341, 341, 341]
+                );
                 assert_eq!(compact_structures, [295]);
             } else {
                 assert_eq!(hero_ids.len(), 10);
@@ -478,15 +487,10 @@ mod tests {
                     room.world
                         .entities
                         .iter()
-                        .filter(|e| {
-                            e.team == 0
-                                && matches!(
-                                    e.kind,
-                                    halcyon_sim::Kind::Tower | halcyon_sim::Kind::Crystal
-                                )
-                        })
+                        .filter(|e| e.team == 0 && crate::compact::structure_slot(e).is_some())
                         .map(|e| {
                             (
+                                crate::compact::structure_slot(e).unwrap(),
                                 u32::from(e.type_id),
                                 u32::from(messages::wire_id(e.id)),
                                 e.hp,
@@ -495,22 +499,13 @@ mod tests {
                         })
                         .collect()
                 };
-                assert_eq!(expected.len(), 4);
-                for (template, actor, hp, max_hp) in expected {
+                assert_eq!(expected.len(), 13);
+                for (slot, template, actor, hp, max_hp) in expected {
                     let m = next(&mut socket, &cipher).await;
                     assert_eq!(m.opcode, 0x3f2);
                     assert_eq!(m.body.len(), 126);
                     assert_eq!(m.body[121], 1);
-                    assert_eq!(
-                        m.body[116],
-                        match template {
-                            295 => 6,
-                            340 => 9,
-                            339 => 26,
-                            341 => 27,
-                            _ => unreachable!(),
-                        }
-                    );
+                    assert_eq!(m.body[116], slot);
                     assert_eq!(
                         u32::from_be_bytes(m.body[0..4].try_into().unwrap()),
                         template
@@ -559,7 +554,7 @@ mod tests {
                     room.world
                         .entities
                         .iter_mut()
-                        .find(|e| e.type_id == 339 && e.team == 0)
+                        .find(|e| e.id == 2060 - 1499)
                         .unwrap()
                         .hp = 3800.;
                 }

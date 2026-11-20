@@ -56,8 +56,11 @@ positive zero. The other 25 structures use bits `0x3d75be29`. The forward
 vectors preserve signed zero and asymmetric angle rounding.
 
 All 26 slots occur in each of the 14 chunks. The codec describes the opening.
-For example, later VainNode snapshots vary at offsets 76 and 80. Side-lane
-structure behavior and VainNode combat are outside the mid-lane simulation.
+All six VainNodes now spawn as authoritative Solo armories. Their stable
+wire actors are 2000 through 2005, one per slot in order. Slot zero is
+accepted for actor 2000 with template 297. Later VainNode snapshots vary at
+offsets 76 and 80. A later scene entry therefore uses the full declaration
+with current HP, the fixed registration, skin and pose. [Armory rules](solo-armories.md)
 
 ## Lane minions in the Solo recording
 

@@ -3,6 +3,7 @@
 mod ai;
 mod aral;
 mod aral_inventory;
+mod armory;
 pub use aral_inventory::{ARAL_ITEM_CAPACITY, AralInventory, AralItem};
 mod chakram;
 mod combat;
@@ -15,6 +16,7 @@ mod progression;
 mod score;
 mod shop;
 mod solo_route;
+mod solo_side;
 use combat::{AbilityBook, Cast, SpellEffect, Status};
 pub use combat::{AbilitySlot, CastTarget};
 use halcyon_data::{GameData, Unit};
@@ -67,6 +69,7 @@ pub enum Kind {
     Minion,
     Tower,
     Crystal,
+    Armory,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum Command {
@@ -279,6 +282,9 @@ pub struct Entity {
     lane_step: Option<(Position, Option<u32>)>,
     #[serde(skip)]
     solo_route_index: u8,
+    /// Solo side-lane assignment (-1, 0 mid, +1).
+    #[serde(skip)]
+    pub solo_side: i8,
     #[serde(skip)]
     stats: Stats,
     #[serde(skip)]
@@ -392,6 +398,9 @@ impl World {
                 ),
             )
             .expect("finite simulation entity");
+            if e.solo_side != 0 {
+                hash.update(e.solo_side.to_be_bytes());
+            }
             if e.solo_route_index != 0 {
                 hash.update([e.solo_route_index]);
             }
@@ -643,6 +652,7 @@ impl World {
             last_seen: None,
             lane_step: None,
             solo_route_index: 0,
+            solo_side: 0,
             path: Default::default(),
             stats: s,
             order: Command::Stop,
@@ -728,11 +738,15 @@ impl World {
                     && e.order == Command::MoveTo(p)
                     && p == self.layout.objective(1 - e.team) =>
             {
-                Some(solo_route::march(e, p))
+                if e.solo_side == 0 {
+                    Some(solo_route::march(e, p))
+                } else {
+                    let marker = solo_side::march(e, p);
+                    solo_side::steer(e.position, marker)
+                }
             }
-            Layout::SoloMid { .. } | Layout::Aral { .. } => {
-                self.layout.clear(e.position, p).then_some(p)
-            }
+            Layout::SoloMid { .. } => solo_side::steer(e.position, p),
+            Layout::Aral { .. } => self.layout.clear(e.position, p).then_some(p),
         };
         let Some(waypoint) = next else {
             return;
@@ -847,6 +861,10 @@ impl World {
             let i = (first + offset) % n;
             let e = &mut self.entities[i];
             e.lane_step = None;
+            if e.kind == Kind::Armory {
+                self.advance_armory(i, events);
+                continue;
+            }
             if e.hp <= 0. {
                 if e.kind == Kind::Hero && e.respawn <= self.tick {
                     e.hp = e.max_hp;
@@ -971,6 +989,14 @@ impl World {
                         continue;
                     }
                     if e.winding.unwrap().0 > self.tick {
+                        continue;
+                    }
+                    if e.kind == Kind::Crystal
+                        && matches!(self.layout, Layout::SoloMid { .. })
+                        && self.living_armories(e.team) == 0
+                    {
+                        self.entities[i].order = Command::Stop;
+                        self.entities[i].winding = None;
                         continue;
                     }
                     let source = e.id;

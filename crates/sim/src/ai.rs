@@ -55,7 +55,7 @@ impl World {
                 Kind::Tower | Kind::Crystal if e.kind == Kind::Minion => 0,
                 Kind::Hero => 1,
                 Kind::Minion => 2,
-                Kind::Tower => 3,
+                Kind::Tower | Kind::Armory => 3,
                 Kind::Crystal => 4,
             };
             let stick = if e.order == Command::Attack(t.id) {
@@ -136,6 +136,31 @@ impl World {
                 && e.position.dist(point) > 1.
             {
                 return Command::MoveTo(point);
+            }
+            if matches!(self.layout, Layout::SoloMid { .. }) {
+                let side = match ((e.id - 1) / 2) % 3 {
+                    0 => 0,
+                    1 => -1,
+                    _ => 1,
+                };
+                if let Some(front) = self
+                    .entities
+                    .iter()
+                    .filter(|ally| {
+                        ally.kind == Kind::Minion
+                            && ally.team == e.team
+                            && ally.hp > 0.
+                            && ally.solo_side == side
+                    })
+                    .max_by(|a, b| a.position.dist(home).total_cmp(&b.position.dist(home)))
+                {
+                    return Command::MoveTo(front.position);
+                }
+                return Command::MoveTo(if side == 0 {
+                    enemy
+                } else {
+                    solo_side::anchor(e.team, side)
+                });
             }
             if let Some(front) = self.rally[e.team as usize] {
                 return Command::MoveTo(front.advance(home, 1.5));

@@ -41,10 +41,19 @@ impl View {
                 0x03f3 => m.body.get(745),
                 _ => continue,
             };
-            let Some(&slot @ 1..=199) = slot else {
+            let Some(&slot @ 0..=199) = slot else {
                 continue;
             };
             let wire = u32::from_be_bytes(m.body[8..12].try_into().unwrap());
+            // Full declarations may use zero as an unset slot. Only the Solo
+            // template-297 armory has a verified real registration there.
+            if slot == 0
+                && !(wire == 2000
+                    && (m.opcode == 0x3f2 && m.body[..4] == 297u32.to_be_bytes()
+                        || m.opcode == 0x3f3 && m.body[2..4] == 297u16.to_be_bytes()))
+            {
+                continue;
+            }
             let Some(id) = wire.checked_sub(1499) else {
                 continue;
             };
@@ -284,6 +293,21 @@ mod tests {
         let mut out = Vec::new();
         view.append(world, visible, &mut out);
         out.iter().map(|m| TowerAggro::decode(m).unwrap()).collect()
+    }
+
+    #[test]
+    fn native_slot_zero_is_reserved_for_the_declared_solo_armory() {
+        let mut view = View::default();
+        let mut armory = halcyon_protocol::SoloStructure::at_slot(0)
+            .unwrap()
+            .message(2000);
+        view.declarations(std::slice::from_ref(&armory));
+        assert_eq!(view.slot(501), Some(0));
+        armory.body[8..12].copy_from_slice(&2001u32.to_be_bytes());
+        view.declarations(&[armory, declaration(1, 0)]);
+        assert_eq!(view.slot(501), Some(0));
+        assert_eq!(view.slot(502), None);
+        assert_eq!(view.slot(1), None);
     }
 
     #[test]

@@ -90,6 +90,14 @@ impl ActorSlots {
                 let facing: f32 = if entity.team == 0 { 1. } else { -1. };
                 message.body[30..34].copy_from_slice(&facing.to_be_bytes());
             }
+            if entity.kind == Kind::Armory {
+                let profile = halcyon_protocol::SoloStructure::at_slot(slot)
+                    .expect("fixed Solo armory slot")
+                    .message(u32::from(messages::wire_id(entity.id)));
+                message.body[4..8].copy_from_slice(&profile.body[4..8]);
+                message.body[22..26].copy_from_slice(&profile.body[16..20]);
+                message.body[30..42].copy_from_slice(&profile.body[24..36]);
+            }
             if entity.kind == Kind::Hero {
                 messages::solo_hero_profile(&mut message, entity, world.tick);
                 super::hero_progress::set_spawn(world, &mut message, entity);
@@ -192,14 +200,16 @@ mod tests {
             assert!(compact::recordable_minion_birth(b));
             assert_eq!(
                 b[12..16],
-                (if e.team == 0 { -70f32 } else { 70f32 }).to_be_bytes()
+                ((if e.solo_side == 0 { 70f32 } else { 75f32 })
+                    * (if e.team == 0 { -1. } else { 1. }))
+                .to_be_bytes()
             );
             assert_eq!(b[16..20], 0x3d75_be29u32.to_be_bytes());
             assert_eq!(b[24..36], [0, 0, 0, 0, 0, 0, 0, 0, 0x3f, 0x80, 0, 0]);
             assert_eq!(b[36..88], [0; 52]);
             assert_eq!(
                 [b[117], b[119], b[120], b[121]],
-                [1, 1, if e.team == 0 { 1 } else { 4 }, e.team + 1]
+                [1, 1, (3 * e.team as i8 + 1 + e.solo_side) as u8, e.team + 1]
             );
             let mut live = e.clone();
             live.hp -= 17.;

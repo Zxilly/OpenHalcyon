@@ -4,10 +4,27 @@ use halcyon_sim::{Entity, Kind};
 use super::messages::wire_id;
 
 const BODY_LEN: usize = 122;
-/// Native Solo mid-lane slots. Other lanes share the template but have
-/// different registrations and are not part of the authoritative layout.
+/// Fixed native Solo structure slots. Towers on different lanes share templates.
 pub(super) fn structure_slot(e: &Entity) -> Option<u8> {
     match (e.kind, e.type_id, e.team) {
+        (Kind::Tower, 340, 0) if e.id == 2008 - 1499 => Some(8),
+        (Kind::Tower, 340, 0) if e.id == 2010 - 1499 => Some(10),
+        (Kind::Tower, 340, 1) if e.id == 2011 - 1499 => Some(11),
+        (Kind::Tower, 340, 1) if e.id == 2013 - 1499 => Some(13),
+        (Kind::Tower, 339, 0) if e.id == 2046 - 1499 => Some(24),
+        (Kind::Tower, 341, 0) if e.id == 2051 - 1499 => Some(25),
+        (Kind::Tower, 339, 0) if e.id == 2074 - 1499 => Some(28),
+        (Kind::Tower, 341, 0) if e.id == 2079 - 1499 => Some(29),
+        (Kind::Tower, 339, 1) if e.id == 2088 - 1499 => Some(30),
+        (Kind::Tower, 341, 1) if e.id == 2093 - 1499 => Some(31),
+        (Kind::Tower, 339, 1) if e.id == 2116 - 1499 => Some(34),
+        (Kind::Tower, 341, 1) if e.id == 2121 - 1499 => Some(35),
+
+        (Kind::Armory, 297, team)
+            if (501..=506).contains(&e.id) && u32::from(team) == (e.id - 501) / 3 =>
+        {
+            Some((e.id - 501) as u8)
+        }
         (Kind::Crystal, 295, 0) => Some(6),
         (Kind::Crystal, 296, 1) => Some(7),
         (Kind::Tower, 340, 0) => Some(9),
@@ -23,7 +40,7 @@ pub(super) fn structure_slot(e: &Entity) -> Option<u8> {
 /// Towers acquire dynamic pose and timer fields after the first tick.
 /// All fourteen crystal snapshots retain the compact profile.
 pub(super) fn structure(tick: u64, e: &Entity) -> Option<Message> {
-    if (e.kind == Kind::Tower && tick != 0)
+    if (matches!(e.kind, Kind::Tower | Kind::Armory) && tick != 0)
         || !(1..=u32::from(u16::MAX) - 1500).contains(&e.id)
         || !e.hp.is_finite()
         || !e.max_hp.is_finite()
@@ -50,6 +67,20 @@ pub(super) fn recordable_mid_structure(body: &[u8]) -> bool {
         return false;
     }
     let wire = match body[116] {
+        8 => 2008,
+        10 => 2010,
+        11 => 2011,
+        13 => 2013,
+        24 => 2046,
+        25 => 2051,
+        28 => 2074,
+        29 => 2079,
+        30 => 2088,
+        31 => 2093,
+        34 => 2116,
+        35 => 2121,
+
+        slot @ 0..=5 => 2000 + u32::from(slot),
         6 => 2006,
         7 => 2007,
         9 => 2009,
@@ -62,7 +93,12 @@ pub(super) fn recordable_mid_structure(body: &[u8]) -> bool {
     };
     let hp = f32::from_be_bytes(body[36..40].try_into().unwrap());
     let max = f32::from_be_bytes(body[40..44].try_into().unwrap());
-    if !hp.is_finite() || !max.is_finite() || hp <= 0. || hp > max || body[116] >= 8 && hp != max {
+    if !hp.is_finite()
+        || !max.is_finite()
+        || hp <= 0.
+        || hp > max
+        || !matches!(body[116], 6 | 7) && hp != max
+    {
         return false;
     }
     let expected = halcyon_protocol::SoloStructure::at_slot(body[116])
@@ -72,18 +108,20 @@ pub(super) fn recordable_mid_structure(body: &[u8]) -> bool {
 }
 
 /// Fresh births use the native template defaults at the measured route anchor.
-fn pristine_minion(template: u32, actor: u32, slot: u8, team: u8) -> Message {
+fn pristine_minion(template: u32, actor: u32, slot: u8, team: u8, side: i8) -> Message {
     let mut b = [0; BODY_LEN];
     put_word(&mut b, 0, template);
     put_word(&mut b, 4, 0xeb39ce55);
     put_word(&mut b, 8, actor);
-    put_word(&mut b, 12, if team == 0 { -70f32 } else { 70f32 }.to_bits());
+    let x = if side == 0 { 70f32 } else { 75f32 };
+    put_word(&mut b, 12, if team == 0 { -x } else { x }.to_bits());
+    put_word(&mut b, 20, (5. * f32::from(side)).to_bits());
     put_word(&mut b, 16, 0x3d75_be29);
     put_word(&mut b, 32, 1f32.to_bits());
     b[88..96].fill(1);
     b[97 + usize::from(team)] = 1;
     put_word(&mut b, 112, u32::MAX);
-    b[116..122].copy_from_slice(&[slot, 1, 0, 1, if team == 0 { 1 } else { 4 }, team + 1]);
+    b[116..122].copy_from_slice(&[slot, 1, 0, 1, (3 * team as i8 + 1 + side) as u8, team + 1]);
     Message::new(0x3f2, b)
 }
 
@@ -93,9 +131,11 @@ pub(super) fn recordable_minion_birth(b: &[u8]) -> bool {
     }
     let template = u32::from_be_bytes(b[..4].try_into().unwrap());
     let actor = u32::from_be_bytes(b[8..12].try_into().unwrap());
-    matches!(template, 335..=338)
+    let side = i16::from(b[120]) - 3 * i16::from(b[121] - 1) - 1;
+    (-1..=1).contains(&side)
+        && matches!(template, 335..=338)
         && (2122..65535).contains(&actor)
-        && pristine_minion(template, actor, b[116], b[121] - 1).body == b
+        && pristine_minion(template, actor, b[116], b[121] - 1, side as i8).body == b
 }
 
 /// Subsequent visibility entries and reconnects carry current numeric state.
@@ -121,6 +161,7 @@ pub(super) fn minion(entity: &Entity, slot: u8, fresh: bool) -> Option<Message> 
             u32::from(wire_id(entity.id)),
             slot,
             entity.team,
+            entity.solo_side,
         ));
     }
     let mut body = [0; BODY_LEN];
@@ -146,7 +187,7 @@ pub(super) fn minion(entity: &Entity, slot: u8, fresh: bool) -> Option<Message> 
     put_word(&mut body, 112, u32::MAX);
     body[116] = slot;
     body[119] = 1;
-    body[120] = if entity.team == 0 { 1 } else { 4 };
+    body[120] = (3 * entity.team as i8 + 1 + entity.solo_side) as u8;
     body[121] = entity.team + 1;
     Some(Message::new(0x03f2, body))
 }
@@ -178,13 +219,26 @@ mod tests {
             let b = &message.body;
             assert_eq!((message.opcode, b.len()), (0x03f2, 122));
             assert_eq!(word(b, 0), u32::from(entity.type_id));
-            assert_eq!(word(b, 4), 0xc10b41da);
+            assert_eq!(
+                word(b, 4),
+                if entity.kind == Kind::Armory {
+                    0x4a2eed42
+                } else {
+                    0xc10b41da
+                }
+            );
             assert_eq!(word(b, 8), u32::from(wire_id(entity.id)));
             assert_eq!(word(b, 12), entity.position.x.to_bits());
             assert_eq!(word(b, 20), entity.position.y.to_bits());
             assert_eq!(
                 word(b, 24),
-                if entity.team == 0 { 1.0_f32 } else { -1.0 }.to_bits()
+                word(
+                    &halcyon_protocol::SoloStructure::at_slot(b[116])
+                        .unwrap()
+                        .message(word(b, 8))
+                        .body,
+                    24
+                )
             );
             assert_eq!(word(b, 36), entity.hp.to_bits());
             assert_eq!(word(b, 40), entity.max_hp.to_bits());
@@ -193,7 +247,8 @@ mod tests {
             slots.push(b[116]);
         }
         slots.sort_unstable();
-        assert_eq!(slots, [6, 7, 9, 12, 26, 27, 32, 33]);
+        let expected: Vec<_> = (0..14).chain(24..36).collect();
+        assert_eq!(slots, expected);
     }
 
     #[test]
@@ -210,7 +265,7 @@ mod tests {
         let side_lane = halcyon_protocol::SoloStructure::at_slot(25)
             .unwrap()
             .message(2051);
-        assert!(!recordable_mid_structure(&side_lane.body));
+        assert!(recordable_mid_structure(&side_lane.body));
     }
 
     #[test]

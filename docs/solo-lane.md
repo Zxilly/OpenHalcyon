@@ -1,4 +1,4 @@
-# Solo mid-lane simulation
+# Solo lane simulation
 
 The Android CE 147219 Solo recording provides positions in native X/Z world units. The two-dimensional simulator stores these as `Position.x` and `Position.y`. A host can select the layout with `World::use_solo_mid_lane()` after assigning the five heroes on each team, before the first simulation tick. A second call before the first tick preserves the existing layout. Reconnection uses the running world's existing positions.
 
@@ -13,7 +13,7 @@ The Android CE 147219 Solo recording provides positions in native X/Z world unit
 
 The opening hero placements correspond to slots 14–18 and 19–23. Ownership and actor IDs remain those of the matchmaking roster, including when seats from the two teams alternate. In all 14 local replay chunks combined, compact minion declarations with mask 1 at body offset 117 and routes 1 or 4 at offset 120 contained 25 creation records per side. Their Z was always zero and the recorded vertical height was approximately 0.06. Mask-0 hydration records carry a moving actor's current position and are excluded from the spawn measurement.
 
-Navigation uses a straight, unobstructed mid-lane corridor bounded by X ±101 and Z ±6. These bounds are a project approximation based on the measured opening extrema. The simulator implements all three mid towers and the crystal on each side. Vision, movement checks, bot rallying and retreat, ability range checks and attacks use these same world positions. Each hero respawns at its assigned opening slot. Base regeneration and the shop use the existing three-unit radius around each friendly opening pad. Mid-lane wave timing follows the native replay clock. Side lanes, jungle geometry and original terrain collision are outside this layout.
+Navigation uses a straight, unobstructed mid-lane corridor bounded by X ±101 and Z ±6. These bounds are a project approximation based on the measured opening extrema. The simulator implements all three mid towers and the crystal on each side. Vision, movement checks, bot rallying and retreat, ability range checks and attacks use these same world positions. Each hero respawns at its assigned opening slot. Base regeneration and the shop use the existing three-unit radius around each friendly opening pad. Mid-lane wave timing follows the native replay clock. Side roads follow the paths below. Original jungle geometry and terrain collision remain unverified.
 
 Run `cargo test --locked -p halcyon-sim --lib layout::tests` to check the team slots, shop range, movement, vision, cast cooldown and respawn. The bot test follows the first wave and advances both teams until one actually destroys the opposing crystal.
 
@@ -70,3 +70,11 @@ combat skips markers it has passed, and reconnecting uses its current state.
 A march step reads one destination in steady state. Each waypoint can be
 retired only once, at most 16 or 19 per actor over its lifetime; marching
 spends no pathfinding search budget.
+
+## Side lanes
+
+The 14 Solo chunks contain 80 side-lane births, 20 each on routes 0, 2, 3 and 5. Their anchors are X ±75 and Z ±5. At 19 seconds and every 25 seconds thereafter, each side lane creates one minion per second for four seconds. The first three waves and the fifth use templates 336, 336, 337, 335. The fourth uses 336, 336, 335, 338. The host repeats this four-wave pattern beyond the five recorded waves. Each minion retains its lane assignment when chasing, reentering sight and reconnecting.
+
+All 20 minions on each route agree on the first eight directed destinations. The two west routes share a longer 22-point sequence with opposite signs for Z. The east routes share the reflected first 17. Beyond the observed movement, the host continues along the opposite recorded road in reverse. A five-unit corridor around each polyline is a local movement and sight rule. It keeps lane fights reachable without opening paths through the unmeasured interior. Heroes can click ahead on either road. Bot heroes split across lanes and rally to a living minion on their assigned lane.
+
+The 12 side towers use their own original actors, slots and tower tier. Each team has outer towers at absolute X/Z (21.30, 57.50), middle towers at (49.24, 37.84) and armory towers at (63.00, 22.41), on both sides of mid. All 12 can fire, take damage and be destroyed. Opening declarations use the measured poses. Reconnection carries current health for each visible tower.
