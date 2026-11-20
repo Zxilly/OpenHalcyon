@@ -71,7 +71,7 @@ pub struct HostedMatch {
 /// Persist a native request to close this exact spectator grant.
 pub type SpectatorExit = Arc<dyn Fn(Uuid) -> Result<()> + Send + Sync>;
 
-pub use halcyon_data::player_actions;
+pub use halcyon_protocol::player_actions;
 
 /// Implementations must make repeated reservations for the same match id idempotent.
 pub trait MatchHost: Send + Sync + 'static {

@@ -9,6 +9,7 @@ repository.workspace = true
 strum = { version = "0.27", features = ["derive"] }
 async-trait = "0.1"
 halcyon-data = { path = "../data" }
+halcyon-protocol = { path = "../protocol" }
 argon2 = "0.5"
 axum = { version = "0.8", features = ["ws"] }
 halcyon-community = { path = "../community" }

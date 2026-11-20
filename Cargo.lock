@@ -1188,6 +1188,7 @@ dependencies = [
  "axum",
  "halcyon-community",
  "halcyon-data",
+ "halcyon-protocol",
  "rusqlite",
  "serde",
  "serde_json",
