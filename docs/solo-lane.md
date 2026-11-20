@@ -34,13 +34,20 @@ original rotating aim and timer fields for arbitrary runtime states remain
 unverified. Crystals retain their compact geometry across all fourteen chunks.
 
 At the first running tick the server sends the compact declarations, then the
-self-sourced `043F` applications for the structures visible to that player.
-The pristine home side receives 38 applications across 13 structures. Across
-both sides the recording contains 76 applications on 26 structures. Their
-34-byte prefixes match in all 14 chunks. The recorder accepts the matching
-actor, definition, instance, duration, stack and extension fields. Another
-18 opening applications use definition 205 and source `FFFFFFFF`; those
-instances and their lifetimes are still unimplemented.
+`043F` effects for structures visible to that player. The home side receives
+47 applications across 13 structures. Across the map the 4.000 s opening
+contains 94 applications on 26 structures. Of these, 76 refer to the same
+actor as source and target. Another 18 use definition 205 and source
+`FFFFFFFF` on nodes, middle towers and armory towers. Each follows the three
+self-sourced effects on that structure. The ordered 34-byte prefixes have
+SHA-256 `bf7618cbe20157483de2b0ad6978cd534ffff64514c710aa604981dbbbf3e350`.
+
+The two crystals first acquire definition 205 at 5.116104 s, through three
+`043E` pairs of definitions 205 and 180 per crystal, away before home.
+The next 13 replay chunks restore definition 205 with three stacks on each
+crystal. These later crystal updates and the effects of destroyed structures
+remain unimplemented. None of the 14 chunks records the death of a target
+structure or cancellation of its opening instance.
 
 ### Mid-lane waves
 

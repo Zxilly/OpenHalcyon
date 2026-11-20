@@ -1,7 +1,9 @@
-//! Self-sourced structure effects observed on pristine native maps.
+//! Initial structure effects observed on pristine native maps.
 use crate::{Batch, Message, Opcode};
 use halcyon_protocol::{BuffApplication, BuffExtras, BuffPrefix, Fields, SoloStructure};
 
+const MAP_SOURCE: u32 = u32::MAX;
+const MAP_STRUCTURE_EFFECT: u16 = 205;
 const DURATION: u16 = 0xbc00;
 const EXTRAS: BuffExtras = BuffExtras {
     stacks: 1,
@@ -13,6 +15,7 @@ pub(super) struct Opening {
     actor: u32,
     first_instance: u32,
     definitions: &'static [u16],
+    map_instance: Option<u32>,
 }
 
 impl Opening {
@@ -26,6 +29,7 @@ impl Opening {
             actor,
             first_instance: actor + 19 + 5 * u32::from(local - 3) + 27 * u32::from(side),
             definitions: &[194, 198, 204],
+            map_instance: None,
         })
     }
 
@@ -42,6 +46,11 @@ impl Opening {
             actor,
             first_instance,
             definitions,
+            map_instance: match slot {
+                0..=5 => Some(2169 - u32::from(slot)),
+                24..=35 => Some(2152 + 2 * u32::from((35 - slot) / 2) + u32::from(slot % 2)),
+                _ => None,
+            },
         })
     }
 
@@ -60,6 +69,13 @@ impl Opening {
                 instance: self.first_instance + ordinal as u32,
                 definition,
             })
+            .chain(self.map_instance.map(|instance| BuffPrefix {
+                target: self.actor,
+                source: MAP_SOURCE,
+                duration_bits: DURATION,
+                instance,
+                definition: MAP_STRUCTURE_EFFECT,
+            }))
     }
 
     pub(super) fn messages(self) -> impl Iterator<Item = Message> {
@@ -90,8 +106,7 @@ pub(super) fn recordable(message: &Message) -> bool {
         return false;
     };
     let p = effect.prefix;
-    if p.target != p.source
-        || p.duration_bits != DURATION
+    if p.duration_bits != DURATION
         || effect.extras != Some(EXTRAS)
         || !matches!(effect.suffix, [] | [0, 0, 0, 0])
     {
@@ -113,12 +128,12 @@ mod tests {
     use sha2::{Digest, Sha256};
 
     #[test]
-    fn solo_opening_reproduces_all_self_sourced_structure_prefixes() {
+    fn solo_opening_reproduces_all_initial_structure_prefixes() {
         let mut groups: Vec<_> = (0..36).filter_map(Opening::solo).collect();
         let mut messages = Vec::new();
         append_solo(&mut messages, &mut groups);
         assert_eq!(groups.len(), 26);
-        assert_eq!(messages.len(), 76);
+        assert_eq!(messages.len(), 94);
         let mut digest = Sha256::new();
         for mut m in messages {
             assert!(recordable(&m));
@@ -128,7 +143,7 @@ mod tests {
         }
         assert_eq!(
             format!("{:x}", digest.finalize()),
-            "6f0364b0d4320ee94eafb96c44e3ebb97b3cc5520d6a4ff5a374a7a1e6cc06d0"
+            "bf7618cbe20157483de2b0ad6978cd534ffff64514c710aa604981dbbbf3e350"
         );
     }
 }

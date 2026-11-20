@@ -670,7 +670,7 @@ mod tests {
                     );
                 }
                 let mut applications = std::collections::BTreeMap::new();
-                for _ in 0..38 {
+                for _ in 0..47 {
                     let m = next(&mut socket, &cipher).await;
                     assert!(crate::structure_effects::recordable(&m));
                     let Fields::BuffApplication(effect) = m.fields().unwrap() else {
