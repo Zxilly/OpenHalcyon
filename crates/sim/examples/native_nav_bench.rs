@@ -1,5 +1,5 @@
 use halcyon_data::{BotDifficulty, GameData, NavMesh};
-use halcyon_sim::World;
+use halcyon_sim::{AbilitySlot, Event, World};
 use std::{hint::black_box, path::Path, time::Instant};
 
 fn mix(hash: &mut u64, bits: u32) {
@@ -72,12 +72,22 @@ fn run(mesh: &NavMesh, work: &str, reps: usize) {
         start.elapsed().as_secs_f64() * 1e9 / (inputs.len() * reps) as f64
     );
 }
-fn match_run(data: &GameData) {
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Roster {
+    Navigation,
+    Effects,
+}
+
+fn match_run(data: &GameData, roster: Roster) {
     let mut world = World::from_data(0, 0, data).unwrap();
-    let teams = [
+    let mut teams = [
         ["Amael", "Inara", "Ardan", "Tony", "Varya"],
         ["Skye", "Alpha", "Tony", "Idris", "Baron"],
     ];
+    if roster == Roster::Effects {
+        teams[0][0] = "Adagio";
+        teams[1][0] = "Lyra";
+    }
     for i in 0..10 {
         world.select_hero(i, teams[i % 2][i / 2], data).unwrap();
     }
@@ -88,9 +98,29 @@ fn match_run(data: &GameData) {
     world.install_native_camps(data).unwrap();
     world.set_bot_difficulty(Some(BotDifficulty::Medium));
     let mut digest = String::new();
+    let adagio = world.entities[0].id;
+    let lyra = world.entities[1].id;
+    let (mut gifts, mut bulwarks) = (0, 0);
     let start = Instant::now();
     while world.tick < 200_000 && world.winner.is_none() {
-        black_box(world.step());
+        let events = black_box(world.step());
+        if roster == Roster::Effects {
+            for event in events {
+                match event {
+                    Event::Cast {
+                        source,
+                        slot: AbilitySlot::A,
+                        ..
+                    } if source == adagio => gifts += 1,
+                    Event::Cast {
+                        source,
+                        slot: AbilitySlot::B,
+                        ..
+                    } if source == lyra => bulwarks += 1,
+                    _ => {}
+                }
+            }
+        }
         if world.tick.is_multiple_of(1000) {
             digest.push_str(&world.state_digest());
         }
@@ -107,13 +137,21 @@ fn match_run(data: &GameData) {
         world.state_digest()
     );
     assert!(world.winner.is_some());
+    if roster == Roster::Effects {
+        assert!(
+            gifts > 0 && bulwarks > 0,
+            "expected both effect families to be exercised"
+        );
+        println!("effect_casts,gift_of_fire,{gifts},bright_bulwark,{bulwarks}");
+    }
 }
 fn main() {
     let args: Vec<_> = std::env::args().collect();
     let data = GameData::load_with_extra(&args[1], Some(Path::new(&args[2]))).unwrap();
-    if args[3] == "room" {
-        match_run(&data);
-        return;
+    match args[3].as_str() {
+        "room" => return match_run(&data, Roster::Navigation),
+        "room-effects" => return match_run(&data, Roster::Effects),
+        _ => {}
     }
     let maps = data.native_maps().unwrap();
     for layout in [maps.solo().unwrap(), maps.aral().unwrap()] {
