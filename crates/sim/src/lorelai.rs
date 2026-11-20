@@ -25,7 +25,7 @@ impl Pool {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(bevy_ecs::prelude::Component, Clone, Copy, Debug, Serialize)]
 pub(super) struct Water {
     owner: u32,
     team: u8,
@@ -77,16 +77,18 @@ impl World {
         let owner = e.id;
         let team = e.team;
         let bonus_hp = e.bonus_hp.max(0.);
-        let standing = self.water.iter().position(|w| {
-            w.owner == owner
-                && w.start <= self.tick
-                && self.tick < w.start + DURATION
-                && e.position.dist(w.position) <= w.pool.radius()
-        });
-        let empowered = standing.is_some();
-        if let Some(i) = standing {
-            self.water.remove(i);
-        }
+        let center = e.position;
+        let tick = self.tick;
+        let empowered = self
+            .entities
+            .remove_spell::<Water>(|w| {
+                w.owner == owner
+                    && w.start <= tick
+                    && tick < w.start + DURATION
+                    && center.dist(w.position) <= w.pool.radius()
+            })
+            .is_some();
+        let e = &self.entities[caster];
         let rules = self.abilities.lorelai.as_ref();
         let splash_rank = if slot == AbilitySlot::B {
             rank
@@ -201,7 +203,7 @@ impl World {
         if skip_pool {
             return;
         }
-        self.water.push(Water {
+        self.entities.spawn_spell(Water {
             owner,
             team,
             position,
@@ -212,94 +214,106 @@ impl World {
     }
 
     pub(super) fn advance_water(&mut self, events: &mut Vec<Event>) {
-        if self.water.is_empty() {
-            return;
+        self.advance_spell_family::<Water>(events);
+    }
+}
+
+impl crate::persistent_spells::TimedSpell for Water {
+    fn expired_before_step(&self, tick: u64) -> bool {
+        tick >= self.start + DURATION
+    }
+    fn begin_impact(&mut self) -> Self {
+        *self
+    }
+    fn advance(&mut self, world: &mut World, events: &mut Vec<Event>) -> bool {
+        if world.winner.is_some() {
+            return false;
         }
-        let mut water = std::mem::take(&mut self.water);
-        water.retain_mut(|w| {
-            if self.tick >= w.start + DURATION || self.winner.is_some() {
-                return false;
+        if let Some(id) = self.follows {
+            if let Some(i) = world.index(id) {
+                self.position = world.entities[i].position;
             }
-            if let Some(id) = w.follows {
-                if let Some(i) = self.index(id) {
-                    w.position = self.entities[i].position;
+            if world.tick >= self.start {
+                self.follows = None;
+            }
+        }
+        if world.tick < self.start {
+            return true;
+        }
+        let elapsed = world.tick - self.start;
+        if matches!(self.pool, Pool::Fish { .. }) && !elapsed.is_multiple_of(TICK_HZ) {
+            return true;
+        }
+        let cp = world
+            .index(self.owner)
+            .map_or(0., |i| world.entities[i].item_stats.crystal);
+        let pierce = world
+            .index(self.owner)
+            .map_or(0., |i| world.entities[i].item_stats.shield_pierce);
+        for i in 0..world.entities.len() {
+            let e = &mut world.entities[i];
+            if e.hp <= 0.
+                || !matches!(e.kind, Kind::Hero | Kind::Minion)
+                || (e.position.x - self.position.x).abs() > self.pool.radius()
+                || e.position.dist(self.position) > self.pool.radius()
+                || !world.layout.clear(self.position, e.position)
+            {
+                continue;
+            }
+            match self.pool {
+                Pool::Fish { rank, stun } if e.team != self.team => {
+                    if elapsed == 0 {
+                        e.status.stun_until = e.status.stun_until.max(world.tick + stun);
+                        e.winding = None;
+                        e.cast = None;
+                        e.status.channel = 0;
+                        e.status.channel_until = 0;
+                    }
+                    let raw = if let Some(rules) = &world.abilities.lorelai {
+                        (if elapsed == 0 {
+                            &rules.impact
+                        } else {
+                            &rules.per_second
+                        })
+                        .at(rank, cp, 0.)
+                    } else if elapsed == 0 {
+                        80. + 35. * rank as f32
+                    } else {
+                        [55., 95., 135., 175., 255.][rank]
+                    };
+                    let damage = shop::mitigated(raw, e.stats.shield, pierce);
+                    world.hurt(
+                        self.owner,
+                        self.team,
+                        i,
+                        damage,
+                        DamageSchool::Crystal,
+                        events,
+                    );
                 }
-                if self.tick >= w.start {
-                    w.follows = None;
-                }
-            }
-            if self.tick < w.start {
-                return true;
-            }
-            let elapsed = self.tick - w.start;
-            if matches!(w.pool, Pool::Fish { .. }) && !elapsed.is_multiple_of(TICK_HZ) {
-                return true;
-            }
-            let cp = self
-                .index(w.owner)
-                .map_or(0., |i| self.entities[i].item_stats.crystal);
-            let pierce = self
-                .index(w.owner)
-                .map_or(0., |i| self.entities[i].item_stats.shield_pierce);
-            for i in 0..self.entities.len() {
-                let e = &mut self.entities[i];
-                if e.hp <= 0.
-                    || !matches!(e.kind, Kind::Hero | Kind::Minion)
-                    || (e.position.x - w.position.x).abs() > w.pool.radius()
-                    || e.position.dist(w.position) > w.pool.radius()
-                    || !self.layout.clear(w.position, e.position)
-                {
-                    continue;
-                }
-                match w.pool {
-                    Pool::Fish { rank, stun } if e.team != w.team => {
-                        if elapsed == 0 {
-                            e.status.stun_until = e.status.stun_until.max(self.tick + stun);
-                            e.winding = None;
-                            e.cast = None;
-                            e.status.channel = 0;
-                            e.status.channel_until = 0;
+                Pool::Splash { speed, .. } if e.team == self.team => {
+                    e.status.water_speed_bonus = if e.status.water_speed_until > world.tick {
+                        match (e.status.water_speed_bonus, speed) {
+                            (Some(a), Some(b)) => Some(a.max(b)),
+                            (a, b) => a.or(b),
                         }
-                        let raw = if let Some(rules) = &self.abilities.lorelai {
-                            (if elapsed == 0 {
-                                &rules.impact
-                            } else {
-                                &rules.per_second
-                            })
-                            .at(rank, cp, 0.)
-                        } else if elapsed == 0 {
-                            80. + 35. * rank as f32
-                        } else {
-                            [55., 95., 135., 175., 255.][rank]
-                        };
-                        let damage = shop::mitigated(raw, e.stats.shield, pierce);
-                        self.hurt(w.owner, w.team, i, damage, DamageSchool::Crystal, events);
-                    }
-                    Pool::Splash { speed, .. } if e.team == w.team => {
-                        e.status.water_speed_bonus = if e.status.water_speed_until > self.tick {
-                            match (e.status.water_speed_bonus, speed) {
-                                (Some(a), Some(b)) => Some(a.max(b)),
-                                (a, b) => a.or(b),
-                            }
-                        } else {
-                            speed
-                        };
-                        e.status.water_speed_until = self.tick + 1;
-                    }
-                    Pool::Splash { slow_factor, .. } => {
-                        e.status.water_slow_factor = if e.status.water_slow_until > self.tick {
-                            e.status.water_slow_factor.min(slow_factor)
-                        } else {
-                            slow_factor
-                        };
-                        e.status.water_slow_until = self.tick + 1;
-                    }
-                    _ => {}
+                    } else {
+                        speed
+                    };
+                    e.status.water_speed_until = world.tick + 1;
                 }
+                Pool::Splash { slow_factor, .. } => {
+                    e.status.water_slow_factor = if e.status.water_slow_until > world.tick {
+                        e.status.water_slow_factor.min(slow_factor)
+                    } else {
+                        slow_factor
+                    };
+                    e.status.water_slow_until = world.tick + 1;
+                }
+                _ => {}
             }
-            true
-        });
-        self.water = water;
+        }
+        true
     }
 }
 
@@ -358,7 +372,7 @@ mod tests {
         while w.tick < 177 {
             w.step();
         }
-        assert!(w.water.is_empty());
+        assert!(w.entities.spells::<Water>().next().is_none());
     }
     #[test]
     fn splash_affects_movement_and_its_owner_can_consume_it() {
@@ -372,9 +386,14 @@ mod tests {
         assert!(w.entities[1].status.water_slow_until > w.tick);
         assert_eq!(w.entities[2].status.haste_until, 0);
         cast(&mut w, AbilitySlot::A, CastTarget::Point(p));
-        assert_eq!(w.water.len(), 1);
-        assert_eq!(w.water[0].start, w.tick + 14);
-        assert!(matches!(w.water[0].pool,Pool::Fish {stun,..} if stun>10));
+        assert_eq!(w.entities.spells::<Water>().count(), 1);
+        assert_eq!(
+            w.entities.spells::<Water>().next().unwrap().start,
+            w.tick + 14
+        );
+        assert!(
+            matches!(w.entities.spells::<Water>().next().unwrap().pool,Pool::Fish {stun,..} if stun>10)
+        );
     }
     #[test]
     fn only_a_fresh_normal_allied_wall_acquires_a_buff_instance_after_release() {
@@ -460,8 +479,15 @@ mod tests {
         while w.tick < 81 {
             w.step();
         }
-        assert_eq!(w.water[0].position, p);
-        assert!(w.water[0].follows.is_none());
+        assert_eq!(w.entities.spells::<Water>().next().unwrap().position, p);
+        assert!(
+            w.entities
+                .spells::<Water>()
+                .next()
+                .unwrap()
+                .follows
+                .is_none()
+        );
         assert!(w.entities[2].status.water_speed_until > w.tick);
     }
 }

@@ -7,7 +7,7 @@ pub(super) fn stamina(e: &Entity, tick: u64) -> f32 {
     100. - (e.status.stamina_spent - recovery).max(0.)
 }
 
-#[derive(Debug, Serialize)]
+#[derive(bevy_ecs::prelude::Component, Clone, Debug, Serialize)]
 pub(super) struct Chakram {
     source: u32,
     team: u8,
@@ -43,70 +43,82 @@ impl Chakram {
 
 impl World {
     pub(super) fn advance_chakrams(&mut self, events: &mut Vec<Event>) {
-        let mut active = std::mem::take(&mut self.chakrams);
-        active.retain_mut(|p| {
-            let Some(owner) = self.index(p.source) else {
-                return false;
-            };
-            if self.winner.is_some() || self.entities[owner].hp <= 0. {
-                return false;
+        self.advance_spell_family::<Chakram>(events);
+    }
+}
+
+impl crate::persistent_spells::TimedSpell for Chakram {
+    fn expired_before_step(&self, _: u64) -> bool {
+        false
+    }
+    fn begin_impact(&mut self) -> Self {
+        let hit = std::mem::take(&mut self.hit);
+        Self {
+            hit,
+            ..self.clone()
+        }
+    }
+    fn advance(&mut self, world: &mut World, events: &mut Vec<Event>) -> bool {
+        let Some(owner) = world.index(self.source) else {
+            return false;
+        };
+        if world.winner.is_some() || world.entities[owner].hp <= 0. {
+            return false;
+        }
+        let goal = if self.returning {
+            world.entities[owner].position
+        } else {
+            self.aim
+        };
+        let next = self.position.advance(goal, 18. / TICK_HZ as f32);
+        if !world.layout.clear(self.position, next) {
+            return false;
+        }
+        for i in 0..world.entities.len() {
+            let target = &world.entities[i];
+            if target.hp <= 0.
+                || target.team == self.team
+                || !matches!(target.kind, Kind::Hero | Kind::Minion)
+                || self.hit.contains(&target.id)
+                || combat::line_distance(target.position, self.position, next)
+                    > 0.75 + target.stats.physiology.map_or(0., |p| p.collision_radius)
+                || !world.layout.clear(self.position, target.position)
+            {
+                continue;
             }
-            let goal = if p.returning {
-                self.entities[owner].position
+            self.hit.push(target.id);
+            let hero = target.kind == Kind::Hero;
+            let (resist, pierce, school) = if self.stamina_refund.is_some() {
+                (
+                    target.stats.shield,
+                    world.entities[owner].item_stats.shield_pierce,
+                    DamageSchool::Crystal,
+                )
             } else {
-                p.aim
+                (
+                    target.stats.armor,
+                    world.entities[owner].item_stats.armor_pierce,
+                    DamageSchool::Weapon,
+                )
             };
-            let next = p.position.advance(goal, 18. / TICK_HZ as f32);
-            if !self.layout.clear(p.position, next) {
+            let damage = shop::mitigated(self.damage, resist, pierce);
+            world.hurt(self.source, self.team, i, damage, school, events);
+            if hero && let Some(refund) = self.stamina_refund {
+                let available = stamina(&world.entities[owner], world.tick);
+                let status = &mut world.entities[owner].status;
+                status.stamina_spent = (100. - available - refund).max(0.);
+                status.stamina_spent_at = world.tick;
+            }
+        }
+        self.position = next;
+        if next == goal {
+            if self.returning {
                 return false;
             }
-            for i in 0..self.entities.len() {
-                let target = &self.entities[i];
-                if target.hp <= 0.
-                    || target.team == p.team
-                    || !matches!(target.kind, Kind::Hero | Kind::Minion)
-                    || p.hit.contains(&target.id)
-                    || combat::line_distance(target.position, p.position, next)
-                        > 0.75 + target.stats.physiology.map_or(0., |p| p.collision_radius)
-                    || !self.layout.clear(p.position, target.position)
-                {
-                    continue;
-                }
-                p.hit.push(target.id);
-                let hero = target.kind == Kind::Hero;
-                let (resist, pierce, school) = if p.stamina_refund.is_some() {
-                    (
-                        target.stats.shield,
-                        self.entities[owner].item_stats.shield_pierce,
-                        DamageSchool::Crystal,
-                    )
-                } else {
-                    (
-                        target.stats.armor,
-                        self.entities[owner].item_stats.armor_pierce,
-                        DamageSchool::Weapon,
-                    )
-                };
-                let damage = shop::mitigated(p.damage, resist, pierce);
-                self.hurt(p.source, p.team, i, damage, school, events);
-                if hero && let Some(refund) = p.stamina_refund {
-                    let available = stamina(&self.entities[owner], self.tick);
-                    let status = &mut self.entities[owner].status;
-                    status.stamina_spent = (100. - available - refund).max(0.);
-                    status.stamina_spent_at = self.tick;
-                }
-            }
-            p.position = next;
-            if next == goal {
-                if p.returning {
-                    return false;
-                }
-                p.returning = true;
-                p.hit.clear();
-            }
-            true
-        });
-        self.chakrams = active;
+            self.returning = true;
+            self.hit.clear();
+        }
+        true
     }
 }
 
@@ -171,7 +183,7 @@ mod tests {
         assert_eq!(releases, 1);
         let expected = w.entities[0].weapon_power() * 0.8 * 100. / (100. + w.entities[1].armor());
         assert_eq!(hits, [expected, expected]);
-        assert!(w.chakrams.is_empty() && w.command(1, ability).is_err());
+        assert!(w.entities.spells::<Chakram>().next().is_none() && w.command(1, ability).is_err());
     }
 
     #[test]
@@ -186,11 +198,11 @@ mod tests {
         for _ in 0..4 {
             w.step();
         }
-        assert_eq!(w.chakrams.len(), 1);
+        assert_eq!(w.entities.spells::<Chakram>().count(), 1);
         w.entities[0].hp = 0.;
         w.entities[0].respawn = w.tick + 2;
         w.step();
-        assert!(w.chakrams.is_empty());
+        assert!(w.entities.spells::<Chakram>().next().is_none());
         w.step();
         assert!(w.entities[0].hp > 0.);
         assert_eq!(stamina(&w.entities[0], w.tick), 100.);
@@ -219,7 +231,7 @@ mod tests {
                 .count();
         }
         assert_eq!(outbound, 1);
-        assert!(w.chakrams[0].returning);
+        assert!(w.entities.spells::<Chakram>().next().unwrap().returning);
         w.entities[0].position = Position { x: 28., y: -4. };
         w.entities[3].position = Position { x: 31.5, y: -2. };
         let mut back = vec![];
@@ -236,6 +248,6 @@ mod tests {
             }));
         }
         assert_eq!(back, [4]);
-        assert!(w.chakrams.is_empty());
+        assert!(w.entities.spells::<Chakram>().next().is_none());
     }
 }

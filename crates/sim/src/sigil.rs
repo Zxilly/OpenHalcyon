@@ -42,7 +42,7 @@ impl Rules {
         (self.startup[r] * TICK_HZ as f32).round() as u64
     }
 }
-#[derive(Debug, Serialize)]
+#[derive(bevy_ecs::prelude::Component, Clone, Copy, Debug, Serialize)]
 pub(super) struct Field {
     pub source: u32,
     team: u8,
@@ -71,7 +71,7 @@ impl World {
         let a = self.abilities.sigil.as_ref().unwrap();
         let e = &self.entities[i];
         let cp = e.item_stats.crystal;
-        self.sigils.push(Field {
+        self.entities.spawn_spell(Field {
             source: e.id,
             team: e.team,
             center,
@@ -91,7 +91,7 @@ impl World {
         });
     }
     pub(super) fn sigil_sight(&self, team: u8, p: Position) -> bool {
-        self.sigils.iter().any(|f| {
+        self.entities.spells::<Field>().any(|f| {
             f.team == team
                 && f.contains(self, p)
                 && self
@@ -103,7 +103,7 @@ impl World {
     pub(super) fn sigil_order(&self, i: usize, enemy: &Entity) -> Option<Command> {
         let e = &self.entities[i];
         self.abilities.sigil.as_ref()?;
-        let target = if let Some(f) = self.sigils.iter().find(|f| f.source == e.id) {
+        let target = if let Some(f) = self.entities.spells::<Field>().find(|f| f.source == e.id) {
             if !f.contains(self, enemy.position)
                 || enemy.hp > f.burst && f.charge > 3. * TICK_HZ as f32
             {
@@ -120,55 +120,13 @@ impl World {
             })
     }
     pub(super) fn advance_sigils(&mut self, events: &mut Vec<Event>) {
-        if self.sigils.is_empty() {
-            return;
-        }
-        let mut fields = std::mem::take(&mut self.sigils);
-        fields.retain_mut(|f| {
-            let pulse = self.tick >= f.next;
-            let mut count = 0;
-            for j in 0..self.entities.len() {
-                let t = &self.entities[j];
-                if t.kind != Kind::Hero || t.hp <= 0. || !f.contains(self, t.position) {
-                    continue;
-                }
-                if f.team == t.team {
-                    if t.hp >= t.max_hp {
-                        continue;
-                    }
-                    count += 1;
-                    if pulse {
-                        self.heal(f.source, j, f.heal, events)
-                    }
-                } else {
-                    count += 1;
-                    if pulse {
-                        let damage = shop::mitigated(f.damage, t.stats.shield, f.pierce);
-                        self.hurt(f.source, f.team, j, damage, DamageSchool::Crystal, events)
-                    }
-                }
-            }
-            if pulse {
-                f.next += TICK_HZ;
-            }
-            f.charge -= if count == 0 {
-                f.passive
-            } else {
-                f.active * count as f32
-            };
-            f.charge > 0.
-        });
-        self.sigils = fields;
+        self.advance_spell_family::<Field>(events);
     }
     pub(super) fn detonate_sigil(&mut self, i: usize, events: &mut Vec<Event>) {
-        let Some(n) = self
-            .sigils
-            .iter()
-            .position(|f| f.source == self.entities[i].id)
-        else {
+        let source = self.entities[i].id;
+        let Some(f) = self.entities.remove_spell::<Field>(|f| f.source == source) else {
             return;
         };
-        let f = self.sigils.remove(n);
         events.push(Event::Cast {
             source: f.source,
             slot: AbilitySlot::A,
@@ -205,6 +163,56 @@ impl World {
         }
     }
 }
+impl crate::persistent_spells::TimedSpell for Field {
+    fn expired_before_step(&self, _: u64) -> bool {
+        false
+    }
+    fn begin_impact(&mut self) -> Self {
+        *self
+    }
+    fn advance(&mut self, world: &mut World, events: &mut Vec<Event>) -> bool {
+        let pulse = world.tick >= self.next;
+        let mut count = 0;
+        for j in 0..world.entities.len() {
+            let t = &world.entities[j];
+            if t.kind != Kind::Hero || t.hp <= 0. || !self.contains(world, t.position) {
+                continue;
+            }
+            if self.team == t.team {
+                if t.hp >= t.max_hp {
+                    continue;
+                }
+                count += 1;
+                if pulse {
+                    world.heal(self.source, j, self.heal, events)
+                }
+            } else {
+                count += 1;
+                if pulse {
+                    let damage = shop::mitigated(self.damage, t.stats.shield, self.pierce);
+                    world.hurt(
+                        self.source,
+                        self.team,
+                        j,
+                        damage,
+                        DamageSchool::Crystal,
+                        events,
+                    )
+                }
+            }
+        }
+        if pulse {
+            self.next += TICK_HZ;
+        }
+        self.charge -= if count == 0 {
+            self.passive
+        } else {
+            self.active * count as f32
+        };
+        self.charge > 0.
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -267,7 +275,7 @@ mod tests {
         }
         assert_eq!(w.entities[1].hp, 925.);
         assert_eq!(w.entities[2].hp, 525.);
-        assert_eq!(w.sigils[0].charge, 80.);
+        assert_eq!(w.entities.spells::<Field>().next().unwrap().charge, 80.);
         let minion = w.spawn(1, Kind::Minion, 4, point, false);
         let mi = w.index(minion).unwrap();
         w.entities[mi].stats.shield = 0.;
@@ -280,7 +288,7 @@ mod tests {
         assert_eq!(w.entities[mi].hp, hp - 46.);
         assert_eq!(w.entities[0].cooldown[0], cooldown);
         assert_eq!(w.entities[0].energy, 120.);
-        assert!(w.sigils.is_empty());
+        assert!(w.entities.spells::<Field>().next().is_none());
         assert!(!w.sigil_sight(0, point));
         assert!(w.command(1, again).is_err());
     }

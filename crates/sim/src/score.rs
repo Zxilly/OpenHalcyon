@@ -277,7 +277,7 @@ mod tests {
                 &mut events,
             );
             w.tick = 600 * TICK_HZ - 1;
-            w.effects.push(SpellEffect::impact(
+            w.entities.spawn_spell(SpellEffect::impact(
                 w.tick + 1,
                 2,
                 1,
@@ -369,7 +369,7 @@ mod tests {
         world.purchase(3, BasicItem::HeavySteel).unwrap();
         let minion = world.spawn(1, Kind::Minion, 4, base(1), false);
         let due = 300 * TICK_HZ;
-        world.effects.push(SpellEffect::impact(
+        world.entities.spawn_spell(SpellEffect::impact(
             due,
             1,
             0,

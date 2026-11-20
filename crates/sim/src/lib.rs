@@ -458,11 +458,6 @@ pub struct World {
     wave_interval: u64,
     abilities: std::sync::Arc<AbilityBook>,
     shop: shop::Shop,
-    effects: Vec<SpellEffect>,
-    chakrams: Vec<chakram::Chakram>,
-    sigils: Vec<sigil::Field>,
-    twisters: Vec<twister::Dash>,
-    water: Vec<lorelai::Water>,
     nav_budget: u8,
     native_navigation: Option<Box<native_navigation::NativeNavigation>>,
     native_camps: Option<Vec<native_camps::NativeCampUnit>>,
@@ -522,11 +517,11 @@ impl World {
                 self.rally,
                 self.nav_budget,
                 (
-                    &self.effects,
-                    &self.chakrams,
-                    &self.water,
-                    &self.sigils,
-                    &self.twisters,
+                    self.entities.spell_snapshot::<SpellEffect>(),
+                    self.entities.spell_snapshot::<chakram::Chakram>(),
+                    self.entities.spell_snapshot::<lorelai::Water>(),
+                    self.entities.spell_snapshot::<sigil::Field>(),
+                    self.entities.spell_snapshot::<twister::Dash>(),
                     self.entities.spell_snapshot::<arcane_fire::Pulse>(),
                     self.entities.spell_snapshot::<bulwark::Field>(),
                 ),
@@ -724,11 +719,6 @@ impl World {
             abilities: rules.abilities.clone(),
             shop: rules.shop.clone(),
             pending_item_events: Vec::new(),
-            effects: Vec::new(),
-            chakrams: Vec::new(),
-            sigils: Vec::new(),
-            twisters: Vec::new(),
-            water: Vec::new(),
             nav_budget: 0,
             native_navigation: None,
             native_camps: None,
@@ -1254,7 +1244,10 @@ impl World {
             }
             let hero = &self.entities[i];
             if hero.status.stun_until > self.tick
-                || self.twisters.iter().any(|d| d.source == hero.id)
+                || self
+                    .entities
+                    .spells::<twister::Dash>()
+                    .any(|d| d.source == hero.id)
             {
                 continue;
             }
@@ -1524,7 +1517,7 @@ impl World {
                         self.entities[j].status.slow_factor = 0.4;
                     }
                     if let Some(delay) = npc_launch {
-                        self.effects.push(SpellEffect::npc_windup(
+                        self.entities.spawn_spell(SpellEffect::npc_windup(
                             self.tick + delay,
                             source,
                             team,
@@ -1537,7 +1530,7 @@ impl World {
                         } else {
                             SpellEffect::impact
                         };
-                        self.effects.push(impact(
+                        self.entities.spawn_spell(impact(
                             self.tick + travel,
                             source,
                             team,
@@ -1555,7 +1548,7 @@ impl World {
                     }
                     if bonus_crystal > 0. {
                         if ranged {
-                            self.effects.push(SpellEffect::impact(
+                            self.entities.spawn_spell(SpellEffect::impact(
                                 self.tick + travel,
                                 source,
                                 team,

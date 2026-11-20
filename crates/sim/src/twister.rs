@@ -19,7 +19,7 @@ impl Rules {
         }))
     }
 }
-#[derive(Debug, Serialize)]
+#[derive(bevy_ecs::prelude::Component, Clone, Debug, Serialize)]
 pub(super) struct Dash {
     pub source: u32,
     team: u8,
@@ -33,7 +33,7 @@ impl World {
     pub(super) fn begin_twister(&mut self, i: usize, r: usize, point: Position) {
         let rules = self.abilities.twister.as_ref().unwrap();
         let e = &self.entities[i];
-        self.twisters.push(Dash {
+        self.entities.spawn_spell(Dash {
             source: e.id,
             team: e.team,
             goal: e.position.advance(point, rules.distance[r]),
@@ -44,49 +44,65 @@ impl World {
         });
     }
     pub(super) fn advance_twisters(&mut self, events: &mut Vec<Event>) {
-        if self.twisters.is_empty() {
-            return;
-        }
-        let mut active = std::mem::take(&mut self.twisters);
-        active.retain_mut(|d| {
-            let Some(i) = self.index(d.source) else {
-                return false;
-            };
-            let e = &self.entities[i];
-            if e.hp <= 0. || e.status.stun_until > self.tick || e.status.root_until > self.tick {
-                return false;
-            }
-            let start = e.position;
-            let next = start.advance(d.goal, d.step);
-            if !self.spell_motion_clear(start, next) || self.bulwark_blocks_leap(i, next) {
-                return false;
-            }
-            let radius = e.stats.physiology.map_or(0., |p| p.collision_radius);
-            self.place_spell_actor(i, next, events);
-            for j in 0..self.entities.len() {
-                let target = &self.entities[j];
-                if target.hp <= 0.
-                    || target.team == d.team
-                    || !matches!(target.kind, Kind::Hero | Kind::Minion | Kind::Neutral)
-                    || d.hit.contains(&target.id)
-                {
-                    continue;
-                }
-                if combat::line_distance(target.position, start, next)
-                    > radius + target.stats.physiology.map_or(0., |p| p.collision_radius)
-                    || !self.spell_motion_clear(next, target.position)
-                {
-                    continue;
-                }
-                d.hit.push(target.id);
-                let amount = shop::mitigated(d.damage, target.stats.shield, d.pierce);
-                self.hurt(d.source, d.team, j, amount, DamageSchool::Crystal, events);
-            }
-            next != d.goal
-        });
-        self.twisters = active;
+        self.advance_spell_family::<Dash>(events);
     }
 }
+impl crate::persistent_spells::TimedSpell for Dash {
+    fn expired_before_step(&self, _: u64) -> bool {
+        false
+    }
+    fn begin_impact(&mut self) -> Self {
+        let hit = std::mem::take(&mut self.hit);
+        Self {
+            hit,
+            ..self.clone()
+        }
+    }
+    fn advance(&mut self, world: &mut World, events: &mut Vec<Event>) -> bool {
+        let Some(i) = world.index(self.source) else {
+            return false;
+        };
+        let e = &world.entities[i];
+        if e.hp <= 0. || e.status.stun_until > world.tick || e.status.root_until > world.tick {
+            return false;
+        }
+        let start = e.position;
+        let next = start.advance(self.goal, self.step);
+        if !world.spell_motion_clear(start, next) || world.bulwark_blocks_leap(i, next) {
+            return false;
+        }
+        let radius = e.stats.physiology.map_or(0., |p| p.collision_radius);
+        world.place_spell_actor(i, next, events);
+        for j in 0..world.entities.len() {
+            let target = &world.entities[j];
+            if target.hp <= 0.
+                || target.team == self.team
+                || !matches!(target.kind, Kind::Hero | Kind::Minion | Kind::Neutral)
+                || self.hit.contains(&target.id)
+            {
+                continue;
+            }
+            if combat::line_distance(target.position, start, next)
+                > radius + target.stats.physiology.map_or(0., |p| p.collision_radius)
+                || !world.spell_motion_clear(next, target.position)
+            {
+                continue;
+            }
+            self.hit.push(target.id);
+            let amount = shop::mitigated(self.damage, target.stats.shield, self.pierce);
+            world.hurt(
+                self.source,
+                self.team,
+                j,
+                amount,
+                DamageSchool::Crystal,
+                events,
+            );
+        }
+        next != self.goal
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -141,6 +157,6 @@ mod tests {
         assert_eq!(w.entities[1].hp, 900.);
         assert_eq!(w.entities[3].hp, 900.);
         assert_eq!(w.entities[5].hp, 1000.);
-        assert!(w.twisters.is_empty());
+        assert!(w.entities.spells::<Dash>().next().is_none());
     }
 }

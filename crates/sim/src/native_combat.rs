@@ -683,7 +683,12 @@ mod tests {
         w.advance_cast(0, &mut Vec::new());
         assert_eq!(w.entities[2].status.barrier, 555.);
         assert_eq!(w.entities[2].status.barrier_until, 81);
-        assert!(w.water.is_empty());
+        assert!(
+            w.entities
+                .spells::<crate::lorelai::Water>()
+                .next()
+                .is_none()
+        );
     }
     #[test]
     #[ignore = "requires original delivery and supplemental combat data"]

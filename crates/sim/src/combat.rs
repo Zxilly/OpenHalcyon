@@ -568,7 +568,12 @@ impl World {
         let rank = e.ability_ranks[slot.idx()]
             .checked_sub(1)
             .ok_or("ability not learned")? as usize;
-        if s == Skill::Sigil && self.sigils.iter().any(|f| f.source == e.id) {
+        if s == Skill::Sigil
+            && self
+                .entities
+                .spells::<sigil::Field>()
+                .any(|f| f.source == e.id)
+        {
             if target != CastTarget::SelfCast {
                 return Err("a sigil is already active");
             }
@@ -814,7 +819,7 @@ impl World {
                     (first, a.first.at(r, cp, 0.)),
                     (second, a.shatter.at(r, cp, 0.)),
                 ] {
-                    self.effects.push(SpellEffect {
+                    self.entities.spawn_spell(SpellEffect {
                         due,
                         src,
                         team,
@@ -839,7 +844,7 @@ impl World {
                 } else {
                     (weapon * self.abilities.chakram_weapon_ratio, None)
                 };
-                self.chakrams.push(chakram::Chakram::new(
+                self.entities.spawn_spell(chakram::Chakram::new(
                     src, team, origin, point, damage, refund,
                 ));
                 if matches!(self.layout, Layout::Aral { .. }) {
@@ -895,9 +900,9 @@ impl World {
                         heal: 0.,
                         channel: 0,
                     };
-                    self.effects.push(base);
+                    self.entities.spawn_spell(base);
                     for second in 1..=c.duration[r] as u64 {
-                        self.effects.push(SpellEffect {
+                        self.entities.spawn_spell(SpellEffect {
                             due: impact + second * TICK_HZ,
                             area: Area::Hellfire(id, c.burn_radius[r], false),
                             damage: c.burn.at(r, cp, 0.),
@@ -907,7 +912,7 @@ impl World {
                     return;
                 }
                 let damage = 140. + r as f32 * 45.;
-                self.effects.push(SpellEffect::impact(
+                self.entities.spawn_spell(SpellEffect::impact(
                     self.tick + travel,
                     src,
                     team,
@@ -916,7 +921,7 @@ impl World {
                     DamageSchool::True,
                 ));
                 for n in 1..=3 {
-                    self.effects.push(SpellEffect::impact(
+                    self.entities.spawn_spell(SpellEffect::impact(
                         self.tick + travel + n * TICK_HZ,
                         src,
                         team,
@@ -969,7 +974,7 @@ impl World {
                 let bonus = bonus_hp;
                 let heal = self.abilities.sigil_heal[r] + bonus * self.abilities.sigil_hp;
                 for sec in 0..3 {
-                    self.effects.push(SpellEffect {
+                    self.entities.spawn_spell(SpellEffect {
                         due: self.tick + 1 + sec * TICK_HZ,
                         src,
                         team,
@@ -1023,7 +1028,7 @@ impl World {
                 self.entities[i].status.channel_until =
                     self.tick + 1 + (f32::from(hits - 1) * pulse).round() as u64;
                 for n in 0..hits {
-                    self.effects.push(SpellEffect {
+                    self.entities.spawn_spell(SpellEffect {
                         due: self.tick + 1 + (f32::from(n) * pulse).round() as u64,
                         src,
                         team,
@@ -1036,7 +1041,7 @@ impl World {
             }
             Skill::Wind if self.abilities.twister.is_some() => self.begin_twister(i, r, point),
             Skill::Wind => {
-                self.effects.push(SpellEffect {
+                self.entities.spawn_spell(SpellEffect {
                     due: self.tick + 1,
                     src,
                     team,
@@ -1070,7 +1075,7 @@ enum Area {
         minion_multiplier: f32,
     },
 }
-#[derive(Clone, Copy, Debug, Serialize)]
+#[derive(bevy_ecs::prelude::Component, Clone, Copy, Debug, Serialize)]
 pub(super) struct SpellEffect {
     due: u64,
     src: u32,
@@ -1160,8 +1165,8 @@ pub(super) fn line_distance(p: Position, a: Position, b: Position) -> f32 {
 impl World {
     pub(super) fn predicted_hp(&self, e: &Entity, at: u64) -> f32 {
         let incoming: f32 = self
-            .effects
-            .iter()
+            .entities
+            .spells::<SpellEffect>()
             .filter(|v| {
                 v.due <= at
                     && matches!(v.area,Area::Target(id, _) | Area::BasicTarget(id,_) if id==e.id)
@@ -1199,119 +1204,125 @@ impl World {
     }
 
     pub(super) fn advance_effects(&mut self, events: &mut Vec<Event>) {
-        let mut effects = std::mem::take(&mut self.effects);
-        effects.retain_mut(|v| {
-            if self.winner.is_some() {
+        self.advance_spell_family::<SpellEffect>(events);
+    }
+}
+
+impl crate::persistent_spells::TimedSpell for SpellEffect {
+    fn expired_before_step(&self, _: u64) -> bool {
+        false
+    }
+    fn begin_impact(&mut self) -> Self {
+        *self
+    }
+    fn advance(&mut self, world: &mut World, events: &mut Vec<Event>) -> bool {
+        if world.winner.is_some() {
+            return false;
+        }
+        if self.due > world.tick {
+            return true;
+        }
+        if self.channel > 0
+            && !world.index(self.src).is_some_and(|i| {
+                world.entities[i].status.channel == self.channel && world.entities[i].hp > 0.
+            })
+        {
+            return false;
+        }
+        if let Area::NpcWindup(target) = self.area {
+            let (Some(a), Some(b)) = (world.index(self.src), world.index(target)) else {
+                return false;
+            };
+            let (source, victim) = (&world.entities[a], &world.entities[b]);
+            if source.hp <= 0. || victim.hp <= 0. {
                 return false;
             }
-            if v.due > self.tick {
-                return true;
+            let distance = source.position.dist(victim.position);
+            let ticks = npc_flight_ticks(source.type_id, victim.type_id, distance);
+            let id = world.next_id;
+            world.next_id += 1;
+            self.area = Area::Target(target, DamageSchool::Weapon);
+            self.due = world.tick + ticks;
+            events.push(Event::NpcProjectile {
+                id,
+                source: self.src,
+                target,
+            });
+            return true;
+        }
+        if let Area::BasicTarget(id, school) = self.area {
+            if let Some(i) = world.index(id) {
+                world.basic_hit(self.src, self.team, i, self.damage, school, events);
             }
-            if v.channel > 0
-                && !self.index(v.src).is_some_and(|i| {
-                    self.entities[i].status.channel == v.channel && self.entities[i].hp > 0.
-                })
-            {
+            return false;
+        }
+        if let Area::Target(id, school) = self.area {
+            if let Some(i) = world.index(id) {
+                world.hurt(self.src, self.team, i, self.damage, school, events)
+            }
+            return false;
+        }
+        let mut shield_ignoring = false;
+        if let Area::Hellfire(id, radius, impact) = self.area {
+            let Some(target) = world
+                .index(id)
+                .map(|i| &world.entities[i])
+                .filter(|t| t.hp > 0.)
+            else {
                 return false;
+            };
+            self.area = Area::Circle(target.position, radius);
+            shield_ignoring = impact;
+        }
+        let pierce = world
+            .index(self.src)
+            .map_or(0., |i| world.entities[i].item_stats.shield_pierce);
+        for i in 0..world.entities.len() {
+            let e = &world.entities[i];
+            if e.hp <= 0. || !matches!(e.kind, Kind::Hero | Kind::Minion) {
+                continue;
             }
-            if let Area::NpcWindup(target) = v.area {
-                let (Some(a), Some(b)) = (self.index(v.src), self.index(target)) else {
-                    return false;
-                };
-                let (source, victim) = (&self.entities[a], &self.entities[b]);
-                if source.hp <= 0. || victim.hp <= 0. {
-                    return false;
-                }
-                let distance = source.position.dist(victim.position);
-                let ticks = npc_flight_ticks(source.type_id, victim.type_id, distance);
-                let id = self.next_id;
-                self.next_id += 1;
-                v.area = Area::Target(target, DamageSchool::Weapon);
-                v.due = self.tick + ticks;
-                events.push(Event::NpcProjectile {
-                    id,
-                    source: v.src,
-                    target,
-                });
-                return true;
+            let hit = match self.area {
+                Area::Circle(p, r) | Area::WinterSpire(p, r) => p.dist(e.position) <= r,
+                Area::Suppression { from, to, .. } => line_distance(e.position, from, to) <= 1.4,
+                Area::Line(a, b, r) => line_distance(e.position, a, b) <= r,
+                Area::BasicTarget(..)
+                | Area::Target(..)
+                | Area::NpcWindup(_)
+                | Area::Hellfire(..) => unreachable!(),
+            };
+            if !hit {
+                continue;
             }
-            if let Area::BasicTarget(id, school) = v.area {
-                if let Some(i) = self.index(id) {
-                    self.basic_hit(v.src, v.team, i, v.damage, school, events);
+            if e.team == self.team {
+                if self.heal > 0. {
+                    world.heal(self.src, i, self.heal, events)
                 }
-                return false;
-            }
-            if let Area::Target(id, school) = v.area {
-                if let Some(i) = self.index(id) {
-                    self.hurt(v.src, v.team, i, v.damage, school, events)
+            } else {
+                let mut raw = self.damage;
+                if matches!(self.area, Area::WinterSpire(..)) && e.kind == Kind::Minion {
+                    raw *= 0.5;
                 }
-                return false;
-            }
-            let mut shield_ignoring = false;
-            if let Area::Hellfire(id, radius, impact) = v.area {
-                let Some(target) = self
-                    .index(id)
-                    .map(|i| &self.entities[i])
-                    .filter(|t| t.hp > 0.)
-                else {
-                    return false;
-                };
-                v.area = Area::Circle(target.position, radius);
-                shield_ignoring = impact;
-            }
-            let pierce = self
-                .index(v.src)
-                .map_or(0., |i| self.entities[i].item_stats.shield_pierce);
-            for i in 0..self.entities.len() {
-                let e = &self.entities[i];
-                if e.hp <= 0. || !matches!(e.kind, Kind::Hero | Kind::Minion) {
-                    continue;
+                if let Area::Suppression {
+                    minion_multiplier, ..
+                } = self.area
+                    && e.kind == Kind::Minion
+                {
+                    raw *= minion_multiplier;
                 }
-                let hit = match v.area {
-                    Area::Circle(p, r) | Area::WinterSpire(p, r) => p.dist(e.position) <= r,
-                    Area::Suppression { from, to, .. } => {
-                        line_distance(e.position, from, to) <= 1.4
-                    }
-                    Area::Line(a, b, r) => line_distance(e.position, a, b) <= r,
-                    Area::BasicTarget(..)
-                    | Area::Target(..)
-                    | Area::NpcWindup(_)
-                    | Area::Hellfire(..) => unreachable!(),
-                };
-                if !hit {
-                    continue;
-                }
-                if e.team == v.team {
-                    if v.heal > 0. {
-                        self.heal(v.src, i, v.heal, events)
-                    }
+                let dmg = if shield_ignoring {
+                    raw
                 } else {
-                    let mut raw = v.damage;
-                    if matches!(v.area, Area::WinterSpire(..)) && e.kind == Kind::Minion {
-                        raw *= 0.5;
-                    }
-                    if let Area::Suppression {
-                        minion_multiplier, ..
-                    } = v.area
-                        && e.kind == Kind::Minion
-                    {
-                        raw *= minion_multiplier;
-                    }
-                    let dmg = if shield_ignoring {
-                        raw
-                    } else {
-                        shop::mitigated(raw, e.stats.shield, pierce)
-                    };
-                    if let Area::Suppression { slow, ticks, .. } = v.area {
-                        self.entities[i].status.slow_factor = slow;
-                        self.entities[i].status.slow_until = self.tick + ticks;
-                    }
-                    self.hurt(v.src, v.team, i, dmg, DamageSchool::Crystal, events)
+                    shop::mitigated(raw, e.stats.shield, pierce)
+                };
+                if let Area::Suppression { slow, ticks, .. } = self.area {
+                    world.entities[i].status.slow_factor = slow;
+                    world.entities[i].status.slow_until = world.tick + ticks;
                 }
+                world.hurt(self.src, self.team, i, dmg, DamageSchool::Crystal, events)
             }
-            false
-        });
-        self.effects = effects;
+        }
+        false
     }
 }
 
@@ -1423,8 +1434,8 @@ mod tests {
         };
         let first_id = w.next_id;
         let mut events = Vec::new();
-        w.effects
-            .push(SpellEffect::npc_windup(6, source, team, target, 42.));
+        w.entities
+            .spawn_spell(SpellEffect::npc_windup(6, source, team, target, 42.));
         for tick in 1..=6 {
             w.tick = tick;
             w.advance_effects(&mut events);
@@ -1453,16 +1464,16 @@ mod tests {
         assert!(
             matches!(events.last(),Some(Event::Damage{source:a,target:b,..}) if *a==source && *b==target)
         );
-        w.effects
-            .push(SpellEffect::npc_windup(17, source, team, target, 42.));
+        w.entities
+            .spawn_spell(SpellEffect::npc_windup(17, source, team, target, 42.));
         w.tick = 17;
         w.advance_effects(&mut events);
-        assert!(w.effects.is_empty());
+        assert!(w.entities.spells::<SpellEffect>().next().is_none());
         assert_eq!(w.next_id, first_id + 1);
 
         w.entities[tower].hp = 10.;
-        w.effects
-            .push(SpellEffect::npc_windup(18, source, team, target, 42.));
+        w.entities
+            .spawn_spell(SpellEffect::npc_windup(18, source, team, target, 42.));
         w.tick = 18;
         w.advance_effects(&mut events);
         w.entities[victim].hp = 0.;
@@ -1470,7 +1481,7 @@ mod tests {
         w.tick = 28;
         w.advance_effects(&mut events);
         assert_eq!(events.len(), before);
-        assert!(w.effects.is_empty());
+        assert!(w.entities.spells::<SpellEffect>().next().is_none());
     }
 
     #[test]
