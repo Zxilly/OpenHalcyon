@@ -4,7 +4,7 @@ use halcyon_platform::{
     AppState, HostedMatch, MatchHost, PlatformConfig, PlatformError, Reservation,
 };
 use rusqlite::{Connection, params};
-use serde_json::{Value, json};
+use serde_json::Value;
 use uuid::Uuid;
 
 use crate::meta::Meta;
@@ -21,9 +21,12 @@ fn result(db: &Connection, player: Uuid, room: Uuid, outcome: Value) {
         "INSERT INTO events(player,body) VALUES(?,?)",
         params![
             player.to_string(),
-            json!({
-                "type":"match_finished","matchId":room,"result":outcome
+            serde_json::to_value(MatchEvent {
+                r#type: "match_finished",
+                match_id: room,
+                result: &outcome
             })
+            .unwrap()
             .to_string()
         ],
     )
@@ -101,18 +104,34 @@ async fn legacy_projections_and_incremental_match_statistics() {
         };
         let preserved = legacy(None, true, "tutorial", "unixepoch()/86400-1");
         legacy(
-            Some(json!({"winner":0,"players":{player.to_string():{"team":0}}})),
+            Some(
+                serde_json::to_value(MatchRoster {
+                    winner: 0,
+                    players: std::collections::BTreeMap::from([(player, Team { team: 0 })]),
+                })
+                .unwrap(),
+            ),
             false,
             "blitz_rounds_casual",
             "unixepoch()/86400",
         );
         let aborted = legacy(
-            Some(json!({"reason":"admin_terminated"})),
+            Some(
+                serde_json::to_value(OperatorReason {
+                    reason: "admin_terminated",
+                })
+                .unwrap(),
+            ),
             false,
             "casual_5v5",
             "unixepoch()/86400",
         );
-        legacy(Some(json!({"winner":0})), false, "aral_casual", "NULL");
+        legacy(
+            Some(serde_json::to_value(Winner { winner: 0 }).unwrap()),
+            false,
+            "aral_casual",
+            "NULL",
+        );
         let meta = Meta::open(&path).unwrap();
         let migrated = meta.player_fields(player).await.unwrap();
         assert_eq!(migrated["completed"], 3);
@@ -127,7 +146,12 @@ async fn legacy_projections_and_incremental_match_statistics() {
         assert!(migrated.get("winStreak").is_none());
         assert_eq!(
             meta.hero_stats(player).await.unwrap(),
-            json!([{"hero":"Ardan","completed":3,"wins":2}])
+            serde_json::to_value([HeroStats {
+                hero: "Ardan",
+                completed: 3,
+                wins: 2
+            }])
+            .unwrap()
         );
         let leader = &meta.ranking().await.unwrap()["leaderboards"][0]["entries"][0];
         assert_eq!(leader["completed"], 3);
@@ -163,13 +187,22 @@ async fn legacy_projections_and_incremental_match_statistics() {
                     &db,
                     player,
                     room,
-                    json!({"reason":"completed",
-                    "players":{player.to_string():{"victory":victory,"hero":"Catherine"}}}),
+                    serde_json::to_value(HeroOutcome {
+                        reason: "completed",
+                        players: std::collections::BTreeMap::from([(
+                            player,
+                            HeroVictory {
+                                victory: &victory,
+                                hero: "Catherine",
+                            },
+                        )]),
+                    })
+                    .unwrap(),
                 );
             }
         };
-        settle("aral_casual", json!(false));
-        settle("casual_5v5", json!(false));
+        settle("aral_casual", Value::Bool(false));
+        settle("casual_5v5", Value::Bool(false));
         assert_eq!(meta.player_fields(player).await.unwrap()["lossStreak"], 2);
         settle("casual_5v5", Value::Null);
         assert!(
@@ -179,13 +212,17 @@ async fn legacy_projections_and_incremental_match_statistics() {
                 .get("lossStreak")
                 .is_none()
         );
-        settle("ranked_5v5", json!(true));
-        settle("aral_casual", json!(true));
+        settle("ranked_5v5", Value::Bool(true));
+        settle("aral_casual", Value::Bool(true));
         result(
             &db,
             player,
             aborted,
-            json!({"reason":"admin_terminated","winner":0}),
+            serde_json::to_value(MatchOutcome {
+                winner: 0,
+                reason: "admin_terminated",
+            })
+            .unwrap(),
         );
 
         let final_stats = meta.player_fields(player).await.unwrap();
@@ -198,10 +235,19 @@ async fn legacy_projections_and_incremental_match_statistics() {
         assert_eq!(final_stats["winStreak"], 2);
         assert_eq!(
             meta.hero_stats(player).await.unwrap(),
-            json!([
-                {"hero":"Ardan","completed":3,"wins":2},
-                {"hero":"Catherine","completed":5,"wins":2},
+            serde_json::to_value([
+                HeroStats {
+                    hero: "Ardan",
+                    completed: 3,
+                    wins: 2
+                },
+                HeroStats {
+                    hero: "Catherine",
+                    completed: 5,
+                    wins: 2
+                }
             ])
+            .unwrap()
         );
         let quest_progress = |quest: &str| {
             db.query_row(
@@ -219,4 +265,56 @@ async fn legacy_projections_and_incremental_match_statistics() {
         assert_eq!(reopened.player_fields(player).await.unwrap(), final_stats);
         assert_eq!(quest_progress("win"), (2, "active".into()));
     }
+}
+
+#[derive(serde::Serialize)]
+struct MatchOutcome<'a> {
+    winner: u8,
+    reason: &'a str,
+}
+
+#[derive(serde::Serialize)]
+struct HeroOutcome<'a> {
+    reason: &'static str,
+    players: std::collections::BTreeMap<Uuid, HeroVictory<'a>>,
+}
+
+#[derive(serde::Serialize)]
+struct Winner {
+    winner: u8,
+}
+
+#[derive(serde::Serialize)]
+struct OperatorReason<'a> {
+    reason: &'a str,
+}
+
+#[derive(serde::Serialize)]
+struct MatchRoster {
+    winner: u32,
+    players: std::collections::BTreeMap<Uuid, Team>,
+}
+
+#[derive(serde::Serialize)]
+struct MatchEvent<'a> {
+    r#type: &'static str,
+    #[serde(rename = "matchId")]
+    match_id: Uuid,
+    result: &'a Value,
+}
+
+#[derive(serde::Serialize)]
+struct Team {
+    team: u8,
+}
+#[derive(serde::Serialize)]
+struct HeroVictory<'a> {
+    hero: &'a str,
+    victory: &'a Value,
+}
+#[derive(serde::Serialize)]
+struct HeroStats<'a> {
+    hero: &'a str,
+    completed: u32,
+    wins: u32,
 }

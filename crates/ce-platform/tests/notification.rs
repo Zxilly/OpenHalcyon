@@ -1,3 +1,7 @@
+#[path = "support/native_rpc.rs"]
+mod native_rpc;
+use halcyon_ce_platform::RpcMethod;
+use native_rpc::{RpcEnvelope, android_guest};
 use std::{sync::Arc, time::Duration};
 
 use axum::{
@@ -11,7 +15,7 @@ use halcyon_chat::Directory;
 use halcyon_platform::{
     AppState, HostedMatch, MatchHost, PlatformConfig, PlatformError, Reservation,
 };
-use serde_json::{Value, json};
+use serde_json::Value;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
@@ -26,13 +30,13 @@ impl MatchHost for Host {
     }
 }
 
-async fn rpc_response(api: &Router, method: &str, params: Value) -> Value {
+async fn rpc_response(api: &Router, method: &str, params: impl serde::Serialize) -> Value {
     let response = api
         .clone()
         .oneshot(
             Request::post(format!("/JSONRpc/{method}"))
                 .body(Body::from(
-                    json!({"method":method,"params":params}).to_string(),
+                    serde_json::to_string(&RpcEnvelope { method, params }).unwrap(),
                 ))
                 .unwrap(),
         )
@@ -41,7 +45,7 @@ async fn rpc_response(api: &Router, method: &str, params: Value) -> Value {
     serde_json::from_slice(&to_bytes(response.into_body(), 1 << 20).await.unwrap()).unwrap()
 }
 
-async fn rpc(api: &Router, method: &str, params: Value) -> Value {
+async fn rpc(api: &Router, method: &str, params: impl serde::Serialize) -> Value {
     let body = rpc_response(api, method, params).await;
     assert_eq!(body["code"], 0, "{method} failed");
     body
@@ -50,34 +54,20 @@ async fn rpc(api: &Router, method: &str, params: Value) -> Value {
 async fn guest(api: &Router, handle: &str) -> Value {
     let user = rpc(
         api,
-        "createGuestPlayer",
-        json!([
-            "kindred",
-            "en",
-            "US",
-            "production",
-            "en",
-            "BAKLAVA",
-            "android",
-            "",
-            "147219",
-            1,
-            "device",
-            "model",
-            "0"
-        ]),
+        RpcMethod::CreateGuestPlayer.as_str(),
+        android_guest("device", "0"),
     )
     .await;
     let session = rpc(
         api,
-        "startSessionForPlayer",
-        json!([user["returnValue"]["playerUUID"]]),
+        RpcMethod::StartSessionForPlayer.as_str(),
+        (&user["returnValue"]["playerUUID"],),
     )
     .await;
     rpc(
         api,
-        "renamePlayerHandle",
-        json!([session["sessionToken"], handle]),
+        RpcMethod::RenamePlayerHandle.as_str(),
+        (&session["sessionToken"], &handle),
     )
     .await;
     session
@@ -191,14 +181,14 @@ async fn socket_and_long_poll_share_recipient_cursor_and_social_refresh() {
 
     rpc(
         &api,
-        "joinLobby",
-        json!([b["sessionToken"],{"lobby":"test"}]),
+        RpcMethod::JoinLobby.as_str(),
+        (&b["sessionToken"], LobbyJoin { lobby: "test" }),
     )
     .await;
     rpc(
         &api,
-        "joinLobby",
-        json!([a["sessionToken"],{"lobby":"test"}]),
+        RpcMethod::JoinLobby.as_str(),
+        (&a["sessionToken"], LobbyJoin { lobby: "test" }),
     )
     .await;
     let queued = next().await;
@@ -212,7 +202,7 @@ async fn socket_and_long_poll_share_recipient_cursor_and_social_refresh() {
     rpc(
         &api,
         "friendRequestIssueByHandle",
-        json!([a["sessionToken"], "Relay"]),
+        (&a["sessionToken"], "Relay"),
     )
     .await;
     let social = next().await;
@@ -224,8 +214,8 @@ async fn socket_and_long_poll_share_recipient_cursor_and_social_refresh() {
     assert!(platform.contacts(&chat_session).await.unwrap().is_empty());
     rpc(
         &api,
-        "friendRequestConfirm",
-        json!([b["sessionToken"], a_id]),
+        RpcMethod::FriendRequestConfirm.as_str(),
+        (&b["sessionToken"], &a_id),
     )
     .await;
     let contacts = platform.contacts(&chat_session).await.unwrap();
@@ -233,23 +223,18 @@ async fn socket_and_long_poll_share_recipient_cursor_and_social_refresh() {
     assert_eq!(contacts[0].id, b_id);
     assert!(platform.presence_allowed(&chat_session).await);
     assert!(platform.receives_presence(&chat_session).await);
-    rpc(
-        &api,
-        "setPresenceInvisibility",
-        json!([a["sessionToken"], true]),
-    )
-    .await;
+    rpc(&api, "setPresenceInvisibility", (&a["sessionToken"], true)).await;
     rpc(
         &api,
         "presenceSetReceiveBroadcast",
-        json!([a["sessionToken"], false]),
+        (&a["sessionToken"], false),
     )
     .await;
     assert!(!platform.presence_allowed(&chat_session).await);
     assert!(!platform.receives_presence(&chat_session).await);
     assert_eq!(platform.contacts(&chat_session).await.unwrap()[0].id, b_id);
 
-    rpc(&api, "endSession", json!([a["sessionToken"]])).await;
+    rpc(&api, RpcMethod::EndSession.as_str(), (&a["sessionToken"],)).await;
     assert!(platform.authenticate(a_id, pass).await.is_none());
     assert!(platform.contacts(&chat_session).await.is_none());
     assert_eq!(http(addr, &lp_path).await.0, 401);
@@ -323,10 +308,20 @@ async fn party_notices_are_private_replayable_and_revoked_with_membership() {
            BEGIN SELECT RAISE(ABORT, 'injected notice write failure'); END;",
     )
     .unwrap();
-    let failed = rpc_response(&api, "createQuintParty", json!([owner["sessionToken"]])).await;
+    let failed = rpc_response(
+        &api,
+        RpcMethod::CreateQuintParty.as_str(),
+        (&owner["sessionToken"],),
+    )
+    .await;
     assert_ne!(failed["code"], 0);
     assert_eq!(
-        rpc(&api, "queryPartyInfo", json!([owner["sessionToken"]])).await["returnValue"]["partyUUID"],
+        rpc(
+            &api,
+            RpcMethod::QueryPartyInfo.as_str(),
+            (&owner["sessionToken"],)
+        )
+        .await["returnValue"]["partyUUID"],
         Value::Null
     );
     db.execute_batch("DROP TRIGGER reject_party_notice")
@@ -334,89 +329,93 @@ async fn party_notices_are_private_replayable_and_revoked_with_membership() {
 
     let party = rpc(
         &api,
-        "createQuintParty",
-        json!([owner["sessionToken"], {"mode":"casual_5v5"}]),
+        RpcMethod::CreateQuintParty.as_str(),
+        (&owner["sessionToken"], QueueJoin { mode: "casual_5v5" }),
     )
     .await;
     let party_id = &party["returnValue"]["partyUUID"];
     let created = http(addr, &resume(&owner_lp, &owner_base)).await.1;
-    assert_eq!(
-        created["text"],
-        json!({"code":0,"quintPartyStateUpdate":{}})
-    );
+    assert_eq!(created["text"], sample("quintPartyStateUpdate"));
 
     for _ in 0..2 {
         rpc(
             &api,
-            "partyInviteSend",
-            json!([owner["sessionToken"], member_id]),
+            RpcMethod::PartyInviteSend.as_str(),
+            (&owner["sessionToken"], &member_id),
         )
         .await;
     }
     let invitation = next().await;
-    assert_eq!(
-        invitation["text"],
-        json!({"code":0,"quintPartyJoinRequest":{}})
-    );
+    assert_eq!(invitation["text"], sample("quintPartyJoinRequest"));
     let polled = http(addr, &resume(&member_lp, &member_base)).await.1;
     assert_eq!(polled["tag"], invitation["tag"]);
     assert_eq!(polled["text"], invitation["text"]);
     for _ in 0..2 {
         rpc(
             &api,
-            "partyInviteConfirm",
-            json!([member["sessionToken"], party_id]),
+            RpcMethod::PartyInviteConfirm.as_str(),
+            (&member["sessionToken"], &party_id),
         )
         .await;
     }
     let joined = next().await;
     assert_eq!(joined["tag"], Uuid::from_u128(2).to_string());
-    assert_eq!(joined["text"], json!({"code":0,"quintPartyStateUpdate":{}}));
+    assert_eq!(joined["text"], sample("quintPartyStateUpdate"));
     assert_eq!(
         http(addr, &resume(&member_lp, &member_base)).await.1["text"]["type"],
         "stateUpdate"
     );
-    rpc(&api, "leaveQuintParty", json!([member["sessionToken"]])).await;
+    rpc(
+        &api,
+        RpcMethod::LeaveQuintParty.as_str(),
+        (&member["sessionToken"],),
+    )
+    .await;
     let owner_joined = http(addr, &resume(&owner_lp, &created)).await.1;
     let left = http(addr, &resume(&owner_lp, &owner_joined)).await.1;
-    assert_eq!(left["text"], json!({"code":0,"quintPartyPlayerLeft":{}}));
+    assert_eq!(left["text"], sample("quintPartyPlayerLeft"));
 
     // The old invite and roster cursors remain usable after the member returns and is removed.
     rpc(
         &api,
-        "joinQuintParty",
-        json!([member["sessionToken"], party["returnValue"]["quintCode"]]),
+        RpcMethod::JoinQuintParty.as_str(),
+        (&member["sessionToken"], &party["returnValue"]["quintCode"]),
     )
     .await;
     let rejoined = next().await;
     assert_eq!(rejoined["tag"], Uuid::from_u128(3).to_string());
     rpc(
         &api,
-        "partyMemberKick",
-        json!([owner["sessionToken"], member_id]),
+        RpcMethod::PartyMemberKick.as_str(),
+        (&owner["sessionToken"], &member_id),
     )
     .await;
     let kicked = next().await;
-    assert_eq!(kicked["text"], json!({"code":0,"quintPartyMemberKick":{}}));
+    assert_eq!(kicked["text"], sample("quintPartyMemberKick"));
     let stale = http(addr, &resume(&member_lp, &joined)).await.1;
     assert_eq!(stale["tag"], rejoined["tag"]);
     assert_eq!(stale["text"]["type"], "stateUpdate");
 
     rpc(
         &api,
-        "partyInviteSend",
-        json!([owner["sessionToken"], invited_id]),
+        RpcMethod::PartyInviteSend.as_str(),
+        (&owner["sessionToken"], &invited_id),
     )
     .await;
-    rpc(&api, "destroyQuintParty", json!([owner["sessionToken"]])).await;
+    rpc(
+        &api,
+        RpcMethod::DestroyQuintParty.as_str(),
+        (&owner["sessionToken"],),
+    )
+    .await;
     let withdrawn = http(addr, &resume(&invited_lp, &invited_base)).await.1;
     assert_eq!(withdrawn["text"]["type"], "stateUpdate");
 
     // An unrelated player gets their own first event, with no hidden ordinal increments.
     rpc(
         &api,
-        "joinLobby",
-        json!([outsider["sessionToken"], {"lobby":"test"}]),
+        RpcMethod::JoinLobby.as_str(),
+        (&outsider["sessionToken"], LobbyJoin { lobby: "test" }),
     )
     .await;
     let outsider_event = http(addr, &resume(&outsider_lp, &outsider_base)).await.1;
@@ -456,8 +455,13 @@ async fn match_acceptance_is_bound_to_the_supplied_offer() {
         let token = player["sessionToken"].clone();
         rpc(
             &api,
-            "joinLobby",
-            json!([token, {"lobby":"5v5_pvp_casual"}]),
+            RpcMethod::JoinLobby.as_str(),
+            (
+                &token,
+                LobbyJoin {
+                    lobby: "5v5_pvp_casual",
+                },
+            ),
         )
         .await;
         tokens.push(token);
@@ -477,23 +481,28 @@ async fn match_acceptance_is_bound_to_the_supplied_offer() {
         .unwrap()
     };
     for (wrong, code) in [
-        (json!(Uuid::new_v4()), -2),
-        (json!("malformed"), -32602),
-        (json!(1), -32602),
+        (serde_json::to_value(Uuid::new_v4()).unwrap(), -2),
+        (Value::from("malformed"), -32602),
+        (Value::from(1), -32602),
     ] {
         assert_eq!(
-            rpc_response(&api, "acceptMatch", json!([tokens[0], wrong])).await["code"],
+            rpc_response(&api, RpcMethod::AcceptMatch.as_str(), (&tokens[0], &wrong,)).await["code"],
             code
         );
         assert_eq!(accepted(), 0);
     }
     for _ in 0..2 {
-        let response = rpc(&api, "acceptMatch", json!([tokens[0], offered])).await;
+        let response = rpc(
+            &api,
+            RpcMethod::AcceptMatch.as_str(),
+            (&tokens[0], &offered),
+        )
+        .await;
         assert_eq!(response["returnValue"], true);
         assert_eq!(accepted(), 1);
     }
     assert_eq!(
-        rpc(&api, "acceptMatch", json!([tokens[1], ""])).await["returnValue"],
+        rpc(&api, RpcMethod::AcceptMatch.as_str(), (&tokens[1], "",)).await["returnValue"],
         true
     );
     assert_eq!(accepted(), 2);
@@ -510,14 +519,13 @@ async fn talent_catalog_preserves_public_fields_and_projects_only_the_callers_in
         |path: &Path, value: Value| fs::write(path, serde_json::to_vec(&value).unwrap()).unwrap();
     write(
         &dir.join("official_getSkinManifest.json"),
-        json!({"returnValue":"{}"}),
+        serde_json::to_value(ArchivedReply { return_value: "{}" }).unwrap(),
     );
-    let public = json!({"id":"example_rare","def":"*Talent_Example_A*","hero":"*Example*","maxLevel":false,
-                      "levelRequirements":{"[fragments]":90,"silver":1300}});
+    let public = sample("rare_talent");
     let mut archived = public.clone();
-    archived["level"] = json!(10);
-    archived["fragments"] = json!(44);
-    archived["privateField"] = json!("discard");
+    archived["level"] = Value::from(10);
+    archived["fragments"] = Value::from(44);
+    archived["privateField"] = Value::from("discard");
     let open = || {
         let app = AppState::open(
             PlatformConfig {
@@ -539,56 +547,71 @@ async fn talent_catalog_preserves_public_fields_and_projects_only_the_callers_in
             Some(dir),
         )
     };
-    for bad in [json!([]), json!({"example_rare":{"id":"bad"}}), {
-        let mut bad = archived.clone();
-        bad["levelRequirements"] = json!([]);
-        json!({"example_rare":bad})
-    }] {
-        write(&talent, json!({"returnValue":bad}));
+    for bad in [
+        serde_json::Value::Array(Vec::new()),
+        sample("malformed_talent"),
+        {
+            let mut bad = archived.clone();
+            bad["levelRequirements"] = serde_json::Value::Array(Vec::new());
+            serde_json::to_value(TalentExample { example_rare: &bad }).unwrap()
+        },
+    ] {
+        write(
+            &talent,
+            serde_json::to_value(ArchivedReply { return_value: &bad }).unwrap(),
+        );
         assert!(open().is_err());
     }
     write(
         &talent,
-        json!({"sessionToken":"discard", "returnValue":{"example_rare":archived}}),
+        serde_json::to_value(ArchivedAccountReply {
+            session_token: "discard",
+            return_value: TalentExample {
+                example_rare: &archived,
+            },
+        })
+        .unwrap(),
     );
     let content = dir.join("content.json");
-    write(
-        &content,
-        json!({
-            "items":[{"id":"exampleLevel","slot":"progress","name":"Example Level"},
-                     {"id":"examplePieces","slot":"progress","name":"Example Pieces"}],
-            "talentProgress":{"example_rare":{"levelItem":"exampleLevel","fragmentItem":"examplePieces"}},
-            "exchanges":{"openRewardChest":{"welcome":{"limit":1,"reward":{"examplePieces":9}}},
-                         "upgradeTalent":{"example_rare":{"cost":{"examplePieces":2},"reward":{"exampleLevel":1}}}}
-        }),
-    );
+    write(&content, sample("community_content"));
     let platform = open().unwrap().with_content(&content).await.unwrap();
     let api = platform.rpc();
     let a = guest(&api, "Amber").await;
     let b = guest(&api, "Slate").await;
     let stat = |level, fragments| {
         let mut v = public.clone();
-        v["levelRequirements"] = json!({});
-        v["level"] = json!(level);
-        v["fragments"] = json!(fragments);
-        json!({"example_rare":v})
+        v["levelRequirements"] = serde_json::to_value(EmptyReply {}).unwrap();
+        v["level"] = serde_json::to_value(level).unwrap();
+        v["fragments"] = serde_json::to_value(fragments).unwrap();
+        serde_json::to_value(TalentExample { example_rare: &v }).unwrap()
     };
-    let read = |token: Value| rpc(&api, "getTalentsData", json!([token]));
+    let read = |token: Value| rpc(&api, RpcMethod::GetTalentsData.as_str(), (token,));
     let ta = &a["sessionToken"];
     let tb = &b["sessionToken"];
     assert_eq!(read(ta.clone()).await["returnValue"], stat(0, 0));
     assert_eq!(read(tb.clone()).await["returnValue"], stat(0, 0));
     assert_ne!(
-        rpc_response(&api, "upgradeTalent", json!([tb, "example_rare"])).await["code"],
+        rpc_response(
+            &api,
+            RpcMethod::UpgradeTalent.as_str(),
+            (&tb, "example_rare",)
+        )
+        .await["code"],
         0
     );
-    rpc(&api, "openRewardChest", json!([ta, "welcome"])).await;
-    let upgraded = rpc(&api, "upgradeTalent", json!([ta, "example_rare"])).await;
+    rpc(&api, RpcMethod::OpenRewardChest.as_str(), (&ta, "welcome")).await;
+    let upgraded = rpc(
+        &api,
+        RpcMethod::UpgradeTalent.as_str(),
+        (&ta, "example_rare"),
+    )
+    .await;
     assert_ne!(upgraded["sessionToken"], *ta);
     // Simulate a receipt left by the earlier bearer-independent implementation.
     use sha2::{Digest, Sha256};
-    let previous =
-        Sha256::digest(serde_json::to_vec(&("upgradeTalent", json!(["example_rare"]))).unwrap());
+    let previous = Sha256::digest(
+        serde_json::to_vec(&(RpcMethod::UpgradeTalent.as_str(), ["example_rare"])).unwrap(),
+    );
     let db = rusqlite::Connection::open(&database).unwrap();
     assert_eq!(
         db.execute(
@@ -598,30 +621,55 @@ async fn talent_catalog_preserves_public_fields_and_projects_only_the_callers_in
         .unwrap(),
         1
     );
-    rpc(&api, "upgradeTalent", json!([ta, "example_rare"])).await;
-    rpc(&api, "upgradeTalent", json!([ta, "example_rare"])).await;
+    rpc(
+        &api,
+        RpcMethod::UpgradeTalent.as_str(),
+        (&ta, "example_rare"),
+    )
+    .await;
+    rpc(
+        &api,
+        RpcMethod::UpgradeTalent.as_str(),
+        (&ta, "example_rare"),
+    )
+    .await;
     assert_eq!(read(ta.clone()).await["returnValue"], stat(1, 7));
     let next = rpc(
         &api,
-        "upgradeTalent",
-        json!([upgraded["sessionToken"], "example_rare"]),
+        RpcMethod::UpgradeTalent.as_str(),
+        (&upgraded["sessionToken"], "example_rare"),
     )
     .await;
     assert_eq!(read(ta.clone()).await["returnValue"], stat(2, 5));
-    let stable = json!({"sku":"example_rare","operationId":Uuid::new_v4()});
-    let first = rpc(&api, "upgradeTalent", json!([next["sessionToken"], stable])).await;
+    let stable = serde_json::to_value(ExchangeWithId {
+        sku: "example_rare",
+        operation_id: Uuid::new_v4(),
+    })
+    .unwrap();
+    let first = rpc(
+        &api,
+        RpcMethod::UpgradeTalent.as_str(),
+        (&next["sessionToken"], &stable),
+    )
+    .await;
     rpc(
         &api,
-        "upgradeTalent",
-        json!([first["sessionToken"], stable]),
+        RpcMethod::UpgradeTalent.as_str(),
+        (&first["sessionToken"], &stable),
     )
     .await;
     assert_eq!(read(ta.clone()).await["returnValue"], stat(3, 3));
     assert_eq!(
         rpc_response(
             &api,
-            "upgradeTalent",
-            json!([ta,{"sku":"example_rare","operationId":"bad"}])
+            RpcMethod::UpgradeTalent.as_str(),
+            (
+                &ta,
+                ExchangeWithId {
+                    sku: "example_rare",
+                    operation_id: "bad"
+                },
+            )
         )
         .await["code"],
         -32602
@@ -645,4 +693,49 @@ async fn talent_catalog_preserves_public_fields_and_projects_only_the_callers_in
             .unwrap()
             .is_none()
     );
+}
+
+#[derive(serde::Serialize)]
+struct ExchangeWithId<'a, T1> {
+    sku: &'a str,
+    #[serde(rename = "operationId")]
+    operation_id: T1,
+}
+
+#[derive(serde::Serialize)]
+struct TalentExample<T0> {
+    example_rare: T0,
+}
+
+#[derive(serde::Serialize)]
+struct EmptyReply {}
+
+#[derive(serde::Serialize)]
+struct ArchivedAccountReply<'a, T1> {
+    #[serde(rename = "sessionToken")]
+    session_token: &'a str,
+    #[serde(rename = "returnValue")]
+    return_value: T1,
+}
+
+#[derive(serde::Serialize)]
+struct ArchivedReply<T0> {
+    #[serde(rename = "returnValue")]
+    return_value: T0,
+}
+
+#[derive(serde::Serialize)]
+struct LobbyJoin<'a> {
+    lobby: &'a str,
+}
+
+#[derive(serde::Serialize)]
+struct QueueJoin<'a> {
+    mode: &'a str,
+}
+
+fn sample(name: &str) -> serde_json::Value {
+    let samples: std::collections::BTreeMap<String, serde_json::Value> =
+        serde_json::from_str(include_str!("fixtures/notification-samples.json")).unwrap();
+    samples.get(name).unwrap().clone()
 }

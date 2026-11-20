@@ -1,5 +1,5 @@
 use rusqlite::{Transaction, params};
-use serde_json::{Value, json};
+use serde_json::Value;
 
 use super::Error;
 
@@ -150,7 +150,7 @@ BEGIN
 END;";
 
 pub(crate) fn player_fields(tx: &Transaction<'_>, player: &str) -> Result<Value, Error> {
-    Ok(tx.query_row(
+    let fields = tx.query_row(
         "SELECT coalesce(p.completed,0),coalesce(p.wins,0),coalesce(p.non_tutorial,0),coalesce(d.wins,0),
                 coalesce(p.aral,0),coalesce(p.blitz,0),coalesce(p.blitz_rounds_casual,0),
                 coalesce(p.casual,0),coalesce(p.ranked,0),p.last_won,coalesce(p.streak,0)
@@ -159,19 +159,42 @@ pub(crate) fn player_fields(tx: &Transaction<'_>, player: &str) -> Result<Value,
          LEFT JOIN ce_daily_wins d ON d.player=q.id AND d.day=unixepoch()/86400",
         params![player],
         |row| {
-            let mut info = json!({
-                "completed":row.get::<_,u64>(0)?,"wins":row.get::<_,u64>(1)?,
-                "completed_non_tutorial":row.get::<_,u64>(2)?,"winsToday":row.get::<_,u64>(3)?,
-                "wins_aral":row.get::<_,u64>(4)?,"wins_blitz":row.get::<_,u64>(5)?,
-                "wins_blitz_rounds_casual":row.get::<_,u64>(6)?,"wins_casual":row.get::<_,u64>(7)?,
-                "wins_ranked":row.get::<_,u64>(8)?,
-            });
-            if let Some(won) = row.get::<_,Option<bool>>(9)? {
-                info[if won {"winStreak"} else {"lossStreak"}] = json!(row.get::<_,u64>(10)?);
-            }
-            Ok(info)
+            let streak = row.get::<_, u64>(10)?;
+            let won = row.get::<_, Option<bool>>(9)?;
+            Ok(PlayerMatches {
+                completed: row.get(0)?,
+                wins: row.get(1)?,
+                completed_non_tutorial: row.get(2)?,
+                wins_today: row.get(3)?,
+                wins_aral: row.get(4)?,
+                wins_blitz: row.get(5)?,
+                wins_blitz_rounds_casual: row.get(6)?,
+                wins_casual: row.get(7)?,
+                wins_ranked: row.get(8)?,
+                win_streak: won.filter(|won| *won).map(|_| streak),
+                loss_streak: won.filter(|won| !*won).map(|_| streak),
+            })
         },
-    )?)
+    )?;
+    Ok(serde_json::to_value(fields)?)
+}
+
+#[derive(serde::Serialize)]
+struct PlayerMatches {
+    completed: u64,
+    wins: u64,
+    completed_non_tutorial: u64,
+    #[serde(rename = "winsToday")]
+    wins_today: u64,
+    wins_aral: u64,
+    wins_blitz: u64,
+    wins_blitz_rounds_casual: u64,
+    wins_casual: u64,
+    wins_ranked: u64,
+    #[serde(rename = "winStreak", skip_serializing_if = "Option::is_none")]
+    win_streak: Option<u64>,
+    #[serde(rename = "lossStreak", skip_serializing_if = "Option::is_none")]
+    loss_streak: Option<u64>,
 }
 
 #[cfg(test)]

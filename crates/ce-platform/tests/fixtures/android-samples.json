@@ -1,0 +1,99 @@
+{
+  "success": {
+    "success": true
+  },
+  "honor_status": {
+    "success": true,
+    "status": 0,
+    "handle": "Coral"
+  },
+  "queue_status": {
+    "success": true,
+    "ttl": 100,
+    "state": "pending_auto",
+    "numPlayers": 1
+  },
+  "invalid_parameters": {
+    "code": -32602,
+    "sessionToken": "",
+    "returnValue": null,
+    "reason": "invalid parameters"
+  },
+  "player_action": {
+    "state": 3,
+    "clientMode": 1
+  },
+  "community_content": {
+    "items": [
+      {
+        "id": "silver",
+        "slot": "currency",
+        "name": "Silver"
+      },
+      {
+        "id": "card",
+        "slot": "card",
+        "name": "Card"
+      }
+    ],
+    "quests": [
+      {
+        "id": "first_win",
+        "category": "win_match",
+        "title": "Win one game",
+        "goal": 1,
+        "skippable": false,
+        "reward": [
+          "silver",
+          2
+        ]
+      },
+      {
+        "id": "play_twice",
+        "category": "complete_match",
+        "title": "Finish two games",
+        "goal": 2,
+        "skippable": false
+      }
+    ],
+    "exchanges": {
+      "collectHeroChest": {
+        "starter": {
+          "reward": {
+            "silver": 10
+          },
+          "limit": 1
+        }
+      },
+      "forgeCard": {
+        "unit": {
+          "cost": {
+            "silver": 7
+          },
+          "reward": {
+            "card": 1
+          }
+        }
+      }
+    }
+  },
+  "friend_list": {
+    "confirmed": [],
+    "pending": [],
+    "numOffline": 0
+  },
+  "ping_sites": [
+    {
+      "site": "lab",
+      "host": "127.0.0.1",
+      "port": 41119
+    }
+  ],
+  "ringo_statistics": [
+    {
+      "hero": "Ringo",
+      "completed": 1,
+      "wins": 1
+    }
+  ]
+}

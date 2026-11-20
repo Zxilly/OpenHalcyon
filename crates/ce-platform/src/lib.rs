@@ -1,10 +1,14 @@
 //! Compatibility layer for the Android Community Edition platform protocol.
+mod wire;
+pub use halcyon_protocol::ce::{LobbyState, RpcMethod};
+use wire::{Empty, PlayerHandle, Seconds, StateSnapshot, Success};
 mod activity;
 mod auth;
 mod community;
 mod content;
 mod match_stats;
 mod meta;
+use meta::Preference;
 mod native_offer;
 mod notify;
 mod party_notify;
@@ -27,10 +31,10 @@ use axum::{
     routing::{get, post},
 };
 use halcyon_platform::{
-    AppState, BotDifficulty, Guest, PlatformError, PlayerProfile, PublicMatches,
+    AppState, BotDifficulty, Guest, LobbyPhase, PlatformError, PlayerProfile, PublicMatches,
 };
-use serde::Deserialize;
-use serde_json::{Value, json};
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::{
     collections::HashMap,
     path::Path as FsPath,
@@ -147,8 +151,11 @@ impl Platform {
             provider: None,
             content: Default::default(),
             peers: None,
-            talents: talents::Catalog::parse(load("official_getTalentsData.json", json!({}))?)?,
-            skins: load("official_getSkinManifest.json", json!("{}"))?,
+            talents: talents::Catalog::parse(load(
+                "official_getTalentsData.json",
+                serde_json::to_value(Empty {})?,
+            )?)?,
+            skins: load("official_getSkinManifest.json", Value::from("{}"))?,
         }))
     }
 
@@ -213,7 +220,10 @@ impl Platform {
         };
         Ok((
             String::new(),
-            json!({"playerUUID":token,"startSessionUrl":format!("https://{}", self.config.authority)}),
+            serde_json::to_value(GuestBootstrap {
+                player_uuid: token,
+                start_session_url: format!("https://{}", self.config.authority),
+            })?,
         ))
     }
 }
@@ -228,14 +238,21 @@ async fn rpc(
     State(s): State<Arc<Platform>>,
     Path(method): Path<String>,
     body: Bytes,
-) -> Json<Value> {
+) -> Json<RpcResponse> {
     let result = match serde_json::from_slice::<Request>(&body) {
-        Ok(request) if request.method == method => dispatch(&s, &method, &request.params).await,
+        Ok(request) if request.method == method => {
+            dispatch(&s, RpcMethod::from_wire(&method), &request.params).await
+        }
         _ => Err(Error::Invalid),
     };
     tracing::debug!(method, success = result.is_ok(), "CE RPC");
     let value = match result {
-        Ok((token, rv)) => json!({"code":0,"sessionToken":token,"returnValue":rv}),
+        Ok((token, rv)) => RpcResponse {
+            code: 0,
+            session_token: token,
+            return_value: rv,
+            reason: None,
+        },
         Err(err) => {
             let (code, reason) = match &err {
                 Error::Unauthorized | Error::Platform(PlatformError::Unauthorized) => {
@@ -261,7 +278,12 @@ async fn rpc(
                 _ => (-3, "service unavailable"),
             };
             tracing::debug!(method,%code,reason,"CE request failed");
-            json!({"code":code,"sessionToken":"","returnValue":null,"reason":reason})
+            RpcResponse {
+                code,
+                session_token: String::new(),
+                return_value: Value::Null,
+                reason: Some(reason),
+            }
         }
     };
     Json(value)
@@ -287,18 +309,18 @@ fn local_credentials(params: &[Value]) -> Result<(&str, String), Error> {
     }
 }
 
-async fn dispatch(s: &Platform, m: &str, params: &[Value]) -> Result<(String, Value), Error> {
-    if m == "createGuestPlayer" {
+async fn dispatch(s: &Platform, m: RpcMethod, params: &[Value]) -> Result<(String, Value), Error> {
+    if m == RpcMethod::CreateGuestPlayer {
         if params.len() != 13 || arg(params, 0)? != "kindred" || arg(params, 8)? != "147219" {
             return Err(Error::Invalid);
         }
         return s.guest_response(s.app.create_guest("Guest".into()).await?, None);
     }
-    if m == "getPlayerFromPlatform" {
+    if m == RpcMethod::GetPlayerFromPlatform {
         let (name, password) = local_credentials(params)?;
         return s.guest_response(s.app.login_account(name, password).await?, None);
     }
-    if m == "authenticate" && params.first().is_some_and(Value::is_object) {
+    if m == RpcMethod::Authenticate && params.first().is_some_and(Value::is_object) {
         let (name, password) = local_credentials(params)?;
         let guest = s.app.login_account(name, password).await?;
         let profile = s.app.profile(&guest.session_token).await?;
@@ -313,14 +335,14 @@ async fn dispatch(s: &Platform, m: &str, params: &[Value]) -> Result<(String, Va
         return Ok((token, snapshot));
     }
     let token = arg(params, 0)?;
-    if m == "getPlayerForGuestAccount" {
+    if m == RpcMethod::GetPlayerForGuestAccount {
         let claims = s.tokens.verify(token, Scope::Guest)?;
         let guest = s.app.resume_guest(claims.credential).await?;
         return s.guest_response(guest, Some(token));
     }
     let session = match s.tokens.verify(token, Scope::Session) {
         Ok(claims) => claims.credential,
-        Err(_) if m == "startSessionForPlayer" || m == "authenticate" => {
+        Err(_) if m == RpcMethod::StartSessionForPlayer || m == RpcMethod::Authenticate => {
             let resume = s.tokens.verify(token, Scope::Guest)?;
             s.app.resume_guest(resume.credential).await?.session_token
         }
@@ -329,24 +351,33 @@ async fn dispatch(s: &Platform, m: &str, params: &[Value]) -> Result<(String, Va
     let profile = s.app.profile(&session).await?;
     let id = profile.player_id;
     let mut rv = match m {
-        "link_account" | "createAccountForPlayer" => {
+        RpcMethod::LinkAccount | RpcMethod::CreateAccountForPlayer => {
             let (name, password) = local_credentials(&params[1..])?;
             s.app.link_account(&session, name, password).await?;
-            json!({"success":true,"username":name,"playerUUID":id})
+            serde_json::to_value(AccountLinked {
+                success: true,
+                username: name,
+                player_uuid: id,
+            })?
         }
-        "isGovernmentIdVerified" | "verifyGovernmentId" | "storePrepareIAP" | "storeProcessIAP" => {
+        RpcMethod::IsGovernmentIdVerified
+        | RpcMethod::VerifyGovernmentId
+        | RpcMethod::StorePrepareIAP
+        | RpcMethod::StoreProcessIAP => {
             provider::dispatch(s.provider.as_ref(), &s.meta, id, m, &params[1..]).await?
         }
-        "authenticate" | "startSessionForPlayer" => {
+        RpcMethod::Authenticate | RpcMethod::StartSessionForPlayer => {
             s.community
                 .observe_player(id, profile.name.clone(), true)
                 .await?;
-            s.meta.set(id, "last_login", json!(now() as f64)).await?;
+            s.meta
+                .set(id, Preference::LastLogin, Value::from(now() as f64))
+                .await?;
             let mut rv = s.start_session(&session, &profile).await?;
-            rv["playerConfig"] = s.meta.prefs(id, "platform_config").await?;
+            rv["playerConfig"] = s.meta.prefs(id, Preference::PlatformConfig).await?;
             rv
         }
-        "getPlayerInfo" => {
+        RpcMethod::GetPlayerInfo => {
             if let Some(target) = params.get(1) {
                 let requested = Uuid::parse_str(target.as_str().ok_or(Error::Invalid)?)
                     .map_err(|_| Error::Invalid)?;
@@ -358,33 +389,37 @@ async fn dispatch(s: &Platform, m: &str, params: &[Value]) -> Result<(String, Va
                         .ok_or(halcyon_community::CommunityError::Missing("unknown player"))?;
                     return Ok((
                         s.tokens.sign(id, &session, Scope::Session)?,
-                        json!({"playerUUID":requested,"handle":other.profile.name}),
+                        serde_json::to_value(PlayerHandle {
+                            player_uuid: requested,
+                            handle: other.profile.name,
+                        })?,
                     ));
                 }
             }
             player_info(&profile)
         }
-        "getSkinManifest" => s.skins.clone(),
-        "getTalentsData" => s.talents_for(id).await?,
-        "queryPendingMatch" => s.pending_match(&session, &profile).await?,
-        "update" => {
+        RpcMethod::GetSkinManifest => s.skins.clone(),
+        RpcMethod::GetTalentsData => s.talents_for(id).await?,
+        RpcMethod::QueryPendingMatch => s.pending_match(&session, &profile).await?,
+        RpcMethod::Update => {
             if let Some(lobby) = &profile.lobby {
-                if lobby.mode == "5v5_bots_solo" && lobby.phase == "offered" {
+                if lobby.mode == "5v5_bots_solo" && lobby.phase_kind() == Some(LobbyPhase::Offered)
+                {
                     let mut snapshot = s.projected_state(&session, &profile).await?;
                     s.accept(&session, lobby.match_id.ok_or(Error::Internal)?)
                         .await?;
                     // The local bot host is already allocated; CE polls again at expiry.
-                    snapshot["ttl"] = json!(1);
-                    snapshot["expiry"] = json!(expiry_in(1));
-                    snapshot
+                    snapshot.ttl = Seconds::Whole(1);
+                    snapshot.expiry = Seconds::Fraction(expiry_in(1));
+                    serde_json::to_value(snapshot)?
                 } else {
-                    s.projected_state(&session, &profile).await?
+                    serde_json::to_value(s.projected_state(&session, &profile).await?)?
                 }
             } else {
-                state(&profile)
+                serde_json::to_value(StateSnapshot::from_profile(&profile))?
             }
         }
-        "joinLobby" => {
+        RpcMethod::JoinLobby => {
             let lobby = params.get(1).ok_or(Error::Invalid)?;
             let parsed;
             let obj = if let Some(raw) = lobby.as_str() {
@@ -413,17 +448,22 @@ async fn dispatch(s: &Platform, m: &str, params: &[Value]) -> Result<(String, Va
                 s.sites.report(&obj["sites"]),
             )
             .await?;
-            let mut joined = json!({"success":true,"ttl":100});
+            let mut joined = Joined {
+                success: true,
+                ttl: 100,
+                state: None,
+                num_players: None,
+            };
             if matches!(mode, "casual_aral" | "ranked") {
-                let current = state(&s.app.profile(&session).await?);
-                if current["state"] == "pending_auto" {
-                    joined["state"] = current["state"].clone();
-                    joined["numPlayers"] = json!(s.meta.queued_party_size(id).await?);
+                let current = StateSnapshot::from_profile(&s.app.profile(&session).await?);
+                if current.state == LobbyState::PendingAuto {
+                    joined.state = Some(current.state);
+                    joined.num_players = Some(s.meta.queued_party_size(id).await?);
                 }
             }
-            joined
+            serde_json::to_value(joined)?
         }
-        "acceptMatch" => {
+        RpcMethod::AcceptMatch => {
             let requested = params
                 .get(1)
                 .map(|v| v.as_str().ok_or(Error::Invalid))
@@ -438,47 +478,53 @@ async fn dispatch(s: &Platform, m: &str, params: &[Value]) -> Result<(String, Va
             };
             s.accept(&session, room).await?;
             if requested.is_some() {
-                json!(true)
+                Value::Bool(true)
             } else {
                 s.start_session(&session, &s.app.profile(&session).await?)
                     .await?
             }
         }
-        "spectateFriend" => spectator::begin(s, &session, params).await?,
-        "spectatorExitMatch" => spectator::exit(s, &session).await?,
+        RpcMethod::SpectateFriend => spectator::begin(s, &session, params).await?,
+        RpcMethod::SpectatorExitMatch => spectator::exit(s, &session).await?,
         // The Android startup sequence calls exitLobby even after resuming a
         // live seat. Leaving the pre-match lobby must preserve that seat.
-        "exitLobby" if profile.lobby.as_ref().is_some_and(|l| l.phase == "playing") => {
-            s.projected_state(&session, &profile).await?
+        RpcMethod::ExitLobby
+            if profile
+                .lobby
+                .as_ref()
+                .is_some_and(|l| l.phase_kind() == Some(LobbyPhase::Playing)) =>
+        {
+            serde_json::to_value(s.projected_state(&session, &profile).await?)?
         }
-        "rejectMatch" if params.len() > 1 => {
+        RpcMethod::RejectMatch if params.len() > 1 => {
             let room = params[1].as_str().ok_or(Error::Invalid)?;
             if room.is_empty() {
-                json!(false)
+                Value::Bool(false)
             } else {
                 let room = Uuid::parse_str(room).map_err(|_| Error::Invalid)?;
-                json!(if let Some(peers) = &s.peers {
+                Value::Bool(if let Some(peers) = &s.peers {
                     peers.reject_offer(&session, room).await?
                 } else {
                     s.app.reject_local_offer(&session, room).await?
                 })
             }
         }
-        "exitLobby" | "rejectMatch" | "notifyExitPostMatch" => {
+        RpcMethod::ExitLobby | RpcMethod::RejectMatch | RpcMethod::NotifyExitPostMatch => {
             if spectator::is_spectating(&profile) || profile.lobby.is_none() {
                 spectator::leave(s, &session).await?;
             } else if profile.lobby.is_some() {
                 s.cancel_queue(&session).await?;
             }
-            if m == "notifyExitPostMatch" {
-                json!({"success":true})
+            if m == RpcMethod::NotifyExitPostMatch {
+                serde_json::to_value(Success { success: true })?
             } else {
-                state(&s.app.profile(&session).await?)
+                serde_json::to_value(StateSnapshot::from_profile(&s.app.profile(&session).await?))?
             }
         }
-        "renamePlayerHandle" | "setPlayerHandle" => {
-            let native =
-                m == "renamePlayerHandle" && params.len() == 3 && params[1].as_str() == Some("");
+        RpcMethod::RenamePlayerHandle | RpcMethod::SetPlayerHandle => {
+            let native = m == RpcMethod::RenamePlayerHandle
+                && params.len() == 3
+                && params[1].as_str() == Some("");
             let name = arg(params, if native { 2 } else { 1 })?;
             s.app.rename(&session, name.to_owned()).await?;
             let updated = s.app.profile(&session).await?;
@@ -486,12 +532,16 @@ async fn dispatch(s: &Platform, m: &str, params: &[Value]) -> Result<(String, Va
                 .observe_player(id, updated.name.clone(), true)
                 .await?;
             if native {
-                json!({"handle":updated.name,"status":0,"success":true})
+                serde_json::to_value(RenamedPlayer {
+                    handle: updated.name,
+                    status: 0,
+                    success: true,
+                })?
             } else {
                 player_info(&updated)
             }
         }
-        "updatePlatformPlayerConfig" => {
+        RpcMethod::UpdatePlatformPlayerConfig => {
             let field = params.get(1).ok_or(Error::Invalid)?;
             let v = if let Some(raw) = field.as_str() {
                 serde_json::from_str(raw).map_err(|_| Error::Invalid)?
@@ -501,46 +551,53 @@ async fn dispatch(s: &Platform, m: &str, params: &[Value]) -> Result<(String, Va
             if !v.is_object() {
                 return Err(Error::Invalid);
             }
-            s.meta.set(id, "platform_config", v).await?;
-            json!({})
+            s.meta.set(id, Preference::PlatformConfig, v).await?;
+            serde_json::to_value(Empty {})?
         }
-        "setTutorialState" => {
+        RpcMethod::SetTutorialState => {
             let mut state = profile::tutorial_state(params.get(1).ok_or(Error::Invalid)?)
                 .ok_or(Error::Invalid)?;
             if let Some(mode) = params.get(2) {
-                state["clientMode"] = json!(mode.as_i64().ok_or(Error::Invalid)?);
+                state.client_mode = mode.as_i64().ok_or(Error::Invalid)?;
             }
-            s.meta.set(id, "tutorial", state).await?;
+            s.meta
+                .set(id, Preference::Tutorial, serde_json::to_value(state)?)
+                .await?;
             player_info(&profile)
         }
-        "recordMatchExperienceMetrics" => {
+        RpcMethod::RecordMatchExperienceMetrics => {
             let room = Uuid::parse_str(arg(params, 1)?).map_err(|_| Error::Invalid)?;
             s.meta.metrics(id, room, params[2..].to_vec()).await?;
-            json!({})
+            serde_json::to_value(Empty {})?
         }
-        "notifyPlayerAction" => {
+        RpcMethod::NotifyPlayerAction => {
             s.meta
-                .set(id, "recent_action", Value::Array(params[1..].to_vec()))
+                .set(
+                    id,
+                    Preference::RecentAction,
+                    Value::Array(params[1..].to_vec()),
+                )
                 .await?;
             if params.len() == 3 && params[1..].iter().all(Value::is_string) {
-                json!({})
+                serde_json::to_value(Empty {})?
             } else {
                 player_info(&profile)
             }
         }
         m if activity::handles(m) => s.activity_rpc(&profile, m, params).await?,
         m if content::Content::handles(m) => s.content_rpc(&profile, m, params).await?,
-        "getLeaderboardData" => s.meta.ranking().await?,
-        "endSession" => {
+        RpcMethod::GetLeaderboardData => s.meta.ranking().await?,
+        RpcMethod::EndSession => {
             let mut snapshot = s.projected_state(&session, &profile).await?;
             spectator::leave(s, &session).await?;
             s.app.end_session(&session).await?;
             s.community
                 .observe_player(id, profile.name.clone(), false)
                 .await?;
-            if snapshot["state"] == "menus" {
-                snapshot["ttl"] = json!(5.0);
+            if snapshot.state == LobbyState::Menus {
+                snapshot.ttl = Seconds::Fraction(5.0);
             }
+            let mut snapshot = serde_json::to_value(snapshot)?;
             s.stamp_state_version(id, &mut snapshot)?;
             return Ok((String::new(), snapshot));
         }
@@ -549,12 +606,12 @@ async fn dispatch(s: &Platform, m: &str, params: &[Value]) -> Result<(String, Va
                 community::dispatch(&s.community, &profile, m, params, Some(&s.app)).await?;
             if matches!(
                 m,
-                "partyLobbyEnter"
-                    | "partyLobbyExit"
-                    | "quintPartyLobbyEnter"
-                    | "getInventoryGroups"
-                    | "getEquipmentSlotInfo"
-                    | "setPresenceInvisibility"
+                RpcMethod::PartyLobbyEnter
+                    | RpcMethod::PartyLobbyExit
+                    | RpcMethod::QuintPartyLobbyEnter
+                    | RpcMethod::GetInventoryGroups
+                    | RpcMethod::GetEquipmentSlotInfo
+                    | RpcMethod::SetPresenceInvisibility
             ) {
                 let mut rv = s.start_session(&session, &profile).await?;
                 if let Some(fields) = patch.as_object() {
@@ -563,11 +620,11 @@ async fn dispatch(s: &Platform, m: &str, params: &[Value]) -> Result<(String, Va
                         .extend(fields.clone())
                 }
                 rv
-            } else if m == "friendRequestIssueByHandle"
+            } else if m == RpcMethod::FriendRequestIssueByHandle
                 && params.len() == 2
                 && params[1].is_string()
             {
-                json!({})
+                serde_json::to_value(Empty {})?
             } else {
                 patch
             }
@@ -610,40 +667,6 @@ async fn dispatch(s: &Platform, m: &str, params: &[Value]) -> Result<(String, Va
     Ok((s.tokens.sign(id, &session, Scope::Session)?, rv))
 }
 
-fn state(p: &PlayerProfile) -> Value {
-    let l = p.lobby.as_ref();
-    let (name, ttl) = match l.map(|l| l.phase.as_str()) {
-        Some("queued" | "pending") => ("pending_auto", 10),
-        Some("offered" | "reserving") => ("match_pending", 59),
-        Some("playing") => ("playing", 100),
-        Some("spectating") => ("spectating", 100),
-        Some("finished" | "post_match") => ("post_match", 100),
-        _ => ("menus", 100),
-    };
-    let expiry = match (name, l.and_then(|l| l.queued_at_ms)) {
-        ("menus", _) => expiry_in(600),
-        ("pending_auto", Some(joined)) => joined as f64 / 1000.0 + 3600.0,
-        _ => expiry_in(ttl),
-    };
-    let mut v = json!({"state":name,"ttl":ttl,"expiry":expiry,"version":Uuid::new_v4(),
-        "lastVersion":Uuid::nil(),"numPlayers":1,"notify":matches!(name,"pending_auto"|"match_pending")});
-    if let Some(l) = l
-        && matches!(name, "playing" | "spectating")
-    {
-        v["matchId"] = json!(l.match_id);
-        if let Some(credential) = l.spectator_id {
-            v["spectatorId"] = json!(credential);
-        }
-        if let Some((host, port)) = l.address.as_deref().and_then(|a| a.rsplit_once(':')) {
-            v["host"] = json!(host);
-            v["port"] = json!(port.parse::<u16>().ok());
-        }
-        v["site"] = json!("");
-        v["timestamp"] = json!(chrono::Utc::now().format("%m/%d/%y %H:%M:%S").to_string());
-    }
-    v
-}
-
 impl Platform {
     /// Link consecutive RPC snapshots for this local player. The first
     /// predecessor is a fresh local version when no prior response is known.
@@ -658,40 +681,158 @@ impl Platform {
             .insert(id, (version, current + 3600))
             .map(|p| p.0)
             .unwrap_or_else(Uuid::new_v4);
-        state["version"] = json!(version);
-        state["lastVersion"] = json!(previous);
+        state["version"] = serde_json::to_value(version)?;
+        state["lastVersion"] = serde_json::to_value(previous)?;
         Ok(())
     }
 
     async fn start_session(&self, session: &str, p: &PlayerProfile) -> Result<Value, Error> {
-        let mut rv = self.projected_state(session, p).await?;
+        let state = self.projected_state(session, p).await?;
         let grant = self.grants.issue(session)?;
-        let http = format!("http://{}/lp/{grant}", self.config.notify_authority);
-        let ws = format!("ws://{}/ws/{grant}", self.config.notify_authority);
-        let extras = json!({"playerUUID":p.player_id,"playerInfo":player_info(p),"handle":p.name,
-            "platformUrl":format!("https://{}",self.config.authority),"region":"na","country":"US",
-            "platformTime":now(),"enableStateUpdates":self.native_state_updates,"missedStateUpdateMessagesThreshold":-1,
-            "notifyUrl":ws,"notifyFallbackUrl":http,"chatUrl":format!("ws://{}/chat/{grant}",self.config.notify_authority),"chatPass":grant,
-            "chatUser":p.player_id,"pingPostToAnalytics":false,"pingHostPortInfo":self.sites.announcement(),
-            "unityAdsGameId":"","ironsourceAppId":null,"experimentDetails":[],
-            "askRegistrationConsent":false,"bucketIncrementer":3000,"failoverThreshold":4000,
-            "supportUrls":{"staticContentUrl":""},"constants":{},"playerConfig":null,"pendingTeamInvites":0,
-            "pendingGuildInvites":0,"pendingPartyInvites":0,"pendingMessages":0});
-        rv.as_object_mut()
-            .unwrap()
-            .extend(extras.as_object().unwrap().clone());
-        if let Some(fields) = self.xmpp.fields(session, p)? {
-            rv["jsonChatUrl"] = rv["chatUrl"].clone();
-            rv["constants"]["featuresEnabled"]["inGameChat"] = json!(true);
-            rv.as_object_mut()
-                .expect("session response is an object")
-                .extend(
-                    fields
-                        .as_object()
-                        .expect("chat fields are an object")
-                        .clone(),
-                );
-        }
-        Ok(rv)
+        let origin = &self.config.notify_authority;
+        let json_chat = format!("ws://{origin}/chat/{grant}");
+        let xmpp = self.xmpp.fields(session, p)?;
+        let in_game_chat = xmpp.is_some();
+        let chat = xmpp.unwrap_or_else(|| xmpp::ChatFields {
+            chat_url: json_chat.clone(),
+            chat_pass: grant.to_string(),
+            chat_user: p.player_id,
+        });
+        Ok(serde_json::to_value(SessionBootstrap {
+            state,
+            player_uuid: p.player_id,
+            player_info: player_info(p),
+            handle: &p.name,
+            platform_url: format!("https://{}", self.config.authority),
+            region: "na",
+            country: "US",
+            platform_time: now(),
+            enable_state_updates: self.native_state_updates,
+            missed_state_update_messages_threshold: -1,
+            notify_url: format!("ws://{origin}/ws/{grant}"),
+            notify_fallback_url: format!("http://{origin}/lp/{grant}"),
+            chat,
+            json_chat_url: in_game_chat.then_some(json_chat),
+            ping_post_to_analytics: false,
+            ping_host_port_info: self.sites.announcement(),
+            unity_ads_game_id: "",
+            ironsource_app_id: None,
+            experiment_details: [],
+            ask_registration_consent: false,
+            bucket_incrementer: 3000,
+            failover_threshold: 4000,
+            support_urls: SupportUrls {
+                static_content_url: "",
+            },
+            constants: SessionConstants {
+                features_enabled: in_game_chat.then_some(FeatureFlags { in_game_chat: true }),
+            },
+            player_config: None,
+            pending_team_invites: 0,
+            pending_guild_invites: 0,
+            pending_party_invites: 0,
+            pending_messages: 0,
+        })?)
     }
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Joined {
+    success: bool,
+    ttl: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    state: Option<LobbyState>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    num_players: Option<u32>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GuestBootstrap {
+    #[serde(rename = "playerUUID")]
+    player_uuid: String,
+    start_session_url: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RpcResponse {
+    code: i32,
+    session_token: String,
+    return_value: Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reason: Option<&'static str>,
+}
+
+#[derive(Serialize)]
+struct AccountLinked<'a> {
+    success: bool,
+    username: &'a str,
+    #[serde(rename = "playerUUID")]
+    player_uuid: Uuid,
+}
+
+#[derive(Serialize)]
+struct RenamedPlayer {
+    handle: String,
+    status: u8,
+    success: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SessionBootstrap<'a> {
+    #[serde(flatten)]
+    state: StateSnapshot,
+    #[serde(rename = "playerUUID")]
+    player_uuid: Uuid,
+    player_info: Value,
+    handle: &'a str,
+    platform_url: String,
+    region: &'static str,
+    country: &'static str,
+    platform_time: u64,
+    enable_state_updates: bool,
+    missed_state_update_messages_threshold: i8,
+    notify_url: String,
+    notify_fallback_url: String,
+    #[serde(flatten)]
+    chat: xmpp::ChatFields,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    json_chat_url: Option<String>,
+    ping_post_to_analytics: bool,
+    ping_host_port_info: Vec<ping::SiteAnnouncement<'a>>,
+    unity_ads_game_id: &'static str,
+    ironsource_app_id: Option<String>,
+    experiment_details: [(); 0],
+    ask_registration_consent: bool,
+    bucket_incrementer: u32,
+    failover_threshold: u32,
+    support_urls: SupportUrls,
+    constants: SessionConstants,
+    player_config: Option<Value>,
+    pending_team_invites: u32,
+    pending_guild_invites: u32,
+    pending_party_invites: u32,
+    pending_messages: u32,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SupportUrls {
+    static_content_url: &'static str,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SessionConstants {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    features_enabled: Option<FeatureFlags>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct FeatureFlags {
+    in_game_chat: bool,
 }

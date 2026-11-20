@@ -5,7 +5,6 @@ use std::{
 };
 
 use halcyon_platform::PlayerProfile;
-use serde_json::{Value, json};
 use subtle::ConstantTimeEq;
 use uuid::Uuid;
 
@@ -54,16 +53,15 @@ impl Chat {
         &self,
         session: &str,
         profile: &PlayerProfile,
-    ) -> Result<Option<Value>, Error> {
+    ) -> Result<Option<ChatFields>, Error> {
         let Some(authority) = self.authority.as_deref() else {
             return Ok(None);
         };
-        let pass = self.issue(profile.player_id, session)?;
-        Ok(Some(json!({
-            "chatUrl":format!("xmpp://{authority}"),
-            "chatUser":profile.player_id,
-            "chatPass":pass,
-        })))
+        Ok(Some(ChatFields {
+            chat_url: format!("xmpp://{authority}"),
+            chat_user: profile.player_id,
+            chat_pass: self.issue(profile.player_id, session)?,
+        }))
     }
 
     fn issue(&self, player: Uuid, session: &str) -> Result<String, Error> {
@@ -170,4 +168,12 @@ impl halcyon_chat::Directory for Platform {
     async fn receives_presence(&self, session: &str) -> bool {
         self.xmpp_presence_preferences(session).await.1
     }
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ChatFields {
+    pub chat_url: String,
+    pub chat_user: Uuid,
+    pub chat_pass: String,
 }

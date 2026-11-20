@@ -10,7 +10,7 @@ impl Platform {
         let Some(id) = p
             .lobby
             .as_ref()
-            .filter(|l| l.phase != "spectating")
+            .filter(|l| l.phase_kind() != Some(LobbyPhase::Spectating))
             .and_then(|l| l.match_id)
         else {
             return Ok(None);
@@ -28,78 +28,99 @@ impl Platform {
         &self,
         key: &str,
         p: &PlayerProfile,
-    ) -> Result<Value, PlatformError> {
-        let mut rv = state(p);
-        if rv["state"] == "pending_auto" {
-            rv["numPlayers"] = json!(self.app.native_queue_party_size(key).await?);
+    ) -> Result<StateSnapshot, PlatformError> {
+        let mut rv = StateSnapshot::from_profile(p);
+        if rv.state == LobbyState::PendingAuto {
+            rv.num_players = self.app.native_queue_party_size(key).await? as usize;
         }
-        if rv["state"] == "post_match"
+        if rv.state == LobbyState::PostMatch
             && let Some(settled) = p.lobby.as_ref().and_then(|l| l.settled_at_ms)
             && let Some(stamp) = chrono::DateTime::from_timestamp_millis(settled)
         {
             let expiry_ms = settled + 100_000;
             let remaining_ms = (expiry_ms - chrono::Utc::now().timestamp_millis()).max(0);
-            rv["ttl"] = json!(((remaining_ms + 999) / 1000).min(100));
-            rv["expiry"] = json!(expiry_ms as f64 / 1000.0);
-            rv["timestamp"] = json!(stamp.format("%m/%d/%y %H:%M:%S").to_string());
-            rv["site"] = json!("");
-            rv["notify"] = json!(true);
+            rv.ttl = Seconds::Whole(((remaining_ms + 999) / 1000).min(100));
+            rv.expiry = Seconds::Fraction(expiry_ms as f64 / 1000.0);
+            rv.timestamp = Some(stamp.format("%m/%d/%y %H:%M:%S").to_string());
+            rv.site = Some("");
+            rv.notify = true;
         }
         if let Some(o) = self.native_offer(key, p).await? {
             let l = p.lobby.as_ref().expect("bound offer");
-            rv["numPlayers"] = json!(o.seats.len());
-            rv["numQueuedEntries"] = json!(o.entries);
-            rv["prevState"] = json!("pending_auto");
-            if l.phase == "finished" {
-                rv["notify"] = json!(true);
+            rv.num_players = o.seats.len();
+            rv.num_queued_entries = Some(o.entries as usize);
+            rv.prev_state = Some(LobbyState::PendingAuto);
+            if l.phase_kind() == Some(LobbyPhase::Finished) {
+                rv.notify = true;
             }
-            if l.phase == "offered" {
+            if l.phase_kind() == Some(LobbyPhase::Offered) {
                 if l.mode == "casual_aral"
                     && o.seats
                         .iter()
                         .any(|s| s.player == p.player_id && !s.accepted)
                 {
-                    rv["state"] = json!("matched_partners");
+                    rv.state = LobbyState::MatchedPartners;
                 }
                 if let Some(exp) = o.expires {
-                    rv["ttl"] = json!((exp - now() as i64).max(0));
-                    rv["expiry"] = json!(exp);
+                    rv.ttl = Seconds::Whole((exp - now() as i64).max(0));
+                    rv.expiry = Seconds::Whole(exp);
                 }
             }
-            if rv.get("timestamp").is_none() {
-                rv["timestamp"] = json!(chrono::Utc::now().format("%m/%d/%y %H:%M:%S").to_string());
-            }
+            rv.timestamp.get_or_insert_with(wire::timestamp);
         }
         Ok(rv)
     }
 
-    pub(super) async fn pending_match(
-        &self,
-        key: &str,
-        p: &PlayerProfile,
-    ) -> Result<Value, PlatformError> {
-        if p.lobby
-            .as_ref()
-            .is_some_and(|l| matches!(l.phase.as_str(), "offered" | "reserving"))
-            && let Some(o) = self.native_offer(key, p).await?
+    pub(super) async fn pending_match(&self, key: &str, p: &PlayerProfile) -> Result<Value, Error> {
+        let response = if p.lobby.as_ref().is_some_and(|l| {
+            matches!(
+                l.phase_kind(),
+                Some(LobbyPhase::Offered | LobbyPhase::Reserving)
+            )
+        }) && let Some(o) = self.native_offer(key, p).await?
         {
-            let responses: Vec<_> = o
+            let responses = o
                 .seats
                 .iter()
-                .map(|seat| {
-                    json!({
-                        "playerUUID": seat.player,
-                        "response": u8::from(seat.accepted),
-                        "acceptDelay": 0.0,
-                    })
+                .map(|seat| OfferSeat {
+                    player_uuid: seat.player,
+                    response: u8::from(seat.accepted),
+                    accept_delay: 0.0,
                 })
                 .collect();
             let remaining = o.expires.map(|exp| (exp - now() as i64).max(0));
-            // Acknowledged seats have response=1. All 150 seat rows in the 25 captures have zero acceptDelay.
-            return Ok(
-                json!({"matchId":o.id,"isValid":remaining!=Some(0) && o.seats.iter().any(|s|s.accepted),"ttl":remaining.unwrap_or(1),"responses":responses}),
-            );
-        }
-        Ok(json!({"isValid":false,"matchId":"","responses":[],"ttl":0}))
+            PendingMatch {
+                match_id: o.id.to_string(),
+                is_valid: remaining != Some(0) && o.seats.iter().any(|s| s.accepted),
+                ttl: remaining.unwrap_or(1),
+                responses,
+            }
+        } else {
+            PendingMatch {
+                match_id: String::new(),
+                is_valid: false,
+                ttl: 0,
+                responses: Vec::new(),
+            }
+        };
+        Ok(serde_json::to_value(response)?)
     }
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PendingMatch {
+    is_valid: bool,
+    match_id: String,
+    responses: Vec<OfferSeat>,
+    ttl: i64,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct OfferSeat {
+    #[serde(rename = "playerUUID")]
+    player_uuid: Uuid,
+    response: u8,
+    accept_delay: f64,
 }

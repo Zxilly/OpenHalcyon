@@ -1,0 +1,73 @@
+{
+  "community_content": {
+    "items": [
+      {
+        "id": "exampleLevel",
+        "slot": "progress",
+        "name": "Example Level"
+      },
+      {
+        "id": "examplePieces",
+        "slot": "progress",
+        "name": "Example Pieces"
+      }
+    ],
+    "talentProgress": {
+      "example_rare": {
+        "levelItem": "exampleLevel",
+        "fragmentItem": "examplePieces"
+      }
+    },
+    "exchanges": {
+      "openRewardChest": {
+        "welcome": {
+          "limit": 1,
+          "reward": {
+            "examplePieces": 9
+          }
+        }
+      },
+      "upgradeTalent": {
+        "example_rare": {
+          "cost": {
+            "examplePieces": 2
+          },
+          "reward": {
+            "exampleLevel": 1
+          }
+        }
+      }
+    }
+  },
+  "rare_talent": {
+    "id": "example_rare",
+    "def": "*Talent_Example_A*",
+    "hero": "*Example*",
+    "maxLevel": false,
+    "levelRequirements": {
+      "[fragments]": 90,
+      "silver": 1300
+    }
+  },
+  "quintPartyMemberKick": {
+    "code": 0,
+    "quintPartyMemberKick": {}
+  },
+  "quintPartyPlayerLeft": {
+    "code": 0,
+    "quintPartyPlayerLeft": {}
+  },
+  "quintPartyStateUpdate": {
+    "code": 0,
+    "quintPartyStateUpdate": {}
+  },
+  "quintPartyJoinRequest": {
+    "code": 0,
+    "quintPartyJoinRequest": {}
+  },
+  "malformed_talent": {
+    "example_rare": {
+      "id": "bad"
+    }
+  }
+}

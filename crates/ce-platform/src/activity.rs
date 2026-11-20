@@ -1,7 +1,12 @@
 use super::{Error, Platform, meta::Meta, player_info};
+use crate::RpcMethod;
+use crate::meta::Preference;
+use crate::wire::{Empty, PlayerHandle, Success};
+use halcyon_community::GroupKind;
 use halcyon_platform::PlayerProfile;
 use rusqlite::{OptionalExtension, Transaction, params};
-use serde_json::{Value, json};
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use uuid::Uuid;
 
 pub(crate) fn initialize(db: &Transaction<'_>) -> Result<(), Error> {
@@ -52,25 +57,25 @@ fn id(params: &[Value], pos: usize, names: &[&str]) -> Result<Uuid, Error> {
     Uuid::parse_str(&text(params, pos, names, 36)?).map_err(|_| Error::Invalid)
 }
 
-pub(crate) fn handles(m: &str) -> bool {
+pub(crate) fn handles(m: RpcMethod) -> bool {
     matches!(
         m,
-        "getPlayerInfos"
-            | "estimatedWaitTime"
-            | "achievementGetScore"
-            | "achievementStoreScore"
-            | "addDeviceToken"
-            | "queryPlayerInboxMessages"
-            | "processMessage"
-            | "dismissReliableMessage"
-            | "friendNotify"
-            | "askInGameFriendToPlay"
-            | "friendReplyFromInGame"
-            | "storeRecordPendingGift"
-            | "storeCancelPendingGift"
-            | "notifyGameResults"
-            | "updateMatchInfo"
-            | "reportHonorPlayer"
+        RpcMethod::GetPlayerInfos
+            | RpcMethod::EstimatedWaitTime
+            | RpcMethod::AchievementGetScore
+            | RpcMethod::AchievementStoreScore
+            | RpcMethod::AddDeviceToken
+            | RpcMethod::QueryPlayerInboxMessages
+            | RpcMethod::ProcessMessage
+            | RpcMethod::DismissReliableMessage
+            | RpcMethod::FriendNotify
+            | RpcMethod::AskInGameFriendToPlay
+            | RpcMethod::FriendReplyFromInGame
+            | RpcMethod::StoreRecordPendingGift
+            | RpcMethod::StoreCancelPendingGift
+            | RpcMethod::NotifyGameResults
+            | RpcMethod::UpdateMatchInfo
+            | RpcMethod::ReportHonorPlayer
     )
 }
 
@@ -78,37 +83,47 @@ impl Meta {
     pub(crate) async fn player_fields(&self, player: Uuid) -> Result<Value, Error> {
         self.transaction(move|tx| {
             let player=player.to_string();
-            let mut info=super::match_stats::player_fields(tx, &player)?;
+            let matches = super::match_stats::player_fields(tx, &player)?;
             let mut inv=tx.prepare("SELECT item,count FROM community_inventory i JOIN community_items d ON d.id=i.item WHERE player=? AND d.slot='currency'")?;
-            let balances=inv.query_map([&player],|r|Ok((r.get::<_,String>(0)?,json!(r.get::<_,u32>(1)?))))?
-                .collect::<rusqlite::Result<serde_json::Map<String,Value>>>()?;
-            let mut currency=super::profile::empty_currency();
-            currency.as_object_mut().unwrap().extend(balances);
-            info["currency"]=currency;
-            info["pendingMessages"]=json!(tx.query_row("SELECT count(*) FROM ce_messages WHERE recipient=? AND dismissed=0",[&player],|r|r.get::<_,u32>(0))?);
+            let balances = inv.query_map([&player], |r| {
+                Ok((r.get::<_, String>(0)?, Value::from(r.get::<_, u32>(1)?)))
+            })?.collect::<rusqlite::Result<serde_json::Map<String, Value>>>()?;
+            let mut currency = super::profile::empty_currency();
+            currency.as_object_mut().expect("currency defaults").extend(balances);
+            let pending_messages = tx.query_row("SELECT count(*) FROM ce_messages WHERE recipient=? AND dismissed=0",
+                [&player], |r| r.get::<_, u32>(0))?;
+            let mut info = PlayerActivityFields { matches, currency, pending_messages, ..Default::default() };
             let mut invites=tx.prepare("SELECT g.kind,count(*) FROM community_invites i JOIN community_groups g ON g.id=i.group_id WHERE i.player=? GROUP BY g.kind")?;
-            for row in invites.query_map([&player],|r|Ok((r.get::<_,String>(0)?,r.get::<_,u32>(1)?)))?{
-                let (kind,count)=row?;
-                let field = match kind.as_str() {"party"=>"pendingPartyInvites","team"=>"pendingTeamInvites","guild"=>"pendingGuildInvites",_=>continue};
-                info[field]=json!(count);
-            }
-            let mut groups=tx.prepare("SELECT kind,group_id FROM community_members WHERE player=?")?;
-            for row in groups.query_map([&player],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?)))? {
-                let (kind,id)=row?;
-                let field=match kind.as_str() {"party"=>"partyUUID","team"=>"teamUUID","guild"=>"guildUUID",_=>continue};
-                info[field]=json!(id);
-            }
-            let mut pref=tx.prepare("SELECT category,data FROM ce_preferences WHERE player=? AND category IN ('tutorial','last_login')")?;
-            for row in pref.query_map([player],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?)))? {
-                let (category,raw)=row?;
-                let data=serde_json::from_str(&raw)?;
-                if category=="last_login" {
-                    info["last_login"]=data;
-                } else if let Some(tutorial)=super::profile::tutorial_state(&data) {
-                    info["tutorialState"]=tutorial;
+            for row in invites.query_map([&player], |r| Ok((r.get::<_, String>(0)?, r.get::<_, u32>(1)?)))? {
+                let (kind, count) = row?;
+                match GroupKind::deserialize(Value::String(kind)) {
+                    Ok(GroupKind::Party) => info.pending_party_invites = Some(count),
+                    Ok(GroupKind::Team) => info.pending_team_invites = Some(count),
+                    Ok(GroupKind::Guild) => info.pending_guild_invites = Some(count),
+                    Err(_) => {}
                 }
             }
-            Ok(info)
+            let mut groups=tx.prepare("SELECT kind,group_id FROM community_members WHERE player=?")?;
+            for row in groups.query_map([&player], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))? {
+                let (kind, id) = row?;
+                match GroupKind::deserialize(Value::String(kind)) {
+                    Ok(GroupKind::Party) => info.party_uuid = Some(id),
+                    Ok(GroupKind::Team) => info.team_uuid = Some(id),
+                    Ok(GroupKind::Guild) => info.guild_uuid = Some(id),
+                    Err(_) => {}
+                }
+            }
+            let mut pref=tx.prepare("SELECT category,data FROM ce_preferences WHERE player=? AND category IN ('tutorial','last_login')")?;
+            for row in pref.query_map([player], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))? {
+                let (category, raw) = row?;
+                let data = serde_json::from_str(&raw)?;
+                if category == Preference::LastLogin.as_str() {
+                    info.last_login = Some(data);
+                } else {
+                    info.tutorial_state = super::profile::tutorial_state(&data);
+                }
+            }
+            Ok(serde_json::to_value(info)?)
         }).await
     }
 }
@@ -117,62 +132,61 @@ impl Platform {
     pub(crate) async fn activity_rpc(
         &self,
         profile: &PlayerProfile,
-        m: &str,
+        m: RpcMethod,
         params: &[Value],
     ) -> Result<Value, Error> {
         let actor = profile.player_id.to_string();
         match m {
-            "getPlayerInfos" => {
+            RpcMethod::GetPlayerInfos => {
                 let ids=field(params,1,&["playerUUIDs","players"])?.as_array().filter(|ids| ids.len()<=50).ok_or(Error::Invalid)?;
                 let mut profiles=Vec::new();
                 for id in ids {
                     let key=Uuid::parse_str(id.as_str().ok_or(Error::Invalid)?).map_err(|_|Error::Invalid)?;
                     if let Some(activity)=self.app.player_activity(key).await? {
-                        profiles.push(json!({"playerUUID":key,"handle":activity.profile.name}));
+                        profiles.push(PlayerHandle { player_uuid: key, handle: activity.profile.name });
                     }
                 }
-                Ok(json!({"playerInfos":profiles}))
+                Ok(serde_json::to_value(PlayerHandles { player_infos: profiles })?)
             }
-            "estimatedWaitTime" => {
+            RpcMethod::EstimatedWaitTime => {
                 let mode=text(params,1,&["lobby","mode","queueName"],128)?;
                 self.meta.transaction(move|tx|{
                     let wait:Option<f64>=tx.query_row("SELECT seconds FROM ce_wait_history WHERE mode=?",[mode],|r|r.get(0)).optional()?;
-                    Ok(json!({"estimatedWait":wait.unwrap_or(0.0).round() as u64}))
+                    Ok(serde_json::to_value(WaitEstimate { estimated_wait: wait.unwrap_or(0.0).round() as u64 })?)
                 }).await
             }
-            "achievementGetScore" | "achievementStoreScore" => {
+            RpcMethod::AchievementGetScore | RpcMethod::AchievementStoreScore => {
                 let key=text(params,1,&["achievementId","achievement"],128)?;
-                let score=if m=="achievementStoreScore" {Some(field(params,2,&["score"])?.as_i64().filter(|n|*n>=0).ok_or(Error::Invalid)?)}else{None};
+                let score=if m==RpcMethod::AchievementStoreScore {Some(field(params,2,&["score"])?.as_i64().filter(|n|*n>=0).ok_or(Error::Invalid)?)}else{None};
                 self.meta.transaction(move|tx|{
                     if let Some(n)=score {tx.execute("INSERT INTO ce_scores VALUES(?,?,?) ON CONFLICT(player,achievement)
                         DO UPDATE SET score=max(score,excluded.score)",params![actor,key,n])?;}
                     let n:Option<i64>=tx.query_row("SELECT score FROM ce_scores WHERE player=? AND achievement=?",params![actor,key],|r|r.get(0)).optional()?;
-                    Ok(json!({"achievementId":key,"score":n.unwrap_or(0)}))
+                    Ok(serde_json::to_value(AchievementScore { achievement_id: key, score: n.unwrap_or(0) })?)
                 }).await
             }
-            "addDeviceToken" => {
+            RpcMethod::AddDeviceToken => {
                 let token=text(params,1,&["deviceToken","token"],4096)?;
-                self.meta.set(profile.player_id,"device_token",json!(token)).await?;
-                Ok(json!({"success":true}))
+                self.meta.set(profile.player_id,Preference::DeviceToken,Value::from(token)).await?;
+                Ok(serde_json::to_value(Success { success: true })?)
             }
-            "queryPlayerInboxMessages" => self.meta.transaction(move|tx|{
+            RpcMethod::QueryPlayerInboxMessages => self.meta.transaction(move|tx|{
                 let mut q=tx.prepare("SELECT id,body,sender,created FROM ce_messages WHERE recipient=? AND dismissed=0 ORDER BY created,id LIMIT 100")?;
-                let entries=q.query_map([actor],|r|Ok(json!({"messageId":r.get::<_,String>(0)?,"message":r.get::<_,String>(1)?,
-                    "playerUUID":r.get::<_,String>(2)?,"time":r.get::<_,i64>(3)?})))?.collect::<rusqlite::Result<Vec<_>>>()?;
-                Ok(json!({"messages":entries,"pendingMessages":!entries.is_empty()}))
+                let entries=q.query_map([actor],|r|Ok(InboxMessage { message_id: r.get(0)?, message: r.get(1)?, player_uuid: r.get(2)?, time: r.get(3)? }))?.collect::<rusqlite::Result<Vec<_>>>()?;
+                Ok(serde_json::to_value(Inbox { pending_messages: !entries.is_empty(), messages: entries })?)
             }).await,
-            "processMessage" | "dismissReliableMessage" => {
+            RpcMethod::ProcessMessage | RpcMethod::DismissReliableMessage => {
                 let message=id(params,1,&["messageId","id"])?.to_string();
                 self.meta.transaction(move|tx|{
                     if tx.execute("UPDATE ce_messages SET dismissed=1 WHERE recipient=? AND id=?",params![actor,message])? == 0 {
                         return Err(Error::Unavailable("no such message"));
                     }
-                    Ok(json!({"success":true}))
+                    Ok(serde_json::to_value(Success { success: true })?)
                 }).await
             }
-            "friendNotify" | "askInGameFriendToPlay" | "friendReplyFromInGame" => {
+            RpcMethod::FriendNotify | RpcMethod::AskInGameFriendToPlay | RpcMethod::FriendReplyFromInGame => {
                 let target=id(params,1,&["playerUUID","targetUUID"])?.to_string();
-                let message=if m=="askInGameFriendToPlay"{m.to_owned()}else{text(params,2,&["message","text"],512)?};
+                let message=if m==RpcMethod::AskInGameFriendToPlay{m.as_str().to_owned()}else{text(params,2,&["message","text"],512)?};
                 self.meta.transaction(move|tx|{
                     let friends:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM community_friends WHERE player=? AND friend=?)",params![actor,target],|r|r.get(0))?;
                     if !friends { return Err(Error::Community(halcyon_community::CommunityError::Forbidden)); }
@@ -180,21 +194,21 @@ impl Platform {
                     if pending>=100 { return Err(Error::Unavailable("inbox full")); }
                     let id=Uuid::new_v4();
                     tx.execute("INSERT INTO ce_messages(id,sender,recipient,body) VALUES(?,?,?,?)",params![id.to_string(),actor,target,message])?;
-                    Ok(json!({"messageId":id,"success":true}))
+                    Ok(serde_json::to_value(MessageSent { message_id: id, success: true })?)
                 }).await
             }
-            "storeRecordPendingGift" | "storeCancelPendingGift" => {
+            RpcMethod::StoreRecordPendingGift | RpcMethod::StoreCancelPendingGift => {
                 let target=id(params,1,&["recipient","playerUUID"])?;
                 let sku=text(params,2,&["product_id","sku"],128)?;
                 if target==profile.player_id || self.app.player_activity(target).await?.is_none(){return Err(Error::Invalid);}
-                let record=m=="storeRecordPendingGift";
+                let record=m==RpcMethod::StoreRecordPendingGift;
                 self.meta.transaction(move|tx|{
                     tx.execute(if record {"INSERT OR IGNORE INTO ce_pending_gifts VALUES(?,?,?)"}
                         else {"DELETE FROM ce_pending_gifts WHERE player=? AND target=? AND sku=?"},params![actor,target.to_string(),sku])?;
-                    Ok(json!({"success":true}))
+                    Ok(serde_json::to_value(Success { success: true })?)
                 }).await
             }
-            "reportHonorPlayer" => {
+            RpcMethod::ReportHonorPlayer => {
                 let room=id(params,1,&["matchId"])?.to_string();
                 let identifier=text(params,2,&["playerUUID","targetUUID","handle"],128)?;
                 let kind=text(params,3,&["honor","reason"],64)?;
@@ -220,17 +234,85 @@ impl Platform {
                         params![actor,room,target],|r|r.get(0))?;
                     if !evidence {return Err(Error::Unavailable("no shared completed match"));}
                     tx.execute("INSERT INTO ce_honor VALUES(?,?,?,?) ON CONFLICT DO NOTHING",params![room,actor,target,kind])?;
-                    Ok(if uuid.is_some(){json!({"success":true})}else{json!({})})
+                    Ok(if uuid.is_some(){serde_json::to_value(Success { success: true })?}else{serde_json::to_value(Empty {})?})
                 }).await
             }
-            "notifyGameResults" | "updateMatchInfo" => {
+            RpcMethod::NotifyGameResults | RpcMethod::UpdateMatchInfo => {
                 let room=id(params,1,&["matchId"])?;
                 if profile.lobby.as_ref().and_then(|l|l.match_id)!=Some(room){return Err(Error::Invalid);}
                 // Client telemetry is separate from the authoritative host outcome.
-                self.meta.set(profile.player_id,if m=="notifyGameResults" {"reported_result"} else {"reported_match"},json!(&params[1..])).await?;
+                self.meta.set(profile.player_id,if m==RpcMethod::NotifyGameResults {Preference::ReportedResult} else {Preference::ReportedMatch},Value::Array(params[1..].to_vec())).await?;
                 Ok(player_info(profile))
             }
             _ => Err(Error::Unsupported)
         }
     }
+}
+
+#[derive(Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PlayerActivityFields {
+    #[serde(flatten)]
+    matches: Value,
+    currency: Value,
+    pending_messages: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pending_party_invites: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pending_team_invites: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pending_guild_invites: Option<u32>,
+    #[serde(rename = "partyUUID", skip_serializing_if = "Option::is_none")]
+    party_uuid: Option<String>,
+    #[serde(rename = "teamUUID", skip_serializing_if = "Option::is_none")]
+    team_uuid: Option<String>,
+    #[serde(rename = "guildUUID", skip_serializing_if = "Option::is_none")]
+    guild_uuid: Option<String>,
+    #[serde(rename = "last_login", skip_serializing_if = "Option::is_none")]
+    last_login: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tutorial_state: Option<super::profile::TutorialState>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PlayerHandles {
+    player_infos: Vec<PlayerHandle>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WaitEstimate {
+    estimated_wait: u64,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AchievementScore {
+    achievement_id: String,
+    score: i64,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MessageSent {
+    message_id: Uuid,
+    success: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Inbox {
+    messages: Vec<InboxMessage>,
+    pending_messages: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct InboxMessage {
+    message_id: String,
+    message: String,
+    #[serde(rename = "playerUUID")]
+    player_uuid: String,
+    time: i64,
 }

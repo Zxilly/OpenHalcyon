@@ -1,4 +1,4 @@
-use halcyon_platform::PlayerProfile;
+use halcyon_platform::{LobbyPhase, PlayerProfile};
 use serde_json::Value;
 use uuid::Uuid;
 
@@ -66,5 +66,5 @@ pub(crate) fn is_spectating(profile: &PlayerProfile) -> bool {
     profile
         .lobby
         .as_ref()
-        .is_some_and(|lobby| lobby.phase == "spectating")
+        .is_some_and(|lobby| lobby.phase_kind() == Some(LobbyPhase::Spectating))
 }

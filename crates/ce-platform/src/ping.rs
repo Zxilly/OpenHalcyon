@@ -49,13 +49,15 @@ impl Sites {
         }
         Ok(Self(entries))
     }
-    pub fn announcement(&self) -> Value {
-        Value::Array(
-            self.0
-                .iter()
-                .map(|s| json!({"site":s.site,"host":s.host,"port":s.port}))
-                .collect(),
-        )
+    pub fn announcement(&self) -> Vec<SiteAnnouncement<'_>> {
+        self.0
+            .iter()
+            .map(|s| SiteAnnouncement {
+                site: &s.site,
+                host: &s.host,
+                port: s.port,
+            })
+            .collect()
     }
     pub fn report(&self, sites: &Value) -> BTreeMap<Uuid, u32> {
         let mut values = BTreeMap::new();
@@ -63,23 +65,21 @@ impl Sites {
             return values;
         };
         for row in rows {
-            let Some(site) = self.0.iter().find(|s| {
-                row["site"].as_str() == Some(&s.site) && row["host"].as_str() == Some(&s.host)
-            }) else {
+            let Ok(row) = ReportedSite::deserialize(row) else {
                 continue;
             };
-            let number = |name: &str| {
-                row[name]
-                    .as_f64()
-                    .filter(|v| v.is_finite() && (0.0..NATIVE_TIMEOUT_MS).contains(v))
+            let Some(site) = self
+                .0
+                .iter()
+                .find(|s| row.site == s.site && row.host == s.host)
+            else {
+                continue;
             };
-            if let (Some(avg), Some(current), Some(max), Some(_)) = (
-                number("avg"),
-                number("current"),
-                number("max"),
-                number("stdDev"),
-            ) {
-                let ms = avg.max(current).max(max).ceil().max(1.) as u32;
+            if [row.avg, row.current, row.max, row.std_dev]
+                .into_iter()
+                .all(|v| v.is_finite() && (0.0..NATIVE_TIMEOUT_MS).contains(&v))
+            {
+                let ms = row.avg.max(row.current).max(row.max).ceil().max(1.) as u32;
                 values
                     .entry(site.node_id)
                     .and_modify(|v: &mut u32| *v = (*v).max(ms))
@@ -89,6 +89,24 @@ impl Sites {
         values
     }
 }
+#[derive(Debug, PartialEq, Eq, Serialize)]
+pub(super) struct SiteAnnouncement<'a> {
+    site: &'a str,
+    host: &'a str,
+    port: u16,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ReportedSite<'a> {
+    site: &'a str,
+    host: &'a str,
+    avg: f64,
+    current: f64,
+    std_dev: f64,
+    max: f64,
+}
+
 impl Platform {
     pub fn configure_ping_sites(
         platform: &mut Arc<Self>,
@@ -116,21 +134,35 @@ mod tests {
         let sites = Sites::new(vec![s]).unwrap();
         assert_eq!(
             sites.announcement(),
-            json!([{"site":"lab","host":"127.0.0.1","port":1119}])
+            [SiteAnnouncement {
+                site: "lab",
+                host: "127.0.0.1",
+                port: 1119
+            }]
         );
-        let valid =
-            json!({"site":"lab","host":"127.0.0.1","avg":6.4,"current":5,"stdDev":1,"max":11.2});
-        assert_eq!(sites.report(&json!([valid])), BTreeMap::from([(id, 12)]));
+        let valid = serde_json::to_value(ReportedSite {
+            site: "lab",
+            host: "127.0.0.1",
+            avg: 6.4,
+            current: 5.,
+            std_dev: 1.,
+            max: 11.2,
+        })
+        .unwrap();
+        assert_eq!(
+            sites.report(&Value::Array(vec![valid.clone()])),
+            BTreeMap::from([(id, 12)])
+        );
         for (k, v) in [
-            ("site", json!("absent")),
-            ("host", json!("other")),
-            ("stdDev", json!(-1)),
-            ("max", json!(2000.032)),
-            ("avg", json!("NaN")),
+            ("site", Value::from("absent")),
+            ("host", Value::from("other")),
+            ("stdDev", Value::from(-1)),
+            ("max", Value::from(2000.032)),
+            ("avg", Value::from("NaN")),
         ] {
             let mut row = valid.clone();
             row[k] = v;
-            assert!(sites.report(&json!([row])).is_empty());
+            assert!(sites.report(&Value::Array(vec![row])).is_empty());
         }
         assert!(
             sites

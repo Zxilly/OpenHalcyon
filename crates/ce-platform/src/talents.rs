@@ -1,6 +1,6 @@
 use super::{Error, Platform};
 use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value, json};
+use serde_json::{Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
 
@@ -23,25 +23,45 @@ pub(crate) struct Catalog {
     bindings: BTreeMap<String, Binding>,
 }
 
+type LevelRequirements = BTreeMap<String, u64>;
+
 struct Definition {
-    public: Value,
-    level_row: Option<(u32, bool, Value)>,
+    public: PublicTalent,
+    level_row: Option<(u32, bool, LevelRequirements)>,
+}
+
+#[derive(Serialize)]
+struct PublicTalent {
+    id: String,
+    hero: String,
+    def: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProjectedTalent<'a> {
+    #[serde(flatten)]
+    public: &'a PublicTalent,
+    #[serde(flatten)]
+    progress: TalentProgress,
+    max_level: bool,
+    level_requirements: &'a LevelRequirements,
 }
 
 impl Definition {
     fn project(&self, progress: TalentProgress) -> Value {
-        let mut row = self.public.clone();
-        row["level"] = json!(progress.level);
-        row["fragments"] = json!(progress.fragments);
         let known = self
             .level_row
             .as_ref()
             .filter(|(level, _, _)| *level == progress.level);
-        row["maxLevel"] = json!(known.is_some_and(|(_, capped, _)| *capped));
-        row["levelRequirements"] = known
-            .map(|(_, _, requirements)| requirements.clone())
-            .unwrap_or_else(|| json!({}));
-        row
+        let empty = BTreeMap::new();
+        serde_json::to_value(ProjectedTalent {
+            public: &self.public,
+            progress,
+            max_level: known.is_some_and(|(_, capped, _)| *capped),
+            level_requirements: known.map_or(&empty, |(_, _, requirements)| requirements),
+        })
+        .expect("public talent projection")
     }
 }
 
@@ -67,10 +87,11 @@ impl Catalog {
             }
             // An operator can supply a captured response. Admit only documented public
             // fields; envelope credentials, individual balances and unknown data stay out.
-            let public = ["id", "def", "hero"]
-                .into_iter()
-                .map(|key| (key.to_owned(), row[key].clone()))
-                .collect();
+            let public = PublicTalent {
+                id: id.clone(),
+                def: row["def"].as_str().ok_or_else(invalid)?.to_owned(),
+                hero: row["hero"].as_str().ok_or_else(invalid)?.to_owned(),
+            };
             let level_row = row
                 .get("level")
                 .map(|v| {
@@ -79,17 +100,12 @@ impl Catalog {
                     Ok::<_, Error>((
                         level,
                         row["maxLevel"].as_bool().ok_or_else(invalid)?,
-                        row["levelRequirements"].clone(),
+                        LevelRequirements::deserialize(&row["levelRequirements"])
+                            .map_err(|_| invalid())?,
                     ))
                 })
                 .transpose()?;
-            definitions.insert(
-                id.clone(),
-                Definition {
-                    public: Value::Object(public),
-                    level_row,
-                },
-            );
+            definitions.insert(id.clone(), Definition { public, level_row });
         }
         Ok(Self {
             definitions,
@@ -128,7 +144,7 @@ impl Catalog {
             let rows: Vec<_> = self
                 .definitions
                 .iter()
-                .filter(|(_, row)| row.public["hero"].as_str() == Some(entry.hero))
+                .filter(|(_, row)| row.public.hero == entry.hero)
                 .collect();
             if rows.len() != 3 {
                 continue;
@@ -140,9 +156,7 @@ impl Catalog {
                     let id = format!("{}_{tier}", entry.inventory_family);
                     let def = format!("*Talent_{}_{name}*", entry.asset_family);
                     rows.iter()
-                        .any(|(key, row)| {
-                            key.as_str() == id && row.public["def"].as_str() == Some(def.as_str())
-                        })
+                        .any(|(key, row)| key.as_str() == id && row.public.def == *def)
                         .then_some(())?;
                     self.bindings.get(&id).map(|b| b.level_item.clone())
                 })
@@ -293,12 +307,30 @@ mod tests {
         let rows: Map<_, _> = [
             ("Caine", "caine", ["TalentA", "TalentB", "TalentC"]),
             ("Ringo", "ringo", ["LongShot", "BulletSplit", "SpikedBrew"]),
-        ].into_iter().flat_map(|(hero, family, definitions)| {
-            ["rare", "epic", "legendary"].into_iter().zip(definitions).map(move |(tier, name)| {
-                let id = format!("{family}_{tier}");
-                (id.clone(), json!({"id": id, "hero": format!("*{hero}*"), "def": format!("*Talent_{hero}_{name}*"), "level":74, "maxLevel": false, "levelRequirements": {}}))
-            })
-        }).collect();
+        ]
+        .into_iter()
+        .flat_map(|(hero, family, definitions)| {
+            ["rare", "epic", "legendary"]
+                .into_iter()
+                .zip(definitions)
+                .map(move |(tier, name)| {
+                    let id = format!("{family}_{tier}");
+                    (
+                        id.clone(),
+                        talent_fixture(
+                            PublicTalent {
+                                id,
+                                hero: format!("*{hero}*"),
+                                def: format!("*Talent_{hero}_{name}*"),
+                            },
+                            74,
+                            false,
+                            &BTreeMap::new(),
+                        ),
+                    )
+                })
+        })
+        .collect();
         let mut catalog = Catalog::parse(Value::Object(rows)).unwrap();
         for id in catalog.definitions.keys() {
             for item in [id.clone(), format!("{id}_fragments")] {
@@ -398,13 +430,47 @@ mod tests {
         );
     }
 
+    fn talent_fixture(
+        public: PublicTalent,
+        level: u32,
+        max_level: bool,
+        requirements: &LevelRequirements,
+    ) -> Value {
+        serde_json::to_value(ProjectedTalent {
+            public: &public,
+            progress: TalentProgress {
+                level,
+                fragments: 12,
+            },
+            max_level,
+            level_requirements: requirements,
+        })
+        .unwrap()
+    }
+
     #[test]
     fn observed_cap_and_cost_belong_only_to_the_observed_level() {
         for (capped, cost) in [
-            (true, json!({})),
-            (false, json!({"[fragments]":90,"silver":1300})),
+            (true, BTreeMap::new()),
+            (
+                false,
+                BTreeMap::from([("[fragments]".into(), 90), ("silver".into(), 1300)]),
+            ),
         ] {
-            let catalog=Catalog::parse(json!({"example":{"id":"example","hero":"*Hero*","def":"*Definition*","level":10,"fragments":12,"maxLevel":capped,"levelRequirements":cost}})).unwrap();
+            let fixture = talent_fixture(
+                PublicTalent {
+                    id: "example".into(),
+                    hero: "*Hero*".into(),
+                    def: "*Definition*".into(),
+                },
+                10,
+                capped,
+                &cost,
+            );
+            let catalog = Catalog::parse(
+                serde_json::to_value(BTreeMap::from([("example", fixture)])).unwrap(),
+            )
+            .unwrap();
             let talent = &catalog.definitions["example"];
             let fresh = talent.project(TalentProgress::default());
             assert_eq!(
@@ -412,14 +478,20 @@ mod tests {
                     fresh["maxLevel"].clone(),
                     fresh["levelRequirements"].clone()
                 ),
-                (json!(false), json!({}))
+                (
+                    Value::Bool(false),
+                    serde_json::to_value(BTreeMap::<String, u64>::new()).unwrap()
+                )
             );
             let at_ten = talent.project(TalentProgress {
                 level: 10,
                 fragments: 2,
             });
             assert_eq!(at_ten["maxLevel"], capped);
-            assert_eq!(at_ten["levelRequirements"], cost);
+            assert_eq!(
+                at_ten["levelRequirements"],
+                serde_json::to_value(cost).unwrap()
+            );
             assert_eq!(at_ten["fragments"], 2);
         }
     }

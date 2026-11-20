@@ -1,10 +1,11 @@
 //! Optional operator attestations. The verifier holds only a public key.
+use crate::RpcMethod;
 use crate::{Error, Platform, meta::Meta, now};
 use halcyon_community::Community;
 use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
 use uuid::Uuid;
@@ -92,7 +93,7 @@ impl Verifier {
         Ok(claims)
     }
 }
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 struct Claims {
     sub: Uuid,
     iat: u64,
@@ -100,7 +101,7 @@ struct Claims {
     #[serde(flatten)]
     proof: Proof,
 }
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(tag = "purpose")]
 enum Proof {
     #[serde(rename = "iap.purchase")]
@@ -121,13 +122,13 @@ pub(crate) fn initialize(db: &Connection) -> Result<(), Error> {
     Ok(())
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Prepare {
     product: String,
     request_id: Option<Uuid>,
 }
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct Attestation {
     attestation: String,
@@ -138,6 +139,29 @@ fn input<T: serde::de::DeserializeOwned>(args: &[Value]) -> Result<T, Error> {
     };
     serde_json::from_value(v.clone()).map_err(|_| Error::Invalid)
 }
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PreparedOrder {
+    order_id: String,
+    product: String,
+    expires_at: u64,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct FulfilledOrder {
+    success: bool,
+    order_id: Uuid,
+    product: String,
+    item: String,
+    count: u32,
+}
+
+#[derive(Serialize)]
+struct Verification {
+    verified: bool,
+}
+
 fn prepare_order(
     tx: &rusqlite::Transaction<'_>,
     player: &str,
@@ -167,7 +191,11 @@ fn prepare_order(
     if product != request.product {
         return Err(Error::Invalid);
     }
-    Ok(json!({"orderId":order,"product":product,"expiresAt":expiry}))
+    Ok(serde_json::to_value(PreparedOrder {
+        order_id: order,
+        product,
+        expires_at: expiry,
+    })?)
 }
 
 fn fulfill(
@@ -205,33 +233,39 @@ fn fulfill(
             params![reference, order_id],
         )?;
     }
-    Ok(json!({"success":true,"orderId":order,"product":product,"item":item,"count":count}))
+    Ok(serde_json::to_value(FulfilledOrder {
+        success: true,
+        order_id: order,
+        product,
+        item,
+        count,
+    })?)
 }
 
 pub(crate) async fn dispatch(
     provider: Option<&Verifier>,
     meta: &Meta,
     account: Uuid,
-    method: &str,
+    method: RpcMethod,
     args: &[Value],
 ) -> Result<Value, Error> {
     let player = account.to_string();
-    if method == "isGovernmentIdVerified" {
+    if method == RpcMethod::IsGovernmentIdVerified {
         return meta.transaction(move |tx| {
             let verified: bool = tx.query_row(
                 "SELECT EXISTS(SELECT 1 FROM ce_provider_identity WHERE player=? AND valid_until>?)",
                 params![player,now()], |r| r.get(0),
             )?;
-            Ok(json!({"verified":verified}))
+            Ok(serde_json::to_value(Verification { verified })?)
         }).await;
     }
-    let unavailable = if method == "verifyGovernmentId" {
+    let unavailable = if method == RpcMethod::VerifyGovernmentId {
         "identity verification provider unavailable"
     } else {
         "payment provider unavailable"
     };
     let verifier = provider.ok_or(Error::Unavailable(unavailable))?;
-    if method == "storePrepareIAP" {
+    if method == RpcMethod::StorePrepareIAP {
         let request: Prepare = input(args)?;
         let grant = verifier
             .products
@@ -247,19 +281,21 @@ pub(crate) async fn dispatch(
     let signed: Attestation = input(args)?;
     let claims = verifier.verify(&signed.attestation, account)?;
     match (method, claims.proof) {
-        ("verifyGovernmentId", Proof::Verified { valid_until }) if valid_until > now() as i64 => {
+        (RpcMethod::VerifyGovernmentId, Proof::Verified { valid_until })
+            if valid_until > now() as i64 =>
+        {
             meta.with_behavior(TransactionBehavior::Immediate, move |tx| {
                 tx.execute(
                     "INSERT INTO ce_provider_identity VALUES(?,?) ON CONFLICT(player) DO UPDATE
                      SET valid_until=MAX(valid_until,excluded.valid_until)",
                     params![player, valid_until],
                 )?;
-                Ok(json!({"verified":true}))
+                Ok(serde_json::to_value(Verification { verified: true })?)
             })
             .await
         }
         (
-            "storeProcessIAP",
+            RpcMethod::StoreProcessIAP,
             Proof::Purchase {
                 order,
                 product,
@@ -307,16 +343,46 @@ mod tests {
             EncodingKey::from_ed_der(private.as_bytes()),
         )
     }
+    #[derive(Serialize)]
+    struct TestAttestation {
+        iss: &'static str,
+        aud: &'static str,
+        #[serde(flatten)]
+        claims: Claims,
+    }
+
+    fn claims(sub: Uuid, proof: Proof) -> Value {
+        let iat = now();
+        serde_json::to_value(TestAttestation {
+            iss: "operator",
+            aud: "test-instance",
+            claims: Claims {
+                sub,
+                iat,
+                exp: iat + 180,
+                proof,
+            },
+        })
+        .unwrap()
+    }
+
     fn sign(claims: &Value, key: &EncodingKey) -> Value {
-        json!({"attestation":encode(&Header::new(Algorithm::EdDSA),claims,key).unwrap()})
+        serde_json::to_value(Attestation {
+            attestation: encode(&Header::new(Algorithm::EdDSA), claims, key).unwrap(),
+        })
+        .unwrap()
     }
     async fn prepare(v: &Verifier, m: &Meta, id: Uuid, request: Uuid) -> Value {
         dispatch(
             Some(v),
             m,
             id,
-            "storePrepareIAP",
-            &[json!({"product":"credits","requestId":request})],
+            RpcMethod::StorePrepareIAP,
+            &[serde_json::to_value(Prepare {
+                product: "credits".into(),
+                request_id: Some(request),
+            })
+            .unwrap()],
         )
         .await
         .unwrap()
@@ -374,7 +440,14 @@ mod tests {
         let request = Uuid::new_v4();
         let order = prepare(&verifier, &meta, id, request).await;
         assert_eq!(order, prepare(&verifier, &meta, id, request).await);
-        let valid = json!({"sub":id,"iss":"operator","aud":"test-instance","iat":now(),"exp":now()+180,"purpose":"iap.purchase","order":order["orderId"],"product":"credits","receipt":"test-receipt-001"});
+        let valid = claims(
+            id,
+            Proof::Purchase {
+                order: serde_json::from_value(order["orderId"].clone()).unwrap(),
+                product: "credits".into(),
+                receipt: "test-receipt-001".into(),
+            },
+        );
         let signed = sign(&valid, &signer);
         // Unknown operator item rolls back the receipt, allowing the same order to be fulfilled later.
         assert!(
@@ -382,7 +455,7 @@ mod tests {
                 Some(&verifier),
                 &meta,
                 id,
-                "storeProcessIAP",
+                RpcMethod::StoreProcessIAP,
                 std::slice::from_ref(&signed)
             )
             .await
@@ -397,13 +470,13 @@ mod tests {
             .await
             .unwrap();
         for (field, bad) in [
-            ("sub", json!(other)),
-            ("aud", json!("wrong")),
-            ("iss", json!("wrong")),
-            ("exp", json!(now() - 1)),
-            ("iat", json!(now() + 30)),
-            ("product", json!("other")),
-            ("purpose", json!("identity.verified")),
+            ("sub", serde_json::to_value(other).unwrap()),
+            ("aud", Value::from("wrong")),
+            ("iss", Value::from("wrong")),
+            ("exp", Value::from(now() - 1)),
+            ("iat", Value::from(now() + 30)),
+            ("product", Value::from("other")),
+            ("purpose", Value::from("identity.verified")),
         ] {
             let mut forged = valid.clone();
             forged[field] = bad;
@@ -412,7 +485,7 @@ mod tests {
                     Some(&verifier),
                     &meta,
                     id,
-                    "storeProcessIAP",
+                    RpcMethod::StoreProcessIAP,
                     &[sign(&forged, &signer)]
                 )
                 .await
@@ -425,7 +498,7 @@ mod tests {
                 Some(&verifier),
                 &meta,
                 id,
-                "storeProcessIAP",
+                RpcMethod::StoreProcessIAP,
                 &[sign(&valid, &key(3).1)]
             )
             .await
@@ -433,20 +506,20 @@ mod tests {
         );
         let args = std::slice::from_ref(&signed);
         let (a, b) = tokio::join!(
-            dispatch(Some(&verifier), &meta, id, "storeProcessIAP", args),
-            dispatch(Some(&verifier), &meta, id, "storeProcessIAP", args)
+            dispatch(Some(&verifier), &meta, id, RpcMethod::StoreProcessIAP, args),
+            dispatch(Some(&verifier), &meta, id, RpcMethod::StoreProcessIAP, args)
         );
         assert_eq!(a.unwrap(), b.unwrap());
         let second = prepare(&verifier, &meta, other, Uuid::new_v4()).await;
         let mut reused = valid.clone();
-        reused["sub"] = json!(other);
+        reused["sub"] = serde_json::to_value(other).unwrap();
         reused["order"] = second["orderId"].clone();
         assert!(
             dispatch(
                 Some(&verifier),
                 &meta,
                 other,
-                "storeProcessIAP",
+                RpcMethod::StoreProcessIAP,
                 &[sign(&reused, &signer)]
             )
             .await
@@ -468,23 +541,28 @@ mod tests {
             .unwrap(),
             32
         );
-        let get = "isGovernmentIdVerified";
+        let get = RpcMethod::IsGovernmentIdVerified;
         assert_eq!(
             dispatch(None, &meta, id, get, &[]).await.unwrap()["verified"],
             false
         );
         assert!(matches!(
-            dispatch(None, &meta, id, "verifyGovernmentId", &[]).await,
+            dispatch(None, &meta, id, RpcMethod::VerifyGovernmentId, &[]).await,
             Err(Error::Unavailable(_))
         ));
-        let proof = json!({"sub":id,"iss":"operator","aud":"test-instance","iat":now(),"exp":now()+180,"purpose":"identity.verified","valid_until":now()+3600});
+        let proof = claims(
+            id,
+            Proof::Verified {
+                valid_until: now() as i64 + 3600,
+            },
+        );
         let signed_id = sign(&proof, &signer);
         assert!(
             dispatch(
                 Some(&verifier),
                 &meta,
                 id,
-                "storeProcessIAP",
+                RpcMethod::StoreProcessIAP,
                 std::slice::from_ref(&signed_id)
             )
             .await
@@ -494,7 +572,7 @@ mod tests {
             Some(&verifier),
             &meta,
             id,
-            "verifyGovernmentId",
+            RpcMethod::VerifyGovernmentId,
             &[signed_id],
         )
         .await

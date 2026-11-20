@@ -1,10 +1,10 @@
 use halcyon_community::{Action, Community, GroupKind};
 use halcyon_platform::AppState;
 use rusqlite::{OptionalExtension, Transaction, params};
-use serde_json::{Value, json};
+use serde_json::Value;
 use uuid::Uuid;
 
-use crate::Error;
+use crate::{Error, wire::PartyNotice};
 
 #[derive(PartialEq)]
 struct Party {
@@ -106,10 +106,10 @@ pub(crate) async fn execute(
                 )?;
             }
             if let (Some(group), Some(target), false) = (&after, invite_target, existing_invite) {
-                notice(tx, &target, "quintPartyJoinRequest", Some(&group.id))?;
+                notice(tx, &target, PartyNotice::JoinRequest, Some(&group.id))?;
             }
             if let Some(target) = kick {
-                notice(tx, &target, "quintPartyMemberKick", None)?;
+                notice(tx, &target, PartyNotice::MemberKick, None)?;
             }
             if before != after {
                 let left = before.as_ref().is_some_and(|group| {
@@ -122,13 +122,13 @@ pub(crate) async fn execute(
                         notice(
                             tx,
                             member,
-                            if left { "quintPartyPlayerLeft" } else { "quintPartyStateUpdate" },
+                            if left { PartyNotice::PlayerLeft } else { PartyNotice::StateUpdate },
                             Some(&group.id),
                         )?;
                     }
                 } else if let Some(group) = &before {
                     for (member, _, _) in &group.members {
-                        notice(tx, member, "quintPartyStateUpdate", None)?;
+                        notice(tx, member, PartyNotice::StateUpdate, None)?;
                     }
                 }
             }
@@ -142,10 +142,12 @@ pub(crate) async fn execute(
 fn notice(
     tx: &Transaction<'_>,
     player: &str,
-    kind: &str,
+    kind: PartyNotice,
     party: Option<&str>,
 ) -> rusqlite::Result<()> {
-    halcyon_platform::record_external_notification(tx, player, &json!({"type":kind,"party":party}))
+    let event =
+        serde_json::to_value(StoredPartyNotice { kind, party }).expect("party notice serializes");
+    halcyon_platform::record_external_notification(tx, player, &event)
 }
 
 pub(crate) fn is_mutation(action: &Action) -> bool {
@@ -178,4 +180,11 @@ pub(crate) fn is_mutation(action: &Action) -> bool {
             }
             | Action::SetPartyLobby { .. }
     )
+}
+
+#[derive(serde::Serialize)]
+struct StoredPartyNotice<'a> {
+    #[serde(rename = "type")]
+    kind: PartyNotice,
+    party: Option<&'a str>,
 }

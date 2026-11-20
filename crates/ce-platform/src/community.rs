@@ -2,11 +2,17 @@
 //! captured, along with empty native guild/team responses. Populated local
 //! guild/team projections still need validation against original clients.
 
+use crate::RpcMethod;
 use std::collections::BTreeMap;
 
+use crate::wire::Empty;
+use halcyon_community::views::{
+    Friends, GroupView, Inventory, InventoryItem, Items, Quest, QuestStatus,
+};
 use halcyon_community::{Action, Community, GroupKind, GroupSettings, Role};
 use halcyon_platform::{AppState, PlayerProfile};
-use serde_json::{Value, json};
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use uuid::Uuid;
 
 use crate::Error;
@@ -80,22 +86,43 @@ fn native_guild_page(args: &Args<'_>) -> Result<Option<u32>, Error> {
     if !options.contains_key("page") && !options.contains_key("minimumSkillTier") {
         return Ok(None);
     }
-    let mut preset = json!({
-        "minimumSkillTier":-2, "minNumMembers":0, "maxNumMembers":200,
-        "guildType":"GUILD_TYPE_ANY", "guildLanguageCode":"EN", "guildInviteOnly":false,
-        "name":"", "tag":""
-    });
-    let page = options
-        .get("page")
-        .and_then(Value::as_u64)
-        .and_then(|page| u32::try_from(page).ok())
-        .filter(|&page| page != 0)
-        .ok_or(Error::Invalid)?;
-    preset["page"] = json!(page);
-    if args.entries.len() != 1 || preset.as_object() != Some(options) {
+    let preset =
+        GuildBrowseOptions::deserialize(args.structured.as_ref().expect("structured guild search"))
+            .map_err(|_| Error::Invalid)?;
+    if args.entries.len() != 1
+        || preset.page == 0
+        || preset.minimum_skill_tier != -2
+        || preset.min_num_members != 0
+        || preset.max_num_members != 200
+        || preset.guild_type != GuildBrowseType::Any
+        || preset.guild_language_code != "EN"
+        || preset.guild_invite_only
+        || !preset.name.is_empty()
+        || !preset.tag.is_empty()
+    {
         return Err(Error::Invalid);
     }
-    Ok(Some(page))
+    Ok(Some(preset.page))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct GuildBrowseOptions {
+    page: u32,
+    minimum_skill_tier: i32,
+    min_num_members: u32,
+    max_num_members: u32,
+    guild_type: GuildBrowseType,
+    guild_language_code: String,
+    guild_invite_only: bool,
+    name: String,
+    tag: String,
+}
+
+#[derive(Deserialize, PartialEq, Eq)]
+enum GuildBrowseType {
+    #[serde(rename = "GUILD_TYPE_ANY")]
+    Any,
 }
 
 const PLAYER_ID: &[&str] = &["playerUUID", "playerId", "uuid", "targetUUID"];
@@ -118,69 +145,222 @@ enum View {
     Quests,
 }
 
-fn basic() -> Value {
-    json!({"success":true, "code":0})
+#[derive(Serialize)]
+struct Acknowledged {
+    success: bool,
+    code: u8,
 }
 
-fn friends(result: Value) -> Value {
-    let confirmed: Vec<_> = array(&result, "friends").iter().map(|friend| json!({
-        "playerUUID":friend["playerId"], "uuid":friend["playerId"], "handle":friend["handle"],
-        "status":friend["status"], "online":friend["online"], "favorite":friend["favorite"],
-    })).collect();
-    let offline = confirmed
-        .iter()
-        .filter(|entry| entry["online"] == false)
-        .count();
-    let pending: Vec<_> = array(&result, "requests").iter().map(|request| json!({
-        "playerUUID":request["playerId"], "uuid":request["playerId"], "handle":request["handle"],
-        "incoming":request["incoming"],
-    })).collect();
-    json!({"confirmed":confirmed, "pending":pending, "numOffline":offline})
+fn basic() -> Result<Value, Error> {
+    Ok(serde_json::to_value(Acknowledged {
+        success: true,
+        code: 0,
+    })?)
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct FriendList<'a> {
+    confirmed: Vec<ConfirmedFriend<'a>>,
+    pending: Vec<PendingFriend<'a>>,
+    num_offline: usize,
+}
+
+#[derive(Serialize)]
+struct ConfirmedFriend<'a> {
+    #[serde(rename = "playerUUID")]
+    player_uuid: &'a str,
+    uuid: &'a str,
+    handle: &'a str,
+    status: &'a Option<String>,
+    online: bool,
+    favorite: bool,
+}
+
+#[derive(Serialize)]
+struct PendingFriend<'a> {
+    #[serde(rename = "playerUUID")]
+    player_uuid: &'a str,
+    uuid: &'a str,
+    handle: &'a str,
+    incoming: bool,
+}
+
+fn friends(result: Value) -> Result<Value, Error> {
+    let result = Friends::deserialize(result)?;
+    let view = FriendList {
+        num_offline: result.friends.iter().filter(|entry| !entry.online).count(),
+        confirmed: result
+            .friends
+            .iter()
+            .map(|friend| ConfirmedFriend {
+                player_uuid: &friend.player_id,
+                uuid: &friend.player_id,
+                handle: &friend.handle,
+                status: &friend.status,
+                online: friend.online,
+                favorite: friend.favorite,
+            })
+            .collect(),
+        pending: result
+            .requests
+            .iter()
+            .map(|request| PendingFriend {
+                player_uuid: &request.player_id,
+                uuid: &request.player_id,
+                handle: &request.handle,
+                incoming: request.incoming,
+            })
+            .collect(),
+    };
+    Ok(serde_json::to_value(view)?)
 }
 
 fn array<'a>(value: &'a Value, key: &str) -> &'a [Value] {
     value[key].as_array().map_or(&[], Vec::as_slice)
 }
 
-fn members(result: &Value, actor: Uuid) -> Vec<Value> {
-    let actor = actor.to_string();
-    array(result, "members").iter().map(|member| {
-        let role = &member["role"];
-        json!({
-            "uuid":member["playerId"], "playerUUID":member["playerId"], "playerId":member["playerId"],
-            "handle":member["handle"], "playerHandle":member["handle"],
-            "memberType":role, "isCaptain":role=="owner", "isOrganizer":role=="owner",
-            "allowedToInvite":role=="owner" || role=="officer",
-            "isSelf":member["playerId"]==actor, "userTeam":member["side"],
-        })
-    }).collect()
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Member<'a> {
+    uuid: &'a str,
+    #[serde(rename = "playerUUID")]
+    player_uuid: &'a str,
+    player_id: &'a str,
+    handle: &'a str,
+    player_handle: &'a str,
+    member_type: Role,
+    is_captain: bool,
+    is_organizer: bool,
+    allowed_to_invite: bool,
+    is_self: bool,
+    user_team: u8,
 }
 
-fn group(view: View, result: Value, actor: Uuid) -> Value {
-    if result.is_null() {
-        return match view {
-            View::Party => json!({"success":true,"partyUUID":null,"partyMembers":[]}),
-            View::Team => json!({"success":true,"teamUUID":null,"members":[]}),
-            _ => json!({"success":true,"guildUUID":null,"members":[]}),
-        };
-    }
-    let members = members(&result, actor);
-    match view {
-        View::Party => json!({
-            "success":true,"partyUUID":result["id"],"partyMembers":members,
-            "partyType":result["kind"],"partyQueueMode":result["mode"],"quintCode":result["joinCode"],
-            "lobbyOpen":result["lobbyOpen"],"members":members,
-        }),
-        View::Team => json!({
-            "success":true,"teamUUID":result["id"],"teamName":result["name"],
-            "members":members,"numMembers":result["memberCount"],"maxMembers":result["maxMembers"],
-        }),
-        _ => json!({
-            "success":true,"guildUUID":result["id"],"guildName":result["name"],"guildTag":result["tag"],
-            "guildMessage":result["motto"],"guildInviteOnly":result["inviteOnly"],"members":members,
-            "numMembers":result["memberCount"],"maxMembers":result["maxMembers"],"createdTime":result["created"],
-        }),
-    }
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PartyView<'a> {
+    success: bool,
+    #[serde(rename = "partyUUID")]
+    party_uuid: Option<&'a str>,
+    party_members: &'a [Member<'a>],
+    #[serde(flatten)]
+    details: Option<PartyDetails<'a>>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PartyDetails<'a> {
+    party_type: GroupKind,
+    party_queue_mode: &'a str,
+    quint_code: &'a Option<String>,
+    lobby_open: bool,
+    members: &'a [Member<'a>],
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TeamView<'a> {
+    success: bool,
+    #[serde(rename = "teamUUID")]
+    team_uuid: Option<&'a str>,
+    members: &'a [Member<'a>],
+    #[serde(flatten)]
+    details: Option<TeamDetails<'a>>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TeamDetails<'a> {
+    team_name: &'a str,
+    num_members: usize,
+    max_members: u8,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GuildView<'a> {
+    success: bool,
+    #[serde(rename = "guildUUID")]
+    guild_uuid: Option<&'a str>,
+    members: &'a [Member<'a>],
+    #[serde(flatten)]
+    details: Option<GuildDetails<'a>>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GuildDetails<'a> {
+    guild_name: &'a str,
+    guild_tag: &'a str,
+    guild_message: &'a str,
+    guild_invite_only: bool,
+    num_members: usize,
+    max_members: u8,
+    created_time: i64,
+}
+
+fn group(view: View, result: Value, actor: Uuid) -> Result<Value, Error> {
+    let result = Option::<GroupView>::deserialize(result)?;
+    let group = result.as_ref();
+    let actor = actor.to_string();
+    let members: Vec<_> = group
+        .and_then(|g| g.members.as_ref())
+        .iter()
+        .flat_map(|members| members.iter())
+        .map(|m| Member {
+            uuid: &m.player_id,
+            player_uuid: &m.player_id,
+            player_id: &m.player_id,
+            handle: &m.handle,
+            player_handle: &m.handle,
+            member_type: m.role,
+            is_captain: m.role == Role::Owner,
+            is_organizer: m.role == Role::Owner,
+            allowed_to_invite: matches!(m.role, Role::Owner | Role::Officer),
+            is_self: m.player_id == actor,
+            user_team: m.side,
+        })
+        .collect();
+    let id = group.map(|g| g.id.as_str());
+    Ok(match view {
+        View::Party => serde_json::to_value(PartyView {
+            success: true,
+            party_uuid: id,
+            party_members: &members,
+            details: group.map(|g| PartyDetails {
+                party_type: g.kind,
+                party_queue_mode: &g.mode,
+                quint_code: &g.join_code,
+                lobby_open: g.lobby_open,
+                members: &members,
+            }),
+        })?,
+        View::Team => serde_json::to_value(TeamView {
+            success: true,
+            team_uuid: id,
+            members: &members,
+            details: group.map(|g| TeamDetails {
+                team_name: &g.name,
+                num_members: g.member_count,
+                max_members: g.max_members,
+            }),
+        })?,
+        _ => serde_json::to_value(GuildView {
+            success: true,
+            guild_uuid: id,
+            members: &members,
+            details: group.map(|g| GuildDetails {
+                guild_name: &g.name,
+                guild_tag: &g.tag,
+                guild_message: &g.motto,
+                guild_invite_only: g.invite_only,
+                num_members: g.member_count,
+                max_members: g.max_members,
+                created_time: g.created,
+            }),
+        })?,
+    })
 }
 
 pub(crate) async fn guild_state(community: &Community, actor: Uuid) -> Result<Value, Error> {
@@ -192,36 +372,74 @@ pub(crate) async fn guild_state(community: &Community, actor: Uuid) -> Result<Va
             },
         )
         .await?;
-    Ok(group(View::Guild, data, actor))
+    group(View::Guild, data, actor)
 }
 
-fn inventory(result: Value) -> Value {
-    let mut groups = BTreeMap::<String, Vec<Value>>::new();
-    for item in array(&result, "items") {
-        if let Some(slot) = item["slot"].as_str() {
-            groups
-                .entry(slot.to_owned())
-                .or_default()
-                .push(item.clone());
-        }
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Loadout<'a> {
+    player_global_loadout: &'a BTreeMap<String, String>,
+    equipped: &'a BTreeMap<String, String>,
+    owned: &'a [InventoryItem],
+    inventory_groups: BTreeMap<&'a str, Vec<&'a InventoryItem>>,
+}
+
+fn inventory(result: Value) -> Result<Value, Error> {
+    let result = Inventory::deserialize(result)?;
+    let mut groups = BTreeMap::<&str, Vec<&InventoryItem>>::new();
+    for item in &result.items {
+        groups.entry(&item.slot).or_default().push(item);
     }
-    json!({
-        "player_global_loadout":result["equipped"], "equipped":result["equipped"],
-        "owned":result["items"], "inventoryGroups":groups,
-    })
+    Ok(serde_json::to_value(Loadout {
+        player_global_loadout: &result.equipped,
+        equipped: &result.equipped,
+        owned: &result.items,
+        inventory_groups: groups,
+    })?)
 }
 
-fn quests(profile: &PlayerProfile, result: Value) -> Value {
-    let data: Vec<_> = array(&result, "items").iter().map(|quest| json!({
-        "questId":quest["id"],"shortDesc":quest["title"],"progress":quest["progress"],
-        "progressMax":quest["goal"],"progressState":quest["state"],
-        "redeemed":quest["state"]=="claimed","metadata":{
-            "category":quest["category"],"rewardItem":quest["rewardItem"],"rewardCount":quest["rewardCount"],
-        },
-    })).collect();
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct QuestDisplay<'a> {
+    quest_id: &'a str,
+    short_desc: &'a str,
+    progress: u32,
+    progress_max: u32,
+    progress_state: QuestStatus,
+    redeemed: bool,
+    metadata: QuestMetadata<'a>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct QuestMetadata<'a> {
+    category: &'a str,
+    reward_item: &'a Option<String>,
+    reward_count: Option<u32>,
+}
+
+fn quests(profile: &PlayerProfile, result: Value) -> Result<Value, Error> {
+    let quests = Items::<Quest>::deserialize(result)?;
+    let data: Vec<_> = quests
+        .items
+        .iter()
+        .map(|quest| QuestDisplay {
+            quest_id: &quest.id,
+            short_desc: &quest.title,
+            progress: quest.progress,
+            progress_max: quest.goal,
+            progress_state: quest.state,
+            redeemed: quest.state == QuestStatus::Claimed,
+            metadata: QuestMetadata {
+                category: &quest.category,
+                reward_item: &quest.reward_item,
+                reward_count: quest.reward_count,
+            },
+        })
+        .collect();
     let mut output = crate::player_info(profile);
-    output["questDisplayData"] = json!(data);
-    output
+    output["questDisplayData"] = serde_json::to_value(data)?;
+    Ok(output)
 }
 
 fn group_settings(args: &Args<'_>) -> Result<GroupSettings, Error> {
@@ -267,83 +485,87 @@ fn group_settings(args: &Args<'_>) -> Result<GroupSettings, Error> {
 pub(crate) async fn dispatch(
     community: &Community,
     profile: &PlayerProfile,
-    method: &str,
+    method: RpcMethod,
     params: &[Value],
     notify: Option<&AppState>,
 ) -> Result<Value, Error> {
     let args = Args::new(params)?;
     let actor = profile.player_id;
-    let native_search = if method == "guildSearch" {
+    let native_search = if method == RpcMethod::GuildSearch {
         native_guild_page(&args)?
     } else {
         None
     };
-    let native_info =
-        method == "queryGuildInfo" && matches!(args.entries, [Value::String(_), Value::Bool(true)]);
+    let native_info = method == RpcMethod::QueryGuildInfo
+        && matches!(args.entries, [Value::String(_), Value::Bool(true)]);
     let native_empty = native_search.is_some()
         || native_info
         || (args.entries.is_empty()
             && matches!(
                 method,
-                "guildGetData" | "queryGuildInvites" | "queryTeamInvites"
+                RpcMethod::GuildGetData
+                    | RpcMethod::QueryGuildInvites
+                    | RpcMethod::QueryTeamInvites
             ));
     match (method, args.entries) {
-        ("joinGuild", [Value::String(group)]) if group.is_empty() => return Ok(json!({})),
-        ("createTeam", [Value::String(prefix), Value::String(a), Value::String(b)])
+        (RpcMethod::JoinGuild, [Value::String(group)]) if group.is_empty() => {
+            return Ok(serde_json::to_value(Empty {})?);
+        }
+        (RpcMethod::CreateTeam, [Value::String(prefix), Value::String(a), Value::String(b)])
             if prefix.is_empty() && !a.trim().is_empty() && !b.trim().is_empty() =>
         {
             // The two strings' roles and the original mutation outcome are unknown.
-            return Ok(json!({}));
+            return Ok(serde_json::to_value(Empty {})?);
         }
         _ => {}
     }
 
     let (action, view) = match method {
-        "friendListAll" | "friendsListUpdate" => (Action::Friends, View::Friends),
-        "friendRequestIssueByHandle" => {
+        RpcMethod::FriendListAll | RpcMethod::FriendsListUpdate => (Action::Friends, View::Friends),
+        RpcMethod::FriendRequestIssueByHandle => {
             let handle = args.text(0, &["handle", "playerHandle"])?;
             let target = community.resolve_handle(handle).await?;
             (Action::RequestFriend { target }, View::Friends)
         }
-        "friendRequestConfirm" | "friendRequestReject" => (
+        RpcMethod::FriendRequestConfirm | RpcMethod::FriendRequestReject => (
             Action::ResolveFriend {
                 requester: args.id(0, PLAYER_ID)?,
-                accept: method == "friendRequestConfirm",
+                accept: method == RpcMethod::FriendRequestConfirm,
             },
             View::Friends,
         ),
-        "friendDelete" => (
+        RpcMethod::FriendDelete => (
             Action::RemoveFriend {
                 target: args.id(0, PLAYER_ID)?,
             },
             View::Ack,
         ),
-        "friendAddFavorite" | "friendDeleteFavorite" => (
+        RpcMethod::FriendAddFavorite | RpcMethod::FriendDeleteFavorite => (
             Action::FavoriteFriend {
                 target: args.id(0, PLAYER_ID)?,
-                favorite: method == "friendAddFavorite",
+                favorite: method == RpcMethod::FriendAddFavorite,
             },
             View::Ack,
         ),
-        "presenceBroadcast" => (
+        RpcMethod::PresenceBroadcast => (
             Action::SetPresence {
                 status: args.text(0, &["status", "presence"])?,
             },
             View::Ack,
         ),
-        "presenceSetReceiveBroadcast" => (
+        RpcMethod::PresenceSetReceiveBroadcast => (
             Action::SetReceivePresence {
                 receive: args.flag(0, &["receive", "enabled"])?,
             },
             View::Ack,
         ),
-        "setPresenceInvisibility" => (
+        RpcMethod::SetPresenceInvisibility => (
             Action::SetInvisible {
                 invisible: args.flag(0, &["invisible", "enabled"])?,
             },
             View::Ack,
         ),
-        "createParty" | "createQuintParty" => (
+        RpcMethod::CreateParty | RpcMethod::CreateQuintParty => (
             Action::CreateGroup {
                 kind: GroupKind::Party,
                 name: format!("{} party", profile.name),
@@ -357,62 +579,62 @@ pub(crate) async fn dispatch(
             },
             View::Party,
         ),
-        "joinQuintParty" => (
+        RpcMethod::JoinQuintParty => (
             Action::JoinPartyByCode {
                 code: args.text(0, &["quintCode", "code"])?,
             },
             View::Party,
         ),
-        "destroyQuintParty" => (
+        RpcMethod::DestroyQuintParty => (
             Action::DisbandGroup {
                 kind: GroupKind::Party,
             },
             View::Party,
         ),
-        "leaveParty" | "leaveQuintParty" => (
+        RpcMethod::LeaveParty | RpcMethod::LeaveQuintParty => (
             Action::LeaveGroup {
                 kind: GroupKind::Party,
             },
             View::Party,
         ),
-        "queryPartyInfo" => (
+        RpcMethod::QueryPartyInfo => (
             Action::Group {
                 kind: GroupKind::Party,
             },
             View::Party,
         ),
-        "queryPartyInvites" => (
+        RpcMethod::QueryPartyInvites => (
             Action::GroupInvites {
                 kind: GroupKind::Party,
             },
             View::PartyInvites,
         ),
-        "partyInviteSend" => (
+        RpcMethod::PartyInviteSend => (
             Action::Invite {
                 kind: GroupKind::Party,
                 target: args.id(0, PLAYER_ID)?,
             },
             View::Party,
         ),
-        "partyInviteConfirm" | "partyInviteReject" => {
+        RpcMethod::PartyInviteConfirm | RpcMethod::PartyInviteReject => {
             return resolve_invite(
                 community,
                 actor,
                 &args,
                 GroupKind::Party,
-                method == "partyInviteConfirm",
+                method == RpcMethod::PartyInviteConfirm,
                 notify,
             )
             .await;
         }
-        "partyMemberKick" => (
+        RpcMethod::PartyMemberKick => (
             Action::Kick {
                 kind: GroupKind::Party,
                 target: args.id(0, PLAYER_ID)?,
             },
             View::Party,
         ),
-        "partyMemberMove" => (
+        RpcMethod::PartyMemberMove => (
             Action::MovePartyMember {
                 target: args.id(0, PLAYER_ID)?,
                 side: args
@@ -423,8 +645,8 @@ pub(crate) async fn dispatch(
             },
             View::Party,
         ),
-        "partyBalanceTeams" => (Action::BalanceParty, View::Party),
-        "updateQuintPartyState" => {
+        RpcMethod::PartyBalanceTeams => (Action::BalanceParty, View::Party),
+        RpcMethod::UpdateQuintPartyState => {
             if args
                 .structured
                 .as_ref()
@@ -453,7 +675,7 @@ pub(crate) async fn dispatch(
             };
             (Action::UpdatePartyState { mode, open }, View::Party)
         }
-        "partyChangeQueueMode" => (
+        RpcMethod::PartyChangeQueueMode => (
             Action::UpdateGroup {
                 kind: GroupKind::Party,
                 settings: GroupSettings {
@@ -463,13 +685,15 @@ pub(crate) async fn dispatch(
             },
             View::Party,
         ),
-        "partyLobbyEnter" | "quintPartyLobbyEnter" | "partyLobbyExit" => (
+        RpcMethod::PartyLobbyEnter
+        | RpcMethod::QuintPartyLobbyEnter
+        | RpcMethod::PartyLobbyExit => (
             Action::SetPartyLobby {
-                open: method != "partyLobbyExit",
+                open: method != RpcMethod::PartyLobbyExit,
             },
             View::Party,
         ),
-        "createTeam" => (
+        RpcMethod::CreateTeam => (
             Action::CreateGroup {
                 kind: GroupKind::Team,
                 name: args.text(0, &["name", "teamName"])?,
@@ -477,50 +701,50 @@ pub(crate) async fn dispatch(
             },
             View::Team,
         ),
-        "leaveTeam" => (
+        RpcMethod::LeaveTeam => (
             Action::LeaveGroup {
                 kind: GroupKind::Team,
             },
             View::Team,
         ),
-        "queryTeamInfo" => (
+        RpcMethod::QueryTeamInfo => (
             Action::Group {
                 kind: GroupKind::Team,
             },
             View::Team,
         ),
-        "queryTeamInvites" => (
+        RpcMethod::QueryTeamInvites => (
             Action::GroupInvites {
                 kind: GroupKind::Team,
             },
             View::TeamInvites,
         ),
-        "teamInviteSend" => (
+        RpcMethod::TeamInviteSend => (
             Action::Invite {
                 kind: GroupKind::Team,
                 target: args.id(0, PLAYER_ID)?,
             },
             View::Team,
         ),
-        "teamInviteConfirm" | "teamInviteReject" => {
+        RpcMethod::TeamInviteConfirm | RpcMethod::TeamInviteReject => {
             return resolve_invite(
                 community,
                 actor,
                 &args,
                 GroupKind::Team,
-                method == "teamInviteConfirm",
+                method == RpcMethod::TeamInviteConfirm,
                 None,
             )
             .await;
         }
-        "teamMemberKick" => (
+        RpcMethod::TeamMemberKick => (
             Action::Kick {
                 kind: GroupKind::Team,
                 target: args.id(0, PLAYER_ID)?,
             },
             View::Team,
         ),
-        "createGuild" => (
+        RpcMethod::CreateGuild => (
             Action::CreateGroup {
                 kind: GroupKind::Guild,
                 name: args.text(0, &["name", "guildName"])?,
@@ -538,13 +762,13 @@ pub(crate) async fn dispatch(
             },
             View::Guild,
         ),
-        "joinGuild" => (
+        RpcMethod::JoinGuild => (
             Action::JoinOpenGuild {
                 group: args.id(0, GROUP_ID)?,
             },
             View::Guild,
         ),
-        "changeGuildMembership" => {
+        RpcMethod::ChangeGuildMembership => {
             let join = match args.field(1, &["join", "action"]) {
                 Some(Value::String(action)) if action == "join" => true,
                 Some(Value::String(action)) if action == "leave" => false,
@@ -558,13 +782,13 @@ pub(crate) async fn dispatch(
                 View::Guild,
             )
         }
-        "leaveGuild" => (
+        RpcMethod::LeaveGuild => (
             Action::LeaveGroup {
                 kind: GroupKind::Guild,
             },
             View::Guild,
         ),
-        "queryGuildInfo" | "guildGetData" => {
+        RpcMethod::QueryGuildInfo | RpcMethod::GuildGetData => {
             let action = match args.field(0, GROUP_ID) {
                 Some(_) => Action::GroupById {
                     group: args.id(0, GROUP_ID)?,
@@ -575,45 +799,45 @@ pub(crate) async fn dispatch(
             };
             (action, View::Guild)
         }
-        "queryGuildInvites" => (
+        RpcMethod::QueryGuildInvites => (
             Action::GroupInvites {
                 kind: GroupKind::Guild,
             },
             View::GuildInvites,
         ),
-        "guildInviteSend" => (
+        RpcMethod::GuildInviteSend => (
             Action::Invite {
                 kind: GroupKind::Guild,
                 target: args.id(0, PLAYER_ID)?,
             },
             View::Guild,
         ),
-        "guildInviteConfirm" | "guildInviteReject" => {
+        RpcMethod::GuildInviteConfirm | RpcMethod::GuildInviteReject => {
             return resolve_invite(
                 community,
                 actor,
                 &args,
                 GroupKind::Guild,
-                method == "guildInviteConfirm",
+                method == RpcMethod::GuildInviteConfirm,
                 None,
             )
             .await;
         }
-        "guildMemberKick" => (
+        RpcMethod::GuildMemberKick => (
             Action::Kick {
                 kind: GroupKind::Guild,
                 target: args.id(0, PLAYER_ID)?,
             },
             View::Guild,
         ),
-        "guildTransferCaptain" => (
+        RpcMethod::GuildTransferCaptain => (
             Action::TransferOwnership {
                 kind: GroupKind::Guild,
                 target: args.id(0, PLAYER_ID)?,
             },
             View::Guild,
         ),
-        "guildChangeOfficerStatus" => (
+        RpcMethod::GuildChangeOfficerStatus => (
             Action::SetRole {
                 kind: GroupKind::Guild,
                 target: args.id(0, PLAYER_ID)?,
@@ -625,19 +849,23 @@ pub(crate) async fn dispatch(
             },
             View::Guild,
         ),
-        "guildChangeName"
-        | "guildChangeTag"
-        | "changeGuildMotto"
-        | "guildChangeSettings"
-        | "guildInviteOnly" => {
+        RpcMethod::GuildChangeName
+        | RpcMethod::GuildChangeTag
+        | RpcMethod::ChangeGuildMotto
+        | RpcMethod::GuildChangeSettings
+        | RpcMethod::GuildInviteOnly => {
             let mut settings = GroupSettings::default();
             match method {
-                "guildChangeName" => settings.name = Some(args.text(0, &["guildName", "name"])?),
-                "guildChangeTag" => settings.tag = Some(args.text(0, &["guildTag", "tag"])?),
-                "changeGuildMotto" => {
+                RpcMethod::GuildChangeName => {
+                    settings.name = Some(args.text(0, &["guildName", "name"])?)
+                }
+                RpcMethod::GuildChangeTag => {
+                    settings.tag = Some(args.text(0, &["guildTag", "tag"])?)
+                }
+                RpcMethod::ChangeGuildMotto => {
                     settings.motto = Some(args.text(0, &["guildMessage", "motto"])?)
                 }
-                "guildInviteOnly" => {
+                RpcMethod::GuildInviteOnly => {
                     settings.invite_only = Some(args.flag(0, &["guildInviteOnly", "inviteOnly"])?)
                 }
                 _ => settings = group_settings(&args)?,
@@ -650,7 +878,7 @@ pub(crate) async fn dispatch(
                 View::Guild,
             )
         }
-        "guildSearch" => (
+        RpcMethod::GuildSearch => (
             match native_search {
                 Some(page) => Action::BrowseOpenGuilds { page },
                 None => Action::SearchGuilds {
@@ -660,19 +888,25 @@ pub(crate) async fn dispatch(
             },
             View::GuildSearch,
         ),
-        "getInventoryGroups" | "getEquipmentSlotInfo" => (Action::Inventory, View::Inventory),
-        "equipToSlot" => (
+        RpcMethod::GetInventoryGroups | RpcMethod::GetEquipmentSlotInfo => {
+            (Action::Inventory, View::Inventory)
+        }
+        RpcMethod::EquipToSlot => (
             Action::Equip {
                 slot: args.text(0, SLOT)?,
                 item: args.item(1, ITEM)?,
             },
             View::Inventory,
         ),
-        "equippedHat" | "equippedEmoji" | "equippedPingPack" | "charm" | "social_ping_pack" => {
+        RpcMethod::EquippedHat
+        | RpcMethod::EquippedEmoji
+        | RpcMethod::EquippedPingPack
+        | RpcMethod::Charm
+        | RpcMethod::SocialPingPack => {
             let slot = match method {
-                "equippedHat" => "hat",
-                "equippedEmoji" => "emoji",
-                "charm" => "charm",
+                RpcMethod::EquippedHat => "hat",
+                RpcMethod::EquippedEmoji => "emoji",
+                RpcMethod::Charm => "charm",
                 _ => "social_ping_pack",
             };
             let action = if args.field(0, ITEM).is_some() {
@@ -685,10 +919,10 @@ pub(crate) async fn dispatch(
             };
             (action, View::Inventory)
         }
-        "player_global_loadout" => {
+        RpcMethod::PlayerGlobalLoadout => {
             let action = if let Some(payload) = &args.structured {
                 let payload = payload
-                    .get("player_global_loadout")
+                    .get("playerGlobalLoadout")
                     .unwrap_or(payload)
                     .clone();
                 let slots = serde_json::from_value(payload).map_err(|_| Error::Invalid)?;
@@ -700,20 +934,22 @@ pub(crate) async fn dispatch(
             };
             (action, View::Inventory)
         }
-        "getQuestDisplayDataForPlayer" => (Action::Quests { category: None }, View::Quests),
-        "getQuestDisplayDataForPlayerAndType" => (
+        RpcMethod::GetQuestDisplayDataForPlayer => {
+            (Action::Quests { category: None }, View::Quests)
+        }
+        RpcMethod::GetQuestDisplayDataForPlayerAndType => (
             Action::Quests {
                 category: Some(args.text(0, &["category", "questType", "type"])?),
             },
             View::Quests,
         ),
-        "redeemQuestForPlayer" => (
+        RpcMethod::RedeemQuestForPlayer => (
             Action::ClaimQuest {
                 quest: args.text(0, &["questId", "id"])?,
             },
             View::Quests,
         ),
-        "skipQuestForPlayer" => (
+        RpcMethod::SkipQuestForPlayer => (
             Action::SkipQuest {
                 quest: args.text(0, &["questId", "id"])?,
             },
@@ -740,7 +976,7 @@ pub(crate) async fn dispatch(
                 halcyon_community::CommunityError::Missing(_)
                 | halcyon_community::CommunityError::Forbidden,
             ) if native_info => {
-                return Ok(json!({}));
+                return Ok(serde_json::to_value(Empty {})?);
             }
             Err(error) => return Err(error.into()),
         }
@@ -751,9 +987,9 @@ pub(crate) async fn dispatch(
                 view,
                 View::GuildSearch | View::GuildInvites | View::TeamInvites
             ) && array(&data, "items").is_empty())
-            || (native_info && data["kind"] != "guild"))
+            || (native_info && group_kind(&data) != Some(GroupKind::Guild)))
     {
-        return Ok(json!({}));
+        return Ok(serde_json::to_value(Empty {})?);
     }
     if let Some(notify) = notify {
         if publish_presence {
@@ -769,20 +1005,63 @@ pub(crate) async fn dispatch(
             tracing::warn!(%error, "local friends refresh could not be published");
         }
     }
-    if matches!(view, View::Guild) && !data.is_null() && data["kind"] != "guild" {
+    if matches!(view, View::Guild) && !data.is_null() && group_kind(&data) != Some(GroupKind::Guild)
+    {
         return Err(Error::Invalid);
     }
-    Ok(match view {
+    match view {
         View::Ack => basic(),
         View::Friends => friends(data),
         View::Party | View::Team | View::Guild => group(view, data, actor),
-        View::PartyInvites => json!({"success":true,"pendingPartyInvites":data["items"]}),
-        View::TeamInvites => json!({"success":true,"pendingTeamInvites":data["items"]}),
-        View::GuildInvites => json!({"success":true,"pendingGuildInvites":data["items"]}),
-        View::GuildSearch => json!({"success":true,"nearestGuilds":data["items"]}),
+        View::PartyInvites | View::TeamInvites | View::GuildInvites => {
+            let invitations =
+                Items::<halcyon_community::views::Invitation>::deserialize(data)?.items;
+            let pending = match view {
+                View::PartyInvites => PendingInvites::Party(invitations),
+                View::TeamInvites => PendingInvites::Team(invitations),
+                _ => PendingInvites::Guild(invitations),
+            };
+            Ok(serde_json::to_value(InviteList {
+                success: true,
+                pending,
+            })?)
+        }
+        View::GuildSearch => Ok(serde_json::to_value(GuildSearch {
+            success: true,
+            nearest_guilds: Items::<halcyon_community::views::GuildListing>::deserialize(data)?
+                .items,
+        })?),
         View::Inventory => inventory(data),
         View::Quests => quests(profile, data),
-    })
+    }
+}
+
+#[derive(Serialize)]
+struct InviteList {
+    success: bool,
+    #[serde(flatten)]
+    pending: PendingInvites,
+}
+
+#[derive(Serialize)]
+enum PendingInvites {
+    #[serde(rename = "pendingPartyInvites")]
+    Party(Vec<halcyon_community::views::Invitation>),
+    #[serde(rename = "pendingTeamInvites")]
+    Team(Vec<halcyon_community::views::Invitation>),
+    #[serde(rename = "pendingGuildInvites")]
+    Guild(Vec<halcyon_community::views::Invitation>),
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GuildSearch {
+    success: bool,
+    nearest_guilds: Vec<halcyon_community::views::GuildListing>,
+}
+
+fn group_kind(value: &Value) -> Option<GroupKind> {
+    GroupKind::deserialize(value.get("kind")?).ok()
 }
 
 async fn resolve_invite(
@@ -797,7 +1076,7 @@ async fn resolve_invite(
     let observed = community
         .execute(actor, Action::GroupById { group: id })
         .await?;
-    if observed["kind"] != json!(kind) {
+    if group_kind(&observed) != Some(kind) {
         return Err(Error::Invalid);
     }
     let action = Action::ResolveInvite { group: id, accept };
@@ -811,16 +1090,40 @@ async fn resolve_invite(
         GroupKind::Team => View::Team,
         GroupKind::Guild => View::Guild,
     };
-    Ok(if accept {
+    if accept {
         group(view, result, actor)
     } else {
         basic()
-    })
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(Serialize)]
+    struct HandleArgument<'a> {
+        handle: &'a str,
+    }
+    #[derive(Serialize)]
+    struct PresenceArgument {
+        invisible: bool,
+    }
+    #[derive(Serialize)]
+    struct PlayerArgument {
+        #[serde(rename = "playerUUID")]
+        player_uuid: Uuid,
+    }
+    #[derive(Serialize)]
+    struct GuildArgument<'a> {
+        name: &'a str,
+        tag: &'a str,
+    }
+    #[derive(Serialize)]
+    struct EquipmentArgument<'a> {
+        slot: &'a str,
+        item: &'a str,
+    }
 
     fn player(name: &str) -> PlayerProfile {
         PlayerProfile {
@@ -833,7 +1136,7 @@ mod tests {
     async fn call(
         community: &Community,
         player: &PlayerProfile,
-        name: &str,
+        name: RpcMethod,
         payload: Option<Value>,
     ) -> Result<Value, Error> {
         let mut params = vec![Value::Null];
@@ -852,19 +1155,27 @@ mod tests {
                 .await
                 .unwrap();
         }
-        let empty = call(&community, &harbor, "friendListAll", None)
+        let empty = call(&community, &harbor, RpcMethod::FriendListAll, None)
             .await
             .unwrap();
-        assert_eq!(empty, json!({"confirmed":[],"pending":[],"numOffline":0}));
+        assert_eq!(
+            empty,
+            serde_json::to_value(FriendList {
+                confirmed: Vec::new(),
+                pending: Vec::new(),
+                num_offline: 0
+            })
+            .unwrap()
+        );
         call(
             &community,
             &harbor,
-            "friendRequestIssueByHandle",
-            Some(json!({"handle":"Beacon"})),
+            RpcMethod::FriendRequestIssueByHandle,
+            Some(serde_json::to_value(HandleArgument { handle: "Beacon" }).unwrap()),
         )
         .await
         .unwrap();
-        let pending = call(&community, &beacon, "friendListAll", None)
+        let pending = call(&community, &beacon, RpcMethod::FriendListAll, None)
             .await
             .unwrap();
         assert_eq!(pending["pending"][0]["incoming"], true);
@@ -875,28 +1186,33 @@ mod tests {
         call(
             &community,
             &beacon,
-            "friendRequestConfirm",
-            Some(json!(harbor.player_id)),
+            RpcMethod::FriendRequestConfirm,
+            Some(serde_json::to_value(harbor.player_id).unwrap()),
         )
         .await
         .unwrap();
         call(
             &community,
             &harbor,
-            "setPresenceInvisibility",
-            Some(json!({"invisible":true})),
+            RpcMethod::SetPresenceInvisibility,
+            Some(serde_json::to_value(PresenceArgument { invisible: true }).unwrap()),
         )
         .await
         .unwrap();
         call(
             &community,
             &beacon,
-            "friendAddFavorite",
-            Some(json!({"playerUUID":harbor.player_id})),
+            RpcMethod::FriendAddFavorite,
+            Some(
+                serde_json::to_value(PlayerArgument {
+                    player_uuid: harbor.player_id,
+                })
+                .unwrap(),
+            ),
         )
         .await
         .unwrap();
-        let friends = call(&community, &beacon, "friendListAll", None)
+        let friends = call(&community, &beacon, RpcMethod::FriendListAll, None)
             .await
             .unwrap();
         assert_eq!(friends["confirmed"][0]["handle"], "Harbor");
@@ -918,8 +1234,14 @@ mod tests {
         let guild = call(
             &community,
             &owner,
-            "createGuild",
-            Some(json!({"name":"Pathfinders","tag":"PATH"})),
+            RpcMethod::CreateGuild,
+            Some(
+                serde_json::to_value(GuildArgument {
+                    name: "Pathfinders",
+                    tag: "PATH",
+                })
+                .unwrap(),
+            ),
         )
         .await
         .unwrap();
@@ -928,12 +1250,12 @@ mod tests {
         call(
             &community,
             &owner,
-            "guildInviteSend",
-            Some(json!(guest.player_id)),
+            RpcMethod::GuildInviteSend,
+            Some(serde_json::to_value(guest.player_id).unwrap()),
         )
         .await
         .unwrap();
-        let invite = &call(&community, &guest, "queryGuildInvites", None)
+        let invite = &call(&community, &guest, RpcMethod::QueryGuildInvites, None)
             .await
             .unwrap()["pendingGuildInvites"][0]["groupId"];
         assert_eq!(invite, &guild["guildUUID"]);
@@ -941,7 +1263,7 @@ mod tests {
             call(
                 &community,
                 &guest,
-                "teamInviteConfirm",
+                RpcMethod::TeamInviteConfirm,
                 Some(invite.clone())
             )
             .await,
@@ -950,7 +1272,7 @@ mod tests {
         let accepted = call(
             &community,
             &guest,
-            "guildInviteConfirm",
+            RpcMethod::GuildInviteConfirm,
             Some(invite.clone()),
         )
         .await
@@ -971,18 +1293,21 @@ mod tests {
         let equipment = call(
             &community,
             &guest,
-            "equipToSlot",
-            Some(json!({"slot":"badge","item":"wayfinder_badge"})),
+            RpcMethod::EquipToSlot,
+            Some(
+                serde_json::to_value(EquipmentArgument {
+                    slot: "badge",
+                    item: "wayfinder_badge",
+                })
+                .unwrap(),
+            ),
         )
         .await
         .unwrap();
-        assert_eq!(
-            equipment["player_global_loadout"]["badge"],
-            "wayfinder_badge"
-        );
+        assert_eq!(equipment["playerGlobalLoadout"]["badge"], "wayfinder_badge");
         assert_eq!(equipment["inventoryGroups"]["badge"][0]["count"], 1);
         assert!(matches!(
-            call(&community, &guest, "storeProcessIAP", None).await,
+            call(&community, &guest, RpcMethod::StoreProcessIAP, None).await,
             Err(Error::Unsupported)
         ));
     }

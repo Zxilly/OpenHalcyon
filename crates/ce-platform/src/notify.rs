@@ -1,4 +1,5 @@
 use super::{Error, Platform, now};
+use crate::wire::{Empty, PartyNotice};
 use axum::{
     Json, Router,
     extract::{
@@ -9,8 +10,8 @@ use axum::{
     response::{IntoResponse, Response},
     routing::get,
 };
+use halcyon_platform::EventKind;
 use serde::Deserialize;
-use serde_json::{Value, json};
 use std::{
     cmp::Reverse,
     collections::{BinaryHeap, HashMap},
@@ -134,7 +135,74 @@ pub fn router(s: Arc<Platform>) -> Router {
         .with_state(s)
 }
 
-async fn update(s: &Platform, key: &str, old: Position) -> Result<(Position, Value), StatusCode> {
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Notification {
+    http_status: u16,
+    time: String,
+    tag: Uuid,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    text: Option<NotificationText>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(untagged)]
+enum NotificationText {
+    Typed(TypedNotification),
+    Party(PartyNotification),
+}
+
+#[derive(serde::Serialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+enum TypedNotification {
+    FriendsListUpdate {
+        code: u8,
+        #[serde(rename = "friendsListUpdate")]
+        friends_list_update: bool,
+    },
+    StateUpdate {
+        code: u8,
+        states: std::collections::BTreeMap<String, String>,
+        counts: [u8; 1],
+    },
+}
+
+#[derive(serde::Serialize)]
+struct PartyNotification {
+    code: u8,
+    #[serde(flatten)]
+    marker: PartyMarker,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+enum PartyMarker {
+    #[serde(rename = "quintPartyStateUpdate")]
+    StateUpdate(Empty),
+    #[serde(rename = "quintPartyJoinRequest")]
+    JoinRequest(Empty),
+    #[serde(rename = "quintPartyPlayerLeft")]
+    PlayerLeft(Empty),
+    #[serde(rename = "quintPartyMemberKick")]
+    MemberKick(Empty),
+}
+
+impl From<PartyNotice> for PartyMarker {
+    fn from(notice: PartyNotice) -> Self {
+        match notice {
+            PartyNotice::StateUpdate => Self::StateUpdate(Empty {}),
+            PartyNotice::JoinRequest => Self::JoinRequest(Empty {}),
+            PartyNotice::PlayerLeft => Self::PlayerLeft(Empty {}),
+            PartyNotice::MemberKick => Self::MemberKick(Empty {}),
+        }
+    }
+}
+
+async fn update(
+    s: &Platform,
+    key: &str,
+    old: Position,
+) -> Result<(Position, Notification), StatusCode> {
     let event = s
         .app
         .next_notification(key, old.after, old.initial)
@@ -143,9 +211,12 @@ async fn update(s: &Platform, key: &str, old: Position) -> Result<(Position, Val
     if event.is_none() && !old.initial {
         return Ok((
             old,
-            json!({
-                "httpStatus":304,"time":old.time.to_string(),"tag":Uuid::from_u128(old.after as u128),
-            }),
+            Notification {
+                http_status: 304,
+                time: old.time.to_string(),
+                tag: Uuid::from_u128(old.after as u128),
+                text: None,
+            },
         ));
     }
     let next = Position {
@@ -157,44 +228,53 @@ async fn update(s: &Platform, key: &str, old: Position) -> Result<(Position, Val
     let kind = (!old.initial)
         .then(|| event.as_ref()?.body["type"].as_str())
         .flatten();
-    let text = match kind {
-        Some("friends_changed") => {
-            json!({"code":0,"type":"friendsListUpdate","friendsListUpdate":true})
-        }
-        Some(
-            kind @ ("quintPartyStateUpdate"
-            | "quintPartyJoinRequest"
-            | "quintPartyPlayerLeft"
-            | "quintPartyMemberKick"),
-        ) => {
-            json!({"code":0,(kind):{}})
-        }
-        _ => {
-            let profile = s.app.profile(key).await.map_err(platform_status)?;
-            let mut state = s
-                .projected_state(key, &profile)
-                .await
-                .map_err(platform_status)?;
-            state["version"] = json!(tag);
-            state["lastVersion"] = json!(Uuid::from_u128(old.after as u128));
-            let states: serde_json::Map<_, _> = state
-                .as_object()
-                .expect("state is an object")
-                .iter()
-                .filter(|(key, _)| key.as_str() != "spectatorId")
-                .map(|(key, value)| {
-                    let value = value
-                        .as_str()
-                        .map_or_else(|| value.to_string(), ToOwned::to_owned);
-                    (key.clone(), json!(value))
-                })
-                .collect();
-            json!({"type":"stateUpdate","code":0,"states":states,"counts":[1]})
-        }
+    let text = if !old.initial
+        && event.as_ref().and_then(|event| event.kind()) == Some(EventKind::FriendsChanged)
+    {
+        NotificationText::Typed(TypedNotification::FriendsListUpdate {
+            code: 0,
+            friends_list_update: true,
+        })
+    } else if let Some(notice) = kind.and_then(PartyNotice::from_wire) {
+        NotificationText::Party(PartyNotification {
+            code: 0,
+            marker: notice.into(),
+        })
+    } else {
+        let profile = s.app.profile(key).await.map_err(platform_status)?;
+        let mut state = s
+            .projected_state(key, &profile)
+            .await
+            .map_err(platform_status)?;
+        state.version = tag;
+        state.last_version = Uuid::from_u128(old.after as u128);
+        state.spectator_id = None;
+        let state = serde_json::to_value(state).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        let states = state
+            .as_object()
+            .expect("snapshot fields")
+            .iter()
+            .map(|(key, value)| {
+                let value = value
+                    .as_str()
+                    .map_or_else(|| value.to_string(), ToOwned::to_owned);
+                (key.clone(), value)
+            })
+            .collect();
+        NotificationText::Typed(TypedNotification::StateUpdate {
+            code: 0,
+            states,
+            counts: [1],
+        })
     };
     Ok((
         next,
-        json!({"httpStatus":200,"time":next.time.to_string(),"tag":tag,"text":text}),
+        Notification {
+            http_status: 200,
+            time: next.time.to_string(),
+            tag,
+            text: Some(text),
+        },
     ))
 }
 
@@ -240,7 +320,8 @@ async fn socket(
             tokio::select!{
                 res=update(&s,&key,cursor)=>{
                     let Ok((seq,v))=res else {break};
-                    if !send(&mut socket,Message::Text(v.to_string().into())).await {break}
+                    let Ok(payload) = serde_json::to_string(&v) else {break};
+                    if !send(&mut socket,Message::Text(payload.into())).await {break}
                     cursor=seq;
                 }
                 input=socket.recv()=>match input {Some(Ok(Message::Ping(_)|Message::Pong(_)))=>{}, _=>break}
@@ -274,7 +355,7 @@ async fn chat(
                 batch=s.app.events(&key,cursor,true)=>{
                     let Ok(batch)=batch else{break};cursor=batch.cursor;
                     for event in batch.events {
-                        if event.body["type"]=="chat" && !send(&mut sock,Message::Text(event.body.to_string().into())).await{return}
+                        if event.kind() == Some(EventKind::Chat) && !send(&mut sock,Message::Text(event.body.to_string().into())).await{return}
                     }
                 }
                 msg=sock.recv()=>match msg {
