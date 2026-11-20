@@ -162,6 +162,11 @@ pub enum Event {
         instance: u32,
         attack_target: Option<u32>,
     },
+    WinterSpireProjectile {
+        source: u32,
+        id: u32,
+        point: Position,
+    },
     ChakramApplied {
         source: u32,
         id: u32,

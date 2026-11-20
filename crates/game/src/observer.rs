@@ -441,6 +441,22 @@ impl Room {
             true
         });
     }
+    pub(super) fn publish_observer_spell_projectile(
+        &mut self,
+        message: impl Fn(&crate::tower_aggro::View) -> Option<Message>,
+    ) {
+        self.observers.retain(|_, o| {
+            if let Some(tx) = &o.live
+                && o.scene.is_some()
+                && let Some(m) = message(&o.view)
+                && tx.try_send(vec![m]).is_err()
+            {
+                o.stop.send_replace(true);
+                return false;
+            }
+            true
+        });
+    }
     pub(super) fn publish_observer_projectiles(&mut self, shots: &[super::npc_projectile::Shot]) {
         self.observers.retain(|_, observer| {
             let Some(tx) = &observer.live else {

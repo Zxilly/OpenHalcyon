@@ -864,6 +864,15 @@ impl Room<'_> {
                         channel: 0,
                     });
                 }
+                if matches!(self.layout, Layout::Aral { .. }) {
+                    let id = self.next_id;
+                    self.next_id += 1;
+                    events.push(Event::WinterSpireProjectile {
+                        source: src,
+                        id,
+                        point,
+                    });
+                }
             }
             Skill::FishFood | Skill::Splashdown | Skill::Waterwall => {
                 self.cast_water(i, c.slot, c.target, r, events);

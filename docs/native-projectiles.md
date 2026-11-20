@@ -55,3 +55,18 @@ ARAL's distance curve. A shot gets its ID at launch and can impact after its
 tower dies. A dead or removed victim takes no subsequent damage. The 13
 recorded shots against three hero templates and towers outside these three
 source slots retain their existing simulation timing.
+
+### ARAL Winter Spire
+
+All 38 allied Reim A witness releases in the seven-stream archive have a
+same-timestamp 040E with the 0416 target vector copied bit for bit, a fourth
+float of positive zero, profile word 1043493024, operand 86 and the caster's
+registration slot repeated. The host uses its authoritative release point
+and room-unique instance ID. It sends this presentation to registered allied
+witnesses and full-map observers. Damage remains on the two scheduled spire
+hits. None of those 38 instances has a recorded 0410.
+
+The supplemental protocol spec §3.2 describes rendering the spire through a
+child entity. That description does not account for these 38 transmitted
+040E records. The captures establish the ally-facing packet independently of
+whether a particular client requires it to render the spire.

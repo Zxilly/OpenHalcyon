@@ -8,6 +8,8 @@ use super::{Batch, Message, Room, messages::wire_id, transport::Delivery};
 
 mod chakram_motion;
 mod chill_winds;
+mod projectile;
+pub(super) use projectile::recordable as recordable_spell_projectile;
 pub(super) fn recordable_chill_winds(m: &Message) -> bool {
     chill_winds::recordable_pfx(m)
 }
@@ -293,6 +295,10 @@ pub(super) fn publish(room: &mut Room, events: &[Event]) {
     }
     let aral = room.legacy_aral();
     for (event_index, event) in events.iter().enumerate() {
+        if aral && let Event::WinterSpireProjectile { source, id, point } = *event {
+            projectile::spire(room, source, id, point);
+            continue;
+        }
         if aral
             && let Event::Move { id, .. } = *event
             && let Some(index) = id.checked_sub(1).map(|v| v as usize)
@@ -870,18 +876,35 @@ mod tests {
             slot: AbilitySlot::A,
             target: CastTarget::Point(p),
         };
-        publish(&mut room, std::slice::from_ref(&event));
+        let events = [
+            event,
+            Event::WinterSpireProjectile {
+                source: 1,
+                id: 800,
+                point: p,
+            },
+        ];
+        publish(&mut room, &events);
         assert!(rx.try_recv().is_err());
         let mut hero = crate::messages::spawn(&room.world.entities[0], &room.picks, None);
         hero.body[745] = 16;
         room.scene_views[1].declarations(&[hero]);
-        publish(&mut room, std::slice::from_ref(&event));
+        publish(&mut room, &events);
         assert_eq!(
             rx.try_recv().unwrap().into_records(),
             [Message::ability_point_used(1500, [p.x, 0., p.y], 0)]
         );
+        let batch = rx.try_recv().unwrap().into_records();
+        let shot = &batch[0];
+        assert!(recordable_spell_projectile(shot));
+        assert_eq!(&shot.body[0..4], &2299u32.to_be_bytes());
+        assert_eq!(&shot.body[4..8], &1043493024u32.to_be_bytes());
+        assert_eq!(&shot.body[8..12], &p.x.to_be_bytes());
+        assert_eq!(&shot.body[12..16], &[0; 4]);
+        assert_eq!(&shot.body[16..20], &p.y.to_be_bytes());
+        assert_eq!(&shot.body[20..], &[0, 0, 0, 0, 0, 86, 16, 16]);
         room.visible[0].clear();
-        publish(&mut room, &[event]);
+        publish(&mut room, &events);
         assert!(rx.try_recv().is_err());
         assert!(NativeCast::point_input(EntityTemplate::Reim.as_raw(), 0).is_none());
         assert!(native_learn_request(EntityTemplate::Reim.as_raw(), 0).is_none());
