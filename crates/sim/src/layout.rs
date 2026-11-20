@@ -1,5 +1,10 @@
 use super::*;
 
+/// Room-local wire instance IDs for the six alternating startup applications
+/// per crystal, in declaration order (away, then home). The fixed Solo
+/// structure effects already occupy IDs through 2169.
+pub const SOLO_CRYSTAL_START_INSTANCES: std::ops::Range<u32> = 2170..2182;
+
 /// The validation map and the measured lanes of the Android Solo map.
 #[derive(Default, Serialize)]
 pub(super) enum Layout {
@@ -227,7 +232,7 @@ impl Room<'_> {
             self.spawn_with_stats(team, Kind::Tower, stats, point(team, x, z), false);
         }
         self.entities.sort_unstable_by_key(|e| e.id);
-        self.next_id = 2122 - 1499;
+        self.next_id = SOLO_CRYSTAL_START_INSTANCES.end - 1499;
         Ok(())
     }
 }
@@ -335,7 +340,7 @@ mod tests {
         }
         assert_eq!(world.entities[0].gold, 1500);
         assert_eq!(world.team_scores()[0].structure_kills.towers, 3);
-        assert_eq!(world.next_id, 2122 - 1499);
+        assert_eq!(world.next_id + 1499, SOLO_CRYSTAL_START_INSTANCES.end);
     }
 
     #[test]

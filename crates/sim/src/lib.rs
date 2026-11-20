@@ -25,6 +25,7 @@ mod combat;
 #[cfg(test)]
 mod effects_replay;
 mod layout;
+pub use layout::SOLO_CRYSTAL_START_INSTANCES;
 mod lorelai;
 mod native_camps;
 mod native_combat;

@@ -211,6 +211,7 @@ pub(super) fn initial_structures(room: &mut Room) {
     }
     if !batch.is_empty() {
         super::structure_effects::append_solo(&mut batch, &mut effects);
+        super::structure_effects::append_crystal_start(&mut batch, &effects);
         room.scene_views[0].declarations(&batch);
         peer.send(super::transport::Delivery::Private(batch));
     }
@@ -540,6 +541,10 @@ mod tests {
             let mut compact_structures = Vec::new();
             loop {
                 let m = next(&mut socket, &cipher).await;
+                assert!(
+                    !m.is(crate::Opcode::EntityProp),
+                    "scene hydration reapplied a live effect"
+                );
                 if m.is(crate::Opcode::RequestScene) {
                     break;
                 }
@@ -690,6 +695,16 @@ mod tests {
                         .collect::<std::collections::BTreeSet<_>>(),
                     declared
                 );
+                for (i, instance) in (2176..2182).enumerate() {
+                    let message = next(&mut socket, &cipher).await;
+                    assert!(crate::structure_effects::recordable(&message));
+                    let Fields::BuffApplication(effect) = message.fields().unwrap() else {
+                        panic!("expected crystal startup");
+                    };
+                    assert_eq!(effect.prefix.target, 2006);
+                    assert_eq!(effect.prefix.instance, instance);
+                    assert_eq!(effect.prefix.definition, [205, 180][i % 2]);
+                }
             }
             send(
                 &mut socket,

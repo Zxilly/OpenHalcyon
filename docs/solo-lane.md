@@ -42,12 +42,17 @@ actor as source and target. Another 18 use definition 205 and source
 self-sourced effects on that structure. The ordered 34-byte prefixes have
 SHA-256 `bf7618cbe20157483de2b0ad6978cd534ffff64514c710aa604981dbbbf3e350`.
 
-The two crystals first acquire definition 205 at 5.116104 s, through three
-`043E` pairs of definitions 205 and 180 per crystal, away before home.
-The next 13 replay chunks restore definition 205 with three stacks on each
-crystal. These later crystal updates and the effects of destroyed structures
-remain unimplemented. None of the 14 chunks records the death of a target
-structure or cancellation of its opening instance.
+The two crystals acquire their map-sourced effects later. In Solo replay section
+zero, `03EF` (record 3430) and records 3484–3495 have timestamp 5.116104 s.
+Away crystal 2007 receives three alternating `043E` pairs of definitions 205
+and 180, then home crystal 2006 receives the same sequence. The captured
+instances are consecutive, 6568–6579. The host reserves 2170–2181 after its
+fixed structure effects and before its first dynamic actor. It sends the pairs
+once on the first running tick, after declaring each visible living crystal.
+A replacement connection can receive its own start marker without creating
+these instances again. Sections 1–13 retain the first 205 instance on each
+crystal with three stacks. The recording contains no associated removal or
+structure death from which to infer a later stack transition.
 
 ### Mid-lane waves
 
