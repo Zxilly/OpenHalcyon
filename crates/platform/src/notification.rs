@@ -40,19 +40,6 @@ pub(super) fn initialize(tx: &Transaction<'_>) -> Result<()> {
     Ok(())
 }
 
-/// Write an integration event inside a transaction on the shared platform database.
-pub fn record_external_notification(
-    tx: &Transaction<'_>,
-    recipient: &str,
-    body: &Value,
-) -> rusqlite::Result<()> {
-    tx.execute(
-        "INSERT INTO events(player, body) VALUES(?, ?)",
-        params![recipient, body.to_string()],
-    )?;
-    Ok(())
-}
-
 impl AppState {
     /// Wake readers after a successful commit made through another connection.
     pub fn wake_notification_readers(&self) {

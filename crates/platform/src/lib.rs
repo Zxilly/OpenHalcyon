@@ -11,7 +11,6 @@ use event_body::EventBody;
 pub use event_body::{AbortReason, EventKind, LobbyPhase};
 mod notification;
 pub use native_offer::{NativeOffer, NativeSeat};
-pub use notification::record_external_notification;
 mod pooled_spectator;
 pub use pooled_spectator::PooledSpectator;
 mod queue;
