@@ -1198,6 +1198,9 @@ impl Room {
         }
         let mut out = vec![];
         match m.fields()? {
+            _ if game && m.is(crate::Opcode::RequestCancelAbility) => {
+                out = native_abilities::receive(self, i, ch, m);
+            }
             Fields::Live(halcyon_protocol::LiveFields::RecommendedBuildPath(path))
                 if game
                     || pending_world_input

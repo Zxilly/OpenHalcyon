@@ -732,6 +732,19 @@ impl Room<'_> {
         });
         Ok(())
     }
+    /// Cancel only the still-pending windup selected by its issuing player.
+    pub fn cancel_cast(&mut self, actor: u32, slot: AbilitySlot, target: CastTarget) -> bool {
+        let Some(i) = self.index(actor) else {
+            return false;
+        };
+        let e = &mut self.entities[i];
+        if e.hp > 0. && e.cast.is_some_and(|c| c.slot == slot && c.target == target) {
+            e.cast = None;
+            return true;
+        }
+        false
+    }
+
     pub(super) fn advance_cast(&mut self, i: usize, events: &mut Vec<Event>) {
         let e = &self.entities[i];
         let c = e.cast.unwrap();

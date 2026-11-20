@@ -58,6 +58,25 @@ pub(super) fn receive(room: &mut Room, seat: usize, channel: usize, m: Message) 
     let aral = room.legacy_aral();
     let state = &mut room.seats[seat].native_abilities;
     match m.known_opcode() {
+        Some(crate::Opcode::RequestCancelAbility)
+            if aral && m.body.len() == 6 && m.body[1..] == [0; 5] =>
+        {
+            let Some(pending) = &state.cast else {
+                return Vec::new();
+            };
+            let selector = m.body[0];
+            if pending.generation != generation
+                || NativeCast::for_slot(hero, pending.slot).is_none_or(|c| c.selector() != selector)
+                || !room.world.cancel_cast(id, pending.slot, pending.target)
+            {
+                return Vec::new();
+            }
+            state.cast = None;
+            let mut body = [0; 10];
+            body[..4].copy_from_slice(&u32::from(wire_id(id)).to_be_bytes());
+            body[4..8].copy_from_slice(&u32::from(selector).to_be_bytes());
+            vec![Message::known(crate::Opcode::CancelAbility, body)]
+        }
         Some(crate::Opcode::RequestUpgradeAbility)
             if m.body.len() == 6 && m.body[1..] == [0; 5] =>
         {
@@ -607,7 +626,23 @@ mod tests {
                 .interrupted_walk
                 .is_some()
         );
-        room.world.command(1, Command::Stop).unwrap();
+        let cancel = |selector, shared| {
+            Message::known(
+                crate::Opcode::RequestCancelAbility,
+                [selector, shared, 0, 0, 0, 0],
+            )
+        };
+        assert!(room.receive(0, 0, cancel(2, 0)).unwrap().is_empty());
+        assert!(room.receive(0, 0, cancel(3, 1)).unwrap().is_empty());
+        assert!(room.receive(1, 0, cancel(3, 0)).unwrap().is_empty());
+        assert_eq!(
+            room.receive(0, 0, cancel(3, 0)).unwrap(),
+            [Message::known(
+                crate::Opcode::CancelAbility,
+                [0, 0, 5, 220, 0, 0, 0, 3, 0, 0]
+            )]
+        );
+        assert!(room.receive(0, 0, cancel(3, 0)).unwrap().is_empty());
         for _ in 0..12 {
             room.tick();
         }
