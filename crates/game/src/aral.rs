@@ -3,12 +3,7 @@ use super::{Batch, Message, Room, messages};
 
 pub(super) use halcyon_data::LEGACY_ARAL_SEATS as SEATS;
 pub(super) const DRAFT_SECONDS: f32 = 20.;
-const MODE: &str = "*GameMode_Aral_Casual*";
-
-pub(super) fn legacy_queue(name: &str) -> bool {
-    // This exact ID occurs in the matching iOS-era joinLobby requests.
-    name == halcyon_data::LEGACY_ARAL_QUEUE
-}
+const MODE: &str = halcyon_protocol::ce::NativeMode::Aral.asset();
 
 /// The level belongs to the reserved seat and selected hero. The client supplies only a slot.
 pub(super) fn talent_response(

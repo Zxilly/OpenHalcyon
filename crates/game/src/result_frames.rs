@@ -1,6 +1,9 @@
 //! End request measured in live ARAL and recorded 5v5 PvP crystal endings.
 pub(super) mod statistics;
-use halcyon_protocol::Message;
+use halcyon_protocol::{
+    Message,
+    ce::{KnownQueue, NativeMode},
+};
 use halcyon_sim::{Kind, World};
 
 pub(super) fn statistics_snapshot(world: &World) -> std::io::Result<Message> {
@@ -36,18 +39,13 @@ pub(super) fn append_postgame(
 /// The local ARAL captures place the statistics report and this request about six seconds after death.
 pub(super) fn crystal_end(queue: &str, world: &World) -> Option<Message> {
     if !matches!(
-        queue,
-        "casual_aral"
-            | "aral_casual"
-            | "aral"
-            | "5v5_pvp_casual"
-            | "5v5_casual"
-            | "casual_5v5"
-            | "5v5_bots_solo"
-            | "solo"
-            | "5v5_pvp_ranked"
-            | "5v5_ranked"
-            | "ranked_5v5"
+        KnownQueue::parse(queue).map(KnownQueue::mode),
+        Some(
+            NativeMode::Aral
+                | NativeMode::CasualFive
+                | NativeMode::SoloBots
+                | NativeMode::RankedFive
+        )
     ) {
         return None;
     }

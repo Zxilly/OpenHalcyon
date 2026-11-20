@@ -26,7 +26,10 @@ mod transport;
 use chrono::{DateTime, Utc};
 use halcyon_data::GameData;
 use halcyon_platform::{HostedMatch, MatchHost, PlatformError, Reservation};
-use halcyon_protocol::{Fields, Message};
+use halcyon_protocol::{
+    Fields, Message,
+    ce::{KnownQueue, NativeMode},
+};
 use halcyon_sim::{Command, Event, Position, World};
 use messages::{setup, snapshot, spawn, wire_id, world_header};
 mod responses;
@@ -183,6 +186,7 @@ struct Room {
     id: Uuid,
     address: String,
     queue: String,
+    known_queue: Option<KnownQueue>,
     difficulty: Option<halcyon_data::BotDifficulty>,
     players: Vec<Uuid>,
     requested_teams: Vec<u8>,
@@ -555,7 +559,8 @@ impl Rooms {
         {
             return Err(PlatformError::Invalid("invalid roster"));
         }
-        let legacy_aral = aral::legacy_queue(&req.mode);
+        let known_queue = KnownQueue::parse(&req.mode);
+        let legacy_aral = known_queue == Some(KnownQueue::CasualAral);
         let six_humans = halcyon_data::three_per_side(&req.mode);
         if six_humans && req.players.len() != halcyon_data::THREE_PER_SIDE_SEATS {
             return Err(PlatformError::Invalid(
@@ -662,6 +667,7 @@ impl Rooms {
             picks,
             id: req.match_id,
             address: address.clone(),
+            known_queue,
             queue: req.mode,
             difficulty: req.difficulty,
             players: req.players,
@@ -782,11 +788,12 @@ impl Room {
         }
     }
     fn legacy_aral(&self) -> bool {
-        aral::legacy_queue(&self.queue)
+        self.known_queue == Some(KnownQueue::CasualAral)
     }
 
     fn solo_scene(&self) -> bool {
-        self.players.len() == 1 && matches!(self.queue.as_str(), "5v5_bots_solo" | "solo")
+        self.players.len() == 1
+            && self.known_queue.map(KnownQueue::mode) == Some(NativeMode::SoloBots)
     }
 
     fn solo_loading(&mut self) {
@@ -1266,7 +1273,9 @@ impl Room {
             }
             Fields::ControlByte { value: 0, .. }
                 if m.is(crate::Opcode::SetupA)
-                    && (legacy || self.solo_scene() || self.queue == "ranked")
+                    && (legacy
+                        || self.solo_scene()
+                        || self.known_queue == Some(KnownQueue::Ranked))
                     && ch == 0
                     && self.phase == crate::RoomPhase::HeroSelect
                     && self.seats[i].peers[0].is_some()
@@ -1554,7 +1563,7 @@ impl Room {
         if self.world.winner.is_some() {
             self.reason = Some("completed");
             self.phase(crate::RoomPhase::Ending);
-            if !matches!(self.queue.as_str(), "aral" | "aral_casual" | "casual_aral") {
+            if self.known_queue.map(KnownQueue::mode) != Some(NativeMode::Aral) {
                 self.finish_world();
             }
         }

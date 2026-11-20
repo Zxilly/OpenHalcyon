@@ -4,7 +4,7 @@ use clap::Parser;
 use halcyon_protocol::{ACK_FRAME, MAX_PAYLOAD, MatchCipher, Message, hello_with_port};
 use halcyon_protocol::{
     Opcode,
-    ce::{LobbyState, RpcMethod},
+    ce::{KnownQueue, LobbyState, RpcMethod},
 };
 use reqwest::{Certificate, Client};
 use serde::{
@@ -524,8 +524,8 @@ enum Workload {
 impl Workload {
     fn queue(&self, group: usize) -> std::borrow::Cow<'static, str> {
         match self {
-            Self::NativeAral => "casual_aral".into(),
-            Self::NativeSolo => "5v5_bots_solo".into(),
+            Self::NativeAral => KnownQueue::CasualAral.as_str().into(),
+            Self::NativeSolo => KnownQueue::SoloBots.as_str().into(),
             Self::Validation(_) => format!("bench_{group}").into(),
         }
     }

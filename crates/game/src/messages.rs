@@ -1,6 +1,9 @@
 //! CE server messages. Unidentified fields use zero defaults.
 use super::Pick;
-use halcyon_protocol::Message;
+use halcyon_protocol::{
+    Message,
+    ce::{KnownQueue, NativeMode},
+};
 use halcyon_sim::{Entity, World};
 use uuid::Uuid;
 
@@ -14,20 +17,10 @@ fn put_text(buf: &mut [u8], s: &str) {
     buf[..n].copy_from_slice(&s.as_bytes()[..n]);
 }
 fn mode_name(queue: &str) -> &'static str {
-    match queue {
-        "ranked" => "*GameMode_HF_Ranked*",
-        "5v5_pvp_ranked" | "5v5_ranked" | "ranked_5v5" => "*GameMode_5v5_Ranked*",
-        "5v5_bots_solo" | "solo" => "*GameMode_5v5_SoloBots*",
-        "5v5_bots_coop" | "5v5_coop" => "*GameMode_5v5_CoopBots*",
-        "5v5_private" | "5v5_pvp_private" => "*GameMode_5v5_Private*",
-        "5v5_private_draft" => "*GameMode_5v5_PrivateDraft*",
-        "5v5_private_bots" => "*GameMode_5v5_PrivateBots*",
-        "5v5_practice" => "*GameMode_5v5_Practice*",
-        "aral_casual" | "casual_aral" | "aral" => "*GameMode_Aral_Casual*",
-        // Includes Android's 5v5_pvp_casual and operator-defined queues.
-        // Only the wire label is resolved here; the queue ID remains intact.
-        _ => "*GameMode_5v5_Casual*",
-    }
+    // Operator queues retain their original IDs but use the casual scene asset.
+    KnownQueue::parse(queue)
+        .map_or(NativeMode::CasualFive, KnownQueue::mode)
+        .asset()
 }
 pub(super) fn scene_mode(queue: &str, flag: u8) -> Message {
     let mut body = vec![0; 69];
@@ -79,7 +72,7 @@ pub fn setup(
     picks: &[Pick],
 ) -> Vec<Message> {
     let mut config = settings(seat, mode_name(mode), true);
-    if mode == "ranked" {
+    if KnownQueue::parse(mode) == Some(KnownQueue::Ranked) {
         config.body[16..18].fill(3);
         config.body[96..100].copy_from_slice(&5f32.to_be_bytes());
         config.body[100] = world.entities[seat].team + 1;

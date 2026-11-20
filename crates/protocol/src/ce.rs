@@ -1,4 +1,6 @@
 //! Shared CE menu and JSON-RPC wire identities.
+mod queue;
+pub use queue::{KnownQueue, NativeMode};
 use serde::Serialize;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, serde::Deserialize)]

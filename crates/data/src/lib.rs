@@ -1,9 +1,10 @@
 //! Read the separately supplied 4.13.4 delivery. Unknown fields retain their original names and values.
 mod difficulty;
 pub use difficulty::BotDifficulty;
+pub use halcyon_protocol::ce::{KnownQueue, NativeMode};
 
 /// Matchmaking ID observed in the iOS-era ARAL requests.
-pub const LEGACY_ARAL_QUEUE: &str = "casual_aral";
+pub const LEGACY_ARAL_QUEUE: &str = KnownQueue::CasualAral.as_str();
 pub const THREE_PER_SIDE_SEATS: usize = 6;
 pub const LEGACY_ARAL_SEATS: usize = THREE_PER_SIDE_SEATS;
 
@@ -211,7 +212,10 @@ pub fn valid_talent_levels(mode: &str, seats: usize, grants: &[TalentLevels]) ->
 
 /// These exact queue IDs advertise three human seats on each team.
 pub fn three_per_side(mode: &str) -> bool {
-    matches!(mode, LEGACY_ARAL_QUEUE | "ranked")
+    matches!(
+        KnownQueue::parse(mode),
+        Some(KnownQueue::CasualAral | KnownQueue::Ranked)
+    )
 }
 
 use serde::{Deserialize, de::DeserializeOwned};
