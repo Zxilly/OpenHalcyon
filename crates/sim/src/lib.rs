@@ -17,6 +17,8 @@ mod captain_tests;
 mod catherine;
 mod chakram;
 mod combat;
+#[cfg(test)]
+mod effects_replay;
 mod layout;
 mod lorelai;
 mod native_camps;
