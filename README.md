@@ -46,6 +46,8 @@ Paths in `server.toml` are relative to that file. For a local research installat
 
 For the optional CE supplement, set `data_extra_dir` alongside `data_dir`. This supplies combat, equipment, native map geometry and client manifests. In the operations panel, **Game data** opens the searchable catalog and its localized messages. The installation guide lists the source files, runtime consumers and real-data regression tests. [Supplemental game data](docs/supplemental-data.md)
 
+Run `openhalcyon check-data --data-dir data/delivery --data-extra-dir data/server_data_extra` before connecting a node to the pool. It loads the same rules as the server and parses every installed walk and visibility mesh, including maps outside the active queues. The JSON report includes pack counts, tile totals and the digests used to compare installations. Omit `--data-extra-dir` to check a base delivery alone.
+
 An operator with a decoded draft trace can export the catalog once. Run
 `openhalcyon export-catalog --trace /private/match_decoded.jsonl > /srv/game-data/catalog.json`.
 Instances load this ordered list of 0x0453 hero and skin names from their

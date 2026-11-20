@@ -1,4 +1,5 @@
 mod config;
+mod data_check;
 mod peers;
 use anyhow::{Context, Result};
 use axum::{Router, routing::get};
@@ -35,6 +36,13 @@ enum Action {
         #[arg(long)]
         trace: PathBuf,
     },
+    /// Validate a local delivery and parse every installed navigation mesh offline.
+    CheckData {
+        #[arg(long)]
+        data_dir: PathBuf,
+        #[arg(long)]
+        data_extra_dir: Option<PathBuf>,
+    },
     /// Inspect or change the voting membership of a trusted pool.
     Pool {
         #[arg(long, default_value = "runtime/server.toml")]
@@ -67,6 +75,15 @@ async fn main() -> Result<()> {
     match Cli::parse().action {
         Action::Init { dir, host } => Config::init(&dir, host),
         Action::Serve { config } => serve(Config::read(&config)?).await,
+        Action::CheckData {
+            data_dir,
+            data_extra_dir,
+        } => {
+            let data = GameData::load_with_extra(data_dir, data_extra_dir.as_deref())?;
+            let report = data_check::inspect(&data)?;
+            println!("{}", serde_json::to_string_pretty(&report)?);
+            Ok(())
+        }
         Action::ExportCatalog { trace } => {
             let file = std::fs::File::open(&trace).with_context(|| trace.display().to_string())?;
             let names = halcyon_data::catalog_from_trace(std::io::BufReader::new(file))?;
