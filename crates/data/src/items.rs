@@ -90,6 +90,15 @@ impl StoreSettings {
 
 #[derive(Clone, Copy)]
 pub enum ItemTuning {
+    Lifespan,
+    InvisibleDelay,
+    TrapArmTime,
+    TriggerRadius,
+    DetonateRadius,
+    DetonateDelay,
+    RevealDuration,
+    VisionRadius,
+
     Ratio,
     ProcTime,
     Damage,
@@ -126,6 +135,14 @@ pub enum ItemTuning {
 impl ItemTuning {
     pub const fn key(self) -> &'static str {
         match self {
+            Self::Lifespan => "LIFESPAN",
+            Self::InvisibleDelay => "INVIS_CHARGEUP_TIME",
+            Self::TrapArmTime => "CHARGEUP_TIME",
+            Self::TriggerRadius => "TRIGGER_RADIUS",
+            Self::DetonateRadius => "DETONATE_RADIUS",
+            Self::DetonateDelay => "DETONATE_DELAY",
+            Self::RevealDuration => "REVEAL_DURATION",
+            Self::VisionRadius => "VISION_RADIUS",
             Self::Ratio => "RATIO",
             Self::ProcTime => "TIME",
             Self::Damage => "DAMAGE",
@@ -162,12 +179,31 @@ impl ItemTuning {
 
 #[derive(Clone, Copy)]
 pub enum ItemActiveParameter {
+    Range,
+    Charges,
     Cooldown,
 }
 impl ItemActiveParameter {
     pub const fn key(self) -> &'static str {
         match self {
+            Self::Range => "Range",
+            Self::Charges => "Charges",
             Self::Cooldown => "Cooldown",
+        }
+    }
+}
+#[derive(Clone, Copy)]
+enum ItemParameterUnit {
+    Seconds,
+    Decimal,
+    FlatInt,
+}
+impl ItemParameterUnit {
+    fn key(self) -> &'static str {
+        match self {
+            Self::Seconds => "seconds",
+            Self::Decimal => "decimal",
+            Self::FlatInt => "flat_int",
         }
     }
 }
@@ -334,11 +370,22 @@ impl FullItem {
         let first = rows.next()?;
         (rows.next().is_none() && first.value.is_finite()).then_some(first.value)
     }
+    pub fn fixed_active(&self, parameter: ItemActiveParameter) -> Option<f32> {
+        let unit = match parameter {
+            ItemActiveParameter::Cooldown => ItemParameterUnit::Seconds,
+            ItemActiveParameter::Range => ItemParameterUnit::Decimal,
+            ItemActiveParameter::Charges => ItemParameterUnit::FlatInt,
+        };
+        self.fixed_active_value(parameter.key(), unit)
+    }
     pub fn fixed_active_seconds(&self, name: &str) -> Option<f32> {
+        self.fixed_active_value(name, ItemParameterUnit::Seconds)
+    }
+    fn fixed_active_value(&self, name: &str, unit: ItemParameterUnit) -> Option<f32> {
         let mut rows = self.active_variables.iter().filter(|row| row.name == name);
         let v = rows.next()?;
         (rows.next().is_none()
-            && v.unit_type == "seconds"
+            && v.unit_type == unit.key()
             && [
                 v.per_rank,
                 v.overdrive,

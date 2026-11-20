@@ -1050,6 +1050,17 @@ mod tests {
                         )
                         .is_err()
                 );
+                let point = state.world.entities[0].position;
+                state
+                    .world
+                    .command(
+                        id,
+                        halcyon_sim::Command::DeployVisionTotem {
+                            instance: 2001,
+                            point,
+                        },
+                    )
+                    .unwrap();
                 state.tick();
                 sale.balance
             };
@@ -1089,6 +1100,15 @@ mod tests {
                     .concat()
                 );
                 assert_eq!(&active.body[12..21], &[0, 0, 0, 0, 0, 0, 0, 0, 2]);
+                let point = next(socket, &cipher).await;
+                assert!(point.is(Opcode::RequestActivateItemVariantC));
+                assert_eq!(&point.body[12..16], &2001_u32.to_be_bytes());
+                let cam = next(socket, &cipher).await;
+                assert!(cam.is(Opcode::ItemActivated));
+                assert_eq!(&cam.body[..4], &1500_u32.to_be_bytes());
+                assert_eq!(&cam.body[12..16], &point.body[..4]);
+                assert_eq!(&cam.body[16..20], &point.body[8..12]);
+                assert_eq!(cam.body[20], 1);
             }
             for seat in [0, 1] {
                 clients[seat]
@@ -1103,7 +1123,10 @@ mod tests {
                     assert!(!matches!(
                         m.known_opcode(),
                         Some(
-                            Opcode::SellItem | Opcode::RequestActivateItem | Opcode::ItemActivated
+                            Opcode::SellItem
+                                | Opcode::RequestActivateItem
+                                | Opcode::RequestActivateItemVariantC
+                                | Opcode::ItemActivated
                         )
                     ));
                 }

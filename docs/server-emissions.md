@@ -2,9 +2,9 @@
 
 Nine complete TCP streams contain 398,293 encrypted server frames in 103 opcode classes. The plaintext handshake acknowledgment is outside these counts. Each count includes every captured form of the opcode. The scope column describes the subset the host currently emits.
 
-Of the 103 classes, 72 have a documented host path for at least one scenario:
-39 room outputs, 19 setup or draft outputs, and 14 conditional responses.
-25 further classes have an identified reader-side action. Six have an
+Of the 103 classes, 73 have a documented host path for at least one scenario:
+40 room outputs, 19 setup or draft outputs, and 14 conditional responses.
+24 further classes have an identified reader-side action. Six have an
 unresolved server trigger and receiver-side field evidence only.
 
 **A** is authoritative room output. **H** is setup, draft or scene output. **E** is a conditional response to the originating request. **R** is a read-only class with a documented action role. **U** has readable fields and an unresolved server role. Action names come from the independently labeled Windows action table. Counts come from the full captured streams. [Capture method](live-captures.md) · [Independent action labels](https://github.com/TurnaboutHero/vainglory-replay-decoder/blob/f4743be743564e3aadef1566499fe25d9d0f9ffc/vg/docs/vg-binary-event-candidates-2026-09-09-details.md)
@@ -77,11 +77,11 @@ The host paths are in [room dispatch](../crates/game/src/lib.rs), [transport](..
 | `0445` | 1,398 | R | ActionCancelBuff |
 | `0446` | 18 | R | ActionTimeoutBuff |
 | `0447` | 41 | R | ActionDecrementBuffStack |
-| `0448` | 150 | A | ARAL Healing Flask instance prefix for eligible witnesses.  [ActionRequestActivateItem](aral-item-activation.md) |
-| `044A` | 66 | R | [ActionRequestActivateItem](aral-item-activation.md) |
+| `0448` | 150 | A | ARAL Healing Flask and Scout Trap instance prefixes for eligible witnesses.  [ActionRequestActivateItem](aral-item-activation.md) |
+| `044A` | 66 | A | ARAL Scout Cam placement for eligible witnesses. [ActionRequestActivateItem](aral-item-activation.md) |
 | `044B` | 150 | A | ActionConsumeItem · Consumed recipe component instance |
-| `044C` | 218 | A | ARAL Healing Flask mode 2 only.  [ActionItemActivated](aral-item-activation.md) · All 218 broadcasts link to a prior grant for the same actor and instance |
-| `044D` | 4 | A | ARAL completed sales of Hourglass, Blazing Salvo or Stormcrown, witnessed by other visible players or an authorized observer. |
+| `044C` | 218 | A | ARAL Healing Flask and Scout Trap mode 2, and Scout Cam mode 1.  [ActionItemActivated](aral-item-activation.md) · All 218 broadcasts link to a prior grant for the same actor and instance |
+| `044D` | 4 | A | ARAL completed sales of Hourglass, Blazing Salvo, Stormcrown or Scout Trap, witnessed by other visible players or an authorized observer. |
 | `044E` | 84 | R | [ActionPing](native-pings.md) · Actor, optional target, map position and two numeric selectors |
 | `044F` | 48 | R | [ActionHUDQuickMessage](native-pings.md) · Actor, message selector, optional target, float and operand |
 | `0451` | 248 | H | Opening world clock |

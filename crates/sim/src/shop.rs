@@ -779,6 +779,7 @@ struct Offer {
 }
 #[derive(Clone, Serialize)]
 pub(super) struct Shop {
+    pub(super) vision: vision_devices::Rules,
     attacks: attack_items::Rules,
     infusions: [Option<infusions::Rule>; 2],
     flask: Option<FlaskRule>,
@@ -789,6 +790,7 @@ pub(super) struct Shop {
 impl Default for Shop {
     fn default() -> Self {
         Self {
+            vision: Default::default(),
             attacks: attack_items::Rules::default(),
             infusions: infusions::Rule::DEFAULTS,
             flask: Some(FlaskRule::ARAL_STARTER),
@@ -921,6 +923,7 @@ impl Shop {
     }
     pub fn load(data: &GameData) -> Result<Self, String> {
         let mut shop = Self {
+            vision: vision_devices::Rules::load(data.item_catalog())?,
             attacks: attack_items::Rules::load(data.item_catalog()),
             infusions: data
                 .item_catalog()
@@ -1575,6 +1578,7 @@ mod tests {
             .push(serde_json::from_str(r#"{"stat_id":18,"value":123.0}"#).unwrap());
         let shop = Shop::load(&data).unwrap();
         assert_eq!(shop.attacks, attack_items::Rules::default());
+        assert_eq!(shop.vision, vision_devices::Rules::default());
         let catalog = data.item_catalog().unwrap();
         assert_eq!((catalog.items().len(), catalog.stores().len()), (93, 5));
         assert_eq!(

@@ -117,6 +117,7 @@ fn sanitize(m: &mut Message) -> bool {
         }
         Some(
             crate::Opcode::RequestActivateItem
+            | crate::Opcode::RequestActivateItemVariantC
             | crate::Opcode::ItemActivated
             | crate::Opcode::SellItem,
         ) => return super::aral_item_actions::recordable(m),

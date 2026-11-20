@@ -27,7 +27,7 @@ The project simulation can sell an owned, equipped instance at base while the he
 
 The additional 17 ordinary templates comprise Aegis, Capacitor Plate, Dragonblood Contract, Protector Contract, Rook’s Decree, Shiversteel, Tension Bow and Tornado Trigger in both standard stores and Blitz Revamp. Both infusions appear in the two standard stores. Flare and Scout Trap appear only in Standard 3v3. Flare Loader, Scout Pak, Scout Tuff, SuperScout 2000 and Teleport Boots appear only in Standard 5v5. Shiversteel also appears in Tutorial 2. The original ARAL transactions independently establish Capacitor Plate, both infusions, Flare and Scout Trap.
 
-Purchase and resale cover the economy of consumables. Vision deployment and most equipment-specific activated abilities remain catalog-only. The full catalog exposes the original tuning for these effects. The four captured ARAL sale broadcasts include Scout Trap's modifier-free removal and 25-gold refund.
+Purchase and resale cover the economy of consumables. Scout Trap and starter Vision Totem have local ARAL deployment commands. Most equipment-specific activated abilities remain catalog-only. The full catalog exposes the original tuning for these effects. The four captured ARAL sale broadcasts include Scout Trap's modifier-free removal and 25-gold refund.
 
 ## Infusions
 
@@ -91,7 +91,7 @@ The middle column lists the static catalog attributes. The right column describe
 | Pulseweave | HEALTH | Base movement amplification; triggered effects are catalog-only |
 | Reflex Block | HEALTH | Catalog only |
 | Rook's Decree | HEALTH, ARMOR, SHIELD, COOLDOWN_SPEED | Catalog only |
-| Scout Trap | — | Catalog only |
+| Scout Trap | — | Owned-instance deployment, ally sight and delayed reveal in ARAL |
 | ScoutPak | COOLDOWN_SPEED, ENERGY_REGEN | Catalog only |
 | ScoutTuff | HEALTH | Catalog only |
 | Serpent Mask | WEAPON_POWER | 15% base Vampirism and Book of Eulogies basic-hit kill heal; rechargeable hero damage pool remains catalog-only |

@@ -3,6 +3,8 @@
 use halcyon_data::EntityTemplate;
 mod ai;
 mod aral;
+mod vision_devices;
+pub use vision_devices::{VisionDevice, VisionDeviceKind};
 mod aral_inventory;
 mod armory;
 mod bot_diagnostics;
@@ -100,6 +102,16 @@ pub enum Command {
     Sell {
         instance: u32,
     },
+    DeployVisionTotem {
+        instance: u32,
+        point: Position,
+    },
+    DeployScoutTrap {
+        instance: u32,
+    },
+    HitScoutCam {
+        device: u32,
+    },
     ConsumeInfusion {
         instance: u32,
     },
@@ -119,6 +131,10 @@ pub enum ImpactEffect {
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Event {
+    VisionDeployed {
+        device: VisionDevice,
+        instance: u32,
+    },
     ChillWindsRoot {
         source: u32,
         target: u32,
@@ -423,6 +439,8 @@ pub struct World {
     solo_inner_towers: [Stats; 2],
     solo_lane_rewards: Option<halcyon_data::SoloLaneRewards>,
     next_id: u32,
+    vision_devices: Vec<VisionDevice>,
+    vision_charges: [vision_devices::Charges; 6],
     next_item: u32,
     pending_item_events: Vec<Event>,
     seed: u64,
@@ -498,6 +516,8 @@ impl World {
             ),
         )
         .expect("finite simulation state");
+        serde_json::to_writer(&mut hash, &(&self.vision_devices, &self.vision_charges))
+            .expect("finite vision device state");
         if let Some(rewards) = self.solo_lane_rewards {
             serde_json::to_writer(&mut hash, &rewards).expect("finite unit rewards");
         }
@@ -542,6 +562,24 @@ impl World {
         self.bot_difficulty = difficulty;
     }
 
+    fn basic_attack_interval(&self, e: &Entity) -> u64 {
+        let haste = e.status.haste_until > self.tick;
+        let twirl = self
+            .abilities
+            .ringo_b
+            .as_ref()
+            .zip(e.status.twirl_rank.filter(|_| haste));
+        let speed = e
+            .stats
+            .physiology
+            .filter(|p| p.attack_speed > 0.)
+            .map_or(1., |p| {
+                p.attack_speed + f32::from(e.level.saturating_sub(1)) * p.attack_speed_growth
+            });
+        let interval = (if haste && twirl.is_none() { 10.0 } else { 17.0 })
+            / (speed + e.item_stats.attack_speed + twirl.map_or(0., |(b, r)| b.attack_speed[r]));
+        interval.ceil() as u64
+    }
     fn decision_interval(&self, entity: &Entity) -> u64 {
         if entity.bot && entity.kind == Kind::Hero {
             self.bot_difficulty
@@ -656,6 +694,8 @@ impl World {
             aral_units: rules.aral_units,
             solo_lane_rewards: rules.solo_lane_rewards,
             solo_inner_towers: rules.solo_inner_towers,
+            vision_devices: Vec::new(),
+            vision_charges: Default::default(),
             next_item: 40000,
             stats: rules.stats,
             seed,
@@ -761,19 +801,21 @@ impl World {
         self.entities.binary_search_by_key(&id, |e| e.id).ok()
     }
     pub fn sees_position(&self, team: u8, p: Position) -> bool {
-        self.entities.iter().any(|e| {
-            e.team == team
-                && e.hp > 0.
-                && e.position.dist(p) <= e.stats.sight()
-                && self.layout.clear(e.position, p)
-                && self
-                    .native_navigation
-                    .as_ref()
-                    .is_none_or(|map| map.can_see(e.position, p))
-        })
+        self.device_sight(team, p)
+            || self.entities.iter().any(|e| {
+                e.team == team
+                    && e.hp > 0.
+                    && e.position.dist(p) <= e.stats.sight()
+                    && self.layout.clear(e.position, p)
+                    && self
+                        .native_navigation
+                        .as_ref()
+                        .is_none_or(|map| map.can_see(e.position, p))
+            })
     }
     pub fn visible(&self, team: u8, e: &Entity) -> bool {
         e.team == team
+            || (e.hp > 0. && self.device_sight(team, e.position))
             || (e.hp > 0. && e.status.reveal_until > self.tick)
             || (e.hp > 0.
                 && self.entities.iter().any(|a| {
@@ -825,6 +867,11 @@ impl World {
             Command::Sell { instance } => {
                 return self.sell_item(self.entities[i].id, instance).map(|_| ());
             }
+            Command::DeployVisionTotem { instance, point } => {
+                return self.deploy_device(i, instance, Some(point));
+            }
+            Command::DeployScoutTrap { instance } => return self.deploy_device(i, instance, None),
+            Command::HitScoutCam { device } => return self.hit_device(i, device),
             Command::ConsumeInfusion { instance } => return self.consume_infusion(i, instance),
             Command::ActivateHealingFlask { instance } => {
                 return self.activate_healing_flask(self.entities[i].id, instance);
@@ -1029,6 +1076,7 @@ impl World {
         events: &mut Vec<Event>,
         mut diagnostics: Option<&mut BotDiagnostics>,
     ) {
+        self.advance_devices();
         self.nav_budget = 6;
         self.advance_effects(events);
         self.advance_chakrams(events);
@@ -1262,6 +1310,9 @@ impl World {
                 Command::Stop
                 | Command::Buy(_)
                 | Command::Sell { .. }
+                | Command::DeployVisionTotem { .. }
+                | Command::DeployScoutTrap { .. }
+                | Command::HitScoutCam { .. }
                 | Command::ConsumeInfusion { .. }
                 | Command::ActivateHealingFlask { .. }
                 | Command::ActivateSprintBoots { .. }
@@ -1400,20 +1451,9 @@ impl World {
                     let npc_launch = self.npc_launch_delay(e, t);
                     let ranged = e.kind == Kind::Hero && e.stats.range >= 4.;
                     let travel = (e.position.dist(t.position) * TICK_HZ as f32 / 18.).ceil() as u64;
-                    let speed =
-                        e.stats
-                            .physiology
-                            .filter(|p| p.attack_speed > 0.)
-                            .map_or(1., |p| {
-                                p.attack_speed
-                                    + f32::from(e.level.saturating_sub(1)) * p.attack_speed_growth
-                            });
-                    let interval = (if haste && twirl.is_none() { 10.0 } else { 17.0 })
-                        / (speed
-                            + e.item_stats.attack_speed
-                            + twirl.map_or(0., |(b, r)| b.attack_speed[r]));
+                    let interval = self.basic_attack_interval(e);
                     self.entities[i].winding = None;
-                    self.entities[i].next_attack = self.tick + interval.ceil() as u64;
+                    self.entities[i].next_attack = self.tick + interval;
                     self.entities[i].status.empowered =
                         self.entities[i].status.empowered.saturating_sub(1);
                     events.push(Event::Attack { source, target: id });

@@ -5,6 +5,40 @@ use halcyon_sim::{BasicItem, Event};
 /// The ARAL camera recorded other actors' transactions from either team.
 fn action(world: &World, event: &Event) -> Option<(u32, Batch)> {
     match *event {
+        Event::VisionDeployed { device, instance } => {
+            let point = [device.point.x.to_bits(), device.point.y.to_bits()];
+            let (request, mode, coordinates) = match device.kind {
+                halcyon_sim::VisionDeviceKind::ScoutCam => (
+                    ItemAction::VectorRequest {
+                        vector_bits: [point[0], 0, point[1]],
+                        argument: instance,
+                        suffix: &[],
+                    },
+                    1,
+                    point,
+                ),
+                halcyon_sim::VisionDeviceKind::ScoutTrap => (
+                    ItemAction::Activate {
+                        instance,
+                        suffix: &[],
+                    },
+                    2,
+                    [0, 0],
+                ),
+            };
+            let activation = ItemAction::Activation {
+                actor: u32::from(wire_id(device.owner)),
+                instance,
+                target_word: u32::MAX,
+                coordinate_bits: coordinates,
+                mode,
+                suffix: &[],
+            };
+            Some((
+                device.owner,
+                vec![request.to_message().ok()?, activation.to_message().ok()?],
+            ))
+        }
         Event::FlaskActivated { actor, instance } => {
             const FLASK_MODE: u8 = 2;
             let active = ItemAction::Activation {
@@ -77,18 +111,41 @@ pub(super) fn recordable(message: &Message) -> bool {
     use halcyon_protocol::{Fields, LiveFields};
     let hero = |actor: u32| (1500..1506).contains(&actor);
     match message.fields() {
-        Ok(Fields::Live(LiveFields::Item(ItemAction::Activate {
-            instance: 2000,
-            suffix,
-        }))) => suffix.iter().all(|&v| v == 0),
+        Ok(Fields::Live(LiveFields::Item(ItemAction::Activate { instance, suffix }))) => {
+            (instance == 2000 || instance >= 40000) && suffix.iter().all(|&v| v == 0)
+        }
         Ok(Fields::Live(LiveFields::Item(ItemAction::Activation {
             actor,
-            instance: 2000,
+            instance,
             target_word: u32::MAX,
             coordinate_bits: [0, 0],
             mode: 2,
             suffix,
-        }))) => hero(actor) && suffix.iter().all(|&v| v == 0),
+        }))) => {
+            hero(actor) && (instance == 2000 || instance >= 40000) && suffix.iter().all(|&v| v == 0)
+        }
+        Ok(Fields::Live(LiveFields::Item(ItemAction::VectorRequest {
+            vector_bits: [x, 0, z],
+            argument: 2001,
+            suffix,
+        }))) => {
+            f32::from_bits(x).is_finite()
+                && f32::from_bits(z).is_finite()
+                && suffix.iter().all(|&v| v == 0)
+        }
+        Ok(Fields::Live(LiveFields::Item(ItemAction::Activation {
+            actor,
+            instance: 2001,
+            target_word: u32::MAX,
+            coordinate_bits: [x, z],
+            mode: 1,
+            suffix,
+        }))) => {
+            hero(actor)
+                && f32::from_bits(x).is_finite()
+                && f32::from_bits(z).is_finite()
+                && suffix.iter().all(|&v| v == 0)
+        }
         Ok(Fields::Live(LiveFields::Item(ItemAction::Sell {
             actor,
             instance,
@@ -111,7 +168,8 @@ impl Room {
             };
             for (i, (seat, viewer)) in self.seats.iter().zip(&self.world.entities).enumerate() {
                 let team = viewer.team;
-                if viewer.id == id
+                if matches!(event, Event::VisionDeployed{device,..} if team!=device.team && !self.world.sees_position(team,device.point))
+                    || viewer.id == id
                     || !seat.world_actor_written
                     || !seat.preamble.confirmed()
                     || !self.scene_views[i].knows(id)
@@ -132,6 +190,42 @@ impl Room {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn authoritative_cam_and_trap_choose_distinct_witness_prefixes() {
+        use halcyon_sim::{Command, Position};
+        let mut world = World::new(9, 6);
+        world.use_six_human_roster().unwrap();
+        world.use_aral_lane().unwrap();
+        let trap = world.purchase(1, BasicItem::ScoutTrap).unwrap().granted;
+        let here = world.entities[0].position;
+        for (command, expected) in [
+            (
+                Command::DeployVisionTotem {
+                    instance: 2001,
+                    point: Position {
+                        x: here.x + 1.,
+                        ..here
+                    },
+                },
+                Opcode::RequestActivateItemVariantC,
+            ),
+            (
+                Command::DeployScoutTrap {
+                    instance: trap.instance,
+                },
+                Opcode::RequestActivateItem,
+            ),
+        ] {
+            world.command(1, command).unwrap();
+            let events = world.step();
+            let (owner, batch) = events.iter().find_map(|e| action(&world, e)).unwrap();
+            assert_eq!(owner, 1);
+            assert_eq!(batch[0].opcode, expected as u16);
+            assert_eq!(batch[1].opcode, Opcode::ItemActivated as u16);
+            assert!(batch.iter().all(recordable));
+        }
+    }
+
     #[test]
     fn replay_allows_only_supported_witness_payloads() {
         let world = World::new(4, 1);
