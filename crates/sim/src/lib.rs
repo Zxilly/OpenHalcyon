@@ -36,6 +36,7 @@ use layout::Layout;
 mod overwhelm;
 mod progression;
 mod pursuit;
+mod reboot;
 mod reflex;
 mod score;
 mod shop;
@@ -150,6 +151,18 @@ pub enum Event {
     VisionDeployed {
         device: VisionDevice,
         instance: u32,
+    },
+    RebootStarted {
+        actor: u32,
+        source: u32,
+        instance: u32,
+        cooldown_seconds: f32,
+    },
+    RebootRecovered {
+        actor: u32,
+        instance: u32,
+        cooldown_seconds: f32,
+        hp: f32,
     },
     Skedaddle {
         source: u32,
@@ -435,6 +448,8 @@ pub struct Entity {
     long_shot: Option<native_combat::LongShot>,
     #[serde(skip_serializing_if = "Option::is_none")]
     speed_loader: Option<std::num::NonZeroU8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reboot: Option<reboot::Phase>,
     pub id: u32,
     pub team: u8,
     pub kind: Kind,
@@ -758,6 +773,7 @@ impl Room<'_> {
         hero.mobile_bulwark_bonus = None;
         hero.long_shot = None;
         hero.speed_loader = None;
+        hero.reboot = None;
         hero.stats = Stats::load(id, unit, data);
         hero.energy = unit.energy;
         hero.max_energy = unit.energy;
@@ -844,6 +860,7 @@ impl Room<'_> {
             mobile_bulwark_bonus: None,
             long_shot: None,
             speed_loader: None,
+            reboot: None,
             id,
             team,
             kind,
@@ -926,6 +943,9 @@ impl Room<'_> {
         let e = &self.entities[i];
         if e.hp <= 0. {
             return Err("dead");
+        }
+        if e.is_rebooting() {
+            return Err("hero is rebooting");
         }
         if e.status.stun_until > self.tick
             && matches!(
@@ -1180,6 +1200,9 @@ impl Room<'_> {
             if e.kind == Kind::Hero {
                 shop::infusions::update(e, self.state.tick, &self.state.shop);
                 reflex::advance(e, self.state.tick, events);
+                if reboot::advance(e, self.state.tick, events) {
+                    continue;
+                }
             }
             e.lane_step = None;
             if e.kind == Kind::Armory {

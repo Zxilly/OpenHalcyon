@@ -2,7 +2,8 @@ use super::AbilitySlot;
 use halcyon_data::EntityTemplate;
 
 // The three columns correspond to native learn indices 0, 1 and 2.
-const MAPPINGS: [(EntityTemplate, [Option<u8>; 3]); 4] = [
+const MAPPINGS: [(EntityTemplate, [Option<u8>; 3]); 5] = [
+    (EntityTemplate::Alpha, [None, None, Some(2)]),
     (EntityTemplate::Hero009, [Some(0), Some(1), None]),
     (EntityTemplate::Yates, [Some(0), Some(2), Some(3)]),
     (EntityTemplate::Idris, [Some(0), Some(3), Some(4)]),

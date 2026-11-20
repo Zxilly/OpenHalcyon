@@ -53,7 +53,11 @@ impl Room<'_> {
             e.level += 1;
             e.skill_points += 1;
             let was_dead = e.hp <= 0.0;
+            let reboot_hp = e.is_rebooting().then_some(e.hp);
             e.apply_growth(1);
+            if let Some(hp) = reboot_hp {
+                e.hp = hp;
+            }
             if native && was_dead {
                 e.hp = 0.0;
             }
@@ -68,7 +72,7 @@ impl Room<'_> {
     }
     pub(super) fn heal(&mut self, src: u32, i: usize, n: f32, events: &mut Vec<Event>) {
         let e = &mut self.entities[i];
-        if e.hp <= 0. {
+        if e.hp <= 0. || e.is_rebooting() {
             return;
         }
         let was = e.hp;
@@ -203,6 +207,11 @@ impl Room<'_> {
             if t.kind == Kind::Neutral && team < 2 && t.order == Command::Stop {
                 t.order = Command::Attack(src);
             }
+            return;
+        }
+        if matches!(self.state.layout, Layout::Aral { .. })
+            && reboot::on_lethal(t, src, self.state.tick, &mut self.state.next_id, events)
+        {
             return;
         }
         let pos = t.position;
