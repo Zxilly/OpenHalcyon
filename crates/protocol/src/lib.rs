@@ -1220,6 +1220,16 @@ mod tests {
             }
         );
         synthetic.body.pop();
+        assert!(matches!(
+            synthetic.fields(),
+            Ok(Fields::AbilityCharges {
+                operand: u32::MAX,
+                mode: 0,
+                remaining: [],
+                ..
+            })
+        ));
+        synthetic.body.pop();
         assert!(!matches!(
             synthetic.fields(),
             Ok(Fields::AbilityCharges { .. })
