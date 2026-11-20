@@ -3,6 +3,8 @@ mod difficulty;
 mod entity_template;
 mod extra;
 mod item_bonuses;
+mod navmesh;
+pub use navmesh::{NavMesh, NavMeshError};
 mod skins;
 mod unit_rewards;
 pub use difficulty::BotDifficulty;

@@ -307,6 +307,24 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires the operator's local F002 navmesh"]
+    fn recorded_flank_centrelines_are_inside_imported_f002_ground() {
+        let directory = std::path::PathBuf::from(std::env::var_os("HALCYON_DATA_EXTRA").unwrap())
+            .join("maps/navmesh");
+        let file = std::fs::read(directory.join("F002__F002_navMesh.navmesh")).unwrap();
+        let mesh = halcyon_data::NavMesh::parse(&file).unwrap();
+        for side in [-1, 1] {
+            for index in 0..=LAST {
+                let position = point(index, 0, side);
+                assert!(
+                    mesh.height_at(position.x, position.y).is_some(),
+                    "{position:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn hero_can_select_either_flank_without_crossing_the_interior() {
         let mut w = World::new(8, 10);
         w.use_solo_mid_lane().unwrap();
