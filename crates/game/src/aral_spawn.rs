@@ -158,22 +158,7 @@ impl WaveSlots {
         if entity.kind != Kind::Minion {
             return structure(world, entity);
         }
-        let existing = self
-            .slots
-            .iter()
-            .position(|slot| slot.is_some_and(|old| old.id == entity.id));
-        let Some(index) = existing.or_else(|| self.slots.iter().position(Option::is_none)) else {
-            if !std::mem::replace(&mut self.reported_full, true) {
-                tracing::warn!("ARAL actor slots exhausted; deferring minion declaration");
-            }
-            return None;
-        };
-        let actor = self.slots[index].get_or_insert(WaveActor {
-            id: entity.id,
-            exposed: 0,
-        });
-        actor.exposed |= 1 << team;
-        let slot = (FIRST_WAVE_SLOT + index) as u8;
+        let slot = self.dynamic_slot(entity.id, team)?;
         let native_minion = EntityTemplate::from_raw(entity.type_id)
             .is_some_and(EntityTemplate::is_aral_lane_minion);
         if fresh_wave
@@ -192,6 +177,21 @@ impl WaveSlots {
         }
     }
 
+    pub(super) fn dynamic_slot(&mut self, id: u32, team: u8) -> Option<u8> {
+        let existing = self
+            .slots
+            .iter()
+            .position(|slot| slot.is_some_and(|old| old.id == id));
+        let Some(index) = existing.or_else(|| self.slots.iter().position(Option::is_none)) else {
+            if !std::mem::replace(&mut self.reported_full, true) {
+                tracing::warn!("ARAL actor slots exhausted; deferring minion declaration");
+            }
+            return None;
+        };
+        let actor = self.slots[index].get_or_insert(WaveActor { id, exposed: 0 });
+        actor.exposed |= 1 << team;
+        Some((FIRST_WAVE_SLOT + index) as u8)
+    }
     /// Reuse only after the delayed destroy for every team that saw the actor.
     pub fn destroy_sent(&mut self, id: u32, team: u8) {
         if let Some(slot) = self

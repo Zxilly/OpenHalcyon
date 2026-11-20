@@ -192,6 +192,17 @@ pub enum Event {
         instance: u32,
         attack_target: Option<u32>,
     },
+    MobileBulwarkStart {
+        source: u32,
+        anchor: u32,
+        position: Position,
+        heading: f32,
+    },
+    MobileBulwarkEnd {
+        source: u32,
+        anchor: u32,
+        position: Position,
+    },
     TwisterDash {
         source: u32,
         goal: Position,
@@ -1115,8 +1126,11 @@ impl Room<'_> {
                 / TICK_HZ as f32,
         );
         if pos != e.position {
-            if e.type_id == EntityTemplate::Reim.as_raw() {
-                e.status.reim_heading = Some((pos.y - e.position.y).atan2(pos.x - e.position.x));
+            if e.type_id == EntityTemplate::Reim.as_raw()
+                || (e.type_id == EntityTemplate::Lyra.as_raw()
+                    && e.mobile_bulwark_bonus == Some(5.0))
+            {
+                e.status.motion_heading = Some((pos.y - e.position.y).atan2(pos.x - e.position.x));
             }
             if e.kind == Kind::Minion {
                 let followed = match e.order {

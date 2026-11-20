@@ -1,6 +1,7 @@
 //! In-process room hosting with CE control and game TCP connections.
 mod actor_slots;
 mod admission;
+mod mobile_bulwark;
 mod tower_aggro;
 pub use admission::{AdmissionPolicy, PortRange, ResourceMetrics};
 mod aral;

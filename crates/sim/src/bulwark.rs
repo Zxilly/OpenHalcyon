@@ -17,6 +17,8 @@ pub(super) struct Rules {
 pub(super) struct Field {
     origin: Position,
     mobile: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    anchor: Option<MobileAnchor>,
     source: u32,
     team: u8,
     end: u64,
@@ -28,6 +30,13 @@ pub(super) struct Field {
     immunity: u64,
     targets: BTreeMap<u32, Contact>,
 }
+#[derive(Clone, Copy, Debug, Serialize)]
+struct MobileAnchor {
+    id: u32,
+    start: u64,
+    heading: f32,
+}
+const ANCHOR_DELAY: u64 = 5;
 #[derive(Default, Clone, Debug, Serialize)]
 struct Contact {
     inside: bool,
@@ -105,7 +114,7 @@ impl Field {
 }
 impl crate::persistent_spells::TimedSpell for Field {
     fn expired_before_step(&self, tick: u64) -> bool {
-        tick >= self.end
+        self.anchor.is_none() && tick >= self.end
     }
     fn begin_impact(&mut self) -> Self {
         // Geometry remains visible to leap queries. Contact history is private to
@@ -120,7 +129,22 @@ impl crate::persistent_spells::TimedSpell for Field {
         let Some(i) = w.index(self.source) else {
             return false;
         };
-        if w.entities[i].hp <= 0. {
+        let visual_end = self.end
+            + if self.anchor.is_some() {
+                ANCHOR_DELAY
+            } else {
+                0
+            };
+        if w.entities[i].hp <= 0. || w.tick >= visual_end {
+            if let Some(anchor) = self.anchor
+                && w.tick > anchor.start
+            {
+                events.push(Event::MobileBulwarkEnd {
+                    source: self.source,
+                    anchor: anchor.id,
+                    position: w.entities[i].position,
+                });
+            }
             return false;
         }
         let center = if self.mobile {
@@ -128,7 +152,19 @@ impl crate::persistent_spells::TimedSpell for Field {
         } else {
             self.origin
         };
-        self.sample(w, center, events);
+        if let Some(anchor) = self.anchor
+            && w.tick == anchor.start
+        {
+            events.push(Event::MobileBulwarkStart {
+                source: self.source,
+                anchor: anchor.id,
+                position: center,
+                heading: anchor.heading,
+            });
+        }
+        if w.tick < self.end {
+            self.sample(w, center, events);
+        }
         true
     }
 }
@@ -150,6 +186,7 @@ impl Room<'_> {
         let mut field = Field {
             origin: pos,
             mobile: e.mobile_bulwark_bonus.is_some(),
+            anchor: None,
             source: e.id,
             team: e.team,
             end: self.tick + ticks(a.duration[r] + e.mobile_bulwark_bonus.unwrap_or(0.)),
@@ -161,6 +198,20 @@ impl Room<'_> {
             immunity: ticks(a.immunity[r]),
             targets: BTreeMap::new(),
         };
+        if matches!(self.layout, Layout::Aral { .. })
+            && a.duration[r] == 3.0
+            && a.radius[r] == 5.5
+            && e.mobile_bulwark_bonus == Some(5.0)
+            && let Some(heading) = e.status.motion_heading
+        {
+            let id = self.next_id;
+            self.next_id += 4;
+            field.anchor = Some(MobileAnchor {
+                id,
+                start: self.tick + ANCHOR_DELAY,
+                heading,
+            });
+        }
         field.sample(self, pos, events);
         self.entities.spawn_spell(field);
     }
@@ -189,6 +240,52 @@ impl Room<'_> {
 mod tests {
     use super::*;
     use std::path::Path;
+    #[test]
+    #[ignore = "requires original delivery and supplemental combat data"]
+    fn only_level_ten_mobile_field_announces_one_timed_anchor() {
+        let data = GameData::load_with_extra(
+            std::env::var_os("HALCYON_DELIVERY").unwrap(),
+            Some(Path::new(&std::env::var_os("HALCYON_DATA_EXTRA").unwrap())),
+        )
+        .unwrap();
+        let mut w = World::from_data(42, 6, &data).unwrap();
+        w.use_six_human_roster().unwrap();
+        w.select_hero(0, "Lyra", &data).unwrap();
+        w.use_aral_lane().unwrap();
+        let mut events = vec![];
+        w.entities[0].status.motion_heading = Some(0.3);
+        w.create_bulwark(0, 0, &mut events);
+        w.entities[0].mobile_bulwark_bonus = Some(5.0);
+        w.create_bulwark(0, 0, &mut events);
+        let mut opening = None;
+        let mut ending = None;
+        for t in 1..=170 {
+            w.tick = t;
+            w.advance_spell_family::<Field>(&mut events);
+            for ev in events.drain(..) {
+                match ev {
+                    Event::MobileBulwarkStart {
+                        source: 1,
+                        anchor,
+                        heading,
+                        ..
+                    } => {
+                        assert_eq!(heading, 0.3);
+                        assert!(opening.replace((anchor, t)).is_none());
+                    }
+                    Event::MobileBulwarkEnd {
+                        source: 1, anchor, ..
+                    } => {
+                        assert!(ending.replace((anchor, t)).is_none());
+                    }
+                    _ => {}
+                }
+            }
+        }
+        let (id, start) = opening.unwrap();
+        assert_eq!(start, 5);
+        assert_eq!(ending, Some((id, start + 160)));
+    }
     #[test]
     #[ignore = "requires original delivery and supplemental combat data"]
     fn start_boundary_immunity_fixed_center_and_leap_gate_share_three_second_clock() {

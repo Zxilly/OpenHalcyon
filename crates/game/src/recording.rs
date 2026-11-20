@@ -101,6 +101,9 @@ impl Recorder {
     }
 }
 fn sanitize(m: &mut Message) -> bool {
+    if super::mobile_bulwark::recordable(m) {
+        return true;
+    }
     match m.known_opcode() {
         Some(crate::Opcode::ActorUndead) if matches!(m.body.as_slice(), [0, 0, 5, 220..=225]) => {}
         Some(crate::Opcode::EntityProp)

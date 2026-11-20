@@ -308,6 +308,12 @@ pub(super) fn publish_before_impacts(room: &mut Room, events: &[Event]) {
         return;
     }
     for event in events {
+        if matches!(
+            event,
+            Event::MobileBulwarkStart { .. } | Event::MobileBulwarkEnd { .. }
+        ) {
+            super::mobile_bulwark::publish(room, event);
+        }
         if let Event::TwisterDash {
             source,
             goal,

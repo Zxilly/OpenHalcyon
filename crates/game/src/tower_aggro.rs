@@ -31,6 +31,15 @@ impl View {
     pub fn slot(&self, id: u32) -> Option<u8> {
         self.actors.get(&id).copied()
     }
+    pub(super) fn release_effect(&mut self, id: u32) -> bool {
+        if let Some(slot) = self.actors.remove(&id) {
+            self.slots.remove(&slot);
+            self.spawn_visibility.remove(&slot);
+            true
+        } else {
+            false
+        }
+    }
     pub fn knows(&self, actor: u32) -> bool {
         self.actors.contains_key(&actor)
     }

@@ -142,7 +142,8 @@ pub(super) struct Status {
     pub(super) root_until: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) skedaddle: Option<super::skedaddle::Active>,
-    pub(super) reim_heading: Option<f32>,
+    #[serde(rename = "reim_heading")]
+    pub(super) motion_heading: Option<f32>,
     pub(super) water_speed_until: u64,
     pub(super) water_speed_bonus: Option<f32>,
     pub(super) water_slow_until: u64,
@@ -824,7 +825,7 @@ impl Room<'_> {
                 events.push(Event::ChillWinds {
                     source: src,
                     position: origin,
-                    heading: self.entities[i].status.reim_heading,
+                    heading: self.entities[i].status.motion_heading,
                 });
                 let pierce = self.entities[i].item_stats.shield_pierce;
                 for j in 0..self.entities.len() {

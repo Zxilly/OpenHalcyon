@@ -11,7 +11,7 @@ Every orbit start had zero words at +4 and +8. For all 17 Bulwarks, the X/Z word
 
 Lyra's authoritative simulation models Imperial Sigil and Bright Bulwark. The recorded orbit uses a separate Bulwark actor. Idris himself orbits a target here; his modeled Chakram has a separate projectile trajectory. Three of the eight Idris starts followed an Idris targeted release with selector 4 within 260 ms. The data do not supply a general start/cancel rule for a currently hosted spell.
 
-For bounce, the first word names the affected actor. The 25 records affected 8 Reim, 4 Ylva, 3 Ringo, 3 ranged minions, 2 lead minions, 2 tank minions, 1 Inara, 1 Lance and 1 Amael. The float at +4 was 10 in 23 records and 6 in two. The third word varied, the fourth was always 1 and all six padding bytes were zero. In 24 of 25 cases `0x0403` for that same actor preceded the bounce within 122 ms and 60 records. In 15 cases an Amael-origin application of definition 62 to that actor also fell in the window. The displacement frame carries no source actor. A nearby release alone cannot assign every bounce to one skill. The host preserves these three actions as read-only.
+For bounce, the first word names the affected actor. The 25 records affected 8 Reim, 4 Ylva, 3 Ringo, 3 ranged minions, 2 lead minions, 2 tank minions, 1 Inara, 1 Lance and 1 Amael. The float at +4 was 10 in 23 records and 6 in two. The third word varied, the fourth was always 1 and all six padding bytes were zero. In 24 of 25 cases `0x0403` for that same actor preceded the bounce within 122 ms and 60 records. In 15 cases an Amael-origin application of definition 62 to that actor also fell in the window. The displacement frame carries no source actor. A nearby release alone cannot assign every bounce to one skill. The bounce attribution remains open. The Mobile Bulwark orbit projection is described below.
 
 ## Actor-anchored zones
 
@@ -28,4 +28,24 @@ For the zone angle at `0421` +20, compare the shortest angular difference to `at
 
 The separate named Mobile Bulwark talent explicitly causes the field to move with Lyra and adds 1.4 seconds at level one plus 0.4 per subsequent level. Level ten therefore yields exactly eight seconds including the ordinary three seconds. That agrees with the recordings. Lyra's sole 0481 equipped selector 1 at level ten. Together with the hero-specific movement and duration, this supports that one selector/level combination. The host enables the named talent when the home grants that level. Other selector/level combinations retain their numeric meaning. The untalented field stays at its cast location.
 
-All 17 0415 records were observed by an opposing Lorelai, with Lyra as source, a no-target word of ffffffff, selector 2 and five zero framing bytes. The host sends that release to a visible opponent whose current scene knows Lyra, and to a live full observer after Lyra's declaration. Live synthesis of the actor orbit and zone sequence and the originating native command remain open.
+All 17 0415 records were observed by an opposing Lorelai, with Lyra as source, a no-target word of ffffffff, selector 2 and five zero framing bytes. The host sends that release to a visible opponent whose current scene knows Lyra, and to a live full observer after Lyra's declaration. The originating native command remains open. The level-ten Mobile Bulwark orbit and zone sequence is described below.
+
+## Hosted Mobile Bulwark
+
+For all 17 level-ten mobile fields, the facing vector in the child actor's
+03F2 at +24/+32 gives the subsequent 0421 angle directly via atan2(Z,X).
+The child's +112 owner is Lyra. Its skin word, fixed height, movement
+profile and both initial effect definitions (66, 709) agree throughout.
+All 17 matching ends send 0407, 0423 and 040B for the same anchor/zone at
+the same timestamp. The host reserves a room-unique actor and zone, shares
+the dynamic slot allocator with minions and derives the orientation from
+its own caster movement. A known heading and authorized level-ten mobile
+talent are required. Its five-tick presentation delay falls inside the
+observed 0.193–0.367 seconds. The combat field retains its own timer.
+
+Opening batches go to visible opposing witnesses with an existing Lyra
+declaration and to authorized observers. A recipient that missed the
+opening gets no terminal reference. A witness that loses sight receives
+zone and actor cleanup without an endpoint revealing Lyra's position.
+Normal expiration follows the caster's current authoritative position.
+Early cleanup on caster death follows the hosted field lifetime.
