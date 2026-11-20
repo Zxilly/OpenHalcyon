@@ -90,6 +90,15 @@ impl StoreSettings {
 
 #[derive(Clone, Copy)]
 pub enum ItemTuning {
+    Ratio,
+    ProcTime,
+    Damage,
+    BonusWeaponRatio,
+    Vamp,
+    OmniVamp,
+    HealRanged,
+    HealMelee,
+
     WeaponMin,
     WeaponMax,
     AttackSpeedMin,
@@ -117,6 +126,14 @@ pub enum ItemTuning {
 impl ItemTuning {
     pub const fn key(self) -> &'static str {
         match self {
+            Self::Ratio => "RATIO",
+            Self::ProcTime => "TIME",
+            Self::Damage => "DAMAGE",
+            Self::BonusWeaponRatio => "BONUS_WEAPON_RATIO",
+            Self::Vamp => "VAMP",
+            Self::OmniVamp => "OMNI_VAMP",
+            Self::HealRanged => "HEAL_RANGED",
+            Self::HealMelee => "HEAL_MELEE",
             Self::WeaponMin => "WEAPON_MIN",
             Self::WeaponMax => "WEAPON_MAX",
             Self::AttackSpeedMin => "ATTACKSPEED_MIN",

@@ -1428,6 +1428,7 @@ impl World {
                         } else {
                             0.
                         };
+                    let item_attack = e.kind == Kind::Hero && e.item_stats.has_attack_passives();
                     let npc_launch = self.npc_launch_delay(e, t);
                     let ranged = e.kind == Kind::Hero && e.stats.range >= 4.;
                     let travel = (e.position.dist(t.position) * TICK_HZ as f32 / 18.).ceil() as u64;
@@ -1469,7 +1470,12 @@ impl World {
                             damage,
                         ));
                     } else if ranged {
-                        self.effects.push(SpellEffect::impact(
+                        let impact = if item_attack {
+                            SpellEffect::basic_impact
+                        } else {
+                            SpellEffect::impact
+                        };
+                        self.effects.push(impact(
                             self.tick + travel,
                             source,
                             team,
@@ -1477,6 +1483,8 @@ impl World {
                             damage,
                             school,
                         ));
+                    } else if item_attack {
+                        self.basic_hit(source, team, j, damage, school, events);
                     } else {
                         self.hurt(source, team, j, damage, school, events);
                     }

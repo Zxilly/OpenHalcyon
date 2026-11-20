@@ -50,6 +50,7 @@ impl Rule {
             .map(|[lo, hi]| (lo + fraction * (hi - lo)) * sign);
         if kind == WeaponInfusion {
             hero.stats.weapon += power;
+            hero.item_stats.bonus_weapon += power;
             hero.item_stats.attack_speed += speed;
         } else {
             hero.item_stats.crystal += power;

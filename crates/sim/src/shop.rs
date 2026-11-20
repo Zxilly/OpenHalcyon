@@ -1,3 +1,5 @@
+#[path = "attack_items.rs"]
+pub(super) mod attack_items;
 #[path = "infusions.rs"]
 pub(super) mod infusions;
 #[path = "item_modifiers.rs"]
@@ -778,6 +780,7 @@ struct Offer {
 }
 #[derive(Serialize)]
 pub(super) struct Shop {
+    attacks: attack_items::Rules,
     infusions: [Option<infusions::Rule>; 2],
     flask: Option<FlaskRule>,
     sprint: Option<SprintRule>,
@@ -786,6 +789,7 @@ pub(super) struct Shop {
 impl Default for Shop {
     fn default() -> Self {
         Self {
+            attacks: attack_items::Rules::default(),
             infusions: infusions::Rule::DEFAULTS,
             flask: Some(FlaskRule::ARAL_STARTER),
             sprint: None,
@@ -909,6 +913,7 @@ impl Shop {
     }
     pub fn load(data: &GameData) -> Result<Self, String> {
         let mut shop = Self {
+            attacks: attack_items::Rules::load(data.item_catalog()),
             infusions: data
                 .item_catalog()
                 .map_or(infusions::Rule::DEFAULTS, |catalog| {
@@ -1177,6 +1182,7 @@ impl World {
         apply_item_delta(h, delta);
         h.gold -= price as u32;
         h.inventory.push(granted);
+        attack_items::refresh(h, &self.shop);
         h.item_stats.boot_speed = self.shop.boot_speed(&h.inventory);
         Ok(Some(Purchase {
             actor: h.id,
@@ -1194,11 +1200,11 @@ fn apply_item_delta(h: &mut Entity, delta: EffectDelta) {
     h.max_energy += delta.energy;
     h.energy = (h.energy + delta.energy).clamp(0., h.max_energy);
     h.item_stats.energy_regen += delta.energy_regen;
+    h.item_stats.bonus_weapon += delta.weapon_power;
     h.stats.weapon += delta.weapon_power;
     h.item_stats.crystal += delta.crystal_power;
     h.stats.armor += delta.armor;
     h.stats.shield += delta.shield;
-    h.item_stats.armor_pierce += delta.armor_pierce;
     h.item_stats.shield_pierce += delta.shield_pierce;
     h.item_stats.move_speed_amp += delta.move_speed_amplifier;
     h.item_stats.attack_speed += delta.attack_speed;
@@ -1316,6 +1322,7 @@ impl World {
             slots.remove_held(sold)?;
         }
         h.inventory.remove(offset);
+        attack_items::refresh(h, &self.shop);
         h.item_stats.boot_speed = self.shop.boot_speed(&h.inventory);
         h.gold = balance;
         apply_item_delta(h, delta);
@@ -1331,6 +1338,8 @@ impl World {
 }
 #[derive(Clone, Copy, Default, Debug, Serialize)]
 pub struct ItemStats {
+    attack_passives: attack_items::Equipped,
+    bonus_weapon: f32,
     infusion: Option<infusions::Active>,
     flask_ready: u64,
     pub(super) boot_speed: f32,
@@ -1554,6 +1563,7 @@ mod tests {
             .unwrap()
             .push(serde_json::from_str(r#"{"stat_id":18,"value":123.0}"#).unwrap());
         let shop = Shop::load(&data).unwrap();
+        assert_eq!(shop.attacks, attack_items::Rules::default());
         let catalog = data.item_catalog().unwrap();
         assert_eq!((catalog.items().len(), catalog.stores().len()), (93, 5));
         assert_eq!(

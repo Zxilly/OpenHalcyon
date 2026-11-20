@@ -27,7 +27,7 @@ The project simulation can sell an owned, equipped instance at base while the he
 
 The additional 17 ordinary templates comprise Aegis, Capacitor Plate, Dragonblood Contract, Protector Contract, Rook’s Decree, Shiversteel, Tension Bow and Tornado Trigger in both standard stores and Blitz Revamp. Both infusions appear in the two standard stores. Flare and Scout Trap appear only in Standard 3v3. Flare Loader, Scout Pak, Scout Tuff, SuperScout 2000 and Teleport Boots appear only in Standard 5v5. Shiversteel also appears in Tutorial 2. The original ARAL transactions independently establish Capacitor Plate, both infusions, Flare and Scout Trap.
 
-Purchase and resale cover the economy of consumables. Vision deployment, Tension Bow's conditional proc and most equipment-specific activated abilities remain catalog-only. The full catalog exposes the original tuning for these effects. The four captured ARAL sale broadcasts include Scout Trap's modifier-free removal and 25-gold refund.
+Purchase and resale cover the economy of consumables. Vision deployment and most equipment-specific activated abilities remain catalog-only. The full catalog exposes the original tuning for these effects. The four captured ARAL sale broadcasts include Scout Trap's modifier-free removal and 25-gold refund.
 
 ## Infusions
 
@@ -43,12 +43,12 @@ The middle column lists the static catalog attributes. The right column describe
 | --- | --- | --- |
 | Aegis | HEALTH, ARMOR, SHIELD | No separate handler |
 | Aftershock | CRYSTAL_POWER, ENERGY_REGEN, COOLDOWN_SPEED | Catalog only |
-| Alternating Current | CRYSTAL_POWER, ATTACK_SPEED_DISPLAY | Catalog only |
+| Alternating Current | CRYSTAL_POWER, ATTACK_SPEED_DISPLAY | Every second landed basic attack adds 50% crystal power as crystal damage |
 | Atlas Pauldron | ARMOR | Catalog only |
-| Barbed Needle | WEAPON_POWER | Catalog only |
+| Barbed Needle | WEAPON_POWER | 10% Vampirism and the Book of Eulogies basic-hit kill heal |
 | Blazing Salvo | ATTACK_SPEED_DISPLAY | No separate handler |
 | Bonesaw | WEAPON_POWER, ATTACK_SPEED_DISPLAY | Armor pierce; stacking attack passive is catalog-only |
-| Book of Eulogies | WEAPON_POWER | Catalog only |
+| Book of Eulogies | WEAPON_POWER | 5% Vampirism on basic weapon HP loss; basic-hit minion/monster kills restore 10 HP for ranged heroes or 30 for melee |
 | Breaking Point | WEAPON_POWER, ATTACK_SPEED_DISPLAY | Catalog only |
 | Broken Myth | CRYSTAL_POWER | Shield pierce |
 | Capacitor Plate | HEALTH, ARMOR, SHIELD, COOLDOWN_SPEED | Catalog only |
@@ -94,7 +94,7 @@ The middle column lists the static catalog attributes. The right column describe
 | Scout Trap | — | Catalog only |
 | ScoutPak | COOLDOWN_SPEED, ENERGY_REGEN | Catalog only |
 | ScoutTuff | HEALTH | Catalog only |
-| Serpent Mask | WEAPON_POWER | Catalog only |
+| Serpent Mask | WEAPON_POWER | 15% base Vampirism and Book of Eulogies basic-hit kill heal; rechargeable hero damage pool remains catalog-only |
 | Shatterglass | CRYSTAL_POWER | No separate handler |
 | Shiversteel | HEALTH, ATTACK_SPEED_DISPLAY | Catalog only |
 | Six Sins | WEAPON_POWER | No separate handler |
@@ -108,7 +108,7 @@ The middle column lists the static catalog attributes. The right column describe
 | SuperScout 2000 | HEALTH, ENERGY_REGEN, COOLDOWN_SPEED | Catalog only |
 | Swift Shooter | ATTACK_SPEED_DISPLAY | No separate handler |
 | Teleport Boots  | HEALTH, SHIELD, ARMOR | Nonstacking boot speed; boot-specific active is catalog-only |
-| Tension Bow | WEAPON_POWER | Catalog only |
+| Tension Bow | WEAPON_POWER | Every six seconds a landed basic attack adds 100 + bonus weapon power as weapon damage; strongest Armorbreaker wins |
 | Tornado Trigger | ATTACK_SPEED_DISPLAY, CRIT_CHANCE, CRIT_DAMAGE | Catalog only |
 | Travel Boots | HEALTH | Nonstacking boot speed; boot-specific active is catalog-only |
 | Tyrant's Monocle | WEAPON_POWER, CRIT_CHANCE, CRIT_DAMAGE | No separate handler |
@@ -117,6 +117,8 @@ The middle column lists the static catalog attributes. The right column describe
 | Warmail | ARMOR, SHIELD | Catalog only |
 | Weapon Blade | WEAPON_POWER | No separate handler |
 | Weapon Infusion | — | Owned-instance consumption; timed weapon power, attack speed, armor and shield |
+
+Tension Bow, Alternating Current and Vampirism use actual hero basic impacts against heroes, lane minions and neutral monsters. Human and bot attacks use the same path. For ranged attacks the victim must still be alive on impact. Host policy counts every second landed hit from first equipping Alternating Current and preserves Tension Bow's cooldown across resale. Bonus hits use their own defense school and do not receive a second critical roll. Vampirism uses the strongest supported rate on actual weapon HP loss, excluding absorbed damage and overkill. The separate Book heal fires once per qualifying basic-hit kill. Building interactions, spell vamp, and Serpent Mask's rechargeable pool remain outside this implementation.
 
 ## Boots
 

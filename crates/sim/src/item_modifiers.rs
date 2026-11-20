@@ -109,7 +109,6 @@ pub(super) struct EffectDelta {
     pub(super) crystal_power: f32,
     pub(super) armor: f32,
     pub(super) shield: f32,
-    pub(super) armor_pierce: f32,
     pub(super) shield_pierce: f32,
     pub(super) attack_speed: f32,
     pub(super) move_speed_amplifier: f32,
@@ -127,7 +126,7 @@ impl EffectDelta {
             NativeItemStat::CrystalPower => self.crystal_power += value,
             NativeItemStat::Armor => self.armor += value,
             NativeItemStat::Shield => self.shield += value,
-            NativeItemStat::ArmorPierce => self.armor_pierce += value,
+            NativeItemStat::ArmorPierce => {} // Recomputed from the strongest held Armorbreaker.
             NativeItemStat::ShieldPierce => self.shield_pierce += value,
             NativeItemStat::AttackSpeed => self.attack_speed += value,
             NativeItemStat::MoveSpeedAmplifier => self.move_speed_amplifier += value,

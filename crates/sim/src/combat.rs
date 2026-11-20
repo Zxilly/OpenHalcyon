@@ -952,6 +952,7 @@ impl World {
 }
 #[derive(Clone, Copy, Debug, Serialize)]
 enum Area {
+    BasicTarget(u32, DamageSchool),
     Target(u32, DamageSchool),
     NpcWindup(u32),
     Hellfire(u32, f32, bool),
@@ -987,6 +988,19 @@ impl SpellEffect {
             heal: 0.,
             channel: 0,
         }
+    }
+
+    pub fn basic_impact(
+        due: u64,
+        src: u32,
+        team: u8,
+        id: u32,
+        damage: f32,
+        school: DamageSchool,
+    ) -> Self {
+        let mut result = Self::impact(due, src, team, id, damage, school);
+        result.area = Area::BasicTarget(id, school);
+        result
     }
 
     pub fn impact(
@@ -1045,7 +1059,10 @@ impl World {
         let incoming: f32 = self
             .effects
             .iter()
-            .filter(|v| v.due <= at && matches!(v.area,Area::Target(id, _) if id==e.id))
+            .filter(|v| {
+                v.due <= at
+                    && matches!(v.area,Area::Target(id, _) | Area::BasicTarget(id,_) if id==e.id)
+            })
             .map(|v| v.damage)
             .sum();
         (e.hp - incoming).max(0.)
@@ -1115,6 +1132,12 @@ impl World {
                 });
                 return true;
             }
+            if let Area::BasicTarget(id, school) = v.area {
+                if let Some(i) = self.index(id) {
+                    self.basic_hit(v.src, v.team, i, v.damage, school, events);
+                }
+                return false;
+            }
             if let Area::Target(id, school) = v.area {
                 if let Some(i) = self.index(id) {
                     self.hurt(v.src, v.team, i, v.damage, school, events)
@@ -1147,7 +1170,10 @@ impl World {
                         line_distance(e.position, from, to) <= 1.4
                     }
                     Area::Line(a, b, r) => line_distance(e.position, a, b) <= r,
-                    Area::Target(..) | Area::NpcWindup(_) | Area::Hellfire(..) => unreachable!(),
+                    Area::BasicTarget(..)
+                    | Area::Target(..)
+                    | Area::NpcWindup(_)
+                    | Area::Hellfire(..) => unreachable!(),
                 };
                 if !hit {
                     continue;
