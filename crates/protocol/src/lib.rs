@@ -54,6 +54,7 @@ mod live;
 pub use live::LiveFields;
 mod mutations;
 mod native_motion;
+pub use native_motion::{ForcedMove, ForcedMoveMode};
 mod projectile;
 pub use mutations::{AttributeChange, ResourceChange};
 pub use projectile::{ProjectileAction, ProjectileFire};

@@ -279,28 +279,25 @@ fn deliver_registered(
 }
 
 fn twister_message(source: u32, goal: Position, speed: f32) -> Message {
-    let mut body = Vec::with_capacity(21);
-    body.extend(u32::from(wire_id(source)).to_be_bytes());
-    for v in [speed, goal.x, f32::from_bits(0x3d192e1f), goal.y] {
-        body.extend(v.to_be_bytes());
+    halcyon_protocol::ForcedMove {
+        actor: u32::from(wire_id(source)),
+        speed,
+        destination: [goal.x, f32::from_bits(0x3d192e1f), goal.y],
+        mode: halcyon_protocol::ForcedMoveMode::Dash,
     }
-    body.push(0);
-    Message::known(crate::Opcode::AutoMoveTo, body)
+    .message()
 }
 
 pub(super) fn recordable_twister(m: &Message) -> bool {
-    let b = &m.body;
-    if !m.is(crate::Opcode::AutoMoveTo) || !matches!(b.len(), 21 | 22) {
-        return false;
-    }
-    let word = |k| u32::from_be_bytes(b[k..k + 4].try_into().unwrap());
-    (1500..1506).contains(&word(0))
-        && f32::from_bits(word(4)) > 0.
-        && [4, 8, 16]
-            .iter()
-            .all(|k| f32::from_bits(word(*k)).is_finite())
-        && word(12) == 0x3d192e1f
-        && b[20..].iter().all(|b| *b == 0)
+    m.forced_move().is_some_and(|motion| {
+        (1500..1506).contains(&motion.actor)
+            && motion.mode == halcyon_protocol::ForcedMoveMode::Dash
+            && motion.speed.is_finite()
+            && motion.speed > 0.
+            && motion.destination.iter().all(|v| v.is_finite())
+            && motion.destination[1].to_bits() == 0x3d192e1f
+            && m.body[21..].iter().all(|&b| b == 0)
+    })
 }
 
 pub(super) fn publish_before_impacts(room: &mut Room, events: &[Event]) {
