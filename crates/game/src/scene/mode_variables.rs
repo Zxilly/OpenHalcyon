@@ -48,27 +48,23 @@ impl Opening {
             Self::Aral => 5,
         };
         KEYS.into_iter().map(move |key| {
-            let mut body = [0; 14];
-            body[..4].copy_from_slice(&key.to_be_bytes());
-            if key == MODE_KEY {
-                body[4..8].copy_from_slice(&mode_word.to_be_bytes());
+            halcyon_protocol::ModifyGameModeVarBody {
+                key,
+                value: if key == MODE_KEY { mode_word } else { 0 },
             }
-            Message::known(crate::Opcode::ModifyGameModeVar, body)
+            .encode_padded()
         })
     }
 }
 
 pub(crate) fn recordable(body: &[u8]) -> bool {
-    let Ok(bytes) = <&[u8; 14]>::try_from(body) else {
+    let Ok(packet) = halcyon_protocol::ModifyGameModeVarBody::read_padded_zero(body) else {
         return false;
     };
-    let key = u32::from_be_bytes(bytes[..4].try_into().unwrap());
-    let value = u32::from_be_bytes(bytes[4..8].try_into().unwrap());
-    bytes[8..] == [0; 6]
-        && KEYS.contains(&key)
-        && if key == MODE_KEY {
-            matches!(value, 1 | 5)
+    KEYS.contains(&packet.key)
+        && if packet.key == MODE_KEY {
+            matches!(packet.value, 1 | 5)
         } else {
-            value == 0
+            packet.value == 0
         }
 }

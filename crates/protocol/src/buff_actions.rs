@@ -1,9 +1,17 @@
-use super::{Message, invalid};
-use std::io;
+use super::{Message, Opcode, fixed_body, invalid};
+use binrw::{BinRead, BinWrite};
+use std::io::{self, Cursor};
+
+const COMPACT_PREFIX_LEN: usize = 16;
+const EXTENDED_PREFIX_LEN: usize = 34;
+const MUTATION_DURATION_PREFIX_LEN: usize = 12;
+const MUTATION_TERMINAL_PREFIX_LEN: usize = 8;
+const STACK_PREFIX_LEN: usize = 12;
 
 /// Native ActionApplyBuff prefix. Actor references and the definition index
 /// are scoped to the recording/build; the duration retains its binary16 bits.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, BinRead, BinWrite)]
+#[brw(big)]
 pub struct BuffPrefix {
     pub target: u32,
     pub source: u32,
@@ -39,12 +47,20 @@ impl BuffPrefix {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, BinRead, BinWrite)]
+#[brw(big)]
 pub struct BuffExtras {
     pub stacks: u16,
     /// Two formatter float operands and two further words. Their gameplay
     /// meanings are unresolved; preserve all four original bit patterns.
     pub words: [u32; 4],
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, BinRead, BinWrite)]
+#[brw(big)]
+struct BuffExtendedWire {
+    prefix: BuffPrefix,
+    extras: BuffExtras,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -57,52 +73,47 @@ pub struct BuffApplication<'a> {
 
 impl<'a> BuffApplication<'a> {
     pub(super) fn decode(opcode: u16, body: &'a [u8]) -> Option<Self> {
-        let size = match (opcode, body.len()) {
-            (crate::wire_opcode::ApplyBuffCompact, 16 | 22) => 16,
-            (crate::wire_opcode::ApplyBuffExtended, 34 | 38) => 34,
-            _ => return None,
-        };
-        let word = |i: usize| u32::from_be_bytes(body[i..i + 4].try_into().unwrap());
-        let half = |i: usize| u16::from_be_bytes(body[i..i + 2].try_into().unwrap());
-        Some(Self {
-            prefix: BuffPrefix {
-                target: word(0),
-                source: word(4),
-                duration_bits: half(8),
-                instance: word(10),
-                definition: half(14),
-            },
-            extras: (size == 34).then(|| BuffExtras {
-                stacks: half(16),
-                words: std::array::from_fn(|i| word(18 + 4 * i)),
-            }),
-            suffix: &body[size..],
-        })
+        let mut cursor = Cursor::new(body);
+        match (Opcode::try_from(opcode).ok()?, body.len()) {
+            (Opcode::ApplyBuffCompact, COMPACT_PREFIX_LEN | 22) => {
+                let prefix = BuffPrefix::read_be(&mut cursor).ok()?;
+                Some(Self {
+                    prefix,
+                    extras: None,
+                    suffix: &body[COMPACT_PREFIX_LEN..],
+                })
+            }
+            (Opcode::ApplyBuffExtended, EXTENDED_PREFIX_LEN | 38) => {
+                let wire = BuffExtendedWire::read_be(&mut cursor).ok()?;
+                Some(Self {
+                    prefix: wire.prefix,
+                    extras: Some(wire.extras),
+                    suffix: &body[EXTENDED_PREFIX_LEN..],
+                })
+            }
+            _ => None,
+        }
     }
 
     pub fn to_message(self) -> io::Result<Message> {
-        let (op, size, extended) = if self.extras.is_some() {
-            (crate::wire_opcode::ApplyBuffExtended, 34, 4)
-        } else {
-            (crate::wire_opcode::ApplyBuffCompact, 16, 6)
-        };
-        if !self.suffix.is_empty() && self.suffix.len() != extended {
-            return Err(invalid("unsupported buff application suffix length"));
+        match self.extras {
+            Some(extras) => fixed_body::message_with_padding(
+                Opcode::ApplyBuffExtended,
+                &BuffExtendedWire {
+                    prefix: self.prefix,
+                    extras,
+                },
+                EXTENDED_PREFIX_LEN,
+                self.suffix,
+            ),
+            None => fixed_body::message_with_padding(
+                Opcode::ApplyBuffCompact,
+                &self.prefix,
+                COMPACT_PREFIX_LEN,
+                self.suffix,
+            ),
         }
-        let mut body = Vec::with_capacity(size + self.suffix.len());
-        body.extend(self.prefix.target.to_be_bytes());
-        body.extend(self.prefix.source.to_be_bytes());
-        body.extend(self.prefix.duration_bits.to_be_bytes());
-        body.extend(self.prefix.instance.to_be_bytes());
-        body.extend(self.prefix.definition.to_be_bytes());
-        if let Some(extras) = self.extras {
-            body.extend(extras.stacks.to_be_bytes());
-            for word in extras.words {
-                body.extend(word.to_be_bytes());
-            }
-        }
-        body.extend(self.suffix);
-        Ok(Message::new(op, body))
+        .map_err(|_| invalid("unsupported buff application suffix length"))
     }
 }
 
@@ -122,6 +133,29 @@ pub struct BuffMutation<'a> {
     pub padding: &'a [u8],
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, BinRead, BinWrite)]
+#[brw(big)]
+struct BuffMutationDurationWire {
+    target: u32,
+    instance: u32,
+    duration: f32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, BinRead, BinWrite)]
+#[brw(big)]
+struct BuffMutationTerminalWire {
+    target: u32,
+    instance: u32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, BinRead, BinWrite)]
+#[brw(big)]
+struct BuffStackWire {
+    target: u32,
+    instance: u32,
+    count: u32,
+}
+
 /// Native ActionModifyBuffStack. `instance` identifies a buff on this actor.
 /// Preserve the full unsigned count and any capture-format suffix.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -134,30 +168,33 @@ pub struct BuffStack<'a> {
 
 impl BuffStack<'_> {
     pub fn to_message(self) -> io::Result<Message> {
-        if !matches!(self.suffix.len(), 0 | 2) {
-            return Err(invalid("unsupported buff stack suffix length"));
-        }
-        let mut body = Vec::with_capacity(12 + self.suffix.len());
-        body.extend(self.target.to_be_bytes());
-        body.extend(self.instance.to_be_bytes());
-        body.extend(self.count.to_be_bytes());
-        body.extend(self.suffix);
-        Ok(Message::known(crate::Opcode::ModifyBuffStack, body))
+        fixed_body::message_with_padding(
+            Opcode::ModifyBuffStack,
+            &BuffStackWire {
+                target: self.target,
+                instance: self.instance,
+                count: self.count,
+            },
+            STACK_PREFIX_LEN,
+            self.suffix,
+        )
+        .map_err(|_| invalid("unsupported buff stack suffix length"))
     }
 }
 
 impl Message {
     /// Reads the Android native prefix and the observed extended capture form.
     pub fn buff_stack(&self) -> Option<BuffStack<'_>> {
-        if !self.is(crate::Opcode::ModifyBuffStack) || !matches!(self.body.len(), 12 | 14) {
+        if !self.is(Opcode::ModifyBuffStack) {
             return None;
         }
-        let word = |i| u32::from_be_bytes(self.body[i..i + 4].try_into().unwrap());
+        let (wire, suffix): (BuffStackWire, _) =
+            fixed_body::read_with_padding(&self.body, STACK_PREFIX_LEN).ok()?;
         Some(BuffStack {
-            target: word(0),
-            instance: word(4),
-            count: word(8),
-            suffix: &self.body[12..],
+            target: wire.target,
+            instance: wire.instance,
+            count: wire.count,
+            suffix,
         })
     }
 
@@ -169,46 +206,67 @@ impl Message {
 
 impl<'a> BuffMutation<'a> {
     fn decode(op: u16, body: &'a [u8]) -> Option<Self> {
-        let size = match op {
-            crate::wire_opcode::ModifyBuffDuration => 12,
-            crate::wire_opcode::CancelBuff | crate::wire_opcode::TimeoutBuff => 8,
-            _ => return None,
-        };
-        if body.len() != size && body.len() != 14 {
-            return None;
-        }
-        let change = match op {
-            crate::wire_opcode::ModifyBuffDuration => {
-                BuffChange::Duration(f32::from_be_bytes(body[8..12].try_into().unwrap()))
+        match Opcode::try_from(op).ok()? {
+            Opcode::ModifyBuffDuration => {
+                let (wire, padding): (BuffMutationDurationWire, _) =
+                    fixed_body::read_with_padding(body, MUTATION_DURATION_PREFIX_LEN).ok()?;
+                Some(Self {
+                    target: wire.target,
+                    instance: wire.instance,
+                    change: BuffChange::Duration(wire.duration),
+                    padding,
+                })
             }
-            crate::wire_opcode::CancelBuff => BuffChange::Cancel,
-            _ => BuffChange::Timeout,
-        };
-        Some(Self {
-            target: u32::from_be_bytes(body[..4].try_into().unwrap()),
-            instance: u32::from_be_bytes(body[4..8].try_into().unwrap()),
-            change,
-            padding: &body[size..],
-        })
+            opcode @ (Opcode::CancelBuff | Opcode::TimeoutBuff) => {
+                let (wire, padding): (BuffMutationTerminalWire, _) =
+                    fixed_body::read_with_padding(body, MUTATION_TERMINAL_PREFIX_LEN).ok()?;
+                Some(Self {
+                    target: wire.target,
+                    instance: wire.instance,
+                    change: if opcode == Opcode::CancelBuff {
+                        BuffChange::Cancel
+                    } else {
+                        BuffChange::Timeout
+                    },
+                    padding,
+                })
+            }
+            _ => None,
+        }
     }
 
     pub fn to_message(self) -> io::Result<Message> {
-        let (op, size) = match self.change {
-            BuffChange::Duration(_) => (crate::wire_opcode::ModifyBuffDuration, 12),
-            BuffChange::Cancel => (crate::wire_opcode::CancelBuff, 8),
-            BuffChange::Timeout => (crate::wire_opcode::TimeoutBuff, 8),
-        };
-        if !self.padding.is_empty() && self.padding.len() != 14 - size {
-            return Err(invalid("unsupported buff mutation padding length"));
+        match self.change {
+            BuffChange::Duration(duration) => fixed_body::message_with_padding(
+                Opcode::ModifyBuffDuration,
+                &BuffMutationDurationWire {
+                    target: self.target,
+                    instance: self.instance,
+                    duration,
+                },
+                MUTATION_DURATION_PREFIX_LEN,
+                self.padding,
+            ),
+            BuffChange::Cancel => fixed_body::message_with_padding(
+                Opcode::CancelBuff,
+                &BuffMutationTerminalWire {
+                    target: self.target,
+                    instance: self.instance,
+                },
+                MUTATION_TERMINAL_PREFIX_LEN,
+                self.padding,
+            ),
+            BuffChange::Timeout => fixed_body::message_with_padding(
+                Opcode::TimeoutBuff,
+                &BuffMutationTerminalWire {
+                    target: self.target,
+                    instance: self.instance,
+                },
+                MUTATION_TERMINAL_PREFIX_LEN,
+                self.padding,
+            ),
         }
-        let mut body = Vec::with_capacity(size + self.padding.len());
-        body.extend(self.target.to_be_bytes());
-        body.extend(self.instance.to_be_bytes());
-        if let BuffChange::Duration(seconds) = self.change {
-            body.extend(seconds.to_be_bytes());
-        }
-        body.extend(self.padding);
-        Ok(Message::new(op, body))
+        .map_err(|_| invalid("unsupported buff mutation padding length"))
     }
 }
 

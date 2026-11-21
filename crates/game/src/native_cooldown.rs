@@ -78,12 +78,15 @@ impl Row {
 
     fn payload(self) -> [u8; 18] {
         let (configured, flags) = self.preset.operands();
-        let mut data = [0; 18];
-        data[..4].copy_from_slice(&self.key.to_be_bytes());
         // The opening value at +4 is positive zero for every recorded hero.
-        data[8..12].copy_from_slice(&configured.to_be_bytes());
-        data[12..].copy_from_slice(&flags);
-        data
+        halcyon_protocol::InitCooldownBody {
+            owner: 0,
+            key: self.key,
+            value: 0.0,
+            config_value: configured,
+            flags,
+        }
+        .encode_payload()
     }
 }
 
@@ -114,23 +117,20 @@ pub(super) fn opening(batch: &mut Batch, actor: &Entity, mode: NativeMode) {
     else {
         return;
     };
-    let id = u32::from(super::messages::wire_id(actor.id)).to_be_bytes();
+    let owner = u32::from(super::messages::wire_id(actor.id));
     batch.reserve(profile.rows.len());
     for row in profile.rows {
-        let mut body = [0; 22];
-        body[..4].copy_from_slice(&id);
-        body[4..].copy_from_slice(&row.payload());
-        batch.push(Message::known(crate::Opcode::InitCooldown, body));
+        batch.push(halcyon_protocol::InitCooldownBody::from_payload(owner, row.payload()).encode());
     }
 }
 
 pub(super) fn recordable(msg: &Message) -> bool {
-    let [0, 0, 5, 220..=229, tail @ ..] = msg.body.as_slice() else {
+    let Ok(body) = halcyon_protocol::InitCooldownBody::read_exact(&msg.body) else {
         return false;
     };
-    let Ok(payload) = <&[u8; 18]>::try_from(tail) else {
+    if !(1500..=1509).contains(&body.owner) {
         return false;
-    };
+    }
     static VERIFIED: OnceLock<HashSet<[u8; 18]>> = OnceLock::new();
     VERIFIED
         .get_or_init(|| {
@@ -139,7 +139,7 @@ pub(super) fn recordable(msg: &Message) -> bool {
                 .flat_map(|p| p.rows.iter().map(|r| r.payload()))
                 .collect()
         })
-        .contains(payload)
+        .contains(&body.encode_payload())
 }
 
 #[cfg(test)]

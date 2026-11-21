@@ -84,6 +84,21 @@ pub use lobby::{
     SceneReadinessRowsBody, SceneSettingsBody,
 };
 pub use wire_text::FixedAscii;
+mod match_events;
+pub use match_events::{
+    ActorAttributeBody, ActorBounceBody, ActorDeadBody, ActorRespawnBody, ActorUndeadBody,
+    AnnouncementBody, AnnouncementKey, BuyItemBody, CancelAbilityBody, ClearAbilityOverrideBody,
+    ClockSyncBody, ConsumeItemBody, CrystalShatteredBody, DecrementBuffStackBody,
+    DestroyEntityBody, EndMatchBody, EndMatchReason, EntityStatBody, GrantAbilityBody,
+    InitCooldownBody, InitCooldownPayload, ItemGrantBody, KickPlayerBody, LevelUpBody,
+    ModifyAbilityChargesBody, ModifyBasicAttackTargetBody, ModifyCooldownBody,
+    ModifyGameModeVarBody, MoveAndFaceBody, MovePointRequestBody, MoveToBody, OverrideAbilityBody,
+    PlayPointAbilityBody, PlayTargetAbilityBody, RejectBuyItemBody, RequestCancelAbilityBody,
+    RequestModifyBasicAttackTargetBody, RequestPointAbilityBody, RequestTargetAbilityBody,
+    RequestUpgradeAbilityBody, RespawnTimerBody, ServerMoveBody, StartMatchBody,
+    StatisticsWireBody, StopActorBody, SurrenderPhase, SurrenderRequestBody, SurrenderVote,
+    TeleportToBody, WorldClockBody,
+};
 mod static_actions;
 pub use metadata::{AndroidLayout, READ_SIZES};
 pub use opcode::{Opcode, UnknownOpcodeName, wire_opcode};

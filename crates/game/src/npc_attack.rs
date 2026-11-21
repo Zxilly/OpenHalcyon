@@ -38,15 +38,18 @@ pub(super) fn release(
 }
 
 pub(super) fn actors(m: &Message) -> Option<(u32, u32)> {
-    if !m.is(crate::Opcode::PlayTargetAbility) || m.body.len() != 9 || m.body[8] != 0 {
+    if !m.is(crate::Opcode::PlayTargetAbility) {
         return None;
     }
-    let a = u32::from_be_bytes(m.body[..4].try_into().ok()?);
-    let b = u32::from_be_bytes(m.body[4..8].try_into().ok()?);
-    if !(1510..65535).contains(&a) || !(1500..65535).contains(&b) || a == b {
+    let body = halcyon_protocol::PlayTargetAbilityBody::read_exact(&m.body).ok()?;
+    if body.selector != 0
+        || !(1510..65535).contains(&body.actor)
+        || !(1500..65535).contains(&body.target)
+        || body.actor == body.target
+    {
         return None;
     }
-    Some((a - 1499, b - 1499))
+    Some((body.actor - 1499, body.target - 1499))
 }
 
 pub(super) fn registered(view: &View, message: &Message) -> bool {

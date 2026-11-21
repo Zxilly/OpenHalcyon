@@ -31,7 +31,7 @@ pub(super) fn append_postgame(
     if let halcyon_sim::Event::Death { id, .. } = ev
         && Some(*id) == crystal
     {
-        out.push(Message::known(crate::Opcode::CrystalShattered, []));
+        out.push(halcyon_protocol::CrystalShatteredBody.encode());
     }
 }
 
@@ -61,9 +61,13 @@ pub(super) fn crystal_end(queue: &str, world: &World) -> Option<Message> {
     {
         return None;
     }
-    let mut body = [0; 6];
-    body[..4].copy_from_slice(&(u32::from(winner) + 1).to_be_bytes());
-    Some(Message::known(crate::Opcode::EndMatch, body))
+    Some(
+        halcyon_protocol::EndMatchBody {
+            team_word: u32::from(winner) + 1,
+            reason: halcyon_protocol::EndMatchReason::CrystalShattered,
+        }
+        .encode_padded(),
+    )
 }
 
 /// Builds a reason-3 (Score/Time Limit) end frame when a Blitz match ends without crystal shatter.
@@ -75,10 +79,13 @@ pub(super) fn score_or_time_end(queue: &str, world: &World) -> Option<Message> {
     if winner > 1 {
         return None;
     }
-    let mut body = [0; 6];
-    body[..4].copy_from_slice(&(u32::from(winner) + 1).to_be_bytes());
-    body[4] = 3;
-    Some(Message::known(crate::Opcode::EndMatch, body))
+    Some(
+        halcyon_protocol::EndMatchBody {
+            team_word: u32::from(winner) + 1,
+            reason: halcyon_protocol::EndMatchReason::ScoreOrTimeLimit,
+        }
+        .encode_padded(),
+    )
 }
 
 #[cfg(test)]

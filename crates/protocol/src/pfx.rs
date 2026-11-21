@@ -1,4 +1,16 @@
-use crate::Message;
+use crate::{Message, Opcode, fixed_body};
+use binrw::{BinRead, BinWrite};
+
+const PFX_PREFIX_LEN: usize = 24;
+
+#[derive(Debug, Clone, Copy, PartialEq, BinRead, BinWrite)]
+#[brw(big)]
+struct PlayPfxWire {
+    effect_key: u32,
+    actor: u32,
+    position: [f32; 3],
+    unknown_word: u32,
+}
 
 /// ActionPlayPfxAtLocation (0419), including the optional decrypted frame padding.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -12,20 +24,20 @@ pub struct PlayPfxAtLocation {
 
 impl Message {
     pub fn play_pfx_at_location(&self) -> Option<PlayPfxAtLocation> {
-        if !self.is(crate::Opcode::PlayPfxAtLocation) {
+        if !self.is(Opcode::PlayPfxAtLocation) {
             return None;
         }
-        let (fields, tail) = self.body.split_at_checked(24)?;
+        let (wire, tail): (PlayPfxWire, _) =
+            fixed_body::read_with_padding(&self.body, PFX_PREFIX_LEN).ok()?;
         let padding = match tail {
             [] => None,
             tail => Some(tail.try_into().ok()?),
         };
-        let words = fields.as_chunks::<4>().0;
         Some(PlayPfxAtLocation {
-            effect_key: u32::from_be_bytes(words[0]),
-            actor: u32::from_be_bytes(words[1]),
-            position: std::array::from_fn(|i| f32::from_be_bytes(words[i + 2])),
-            unknown_word: u32::from_be_bytes(words[5]),
+            effect_key: wire.effect_key,
+            actor: wire.actor,
+            position: wire.position,
+            unknown_word: wire.unknown_word,
             padding,
         })
     }
@@ -33,17 +45,15 @@ impl Message {
 
 impl PlayPfxAtLocation {
     pub fn to_message(&self) -> Message {
-        let mut body = Vec::with_capacity(30);
-        body.extend(self.effect_key.to_be_bytes());
-        body.extend(self.actor.to_be_bytes());
-        for coordinate in self.position {
-            body.extend(coordinate.to_be_bytes());
-        }
-        body.extend(self.unknown_word.to_be_bytes());
-        if let Some(padding) = self.padding {
-            body.extend(padding);
-        }
-        Message::known(crate::Opcode::PlayPfxAtLocation, body)
+        let wire = PlayPfxWire {
+            effect_key: self.effect_key,
+            actor: self.actor,
+            position: self.position,
+            unknown_word: self.unknown_word,
+        };
+        let suffix = self.padding.as_ref().map_or(&[][..], |pad| &pad[..]);
+        fixed_body::message_with_padding(Opcode::PlayPfxAtLocation, &wire, PFX_PREFIX_LEN, suffix)
+            .expect("pfx padding is 0 or 6 bytes")
     }
 }
 

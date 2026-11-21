@@ -1,7 +1,9 @@
 //! Native attribute (0x041C) and resource (0x041D) operations.
-use super::{Message, Opcode};
+use super::{Message, Opcode, fixed_body::fixed_packet};
+use binrw::{BinRead, BinWrite};
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, BinRead, BinWrite)]
+#[brw(big)]
 pub struct AttributeChange {
     pub actor: u32,
     pub source: u32,
@@ -11,34 +13,22 @@ pub struct AttributeChange {
     /// Zero adds and nonzero sets. Retain the original byte.
     pub set_mode: u8,
 }
+fixed_packet!(AttributeChange, Opcode::ModifyActorAttribute, 15);
 
 impl AttributeChange {
     pub fn read(msg: &Message) -> Option<Self> {
-        let b = &msg.body;
-        if msg.opcode != Opcode::ModifyActorAttribute as u16 || !matches!(b.len(), 15 | 22) {
-            return None;
-        }
-        Some(Self {
-            actor: u32::from_be_bytes(b[..4].try_into().unwrap()),
-            source: u32::from_be_bytes(b[4..8].try_into().unwrap()),
-            value: f32::from_be_bytes(b[8..12].try_into().unwrap()),
-            index: b[12],
-            layer: b[13],
-            set_mode: b[14],
-        })
+        msg.is(Opcode::ModifyActorAttribute)
+            .then(|| Self::read_exact_or_padded(&msg.body).ok())
+            .flatten()
     }
 
     pub fn message(self) -> Message {
-        let mut b = [0; 22];
-        b[..4].copy_from_slice(&self.actor.to_be_bytes());
-        b[4..8].copy_from_slice(&self.source.to_be_bytes());
-        b[8..12].copy_from_slice(&self.value.to_be_bytes());
-        b[12..15].copy_from_slice(&[self.index, self.layer, self.set_mode]);
-        Message::new(Opcode::ModifyActorAttribute as u16, b)
+        self.encode_padded()
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, BinRead, BinWrite)]
+#[brw(big)]
 pub struct ResourceChange {
     pub actor: u32,
     pub value: f32,
@@ -47,28 +37,17 @@ pub struct ResourceChange {
     pub set_mode: u8,
     pub flags: [u8; 2],
 }
+fixed_packet!(ResourceChange, Opcode::ModifyActorResource, 12);
 
 impl ResourceChange {
     pub fn read(msg: &Message) -> Option<Self> {
-        let b = &msg.body;
-        if msg.opcode != Opcode::ModifyActorResource as u16 || !matches!(b.len(), 12 | 14) {
-            return None;
-        }
-        Some(Self {
-            actor: u32::from_be_bytes(b[..4].try_into().unwrap()),
-            value: f32::from_be_bytes(b[4..8].try_into().unwrap()),
-            index: b[8],
-            set_mode: b[9],
-            flags: [b[10], b[11]],
-        })
+        msg.is(Opcode::ModifyActorResource)
+            .then(|| Self::read_exact_or_padded(&msg.body).ok())
+            .flatten()
     }
 
     pub fn message(self) -> Message {
-        let mut b = [0; 14];
-        b[..4].copy_from_slice(&self.actor.to_be_bytes());
-        b[4..8].copy_from_slice(&self.value.to_be_bytes());
-        b[8..12].copy_from_slice(&[self.index, self.set_mode, self.flags[0], self.flags[1]]);
-        Message::new(Opcode::ModifyActorResource as u16, b)
+        self.encode_padded()
     }
 }
 

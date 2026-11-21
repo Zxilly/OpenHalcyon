@@ -95,11 +95,14 @@ pub(in crate::native_abilities) fn recordable(m: &Message) -> bool {
                 && buff.suffix == [0; 6]
         }
         Ok(halcyon_protocol::Fields::CooldownValue { .. }) => {
-            m.body.len() == 13
-                && matches!(m.body[..4], [0, 0, 5, 220..=225])
-                && m.body[4..]
-                    == Message::cooldown_adjustment(1500, BUCKSHOT_BONANZA, 0., CooldownMode::Set)
-                        .body[4..]
+            matches!(
+                halcyon_protocol::ModifyCooldownBody::read_exact(&m.body),
+                Ok(body)
+                    if (1500..=1505).contains(&body.owner)
+                        && body.key == BUCKSHOT_BONANZA
+                        && body.value.to_bits() == 0.0f32.to_bits()
+                        && body.cooldown_mode() == Some(CooldownMode::Set)
+            )
         }
         _ => m.flyout().is_some_and(|flyout| {
             flyout.text() == Some(FlyoutText::Cleansed)

@@ -79,12 +79,18 @@ pub(super) fn receive(room: &mut Room, seat: usize, channel: usize, m: Message) 
     let state = &mut room.seats[seat].native_abilities;
     match m.known_opcode() {
         Some(crate::Opcode::RequestCancelAbility)
-            if aral && m.body.len() == 6 && m.body[1..] == [0; 5] =>
+            if aral
+                && matches!(
+                    halcyon_protocol::RequestCancelAbilityBody::read_padded_zero(&m.body),
+                    Ok(req) if req.cancel_flag == 0
+                ) =>
         {
+            let req = halcyon_protocol::RequestCancelAbilityBody::read_padded_zero(&m.body)
+                .expect("validated cancel ability request");
             let Some(pending) = &state.cast else {
                 return Vec::new();
             };
-            let selector = m.body[0];
+            let selector = req.ability_slot;
             if pending.generation != generation
                 || NativeCast::for_slot(hero, pending.slot).is_none_or(|c| c.selector() != selector)
                 || !room.world.cancel_cast(id, pending.slot, pending.target)
@@ -92,18 +98,26 @@ pub(super) fn receive(room: &mut Room, seat: usize, channel: usize, m: Message) 
                 return Vec::new();
             }
             state.cast = None;
-            let mut body = [0; 10];
-            body[..4].copy_from_slice(&u32::from(wire_id(id)).to_be_bytes());
-            body[4..8].copy_from_slice(&u32::from(selector).to_be_bytes());
-            vec![m, Message::known(crate::Opcode::CancelAbility, body)]
+            vec![
+                m,
+                halcyon_protocol::CancelAbilityBody {
+                    actor: u32::from(wire_id(id)),
+                    reference: u32::from(selector),
+                    is_item: 0,
+                    cancel_shared: 0,
+                }
+                .encode(),
+            ]
         }
         Some(crate::Opcode::RequestUpgradeAbility)
-            if m.body.len() == 6 && m.body[1..] == [0; 5] =>
+            if halcyon_protocol::RequestUpgradeAbilityBody::read_padded_zero(&m.body).is_ok() =>
         {
+            let req = halcyon_protocol::RequestUpgradeAbilityBody::read_padded_zero(&m.body)
+                .expect("validated upgrade ability request");
             if hero == AMAEL && (!aral || !room.scene_views[seat].knows(id)) {
                 return Vec::new();
             }
-            let Some((slot, operand)) = native_learn_request(hero, m.body[0]) else {
+            let Some((slot, operand)) = native_learn_request(hero, req.ability_slot) else {
                 return Vec::new();
             };
             if state.learned_at == Some(room.world.tick)
@@ -116,15 +130,17 @@ pub(super) fn receive(room: &mut Room, seat: usize, channel: usize, m: Message) 
             witness(room, id, None, &grant, None);
             vec![m, grant]
         }
-        Some(crate::Opcode::RequestPointAbility) if m.body.len() == 14 && m.body[13] == 0 => {
-            let selector = m.body[12];
+        Some(crate::Opcode::RequestPointAbility)
+            if halcyon_protocol::RequestPointAbilityBody::read_padded_zero(&m.body).is_ok() =>
+        {
+            let req = halcyon_protocol::RequestPointAbilityBody::read_padded_zero(&m.body)
+                .expect("validated point ability request");
+            let selector = req.selector;
             let Some(cast) = NativeCast::point_input(hero, selector) else {
                 return Vec::new();
             };
             let slot = cast.slot();
-            let coordinates: [f32; 3] = std::array::from_fn(|i| {
-                f32::from_be_bytes(m.body[i * 4..i * 4 + 4].try_into().unwrap())
-            });
+            let coordinates = req.coordinates;
             let [x, height, y] = coordinates;
             if height != 0.0 || !x.is_finite() || !y.is_finite() {
                 return Vec::new();
@@ -155,10 +171,14 @@ pub(super) fn receive(room: &mut Room, seat: usize, channel: usize, m: Message) 
         }
         Some(crate::Opcode::RequestTargetAbility)
             if (hero == LORELAI || (aral && hero == AMAEL))
-                && m.body.len() == 6
-                && m.body[4..] == [NativeCast::LorelaiC.selector(), 0] =>
+                && matches!(
+                    halcyon_protocol::RequestTargetAbilityBody::read_padded_zero(&m.body),
+                    Ok(req) if req.selector == NativeCast::LorelaiC.selector()
+                ) =>
         {
-            let wire_target = u32::from_be_bytes(m.body[..4].try_into().unwrap());
+            let wire_target = halcyon_protocol::RequestTargetAbilityBody::read_padded_zero(&m.body)
+                .expect("validated target ability request")
+                .target;
             let Some(target_id) = wire_target.checked_sub(1499) else {
                 return Vec::new();
             };
@@ -437,11 +457,10 @@ fn publish_visible(room: &mut Room, actors: &[u32], frames: &[Message]) {
 
 /// Encodes an `0x0425 ModifyBasicAttackTarget` frame, using `u32::MAX` to clear the lock.
 pub(super) fn modify_basic_attack_target_message(target: Option<u32>) -> Message {
-    let wire_target = target.map_or(u32::MAX, |actor| u32::from(wire_id(actor)));
-    Message::known(
-        crate::Opcode::ModifyBasicAttackTarget,
-        wire_target.to_be_bytes(),
-    )
+    halcyon_protocol::ModifyBasicAttackTargetBody {
+        target: target.map(|actor| u32::from(wire_id(actor))),
+    }
+    .encode()
 }
 
 pub(super) fn publish(room: &mut Room, events: &[Event]) {

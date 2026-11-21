@@ -90,7 +90,7 @@ pub(super) fn start(room: &mut Room, actor: u32, instance: u32) {
         room,
         &[actor],
         &[
-            Message::known(crate::Opcode::ActorUndead, wire.to_be_bytes()),
+            halcyon_protocol::ActorUndeadBody { actor: wire }.encode(),
             effect,
         ],
     );

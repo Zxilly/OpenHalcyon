@@ -1,11 +1,37 @@
 //! Scoreboard AFK and deserter flags. Reconnection clears both flags.
-use crate::Message;
+use crate::{Message, Opcode, fixed_body};
+use binrw::{BinRead, BinWrite};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ActorFlagChange {
     Afk,
     Deserter,
     Reconnected,
+}
+
+impl ActorFlagChange {
+    pub const fn opcode(self) -> Opcode {
+        match self {
+            Self::Afk => Opcode::PlayerAfk,
+            Self::Deserter => Opcode::PlayerDeserter,
+            Self::Reconnected => Opcode::PlayerReconnected,
+        }
+    }
+
+    pub const fn from_opcode(opcode: Opcode) -> Option<Self> {
+        match opcode {
+            Opcode::PlayerAfk => Some(Self::Afk),
+            Opcode::PlayerDeserter => Some(Self::Deserter),
+            Opcode::PlayerReconnected => Some(Self::Reconnected),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, BinRead, BinWrite)]
+#[brw(big)]
+struct ActorFlagWire {
+    actor: u32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -17,15 +43,11 @@ pub struct ActorFlags<'a> {
 
 impl Message {
     pub fn actor_flags(&self) -> Option<ActorFlags<'_>> {
-        let change = match self.known_opcode() {
-            Some(crate::Opcode::PlayerAfk) => ActorFlagChange::Afk,
-            Some(crate::Opcode::PlayerDeserter) => ActorFlagChange::Deserter,
-            Some(crate::Opcode::PlayerReconnected) => ActorFlagChange::Reconnected,
-            _ => return None,
-        };
-        let (actor, padding) = self.body.split_first_chunk::<4>()?;
-        matches!(padding.len(), 0 | 2).then(|| ActorFlags {
-            actor: u32::from_be_bytes(*actor),
+        let change = ActorFlagChange::from_opcode(self.known_opcode()?)?;
+        let (wire, padding): (ActorFlagWire, _) =
+            fixed_body::read_with_padding(&self.body, 4).ok()?;
+        Some(ActorFlags {
+            actor: wire.actor,
             change,
             padding,
         })
@@ -42,15 +64,13 @@ impl ActorFlags<'_> {
     }
 
     pub fn to_message(self) -> Message {
-        let opcode = match self.change {
-            ActorFlagChange::Afk => crate::wire_opcode::PlayerAfk,
-            ActorFlagChange::Deserter => crate::wire_opcode::PlayerDeserter,
-            ActorFlagChange::Reconnected => crate::wire_opcode::PlayerReconnected,
-        };
-        let mut body = Vec::with_capacity(4 + self.padding.len());
-        body.extend_from_slice(&self.actor.to_be_bytes());
-        body.extend_from_slice(self.padding);
-        Message::new(opcode, body)
+        fixed_body::message_with_padding(
+            self.change.opcode(),
+            &ActorFlagWire { actor: self.actor },
+            4,
+            self.padding,
+        )
+        .expect("actor flag padding validated at decode")
     }
 }
 

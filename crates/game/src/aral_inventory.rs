@@ -5,18 +5,31 @@ use halcyon_protocol::ItemAction;
 #[derive(Default)]
 pub(super) struct ProjectedSlots([Option<std::num::NonZeroU32>; halcyon_sim::ARAL_ITEM_CAPACITY]);
 
-fn word(body: &[u8], offset: usize) -> Option<u32> {
-    Some(u32::from_be_bytes(
-        body.get(offset..offset + 4)?.try_into().ok()?,
-    ))
-}
-
 pub(super) fn affects_owner(message: &Message, owner: u32) -> bool {
     match message.known_opcode() {
-        Some(crate::Opcode::HeroSpawn) => word(&message.body, 8) == Some(owner),
-        Some(
-            crate::Opcode::DestroyEntity | crate::Opcode::ItemGrant | crate::Opcode::ConsumeItem,
-        ) => word(&message.body, 0) == Some(owner),
+        Some(crate::Opcode::HeroSpawn) => {
+            message
+                .body
+                .get(8..12)
+                .and_then(|bytes| bytes.try_into().ok())
+                .map(u32::from_be_bytes)
+                == Some(owner)
+        }
+        Some(crate::Opcode::DestroyEntity) => {
+            halcyon_protocol::DestroyEntityBody::read_exact_or_padded(&message.body)
+                .ok()
+                .is_some_and(|body| body.actor == owner)
+        }
+        Some(crate::Opcode::ItemGrant) => {
+            halcyon_protocol::ItemGrantBody::read_exact_or_padded(&message.body)
+                .ok()
+                .is_some_and(|body| body.actor == owner)
+        }
+        Some(crate::Opcode::ConsumeItem) => {
+            halcyon_protocol::ConsumeItemBody::read_exact_or_padded(&message.body)
+                .ok()
+                .is_some_and(|body| body.actor == owner)
+        }
         _ => false,
     }
 }
@@ -30,19 +43,21 @@ pub(super) fn record_delivery(view: &mut Option<ProjectedSlots>, owner: u32, bat
             }
             Some(crate::Opcode::DestroyEntity) => *view = None,
             Some(crate::Opcode::ItemGrant) => {
-                if let (Some(view), Some(instance)) = (
+                if let (Some(view), Ok(grant)) = (
                     view.as_mut(),
-                    word(&m.body, 8).and_then(std::num::NonZeroU32::new),
-                ) && let Some(slot) = view.0.iter_mut().find(|slot| slot.is_none())
+                    halcyon_protocol::ItemGrantBody::read_exact_or_padded(&m.body),
+                ) && let Some(instance) = std::num::NonZeroU32::new(grant.instance)
+                    && let Some(slot) = view.0.iter_mut().find(|slot| slot.is_none())
                 {
                     *slot = Some(instance);
                 }
             }
             Some(crate::Opcode::ConsumeItem) => {
-                if let (Some(view), Some(instance)) = (
+                if let (Some(view), Ok(consume)) = (
                     view.as_mut(),
-                    word(&m.body, 4).and_then(std::num::NonZeroU32::new),
-                ) && let Some(slot) = view.0.iter_mut().find(|slot| **slot == Some(instance))
+                    halcyon_protocol::ConsumeItemBody::read_exact_or_padded(&m.body),
+                ) && let Some(instance) = std::num::NonZeroU32::new(consume.instance)
+                    && let Some(slot) = view.0.iter_mut().find(|slot| **slot == Some(instance))
                 {
                     *slot = None;
                 }
@@ -65,11 +80,18 @@ pub(super) fn without_existing_baseline(batch: &[Message], owner: u32) -> Option
                 snapshot = affects_owner(m, owner);
             } else {
                 snapshot = snapshot
-                    && matches!(
-                        m.opcode,
-                        crate::wire_opcode::ItemGrant | crate::wire_opcode::ModifyActorAttribute
-                    )
-                    && word(&m.body, 0) == Some(owner);
+                    && match m.known_opcode() {
+                        Some(crate::Opcode::ItemGrant) => {
+                            halcyon_protocol::ItemGrantBody::read_exact_or_padded(&m.body)
+                                .ok()
+                                .is_some_and(|body| body.actor == owner)
+                        }
+                        Some(crate::Opcode::ModifyActorAttribute) => {
+                            halcyon_protocol::AttributeChange::read(m)
+                                .is_some_and(|attr| attr.actor == owner)
+                        }
+                        _ => false,
+                    };
             }
             let drop = old_snapshot
                 && snapshot

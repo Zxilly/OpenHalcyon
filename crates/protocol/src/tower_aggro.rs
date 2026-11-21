@@ -1,5 +1,8 @@
 //! Observed tower form of ActionSendAggroState_Client in ARAL and Android Solo.
-use crate::Message;
+use crate::{Message, Opcode, fixed_body::fixed_packet};
+use binrw::{BinRead, BinWrite};
+
+const OBSERVED_RANGE_BITS: u32 = 9_f32.to_bits();
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TowerAggro {
@@ -7,24 +10,37 @@ pub struct TowerAggro {
     pub target_slot: Option<u8>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, BinRead, BinWrite)]
+#[brw(big)]
+struct TowerAggroWire {
+    tower_slot: u8,
+    target_slot: u8,
+    range_bits: u32,
+    has_target: u8,
+    reserved: u8,
+}
+fixed_packet!(TowerAggroWire, Opcode::SendAggroState, 8);
+
 impl TowerAggro {
     pub fn decode(message: &Message) -> Option<Self> {
-        let b = &message.body;
-        if !message.is(crate::Opcode::SendAggroState)
-            || !matches!(b.len(), 8 | 14)
-            || b[2..6] != 9_f32.to_be_bytes()
-            || b[7..].iter().any(|&byte| byte != 0)
-            || b[0] == u8::MAX
+        if !message.is(Opcode::SendAggroState) {
+            return None;
+        }
+        let (wire, tail) = TowerAggroWire::read_with_padding(&message.body).ok()?;
+        if wire.range_bits != OBSERVED_RANGE_BITS
+            || wire.reserved != 0
+            || tail.iter().any(|&byte| byte != 0)
+            || wire.tower_slot == u8::MAX
         {
             return None;
         }
-        let target_slot = match (b[1], b[6]) {
+        let target_slot = match (wire.target_slot, wire.has_target) {
             (255, 0) => None,
             (slot @ 0..=254, 1) => Some(slot),
             _ => return None,
         };
         Some(Self {
-            tower_slot: b[0],
+            tower_slot: wire.tower_slot,
             target_slot,
         })
     }
@@ -33,12 +49,16 @@ impl TowerAggro {
         if self.tower_slot == 255 || self.target_slot == Some(255) {
             return None;
         }
-        let mut body = [0; 14];
-        body[0] = self.tower_slot;
-        body[1] = self.target_slot.unwrap_or(255);
-        body[2..6].copy_from_slice(&9_f32.to_be_bytes());
-        body[6] = u8::from(self.target_slot.is_some());
-        Some(Message::known(crate::Opcode::SendAggroState, body))
+        Some(
+            TowerAggroWire {
+                tower_slot: self.tower_slot,
+                target_slot: self.target_slot.unwrap_or(255),
+                range_bits: OBSERVED_RANGE_BITS,
+                has_target: u8::from(self.target_slot.is_some()),
+                reserved: 0,
+            }
+            .encode_padded(),
+        )
     }
 }
 

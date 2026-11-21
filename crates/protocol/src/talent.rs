@@ -1,7 +1,9 @@
-use super::Message;
+use super::{Message, Opcode, fixed_body::fixed_packet};
+use binrw::{BinRead, BinWrite};
 
 /// Hero-relative indices observed in ordinary ARAL equip actions.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, BinRead, BinWrite)]
+#[brw(big, repr = u8)]
 #[repr(u8)]
 pub enum TalentSelection {
     Slot0 = 0,
@@ -9,6 +11,14 @@ pub enum TalentSelection {
     Slot2 = 2,
     NoTalent = 255,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, BinRead, BinWrite)]
+#[brw(big)]
+struct RequestEquipTalentWire {
+    selection: TalentSelection,
+    reserved: [u8; 3],
+}
+fixed_packet!(RequestEquipTalentWire, Opcode::RequestEquipTalent, 4);
 
 impl TalentSelection {
     pub(super) fn from_wire(value: u8) -> Option<Self> {
@@ -23,29 +33,31 @@ impl TalentSelection {
 
     /// The request carries no actor identifier or level.
     pub fn request(self) -> Message {
-        Message::known(crate::Opcode::RequestEquipTalent, [self as u8, 0, 0, 0])
+        RequestEquipTalentWire {
+            selection: self,
+            reserved: [0; 3],
+        }
+        .encode()
     }
 }
 
 /// Authoritative equip notification. The caller supplies the authenticated
 /// actor and level from its own game state.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, BinRead, BinWrite)]
+#[brw(big)]
 pub struct EquippedTalent {
     pub actor: u32,
     pub selection: TalentSelection,
     pub level: u8,
 }
+fixed_packet!(EquippedTalent, Opcode::EquipTalent, 6);
 
 impl EquippedTalent {
     pub fn message(self) -> std::io::Result<Message> {
         if self.selection == TalentSelection::NoTalent && self.level != 0 {
             return Err(super::invalid("NoTalent requires level zero"));
         }
-        let mut body = [0; 6];
-        body[..4].copy_from_slice(&self.actor.to_be_bytes());
-        body[4] = self.selection as u8;
-        body[5] = self.level;
-        Ok(Message::known(crate::Opcode::EquipTalent, body))
+        Ok(self.encode())
     }
 }
 

@@ -1,36 +1,70 @@
 //! Native movement actions carry either a scene registration slot or full actor IDs.
-use crate::{Fields, Message, Opcode};
+use crate::{Fields, Message, Opcode, fixed_body::fixed_packet};
+use binrw::{BinRead, BinWrite};
 
 /// Supported 0403 displacement profiles seen on the ARAL wire.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, BinRead, BinWrite)]
+#[brw(big, repr = u8)]
 #[repr(u8)]
 pub enum ForcedMoveMode {
     Dash = 0,
     Knockback = 1,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, BinRead, BinWrite)]
+#[brw(big)]
 pub struct ForcedMove {
     pub actor: u32,
     pub speed: f32,
     pub destination: [f32; 3],
     pub mode: ForcedMoveMode,
 }
+fixed_packet!(ForcedMove, Opcode::AutoMoveTo, 21);
+
+/// 16-byte body of `0x0402` (`Opcode::AutoActorBounce`), padded to 22 bytes when aligned.
+#[derive(Clone, Copy, Debug, PartialEq, BinRead, BinWrite)]
+#[brw(big)]
+pub struct ActorBounceBody {
+    pub actor: u32,
+    pub height: f32,
+    pub duration: f32,
+    pub enabled: u32,
+}
+fixed_packet!(ActorBounceBody, Opcode::AutoActorBounce, 16);
+
+/// 14-byte body of `0x03F9` (`Opcode::MoveToServerAuthoritative`).
+#[derive(Clone, Copy, Debug, PartialEq, BinRead, BinWrite)]
+#[brw(big)]
+pub struct ServerMoveBody {
+    pub selector: u8,
+    pub values: [f32; 3],
+    pub flag: u8,
+}
+fixed_packet!(ServerMoveBody, Opcode::MoveToServerAuthoritative, 14);
+
+/// 20-byte body of `0x03FA` (`Opcode::MoveAndFace`), padded to 22 bytes when aligned.
+#[derive(Clone, Copy, Debug, PartialEq, BinRead, BinWrite)]
+#[brw(big)]
+pub struct MoveAndFaceBody {
+    pub actor: u32,
+    pub reference: u32,
+    pub values: [f32; 3],
+}
+fixed_packet!(MoveAndFaceBody, Opcode::MoveAndFace, 20);
+
+/// 17-byte body of `0x03FB` (`Opcode::StopActor`), padded to 22 bytes when aligned.
+#[derive(Clone, Copy, Debug, PartialEq, BinRead, BinWrite)]
+#[brw(big)]
+pub struct StopActorBody {
+    pub actor: u32,
+    pub values: [f32; 3],
+    pub flag: u8,
+}
+fixed_packet!(StopActorBody, Opcode::StopActor, 17);
 
 impl ForcedMove {
     pub fn message(self) -> Message {
-        let mut body = [0; 21];
-        body[..4].copy_from_slice(&self.actor.to_be_bytes());
-        for (bytes, value) in body[4..20].as_chunks_mut::<4>().0.iter_mut().zip([
-            self.speed,
-            self.destination[0],
-            self.destination[1],
-            self.destination[2],
-        ]) {
-            bytes.copy_from_slice(&value.to_be_bytes());
-        }
-        body[20] = self.mode as u8;
-        Message::known(Opcode::AutoMoveTo, body)
+        self.encode()
     }
 }
 
@@ -38,35 +72,20 @@ impl Message {
     /// Karas dash and knockback captures place speed before the destination.
     /// The imported operator layout retains its original labels in spec_view().
     pub fn forced_move(&self) -> Option<ForcedMove> {
-        let b = &self.body;
-        if !self.is(Opcode::AutoMoveTo) || !matches!(b.len(), 21 | 22) {
-            return None;
-        }
-        let word = |i| u32::from_be_bytes(b[i..i + 4].try_into().unwrap());
-        Some(ForcedMove {
-            actor: word(0),
-            speed: f32::from_bits(word(4)),
-            destination: std::array::from_fn(|i| f32::from_bits(word(8 + 4 * i))),
-            mode: match b[20] {
-                0 => ForcedMoveMode::Dash,
-                1 => ForcedMoveMode::Knockback,
-                _ => return None,
-            },
-        })
+        self.is(Opcode::AutoMoveTo)
+            .then(|| ForcedMove::read_exact_or_padded(&self.body).ok())
+            .flatten()
     }
 
     /// Native enabled bounce applied to an affected actor.
     pub fn actor_bounce(actor: u32, height: f32, duration: f32) -> Self {
-        let mut body = [0; 16];
-        for (bytes, word) in body.as_chunks_mut::<4>().0.iter_mut().zip([
+        ActorBounceBody {
             actor,
-            height.to_bits(),
-            duration.to_bits(),
-            1,
-        ]) {
-            bytes.copy_from_slice(&word.to_be_bytes());
+            height,
+            duration,
+            enabled: 1,
         }
-        Self::known(Opcode::AutoActorBounce, body)
+        .encode()
     }
 }
 
@@ -74,51 +93,45 @@ impl Fields<'_> {
     /// Rebuild one of the three native movement actions at its original body
     /// length, including any caller-preserved transport padding.
     pub fn movement_message(&self) -> Option<Message> {
-        let mut body = Vec::with_capacity(22);
-        let (opcode, position, flag, padding) = match self {
+        match *self {
             Self::ServerMove {
                 selector,
                 values,
                 flag,
                 remaining,
-            } if remaining.is_empty() => {
-                body.push(*selector);
-                (
-                    crate::wire_opcode::MoveToServerAuthoritative,
-                    values,
-                    Some(flag),
-                    remaining,
-                )
+            } => ServerMoveBody {
+                selector,
+                values,
+                flag,
             }
+            .encode_with_padding(remaining)
+            .ok(),
             Self::MoveAndFace {
                 actor,
                 reference,
                 values,
                 remaining,
-            } if matches!(remaining.len(), 0 | 2) => {
-                body.extend(actor.to_be_bytes());
-                body.extend(reference.to_be_bytes());
-                (crate::wire_opcode::MoveAndFace, values, None, remaining)
+            } => MoveAndFaceBody {
+                actor,
+                reference,
+                values,
             }
+            .encode_with_padding(remaining)
+            .ok(),
             Self::StopActor {
                 actor,
                 values,
                 flag,
                 remaining,
-            } if matches!(remaining.len(), 0 | 5) => {
-                body.extend(actor.to_be_bytes());
-                (crate::wire_opcode::StopActor, values, Some(flag), remaining)
+            } => StopActorBody {
+                actor,
+                values,
+                flag,
             }
-            _ => return None,
-        };
-        for v in position {
-            body.extend(v.to_be_bytes());
+            .encode_with_padding(remaining)
+            .ok(),
+            _ => None,
         }
-        if let Some(flag) = flag {
-            body.push(*flag);
-        }
-        body.extend_from_slice(padding);
-        Some(Message::new(opcode, body))
     }
 }
 

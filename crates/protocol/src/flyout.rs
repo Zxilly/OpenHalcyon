@@ -1,4 +1,7 @@
-use crate::{Message, Opcode};
+use crate::{Message, Opcode, fixed_body};
+use binrw::{BinRead, BinWrite};
+
+const FLYOUT_PREFIX_LEN: usize = 10;
 
 /// Native 147219 flyout text selectors, in client table order.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -64,6 +67,14 @@ impl FlyoutText {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, BinRead, BinWrite)]
+#[brw(big)]
+struct FlyoutWire {
+    actor: u32,
+    selector: u16,
+    parameter: u32,
+}
+
 /// Keeps an unknown selector, parameter and any decrypted padding for replay.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Flyout {
@@ -88,28 +99,29 @@ impl Flyout {
     }
 
     pub(super) fn decode(body: &[u8]) -> Option<Self> {
-        let (data, tail) = body.split_at_checked(10)?;
+        let (wire, tail): (FlyoutWire, _) =
+            fixed_body::read_with_padding(body, FLYOUT_PREFIX_LEN).ok()?;
         let padding = match tail {
             [] => None,
             tail => Some(tail.try_into().ok()?),
         };
         Some(Self {
-            actor: u32::from_be_bytes(data[..4].try_into().unwrap()),
-            selector: u16::from_be_bytes(data[4..6].try_into().unwrap()),
-            parameter: u32::from_be_bytes(data[6..].try_into().unwrap()),
+            actor: wire.actor,
+            selector: wire.selector,
+            parameter: wire.parameter,
             padding,
         })
     }
 
     pub fn to_message(self) -> Message {
-        let mut body = Vec::with_capacity(14);
-        body.extend(self.actor.to_be_bytes());
-        body.extend(self.selector.to_be_bytes());
-        body.extend(self.parameter.to_be_bytes());
-        if let Some(padding) = self.padding {
-            body.extend(padding);
-        }
-        Message::known(Opcode::ShowFlyoutText, body)
+        let wire = FlyoutWire {
+            actor: self.actor,
+            selector: self.selector,
+            parameter: self.parameter,
+        };
+        let suffix = self.padding.as_ref().map_or(&[][..], |pad| &pad[..]);
+        fixed_body::message_with_padding(Opcode::ShowFlyoutText, &wire, FLYOUT_PREFIX_LEN, suffix)
+            .expect("flyout padding is 0 or 4 bytes")
     }
 }
 
