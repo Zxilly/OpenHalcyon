@@ -178,6 +178,9 @@ pub(crate) fn solo_opening(room: &mut Room, seat: usize) -> std::io::Result<Opti
         for e in &room.world.entities {
             if e.hp > 0.0 && room.world.visible(team, e) {
                 room.visible[usize::from(team)].insert(e.id);
+                if crate::uses_visibility_toggle(team, e) {
+                    out.push(crate::actor_visibility_message(e.id, team, true));
+                }
             }
         }
         out.extend(room.recommended_paths(Some(team)));
@@ -219,6 +222,9 @@ pub(crate) fn solo_opening(room: &mut Room, seat: usize) -> std::io::Result<Opti
             }
             if visible {
                 room.visible[usize::from(team)].insert(e.id);
+                if crate::uses_visibility_toggle(team, e) {
+                    out.push(crate::actor_visibility_message(e.id, team, true));
+                }
             }
         }
         out.extend(super::scene::mode_variables::Opening::Aral.messages());
@@ -2070,5 +2076,196 @@ mod tests {
                     if eq.actor == 1500 && eq.selection == sel && eq.level == expected_level
             ));
         }
+    }
+
+    #[tokio::test]
+    async fn blitz_visibility_transitions_emit_042b_for_enemies_minions_and_neutrals() {
+        let rooms = Rooms::new("127.0.0.1".parse().unwrap(), "127.0.0.1".into(), 1, None);
+        let id = Uuid::new_v4();
+        let player = Uuid::new_v4();
+        rooms
+            .reserve(Reservation {
+                talent_levels: Vec::new(),
+                match_id: id,
+                players: vec![player],
+                teams: Vec::new(),
+                mode: "blitz_bots_solo".into(),
+                difficulty: Some(halcyon_data::BotDifficulty::Medium),
+            })
+            .unwrap();
+        let shared = rooms.room(id).unwrap();
+        let mut room = shared.lock().unwrap();
+        let (tx, mut rx) = mpsc::channel(256);
+        room.attach(player, tx, watch::channel(false).0).unwrap();
+        room.receive(0, 0, Message::known(crate::Opcode::DraftLockHero, []))
+            .unwrap();
+        room.seats[0].loading_roster_sent = true;
+        room.receive(
+            0,
+            0,
+            Message::known(crate::Opcode::RequestSceneSnapshot, [0; 6]),
+        )
+        .unwrap();
+        let wire_hero = u32::from(messages::wire_id(room.world.entities[0].id));
+        let mut confirm = [0u8; 6];
+        confirm[..4].copy_from_slice(&wire_hero.to_be_bytes());
+        confirm[4..].copy_from_slice(&[1, 0]);
+        room.receive(
+            0,
+            0,
+            Message::known(crate::Opcode::ConfirmSceneOwner, confirm),
+        )
+        .unwrap();
+        room.receive(
+            0,
+            0,
+            Message::known(crate::Opcode::SceneReadyConfirm, [0; 6]),
+        )
+        .unwrap();
+        room.seats[0].world_actor_written = true;
+        while rx.try_recv().is_ok() {}
+
+        let middle_sentry = room
+            .world
+            .entities
+            .iter()
+            .find(|e| e.type_id == EntityTemplate::BlitzMiddleSentry.as_raw())
+            .expect("BlitzMiddleSentry present")
+            .clone();
+        let ally_sentry_id = room
+            .world
+            .entities
+            .iter()
+            .find(|e| e.type_id == EntityTemplate::BlitzAllySentry.as_raw() && e.team == 0)
+            .expect("team 0 AllySentry present")
+            .id;
+        let enemy_hero_id = room.world.entities[1].id;
+        assert_eq!(room.world.entities[1].team, 1);
+
+        // Step 2: Enemy hero 2 and MiddleSentry start in fog; own AllySentry is visible.
+        assert!(!room.visible[0].contains(&enemy_hero_id));
+        assert!(!room.visible[0].contains(&middle_sentry.id));
+        assert!(room.visible[0].contains(&ally_sentry_id));
+
+        // Step 3: Move stationary enemy hero 2 and human hero 0 next to MiddleSentry, replicate(&[]).
+        let home_pos = room.world.entities[0].position;
+        let sentry_wire = u32::from(messages::wire_id(middle_sentry.id));
+        let enemy_hero_wire = u32::from(messages::wire_id(enemy_hero_id));
+        room.world.entities[0].position = middle_sentry.position;
+        room.world.entities[1].position = middle_sentry.position;
+        room.replicate(&[]);
+
+        let enter = rx.try_recv().unwrap().into_records();
+        let has_vis = |batch: &[Message], actor_wire: u32, mask: u8| {
+            batch.iter().any(|m| {
+                m.is(crate::Opcode::ModifyVisibility)
+                    && m.body[..8]
+                        == [
+                            actor_wire.to_be_bytes()[0],
+                            actor_wire.to_be_bytes()[1],
+                            actor_wire.to_be_bytes()[2],
+                            actor_wire.to_be_bytes()[3],
+                            1,
+                            1,
+                            mask,
+                            0,
+                        ]
+            })
+        };
+        assert!(has_vis(&enter, enemy_hero_wire, 15));
+        assert!(has_vis(&enter, sentry_wire, 15));
+        assert!(enter.iter().any(|m| {
+            m.is(crate::Opcode::MoveToCorrection) && m.body[..4] == enemy_hero_wire.to_be_bytes()
+        }));
+        assert!(enter.iter().all(|m| {
+            !(m.is(crate::Opcode::HeroSpawn)
+                && m.body[10..12] == (enemy_hero_wire as u16).to_be_bytes())
+                && !(m.is(crate::Opcode::EntitySpawn) && m.body[8..12] == sentry_wire.to_be_bytes())
+        }));
+        for m in &enter {
+            if m.is(crate::Opcode::ModifyVisibility) {
+                assert!(matches!(
+                    m.body.as_slice(),
+                    [0, 0, _, _, 0..=7, 1, 0 | 15, 0, 0, 0, 0, 0, 0, 0]
+                ));
+            }
+        }
+
+        // Step 4: Return hero 0 to home fountain (enemy hero & MiddleSentry leave vision).
+        room.world.entities[0].position = home_pos;
+        room.replicate(&[]);
+        let leave = rx.try_recv().unwrap().into_records();
+        assert!(has_vis(&leave, enemy_hero_wire, 0));
+        assert!(has_vis(&leave, sentry_wire, 0));
+        assert!(leave.iter().all(|m| {
+            !m.is(crate::Opcode::ModifyVisibility)
+                || room
+                    .world
+                    .entities
+                    .iter()
+                    .find(|e| u32::from(messages::wire_id(e.id)).to_be_bytes() == m.body[..4])
+                    .is_some_and(|e| !matches!(e.kind, Kind::Tower | Kind::Crystal))
+        }));
+
+        // Step 5: Step to Blitz wave start, bring a fresh enemy minion into vision, verify 0x03F2 precedes 0x042B.
+        while !room
+            .world
+            .entities
+            .iter()
+            .any(|e| e.kind == Kind::Minion && e.team == 1)
+        {
+            room.world.step();
+        }
+        room.world.entities[0].position = home_pos;
+        room.replicate(&[]);
+        while rx.try_recv().is_ok() {}
+
+        let enemy_minion_id = room
+            .world
+            .entities
+            .iter()
+            .find(|e| e.kind == Kind::Minion && e.team == 1 && !room.visible[0].contains(&e.id))
+            .expect("unseen enemy minion present")
+            .id;
+        let minion_wire = u32::from(messages::wire_id(enemy_minion_id));
+        room.world
+            .entities
+            .find_mut(|e| e.id == enemy_minion_id)
+            .unwrap()
+            .position = home_pos;
+        room.replicate(&[]);
+        let minion_enter = rx.try_recv().unwrap().into_records();
+        let spawn_pos = minion_enter
+            .iter()
+            .position(|m| {
+                m.is(crate::Opcode::EntitySpawn) && m.body[8..12] == minion_wire.to_be_bytes()
+            })
+            .expect("enemy minion 0x03F2 EntitySpawn emitted");
+        let vis_pos = minion_enter
+            .iter()
+            .position(|m| {
+                m.is(crate::Opcode::ModifyVisibility)
+                    && m.body[..8]
+                        == [
+                            minion_wire.to_be_bytes()[0],
+                            minion_wire.to_be_bytes()[1],
+                            minion_wire.to_be_bytes()[2],
+                            minion_wire.to_be_bytes()[3],
+                            1,
+                            1,
+                            15,
+                            0,
+                        ]
+            })
+            .expect("enemy minion 0x042B ModifyVisibility emitted");
+        assert!(spawn_pos < vis_pos, "0x03F2 must precede 0x042B");
+
+        // Step 6: Mid-match solo_opening reconnect snapshot reveals visible enemy & neutral actors.
+        room.world.tick = 40;
+        room.world.entities[0].position = middle_sentry.position;
+        room.world.entities[1].position = middle_sentry.position;
+        let reconnect = solo_opening(&mut room, 0).unwrap().unwrap();
+        assert!(has_vis(&reconnect, enemy_hero_wire, 15));
+        assert!(has_vis(&reconnect, sentry_wire, 15));
     }
 }

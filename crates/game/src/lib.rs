@@ -66,6 +66,35 @@ type Batch = Vec<Message>;
 type Sink = mpsc::Sender<transport::Delivery>;
 type Finish = Arc<dyn Fn(Uuid, Value) + Send + Sync>;
 type Shared = Arc<Mutex<Room>>;
+
+const VISIBILITY_STATE_NORMAL: u8 = 1;
+const VISIBILITY_MASK_HIDDEN: u8 = 0;
+const VISIBILITY_MASK_VISIBLE: u8 = 15;
+
+/// Returns true for non-own-team mobile and neutral actors whose client visibility
+/// is toggled via `0x042B` (`Opcode::ModifyVisibility`). Own-team units and static
+/// lane structures (`Tower`, `Crystal`, `Armory`) remain visible via their spawn masks.
+pub(crate) fn uses_visibility_toggle(viewer_team: u8, entity: &halcyon_sim::Entity) -> bool {
+    entity.team != viewer_team
+        && matches!(
+            entity.kind,
+            halcyon_sim::Kind::Hero | halcyon_sim::Kind::Minion | halcyon_sim::Kind::Neutral
+        )
+}
+
+pub(crate) fn actor_visibility_message(actor_id: u32, viewer_team: u8, visible: bool) -> Message {
+    let mask = if visible {
+        VISIBILITY_MASK_VISIBLE
+    } else {
+        VISIBILITY_MASK_HIDDEN
+    };
+    Message::actor_visibility(
+        u32::from(wire_id(actor_id)),
+        viewer_team + 1,
+        VISIBILITY_STATE_NORMAL,
+        [mask, 0],
+    )
+}
 #[derive(Clone)]
 pub struct Rooms(Arc<Manager>);
 struct Manager {
@@ -1225,6 +1254,9 @@ impl Room {
                 for e in &self.world.entities {
                     if e.hp > 0.0 && self.world.visible(team, e) {
                         self.visible[usize::from(team)].insert(e.id);
+                        if uses_visibility_toggle(team, e) {
+                            batch.push(actor_visibility_message(e.id, team, true));
+                        }
                     }
                 }
             } else {
@@ -1264,6 +1296,11 @@ impl Room {
                 self.legacy_aral(),
             ));
             messages::append_inventory(&mut out, &self.world, e);
+            if let Some(viewer_team) = team
+                && uses_visibility_toggle(viewer_team, e)
+            {
+                out.push(actor_visibility_message(e.id, viewer_team, true));
+            }
         }
         out.extend(self.recommended_paths(team));
         out.extend(aral::talent_snapshot(self));
@@ -2262,6 +2299,11 @@ impl Room {
                             if !self.scene_views[*seat].knows(id) {
                                 decls.push(message.clone());
                                 messages::append_inventory(decls, &self.world, e);
+                                if uses_visibility_toggle(team as u8, e)
+                                    && self.visible[team].contains(&id)
+                                {
+                                    decls.push(actor_visibility_message(id, team as u8, true));
+                                }
                             }
                         }
                     }
@@ -2314,6 +2356,26 @@ impl Room {
                 );
             }
             let previous = &mut self.visible[team];
+            let viewer_team = team as u8;
+            for e in &self.world.entities {
+                if !uses_visibility_toggle(viewer_team, e) {
+                    continue;
+                }
+                let was_visible = previous.contains(&e.id);
+                let now_visible = current.contains(&e.id);
+                if !was_visible && now_visible {
+                    out.push(actor_visibility_message(e.id, viewer_team, true));
+                    if !newly_declared.contains(&e.id)
+                        && !events
+                            .iter()
+                            .any(|ev| matches!(ev, Event::Move { id, .. } if *id == e.id))
+                    {
+                        out.push(Message::position(wire_id(e.id), e.position.x, e.position.y));
+                    }
+                } else if was_visible && !now_visible && e.hp > 0.0 && !fallen.contains(&e.id) {
+                    out.push(actor_visibility_message(e.id, viewer_team, false));
+                }
+            }
             let mut has_attack_release = false;
             for ev in events {
                 if legacy_aral

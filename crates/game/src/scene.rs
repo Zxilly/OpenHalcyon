@@ -180,6 +180,9 @@ pub(super) fn solo_opening(room: &mut Room, seat: usize) -> std::io::Result<Batc
             messages::append_inventory(&mut out, &room.world, e);
             if visible {
                 room.visible[team as usize].insert(e.id);
+                if crate::uses_visibility_toggle(team, e) {
+                    out.push(crate::actor_visibility_message(e.id, team, true));
+                }
             }
         }
     }
