@@ -216,7 +216,8 @@ pub(super) fn initial_structures(room: &mut Room) {
             && let Some(message) = super::compact::structure(room.world.tick, entity)
         {
             known.insert(entity.id);
-            if let Some(opening) = super::structure_effects::Opening::solo(message.body[116])
+            if let Ok(spawn) = halcyon_protocol::EntitySpawnBody::read_body(&message.body)
+                && let Some(opening) = super::structure_effects::Opening::solo(spawn.slot)
                 && opening.actor() == u32::from(messages::wire_id(entity.id))
             {
                 effects.push(opening);

@@ -160,17 +160,30 @@ impl SoloSnapshot {
         }
         let mut groups = Vec::new();
         for message in batch.iter() {
-            let slot = match message.known_opcode() {
-                Some(Opcode::EntitySpawn) => message.body.get(116),
-                Some(Opcode::HeroSpawn) => message.body.get(745),
+            let (slot, actor, template) = match message.known_opcode() {
+                Some(Opcode::EntitySpawn) => {
+                    let Ok(spawn) = halcyon_protocol::EntitySpawnBody::read_body(&message.body)
+                    else {
+                        continue;
+                    };
+                    (spawn.slot, spawn.actor, spawn.template)
+                }
+                Some(Opcode::HeroSpawn) => {
+                    let Ok(spawn) =
+                        halcyon_protocol::HeroSpawnBody::read_unpadded_or_padded(&message.body)
+                    else {
+                        continue;
+                    };
+                    (spawn.slot, spawn.actor, spawn.template)
+                }
                 _ => continue,
             };
-            let Some(profile) = slot.copied().and_then(SoloStructure::at_slot) else {
+            let Some(profile) = SoloStructure::at_slot(slot) else {
                 continue;
             };
             if self.lost_slots & (1_u64 << profile.slot()) == 0
-                && message.body[8..12] == profile.actor().to_be_bytes()
-                && message.body[..4] == u32::from(profile.template()).to_be_bytes()
+                && actor == profile.actor()
+                && template == u32::from(profile.template())
             {
                 groups.push(Opening::solo(profile.slot()).expect("known Solo structure"));
             }

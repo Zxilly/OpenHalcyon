@@ -79,28 +79,26 @@ fn decrement(slot: u8) -> Message {
 }
 
 pub(super) fn recordable(m: &Message) -> bool {
-    let Some(wire) = m.body.get(..4) else {
-        return false;
-    };
-    let Some(slot) = u32::from_be_bytes(wire.try_into().unwrap())
-        .checked_sub(2000)
-        .and_then(|n| u8::try_from(n).ok())
-    else {
-        return false;
-    };
-    let Some((guards, instance)) = profile(slot) else {
-        return false;
+    let slot_from_actor = |actor: u32| {
+        actor
+            .checked_sub(2000)
+            .and_then(|n| u8::try_from(n).ok())
+            .and_then(|slot| profile(slot).map(|prof| (slot, prof)))
     };
     if m.is(Opcode::DecrementBuffStack) {
-        return matches!(
-            halcyon_protocol::DecrementBuffStackBody::read_with_padding(&m.body),
-            Ok((body, tail))
-                if (tail.is_empty() || tail == [0, 0])
-                    && body.instance == instance
-                    && body.count == 1
-        );
+        let Ok((body, tail)) = halcyon_protocol::DecrementBuffStackBody::read_with_padding(&m.body)
+        else {
+            return false;
+        };
+        let Some((_, (_, instance))) = slot_from_actor(body.target) else {
+            return false;
+        };
+        return (tail.is_empty() || tail == [0, 0]) && body.instance == instance && body.count == 1;
     }
     let Ok(Fields::BuffApplication(effect)) = m.fields() else {
+        return false;
+    };
+    let Some((slot, (guards, instance))) = slot_from_actor(effect.prefix.target) else {
         return false;
     };
     m.is(Opcode::ApplyBuffExtended)
@@ -126,7 +124,10 @@ impl View {
             .iter()
             .filter(|m| m.is(Opcode::ApplyBuffExtended) && recordable(m))
         {
-            let slot = (u32::from_be_bytes(m.body[..4].try_into().unwrap()) - 2000) as u8;
+            let Ok(Fields::BuffApplication(effect)) = m.fields() else {
+                continue;
+            };
+            let slot = (effect.prefix.target - 2000) as u8;
             if self.registered(sim_id(slot), slot) {
                 self.guard_links.granted |= 1 << slot;
             }

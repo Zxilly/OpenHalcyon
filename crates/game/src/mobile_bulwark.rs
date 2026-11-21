@@ -1,9 +1,16 @@
 use crate::{Batch, Message, Opcode, Room, tower_aggro::View, transport::Delivery};
-use halcyon_protocol::{BuffApplication, BuffPrefix, OrbitAction, OrbitPosition, ZoneAction};
+use halcyon_protocol::{
+    BuffApplication, BuffPrefix, EntitySpawnBody, EntityStatMask, OrbitAction, OrbitPosition,
+    ZoneAction,
+};
 use halcyon_sim::{Event, Position};
 
 const GROUND: u32 = 0x3d192e1f;
 const END_HEIGHT: u32 = 0x3f86630b;
+const BULWARK_TEMPLATE: u32 = 272;
+const BULWARK_SKIN: u32 = 0x34bd_643e;
+const BULWARK_VIS_REQUIRED: [u8; 8] = [0x59, 0x37, 0xc9, 0xff, 0x65, 0x37, 0xc9, 0xff];
+
 fn orbit_position(p: Position, height: u32) -> OrbitPosition {
     OrbitPosition {
         x_bits: p.x.to_bits(),
@@ -12,25 +19,14 @@ fn orbit_position(p: Position, height: u32) -> OrbitPosition {
     }
 }
 fn initial(source: u32, id: u32, p: Position, angle: f32, slot: u8, team: u8) -> Batch {
-    let mut b = vec![0; 122];
-    for (offset, word) in [
-        (0, 272),
-        (4, 0x34bd643e),
-        (8, id),
-        (12, p.x.to_bits()),
-        (16, GROUND),
-        (20, p.y.to_bits()),
-        (24, angle.cos().to_bits()),
-        (32, angle.sin().to_bits()),
-        (88, 0x5937c9ff),
-        (92, 0x6537c9ff),
-        (112, source),
-    ] {
-        b[offset..offset + 4].copy_from_slice(&word.to_be_bytes());
-    }
-    b[97 + usize::from(team)] = 1;
-    b[116..].copy_from_slice(&[slot, 1, 0, 1, 255, team + 1]);
-    let mut out = vec![Message::known(Opcode::EntitySpawn, b)];
+    let mut spawn = EntitySpawnBody::new(BULWARK_TEMPLATE, BULWARK_SKIN, id, slot, team + 1);
+    spawn.position = [p.x, f32::from_bits(GROUND), p.y];
+    spawn.forward = [angle.cos(), 0.0, angle.sin()];
+    spawn.visibility_required = BULWARK_VIS_REQUIRED;
+    spawn.visibility_mask[1 + usize::from(team)] = 1;
+    spawn.word112 = source;
+    spawn.set_stat_mask(EntityStatMask::Pristine);
+    let mut out = vec![spawn.encode()];
     for (i, definition) in [66, 709].into_iter().enumerate() {
         out.push(
             BuffApplication {
@@ -170,26 +166,44 @@ pub(super) fn publish(room: &mut Room, event: &Event) {
 }
 
 pub(super) fn recordable(m: &Message) -> bool {
-    let b = &m.body;
     let dynamic = |id: u32| (2084..=65535).contains(&id);
     let hero = |id: u32| (1500..1506).contains(&id);
-    let word = |i| u32::from_be_bytes(b[i..i + 4].try_into().unwrap());
-    let finite = |value| f32::from_bits(value).is_finite();
+    let finite = |value: u32| f32::from_bits(value).is_finite();
     match m.known_opcode() {
-        Some(Opcode::EntitySpawn) if b.len() == 122 => {
-            word(0) == 272
-                && word(4) == 0x34bd643e
-                && dynamic(word(8))
-                && [12, 20, 24, 32].into_iter().all(|i| finite(word(i)))
-                && word(16) == GROUND
-                && word(28) == 0
-                && b[36..88].iter().all(|v| *v == 0)
-                && word(88) == 0x5937c9ff
-                && word(92) == 0x6537c9ff
-                && matches!(&b[96..100], [0, 1, 0, 0] | [0, 0, 1, 0])
-                && b[100..112].iter().all(|v| *v == 0)
-                && hero(word(112))
-                && matches!(&b[116..], [22..=199, 1, 0, 1, 255, 1 | 2])
+        Some(Opcode::EntitySpawn) => {
+            let Ok(spawn) = EntitySpawnBody::read_body(&m.body) else {
+                return false;
+            };
+            spawn.template == BULWARK_TEMPLATE
+                && spawn.skin == BULWARK_SKIN
+                && dynamic(spawn.actor)
+                && spawn.position[0].is_finite()
+                && spawn.position[1].to_bits() == GROUND
+                && spawn.position[2].is_finite()
+                && spawn.forward[0].is_finite()
+                && spawn.forward[1].to_bits() == 0
+                && spawn.forward[2].is_finite()
+                && spawn.hp.to_bits() == 0
+                && spawn.max_hp.to_bits() == 0
+                && spawn.reserved_44 == [0; 8]
+                && spawn.radius.to_bits() == 0
+                && spawn.reserved_56 == [0; 8]
+                && spawn.word64.to_bits() == 0
+                && spawn.reserved_68 == [0; 16]
+                && spawn.word84.to_bits() == 0
+                && spawn.visibility_required == BULWARK_VIS_REQUIRED
+                && matches!(
+                    spawn.visibility_mask,
+                    [0, 1, 0, 0, 0, 0, 0, 0] | [0, 0, 1, 0, 0, 0, 0, 0]
+                )
+                && spawn.visibility_aux == [0; 8]
+                && hero(spawn.word112)
+                && (22..=199).contains(&spawn.slot)
+                && spawn.stat_mask() == EntityStatMask::Pristine
+                && spawn.flag118 == 0
+                && spawn.level == 1
+                && spawn.lane_index == EntitySpawnBody::NO_LANE_INDEX
+                && matches!(spawn.team_index, 1 | 2)
         }
         Some(Opcode::ApplyBuffCompact) => {
             matches!(m.fields(),Ok(halcyon_protocol::Fields::BuffApplication(e)) if dynamic(e.prefix.target) && hero(e.prefix.source) && e.prefix.duration_bits==0xbc00 && e.suffix.is_empty() && matches!((e.prefix.definition,e.prefix.instance.checked_sub(e.prefix.target)),(66,Some(1))|(709,Some(2))))

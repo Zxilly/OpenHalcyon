@@ -18,10 +18,6 @@ impl Preferences {
         )
     }
 
-    pub(super) fn write(self, row: &mut [u8]) {
-        let _ = self.to_wire().write_body(&mut row[12..15]);
-    }
-
     pub(super) fn set_position(&mut self, value: Option<DraftPosition>) {
         self.position = value;
     }

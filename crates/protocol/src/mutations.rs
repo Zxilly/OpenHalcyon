@@ -16,6 +16,11 @@ pub struct AttributeChange {
 fixed_packet!(AttributeChange, Opcode::ModifyActorAttribute, 15);
 
 impl AttributeChange {
+    /// Reads the 14-byte `Fields::StatModifier` prefix (`actor`, `source`, `value`, `index`, `layer`).
+    pub fn read_stat_modifier(body: &[u8]) -> std::io::Result<StatModifierPrefix> {
+        crate::fixed_body::read(body)
+    }
+
     pub fn read(msg: &Message) -> Option<Self> {
         msg.is(Opcode::ModifyActorAttribute)
             .then(|| Self::read_exact_or_padded(&msg.body).ok())
@@ -25,6 +30,26 @@ impl AttributeChange {
     pub fn message(self) -> Message {
         self.encode_padded()
     }
+}
+
+/// 14-byte prefix of `0x041C` (`Opcode::ModifyActorAttribute`) excluding `set_mode`.
+#[derive(Clone, Copy, Debug, PartialEq, BinRead, BinWrite)]
+#[brw(big)]
+pub struct StatModifierPrefix {
+    pub actor: u32,
+    pub source: u32,
+    pub value: f32,
+    pub index: u8,
+    pub layer: u8,
+}
+
+/// 9-byte prefix of `0x041D` (`Opcode::ModifyActorResource`) up through the resource `index`.
+#[derive(Clone, Copy, Debug, PartialEq, BinRead, BinWrite)]
+#[brw(big)]
+pub struct EntityStatPrefix {
+    pub actor: u32,
+    pub value: f32,
+    pub index: u8,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, BinRead, BinWrite)]
@@ -40,6 +65,11 @@ pub struct ResourceChange {
 fixed_packet!(ResourceChange, Opcode::ModifyActorResource, 12);
 
 impl ResourceChange {
+    /// Reads the 9-byte `Fields::EntityStat` prefix (`actor`, `value`, `index`).
+    pub fn read_entity_stat_prefix(body: &[u8]) -> std::io::Result<EntityStatPrefix> {
+        crate::fixed_body::read(body)
+    }
+
     pub fn read(msg: &Message) -> Option<Self> {
         msg.is(Opcode::ModifyActorResource)
             .then(|| Self::read_exact_or_padded(&msg.body).ok())

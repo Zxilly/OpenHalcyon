@@ -10,23 +10,31 @@ pub struct TowerAggro {
     pub target_slot: Option<u8>,
 }
 
+/// Raw 8-byte `0x0417` (`Opcode::SendAggroState`) wire prefix.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, BinRead, BinWrite)]
 #[brw(big)]
-struct TowerAggroWire {
-    tower_slot: u8,
-    target_slot: u8,
-    range_bits: u32,
-    has_target: u8,
-    reserved: u8,
+pub struct SendAggroStateBody {
+    pub tower_slot: u8,
+    pub target_slot: u8,
+    pub range_bits: u32,
+    pub has_target: u8,
+    pub reserved: u8,
 }
-fixed_packet!(TowerAggroWire, Opcode::SendAggroState, 8);
+fixed_packet!(SendAggroStateBody, Opcode::SendAggroState, 8);
+
+impl SendAggroStateBody {
+    /// Returns the big-endian float word at bytes `2..6`.
+    pub const fn value(self) -> f32 {
+        f32::from_bits(self.range_bits)
+    }
+}
 
 impl TowerAggro {
     pub fn decode(message: &Message) -> Option<Self> {
         if !message.is(Opcode::SendAggroState) {
             return None;
         }
-        let (wire, tail) = TowerAggroWire::read_with_padding(&message.body).ok()?;
+        let (wire, tail) = SendAggroStateBody::read_with_padding(&message.body).ok()?;
         if wire.range_bits != OBSERVED_RANGE_BITS
             || wire.reserved != 0
             || tail.iter().any(|&byte| byte != 0)
@@ -50,7 +58,7 @@ impl TowerAggro {
             return None;
         }
         Some(
-            TowerAggroWire {
+            SendAggroStateBody {
                 tower_slot: self.tower_slot,
                 target_slot: self.target_slot.unwrap_or(255),
                 range_bits: OBSERVED_RANGE_BITS,

@@ -1,11 +1,12 @@
 //! Vainglory CE game transport. Decrypted messages preserve every byte,
 //! including ambiguous padding, so unknown opcodes can be re-encoded exactly.
+use binrw::{BinRead, BinWrite};
 use blowfish::{
     BlowfishLE,
     cipher::{BlockDecrypt, BlockEncrypt, KeyInit},
 };
 use md5::{Digest, Md5};
-use std::io::{self, Read, Write};
+use std::io::{self, Cursor, Read, Write};
 
 mod actor_flags;
 pub mod async_frame;
@@ -19,7 +20,7 @@ pub mod player_actions;
 pub mod spec;
 pub use actor_flags::{ActorFlagChange, ActorFlags};
 mod tower_aggro;
-pub use tower_aggro::TowerAggro;
+pub use tower_aggro::{SendAggroStateBody, TowerAggro};
 mod orbit;
 pub use orbit::{OrbitAction, OrbitPosition};
 mod zone;
@@ -27,7 +28,7 @@ pub use zone::ZoneAction;
 mod entity_spawn;
 pub use entity_spawn::{EntitySpawnBody, EntityStatMask, WireTeam};
 mod hero_spawn;
-pub use hero_spawn::HeroSpawnBody;
+pub use hero_spawn::{HeroSpawnBody, HeroSpawnPrefix};
 mod solo_structure;
 pub use solo_structure::SoloStructure;
 mod surrender;
@@ -35,7 +36,9 @@ pub use surrender::{AralSurrenderBoard, MAX_SURRENDER_SLOTS, TeamSurrenderBoard}
 mod talent;
 pub use talent::{EquippedTalent, TalentSelection};
 mod recommended_build;
-pub use recommended_build::RecommendedBuildPath;
+pub use recommended_build::{
+    RecommendedBuildPath, RequestRecommendedBuildPathBody, SetRecommendedBuildPathBody,
+};
 mod statistics;
 pub use statistics::{
     MatchStatistics, MatchStatisticsMut, PlayerStatistics, StatisticsReport, TeamStatistics,
@@ -63,7 +66,7 @@ mod mutations;
 mod native_motion;
 pub use native_motion::{ForcedMove, ForcedMoveMode};
 mod projectile;
-pub use mutations::{AttributeChange, ResourceChange};
+pub use mutations::{AttributeChange, EntityStatPrefix, ResourceChange, StatModifierPrefix};
 pub use projectile::{ProjectileAction, ProjectileFire};
 mod metadata;
 mod opcode;
@@ -79,9 +82,9 @@ pub use draft::{
 };
 pub use lobby::{
     AralRerollStateBody, ConfirmSceneOwnerBody, DraftCatalogEntryBody, DraftModeAnnouncementBody,
-    DraftPreferenceFlags, DraftRosterBody, DraftSlotBody, MatchSettingsBody, PlayerInfoBody,
-    PlayerInfoPrefix, PlayerLoadedSceneBody, RegisterPlayerUuidBody, SceneReadinessRow,
-    SceneReadinessRowsBody, SceneSettingsBody,
+    DraftPreferenceFlags, DraftRosterBody, DraftSlotBody, MatchSettingsBody, MatchSettingsPrefix,
+    PlayerInfoBody, PlayerInfoPrefix, PlayerInfoSummaryPrefix, PlayerLoadedSceneBody,
+    RegisterPlayerUuidBody, SceneReadinessRow, SceneReadinessRowsBody, SceneSettingsBody,
 };
 pub use wire_text::FixedAscii;
 mod match_events;
@@ -192,12 +195,13 @@ impl Message {
     }
     /// The charge operand is an unsigned wire word; its interpretation depends on the mode.
     pub fn modify_ability_charges(owner: u32, ability_slot: u32, operand: u32, mode: u8) -> Self {
-        let mut body = [0; 14];
-        body[..4].copy_from_slice(&owner.to_be_bytes());
-        body[4..8].copy_from_slice(&ability_slot.to_be_bytes());
-        body[8..12].copy_from_slice(&operand.to_be_bytes());
-        body[12] = mode;
-        Self::new(Opcode::ModifyAbilityCharges as u16, body)
+        ModifyAbilityChargesBody {
+            owner,
+            ability_slot,
+            operand,
+            mode,
+        }
+        .encode_padded()
     }
     /// The Android spectator-exit wrapper writes one zero operand before block padding.
     pub fn is_spectator_exit(&self) -> bool {
@@ -208,7 +212,7 @@ impl Message {
         opcode == Opcode::SpectatorExitMatchRequest.raw() && (body == [0] || body == [0; 6])
     }
     pub fn clock(time: f32) -> Self {
-        Self::known(crate::Opcode::ClockSync, time.to_be_bytes())
+        ClockSyncBody { seconds: time }.encode()
     }
     pub fn movement(x: f32, y: f32) -> Self {
         MoveCmd { x, y }.message(Opcode::RequestMoveJoystick, MoveCmd::BODY_LEN)
@@ -232,19 +236,15 @@ impl Message {
         .message()
     }
     pub fn actor_relocation(actor: u32, xyz: [f32; 3], flag: u8) -> Self {
-        let mut body = [0; 22];
-        body[..4].copy_from_slice(&actor.to_be_bytes());
-        for (dst, value) in body[4..16].as_chunks_mut::<4>().0.iter_mut().zip(xyz) {
-            dst.copy_from_slice(&value.to_be_bytes());
+        TeleportToBody {
+            actor,
+            position: xyz,
+            flag,
         }
-        body[16] = flag;
-        Self::known(crate::Opcode::TeleportTo, body)
+        .encode_padded()
     }
     pub fn actor_respawn_timer(actor: u32, seconds: f32) -> Self {
-        let mut body = [0; 14];
-        body[..4].copy_from_slice(&actor.to_be_bytes());
-        body[4..8].copy_from_slice(&seconds.to_be_bytes());
-        Self::known(crate::Opcode::ActorRespawnTimer, body)
+        RespawnTimerBody { actor, seconds }.encode_padded()
     }
     pub fn actor_death(victim: u32, source: u32) -> Self {
         DeathBody { victim, source }.message(Opcode::ActorDeath, 14)
@@ -277,74 +277,44 @@ impl Message {
         if let Some(application) = BuffApplication::decode(self.opcode, b) {
             return Ok(Fields::BuffApplication(application));
         }
-        let float = |i: usize| -> io::Result<f32> {
-            Ok(f32::from_be_bytes(
-                b.get(i..i + 4)
-                    .ok_or_else(|| invalid("truncated float"))?
-                    .try_into()
-                    .unwrap(),
-            ))
-        };
-        let eid = || -> io::Result<u16> {
-            Ok(u16::from_be_bytes(
-                b.get(2..4)
-                    .ok_or_else(|| invalid("truncated entity"))?
-                    .try_into()
-                    .unwrap(),
-            ))
-        };
-        let number = |i: usize| -> io::Result<u32> {
-            Ok(u32::from_be_bytes(
-                b.get(i..i + 4)
-                    .ok_or_else(|| invalid("missing u32 field"))?
-                    .try_into()
-                    .unwrap(),
-            ))
-        };
-        let word = |i: usize| -> io::Result<u16> {
-            Ok(u16::from_be_bytes(
-                b.get(i..i + 2)
-                    .ok_or_else(|| invalid("missing u16 field"))?
-                    .try_into()
-                    .unwrap(),
-            ))
-        };
         Ok(match self.known_opcode() {
-            Some(Opcode::ClockSync) => Fields::Clock(float(0)?),
+            Some(Opcode::ClockSync) => Fields::Clock(ClockSyncBody::read_body(b)?.seconds),
             Some(Opcode::StartMatch)
-                if b.is_empty() || (b.len() == 6 && b.iter().all(|&v| v == 0)) =>
+                if StartMatchBody::read_with_padding(b)
+                    .is_ok_and(|(_, tail)| tail.iter().all(|&v| v == 0)) =>
             {
                 Fields::HeaderOnly { remaining: b }
             }
-            Some(Opcode::EndMatch) if matches!(b.len(), 5 | 6) => Fields::MatchRequest {
-                team_word: number(0)?,
-                reason: b[4],
-                remaining: &b[5..],
-            },
+            Some(Opcode::EndMatch)
+                if let Ok((body, remaining)) = EndMatchBody::read_with_padding(b) =>
+            {
+                Fields::MatchRequest {
+                    team_word: body.team_word,
+                    reason: body.reason.to_wire(),
+                    remaining,
+                }
+            }
             Some(Opcode::PostMatchStats) if statistics::complete(b) => {
                 Fields::MatchStatistics(MatchStatistics(b))
             }
-            Some(Opcode::OverrideAbility | Opcode::ClearAbilityOverride)
-                if matches!(
-                    (self.opcode, b.len()),
-                    (_, 14)
-                        | (crate::wire_opcode::OverrideAbility, 13)
-                        | (crate::wire_opcode::ClearAbilityOverride, 8)
-                ) =>
+            Some(Opcode::OverrideAbility)
+                if let Ok((body, _)) = OverrideAbilityBody::read_with_padding(b) =>
             {
                 Fields::AbilityOverride {
-                    actor: number(0)?,
-                    key: number(4)?,
-                    replacement: if self.is(crate::Opcode::OverrideAbility) {
-                        Some(number(8)?)
-                    } else {
-                        None
-                    },
-                    remaining: if self.is(crate::Opcode::OverrideAbility) {
-                        &b[12..]
-                    } else {
-                        &b[8..]
-                    },
+                    actor: body.actor,
+                    key: body.key,
+                    replacement: Some(body.replacement),
+                    remaining: &b[12..],
+                }
+            }
+            Some(Opcode::ClearAbilityOverride)
+                if let Ok((body, remaining)) = ClearAbilityOverrideBody::read_with_padding(b) =>
+            {
+                Fields::AbilityOverride {
+                    actor: body.actor,
+                    key: body.key,
+                    replacement: None,
+                    remaining,
                 }
             }
             Some(Opcode::ModifyBuffDuration | Opcode::CancelBuff | Opcode::TimeoutBuff) => self
@@ -370,64 +340,112 @@ impl Message {
                     state,
                 }
             }
-            Some(Opcode::CancelAbility) if matches!(b.len(), 10 | 14) => {
+            Some(Opcode::CancelAbility)
+                if let Ok((body, _)) = CancelAbilityBody::read_with_padding(b) =>
+            {
                 Fields::AbilityCancellation {
-                    actor: number(0)?,
-                    reference: number(4)?,
+                    actor: body.actor,
+                    reference: body.reference,
                     remaining: &b[8..],
                 }
             }
-            Some(Opcode::SendAggroState) if matches!(b.len(), 8 | 14) => Fields::AggroState {
-                prefix: [b[0], b[1]],
-                value: float(2)?,
-                remaining: &b[6..],
-            },
-            Some(Opcode::MoveAndFace) if matches!(b.len(), 20 | 22) => Fields::MoveAndFace {
-                actor: number(0)?,
-                reference: number(4)?,
-                values: [float(8)?, float(12)?, float(16)?],
-                remaining: &b[20..],
-            },
-            Some(Opcode::StopActor) if matches!(b.len(), 17 | 22) => Fields::StopActor {
-                actor: number(0)?,
-                values: [float(4)?, float(8)?, float(12)?],
-                flag: b[16],
-                remaining: &b[17..],
-            },
-            Some(Opcode::MoveToServerAuthoritative) if b.len() == 14 => Fields::ServerMove {
-                selector: b[0],
-                values: [float(1)?, float(5)?, float(9)?],
-                flag: b[13],
-                remaining: &b[14..],
-            },
-            Some(Opcode::TeleportTo) if matches!(b.len(), 17 | 22) => Fields::ActorRelocation {
-                actor: number(0)?,
-                xyz: [float(4)?, float(8)?, float(12)?],
-                flag: b[16],
-                remaining: &b[17..],
-            },
-            Some(Opcode::ActorRespawn) if matches!(b.len(), 16 | 22) => Fields::Respawn {
-                actor: number(0)?,
-                position: [float(4)?, float(8)?, float(12)?],
-                remaining: &b[16..],
-            },
-            Some(Opcode::ActorRespawnTimer) if matches!(b.len(), 8 | 14) => Fields::RespawnTimer {
-                actor: number(0)?,
-                seconds: float(4)?,
-                remaining: &b[8..],
-            },
-            Some(Opcode::LevelUp | Opcode::GrantAbility) if matches!(b.len(), 8 | 14) => {
+            Some(Opcode::SendAggroState)
+                if let Ok((body, _)) = SendAggroStateBody::read_with_padding(b) =>
+            {
+                Fields::AggroState {
+                    prefix: [body.tower_slot, body.target_slot],
+                    value: body.value(),
+                    remaining: &b[6..],
+                }
+            }
+            Some(Opcode::MoveAndFace)
+                if let Ok((body, remaining)) = MoveAndFaceBody::read_with_padding(b) =>
+            {
+                Fields::MoveAndFace {
+                    actor: body.actor,
+                    reference: body.reference,
+                    values: body.values,
+                    remaining,
+                }
+            }
+            Some(Opcode::StopActor)
+                if let Ok((body, remaining)) = StopActorBody::read_with_padding(b) =>
+            {
+                Fields::StopActor {
+                    actor: body.actor,
+                    values: body.values,
+                    flag: body.flag,
+                    remaining,
+                }
+            }
+            Some(Opcode::MoveToServerAuthoritative)
+                if let Ok((body, remaining)) = ServerMoveBody::read_with_padding(b) =>
+            {
+                Fields::ServerMove {
+                    selector: body.selector,
+                    values: body.values,
+                    flag: body.flag,
+                    remaining,
+                }
+            }
+            Some(Opcode::TeleportTo)
+                if let Ok((body, remaining)) = TeleportToBody::read_with_padding(b) =>
+            {
+                Fields::ActorRelocation {
+                    actor: body.actor,
+                    xyz: body.position,
+                    flag: body.flag,
+                    remaining,
+                }
+            }
+            Some(Opcode::ActorRespawn)
+                if let Ok((body, remaining)) = ActorRespawnBody::read_with_padding(b) =>
+            {
+                Fields::Respawn {
+                    actor: body.actor,
+                    position: body.position,
+                    remaining,
+                }
+            }
+            Some(Opcode::ActorRespawnTimer)
+                if let Ok((body, remaining)) = RespawnTimerBody::read_with_padding(b) =>
+            {
+                Fields::RespawnTimer {
+                    actor: body.actor,
+                    seconds: body.seconds,
+                    remaining,
+                }
+            }
+            Some(Opcode::LevelUp)
+                if let Ok((body, remaining)) = LevelUpBody::read_with_padding(b) =>
+            {
                 Fields::ProgressAction {
-                    kind: Opcode::try_from(self.opcode).expect("matched known opcode"),
-                    actor: number(0)?,
-                    operand: number(4)?,
-                    remaining: &b[8..],
+                    kind: Opcode::LevelUp,
+                    actor: body.actor,
+                    operand: body.operand,
+                    remaining,
                 }
             }
-            Some(Opcode::DestroyEntity | Opcode::ActorUndead | Opcode::ActorDead) => {
+            Some(Opcode::GrantAbility)
+                if let Ok((body, remaining)) = GrantAbilityBody::read_with_padding(b) =>
+            {
+                Fields::ProgressAction {
+                    kind: Opcode::GrantAbility,
+                    actor: body.actor,
+                    operand: body.operand,
+                    remaining,
+                }
+            }
+            Some(op @ (Opcode::DestroyEntity | Opcode::ActorUndead | Opcode::ActorDead)) => {
+                let actor = match op {
+                    Opcode::DestroyEntity => DestroyEntityBody::read_body(b)?.actor,
+                    Opcode::ActorUndead => ActorUndeadBody::read_body(b)?.actor,
+                    Opcode::ActorDead => ActorDeadBody::read_body(b)?.actor,
+                    _ => unreachable!(),
+                };
                 Fields::ActorLifecycle {
-                    kind: Opcode::try_from(self.opcode).expect("matched known opcode"),
-                    actor: number(0)?,
+                    kind: op,
+                    actor,
                     remaining: &b[4..],
                 }
             }
@@ -437,35 +455,47 @@ impl Message {
                 | Opcode::FireDirectedProjectile
                 | Opcode::DetonateProjectile),
             ) => ProjectileAction::read_body(op, b).map_or(Fields::Opaque(b), Fields::Projectile),
-            Some(Opcode::PlayTargetAbility) if matches!(b.len(), 9 | 14) => Fields::AbilityAction {
-                actor: number(0)?,
-                reference: number(4)?,
-                selector: b[8],
-                remaining: &b[9..],
-            },
-            Some(Opcode::ModifyCooldown) if matches!(b.len(), 13 | 14) => Fields::CooldownValue {
-                owner: number(0)?,
-                key: number(4)?,
-                value: float(8)?,
-                mode: b[12],
-                remaining: &b[13..],
-            },
-            Some(Opcode::ModifyAbilityCharges) if matches!(b.len(), 13 | 14) => {
-                Fields::AbilityCharges {
-                    owner: number(0)?,
-                    ability_slot: number(4)?,
-                    operand: number(8)?,
-                    mode: b[12],
-                    remaining: &b[13..],
+            Some(Opcode::PlayTargetAbility)
+                if let Ok((body, remaining)) = PlayTargetAbilityBody::read_with_padding(b) =>
+            {
+                Fields::AbilityAction {
+                    actor: body.actor,
+                    reference: body.target,
+                    selector: body.selector,
+                    remaining,
                 }
             }
-            Some(Opcode::InitCooldown) if b.len() == 22 => Fields::CooldownSync {
-                owner: number(0)?,
-                key: number(4)?,
-                value: float(8)?,
-                config_value: float(12)?,
-                raw: b[16..22].try_into().unwrap(),
-            },
+            Some(Opcode::ModifyCooldown)
+                if let Ok((body, remaining)) = ModifyCooldownBody::read_with_padding(b) =>
+            {
+                Fields::CooldownValue {
+                    owner: body.owner,
+                    key: body.key,
+                    value: body.value,
+                    mode: body.mode,
+                    remaining,
+                }
+            }
+            Some(Opcode::ModifyAbilityCharges)
+                if let Ok((body, remaining)) = ModifyAbilityChargesBody::read_with_padding(b) =>
+            {
+                Fields::AbilityCharges {
+                    owner: body.owner,
+                    ability_slot: body.ability_slot,
+                    operand: body.operand,
+                    mode: body.mode,
+                    remaining,
+                }
+            }
+            Some(Opcode::InitCooldown) if let Ok(body) = InitCooldownBody::read_exact(b) => {
+                Fields::CooldownSync {
+                    owner: body.owner,
+                    key: body.key,
+                    value: body.value,
+                    config_value: body.config_value,
+                    raw: b[16..22].try_into().unwrap(),
+                }
+            }
             Some(Opcode::ActorDeath) => {
                 let fixed_body::DeathBody { victim, source } = DeathBody::read_body(b)?;
                 Fields::ActorDeath {
@@ -493,26 +523,29 @@ impl Message {
                     remaining: &b[16..],
                 }
             }
-            Some(Opcode::MatchSettings) => Fields::GameSetup {
-                first_word: number(0)?,
-                state_input: number(4)?,
-                word8: number(8)?,
-                word12: number(12)?,
-                word96: number(96)?,
-                mode: b
-                    .get(32..96)
-                    .ok_or_else(|| invalid("truncated game setup"))?
-                    .split(|&v| v == 0)
-                    .next()
-                    .unwrap_or_default(),
-                remaining: &b[100..],
-            },
-            Some(Opcode::MoveTo) if matches!(b.len(), 9 | 14) => Fields::MoveAction {
-                selector: b[0],
-                x: float(1)?,
-                y: float(5)?,
-                remaining: &b[9..],
-            },
+            Some(Opcode::MatchSettings) => {
+                let prefix = MatchSettingsBody::read_prefix(b)?;
+                let mode_len = prefix.mode.trimmed_bytes().len();
+                Fields::GameSetup {
+                    first_word: prefix.local_actor,
+                    state_input: prefix.state_input,
+                    word8: prefix.hero_template,
+                    word12: prefix.skin_hash,
+                    word96: prefix.word96,
+                    mode: &b[32..32 + mode_len],
+                    remaining: &b[MatchSettingsBody::PREFIX_LEN..],
+                }
+            }
+            Some(Opcode::MoveTo)
+                if let Ok((body, remaining)) = MoveToBody::read_with_padding(b) =>
+            {
+                Fields::MoveAction {
+                    selector: body.selector,
+                    x: body.x,
+                    y: body.y,
+                    remaining,
+                }
+            }
             Some(Opcode::ModifyVisibility) if matches!(b.len(), 8 | 14) => {
                 let VisibilityBody {
                     actor,
@@ -529,55 +562,53 @@ impl Message {
                 }
             }
             Some(
-                Opcode::ModifyVisibility | Opcode::ApplyBuffCompact | Opcode::ApplyBuffExtended,
+                op @ (Opcode::ModifyVisibility
+                | Opcode::ApplyBuffCompact
+                | Opcode::ApplyBuffExtended),
             ) => Fields::EntityPrefix {
-                kind: Opcode::try_from(self.opcode).expect("matched known opcode"),
-                entity: number(0)?,
+                kind: op,
+                entity: fixed_body::read(b)?,
                 remaining: &b[4..],
             },
-            Some(Opcode::PlayerLoadedScene) => Fields::HandleRecord {
-                text: b
-                    .get(..64)
-                    .ok_or_else(|| invalid("truncated name field"))?
-                    .split(|&v| v == 0)
-                    .next()
-                    .unwrap_or_default(),
-                field64: number(64)?,
-                lookup: number(68)?,
-                remaining: &b[72..],
-            },
-            Some(Opcode::SceneSettings) => Fields::NameField {
-                kind: Opcode::SceneSettings,
-                text: b
-                    .get(..64)
-                    .ok_or_else(|| invalid("truncated name field"))?
-                    .split(|&v| v == 0)
-                    .next()
-                    .unwrap_or_default(),
-                remaining: &b[64..],
-            },
+            Some(Opcode::PlayerLoadedScene) => {
+                let body = PlayerLoadedSceneBody::read_prefix(b)?;
+                let len = body.player_name.trimmed_bytes().len();
+                Fields::HandleRecord {
+                    text: &b[..len],
+                    field64: body.seat,
+                    lookup: body.actor,
+                    remaining: &b[PlayerLoadedSceneBody::BODY_LEN..],
+                }
+            }
+            Some(Opcode::SceneSettings) => {
+                let name: FixedAscii<64> = fixed_body::read(b)?;
+                let len = name.trimmed_bytes().len();
+                Fields::NameField {
+                    kind: Opcode::SceneSettings,
+                    text: &b[..len],
+                    remaining: &b[FixedAscii::<64>::LEN..],
+                }
+            }
             Some(Opcode::SceneReadinessRows) => {
-                let raw = b
-                    .get(..96)
-                    .ok_or_else(|| invalid("truncated control entries"))?;
-                let entries = std::array::from_fn(|i| {
-                    let slot = &raw[i * 6..][..6];
-                    ControlEntry {
-                        reference: u32::from_be_bytes(slot[..4].try_into().unwrap()),
-                        gate: slot[4],
-                        flag: slot[5],
-                    }
+                let table = SceneReadinessRowsBody::read_prefix(b)?;
+                let entries = table.rows.map(|row| ControlEntry {
+                    reference: row.reference,
+                    gate: row.gate,
+                    flag: row.flag,
                 });
                 Fields::ControlTable {
                     entries,
-                    remaining: &b[96..],
+                    remaining: &b[SceneReadinessRowsBody::BODY_LEN..],
                 }
             }
-            Some(Opcode::ConfirmSceneOwner) => Fields::ReferencedFlag {
-                reference: number(0)?,
-                flag: *b.get(4).ok_or_else(|| invalid("truncated control flag"))?,
-                remaining: &b[5..],
-            },
+            Some(Opcode::ConfirmSceneOwner) => {
+                let body = ConfirmSceneOwnerBody::read_prefix(b)?;
+                Fields::ReferencedFlag {
+                    reference: body.actor,
+                    flag: body.flag,
+                    remaining: &b[ConfirmSceneOwnerBody::BODY_LEN..],
+                }
+            }
             Some(
                 Opcode::DraftRefreshRequest
                 | Opcode::SceneReadyConfirm
@@ -593,68 +624,110 @@ impl Message {
                     remaining,
                 }
             }
-            Some(Opcode::EntitySpawn) if matches!(b.len(), 122 | 126) => Fields::CompactSpawn {
-                template: number(0)?,
-                skin: number(4)?,
-                entity: number(8)?,
-                lane_minion: LaneMinionSpawn::decode(b),
-                remaining: &b[12..],
-            },
+            Some(Opcode::EntitySpawn) if let Ok((spawn, _)) = EntitySpawnBody::read_padded(b) => {
+                Fields::CompactSpawn {
+                    template: spawn.template,
+                    skin: spawn.skin,
+                    entity: spawn.actor,
+                    lane_minion: LaneMinionSpawn::from_entity(&spawn),
+                    remaining: &b[12..],
+                }
+            }
             Some(Opcode::DraftRosterAral) if b.len() >= AralRoster::BODY_BYTES => {
                 Fields::AralRoster(AralRoster::new(b)?)
             }
-            Some(Opcode::DraftRosterAral) => Fields::AralRosterHeader {
-                remaining_seconds: float(0)?,
-                allotted_seconds: float(4)?,
-                remaining: &b[8..],
-            },
+            Some(Opcode::DraftRosterAral) => {
+                let (remaining_seconds, allotted_seconds) = DraftRosterBody::read_timers_prefix(b)?;
+                Fields::AralRosterHeader {
+                    remaining_seconds,
+                    allotted_seconds,
+                    remaining: &b[8..],
+                }
+            }
             Some(Opcode::DraftRosterFull) => Fields::DraftRoster(DraftRoster::new(b)?),
-            Some(Opcode::ModifyActorAttribute) => Fields::StatModifier {
-                actor: number(0)?,
-                source: number(4)?,
-                value: float(8)?,
-                stat: *b.get(12).ok_or_else(|| invalid("missing modifier stat"))?,
-                flags: *b.get(13).ok_or_else(|| invalid("missing modifier flags"))?,
-            },
-            Some(Opcode::ConsumeItem) => Fields::ItemRemoval {
-                actor: number(0)?,
-                instance: number(4)?,
-                flags: word(8)?,
-            },
-            Some(Opcode::ItemGrant) => Fields::ItemGrant {
-                actor: number(0)?,
-                item: number(4)?,
-                instance: number(8)?,
-            },
-            Some(Opcode::DraftSelectSkin) => Fields::SkinSelection(number(0)?),
-            Some(Opcode::BuyItem) => Fields::ShopRequest {
-                actor: number(0)?,
-                item: number(4)?,
-            },
-            Some(Opcode::DraftSelectHero) => Fields::HeroSelection {
-                template: number(0)?,
-                choice: if b.len() == 6 {
-                    DraftHeroChoice::Flags(u16::from_be_bytes([b[4], b[5]]))
+            Some(Opcode::ModifyActorAttribute) => {
+                let prefix = AttributeChange::read_stat_modifier(b)?;
+                Fields::StatModifier {
+                    actor: prefix.actor,
+                    source: prefix.source,
+                    value: prefix.value,
+                    stat: prefix.index,
+                    flags: prefix.layer,
+                }
+            }
+            Some(Opcode::ConsumeItem) => {
+                let body = ConsumeItemBody::read_body(b)?;
+                Fields::ItemRemoval {
+                    actor: body.actor,
+                    instance: body.instance,
+                    flags: body.flags,
+                }
+            }
+            Some(Opcode::ItemGrant) => {
+                let body = ItemGrantBody::read_body(b)?;
+                Fields::ItemGrant {
+                    actor: body.actor,
+                    item: body.item,
+                    instance: body.instance,
+                }
+            }
+            Some(Opcode::DraftSelectSkin) => Fields::SkinSelection(fixed_body::read(b)?),
+            Some(Opcode::BuyItem) => {
+                let body = BuyItemBody::read_body(b)?;
+                Fields::ShopRequest {
+                    actor: body.actor,
+                    item: body.item,
+                }
+            }
+            Some(Opcode::DraftSelectHero) => {
+                #[derive(BinRead)]
+                #[br(big)]
+                struct SelectHeroWithFlags {
+                    template: u32,
+                    flags: u16,
+                }
+                #[derive(BinRead)]
+                #[br(big)]
+                struct SelectHeroWithSkin {
+                    template: u32,
+                    skin: u32,
+                }
+                if b.len() == 6 {
+                    let parsed: SelectHeroWithFlags = fixed_body::read(b)?;
+                    Fields::HeroSelection {
+                        template: parsed.template,
+                        choice: DraftHeroChoice::Flags(parsed.flags),
+                    }
                 } else {
-                    DraftHeroChoice::Skin(number(4)?)
-                },
-            },
-            Some(Opcode::HeroSpawn) => Fields::Spawn {
-                template: number(0)?,
-                skin: number(4)?,
-                entity: number(8)?,
-                team: number(12)?,
-                x: float(18)?,
-                height: float(22)?,
-                z: float(26)?,
-                hp: float(42)?,
-                max_hp: float(46)?,
-            },
-            Some(Opcode::PlayerInfo) => Fields::PlayerInfo {
-                entity: number(160)?,
-                template: number(164)?,
-                skin: number(168)?,
-            },
+                    let parsed: SelectHeroWithSkin = fixed_body::read(b)?;
+                    Fields::HeroSelection {
+                        template: parsed.template,
+                        choice: DraftHeroChoice::Skin(parsed.skin),
+                    }
+                }
+            }
+            Some(Opcode::HeroSpawn) => {
+                let prefix = HeroSpawnBody::read_summary_prefix(b)?;
+                Fields::Spawn {
+                    template: prefix.template,
+                    skin: prefix.skin,
+                    entity: prefix.actor,
+                    team: prefix.team,
+                    x: prefix.position[0],
+                    height: prefix.position[1],
+                    z: prefix.position[2],
+                    hp: prefix.hp,
+                    max_hp: prefix.max_hp,
+                }
+            }
+            Some(Opcode::PlayerInfo) => {
+                let prefix = PlayerInfoBody::read_summary_prefix(b)?;
+                Fields::PlayerInfo {
+                    entity: prefix.actor_id,
+                    template: prefix.hero_template,
+                    skin: prefix.skin_hash,
+                }
+            }
 
             Some(Opcode::ServerHelloAck) => Fields::Heartbeat,
             Some(Opcode::DraftReadyAccept | Opcode::DraftLockHero) => Fields::HeroLock,
@@ -671,11 +744,14 @@ impl Message {
                     y,
                 }
             }
-            Some(Opcode::ModifyActorResource) => Fields::EntityStat {
-                entity: eid()?,
-                value: float(4)?,
-                stat: *b.get(8).ok_or_else(|| invalid("missing stat type"))?,
-            },
+            Some(Opcode::ModifyActorResource) => {
+                let prefix = ResourceChange::read_entity_stat_prefix(b)?;
+                Fields::EntityStat {
+                    entity: prefix.actor as u16,
+                    value: prefix.value,
+                    stat: prefix.index,
+                }
+            }
             Some(
                 Opcode::RegisterPlayerUuid
                 | Opcode::DraftCatalogEntry
@@ -737,24 +813,26 @@ pub struct LaneMinionSpawn {
 }
 
 impl LaneMinionSpawn {
-    fn decode(body: &[u8]) -> Option<Self> {
-        let word = |offset: usize| u32::from_be_bytes(body[offset..offset + 4].try_into().unwrap());
-        if !(335..=338).contains(&word(0))
-            || word(4) != 0xeb39ce55
-            || !matches!((body[120], body[121]), (0..=2, 1) | (3..=5, 2))
+    fn from_entity(spawn: &EntitySpawnBody) -> Option<Self> {
+        if !(335..=338).contains(&spawn.template)
+            || spawn.skin != EntitySpawnBody::MINION_SKIN
+            || !matches!(
+                (spawn.lane_index, spawn.team_index),
+                (0..=2, 1) | (3..=5, 2)
+            )
         {
             return None;
         }
-        let health = match body[117] {
-            0 => Some((f32::from_bits(word(36)), f32::from_bits(word(40)))),
-            1 => None,
-            _ => return None,
+        let health = match spawn.stat_mask() {
+            EntityStatMask::Full => Some((spawn.hp, spawn.max_hp)),
+            EntityStatMask::Pristine => None,
+            EntityStatMask::Unknown(_) => return None,
         };
         Some(Self {
-            slot: body[116],
-            stat_mask: body[117],
-            route: body[120],
-            wire_team: body[121],
+            slot: spawn.slot,
+            stat_mask: spawn.flag117,
+            route: spawn.lane_index,
+            wire_team: spawn.team_index,
             health,
         })
     }
@@ -1046,34 +1124,57 @@ pub struct DraftSlot<'a> {
 }
 impl<'a> DraftRoster<'a> {
     pub fn new(bytes: &'a [u8]) -> io::Result<Self> {
-        if bytes.len() < 16 * 161 + 8 {
+        if bytes.len() < DraftRosterBody::BODY_LEN {
             return Err(invalid("truncated draft roster"));
         }
         Ok(Self(bytes))
     }
     pub fn remaining_seconds(&self) -> f32 {
-        f32::from_be_bytes(self.0[..4].try_into().unwrap())
+        DraftRosterBody::read_timers_prefix(self.0)
+            .expect("validated draft roster header")
+            .0
     }
     pub fn allotted_seconds(&self) -> f32 {
-        f32::from_be_bytes(self.0[4..8].try_into().unwrap())
+        DraftRosterBody::read_timers_prefix(self.0)
+            .expect("validated draft roster header")
+            .1
     }
     pub fn slot(&self, i: usize) -> Option<DraftSlot<'a>> {
-        if i >= 16 {
+        if i >= DraftRosterBody::SLOT_COUNT {
             return None;
         }
-        let b = &self.0[i * 161..][..161];
+        let offset = i * DraftSlotBody::BODY_LEN;
+        let slot = DraftSlotBody::read_body(&self.0[offset..][..DraftSlotBody::BODY_LEN]).ok()?;
+        let name_len = slot.display_name.trimmed_bytes().len();
         Some(DraftSlot {
-            occupied: b[8] != 0,
-            slot: b[9],
-            selected: b[10] != 0,
-            locked: b[11] != 0,
-            team: b[16],
-            template: u16::from_be_bytes(b[17..19].try_into().unwrap()),
-            entity: u16::from_be_bytes(b[19..21].try_into().unwrap()),
-            skin: u32::from_be_bytes(b[21..25].try_into().unwrap()),
-            display_name: b[25..57].split(|v| *v == 0).next().unwrap(),
+            occupied: slot.occupied != 0,
+            slot: slot.slot,
+            selected: slot.selected != 0,
+            locked: slot.locked != 0,
+            team: slot.team,
+            template: slot.template,
+            entity: slot.entity,
+            skin: slot.skin,
+            display_name: &self.0[offset + 25..offset + 25 + name_len],
         })
     }
+}
+
+#[derive(BinRead, BinWrite)]
+#[brw(big)]
+struct HelloFrameWire {
+    frame_len: u16,
+    opcode: u16,
+    address: FixedAscii<128>,
+    port_word: u32,
+}
+
+#[derive(BinRead)]
+#[br(big)]
+struct HelloPayloadWire {
+    opcode: u16,
+    address: FixedAscii<128>,
+    port_word: u32,
 }
 
 pub fn hello(address: &str) -> io::Result<Vec<u8>> {
@@ -1083,11 +1184,15 @@ pub fn hello_with_port(address: &str, port: u16) -> io::Result<Vec<u8>> {
     if address.len() > 128 || !address.is_ascii() || address.as_bytes().contains(&0) {
         return Err(invalid("invalid hello address"));
     }
+    let wire = HelloFrameWire {
+        frame_len: 134,
+        opcode: Opcode::ClientHello.raw(),
+        address: FixedAscii::from_str_trunc(address),
+        port_word: u32::from(port),
+    };
     let mut frame = vec![0; 136];
-    frame[..2].copy_from_slice(&134u16.to_be_bytes());
-    frame[2..4].copy_from_slice(&Opcode::ClientHello.raw().to_be_bytes());
-    frame[4..4 + address.len()].copy_from_slice(address.as_bytes());
-    frame[132..].copy_from_slice(&u32::from(port).to_be_bytes());
+    wire.write_be(&mut Cursor::new(&mut frame[..]))
+        .map_err(|_| invalid("failed to encode hello frame"))?;
     Ok(frame)
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1105,18 +1210,24 @@ pub fn parse_hello(payload: &[u8]) -> io::Result<&str> {
 }
 
 pub fn parse_hello_endpoint(payload: &[u8]) -> io::Result<HelloEndpoint<'_>> {
-    if payload.len() != 134 || payload[..2] != Opcode::ClientHello.raw().to_be_bytes() {
+    if payload.len() != 134 {
         return Err(invalid("invalid hello frame"));
     }
-    let len = payload[2..130].iter().position(|&x| x == 0).unwrap_or(128);
-    let address = &payload[2..2 + len];
-    if !address.is_ascii() || address.contains(&0) || payload[2 + len..130].iter().any(|v| *v != 0)
+    let wire = HelloPayloadWire::read_be(&mut Cursor::new(payload))
+        .map_err(|_| invalid("invalid hello frame"))?;
+    if wire.opcode != Opcode::ClientHello.raw() {
+        return Err(invalid("invalid hello frame"));
+    }
+    let raw_addr = wire.address.as_bytes();
+    let len = raw_addr.iter().position(|&x| x == 0).unwrap_or(128);
+    let addr_bytes = &raw_addr[..len];
+    if !addr_bytes.is_ascii() || addr_bytes.contains(&0) || raw_addr[len..].iter().any(|&v| v != 0)
     {
         return Err(invalid("invalid hello address field"));
     }
     Ok(HelloEndpoint {
-        address: std::str::from_utf8(address).unwrap(),
-        port_word: u32::from_be_bytes(payload[130..134].try_into().unwrap()),
+        address: std::str::from_utf8(&payload[2..2 + len]).unwrap(),
+        port_word: wire.port_word,
     })
 }
 

@@ -118,7 +118,9 @@ fn sanitize(m: &mut Message) -> bool {
             && buff.prefix.duration_bits==0x58b0 && buff.prefix.target==buff.prefix.source
             && (1500..=1505).contains(&buff.prefix.target) && buff.extras.is_none() && buff.suffix.is_empty()) =>
             {}
-        Some(crate::Opcode::ActorUndead) if matches!(m.body.as_slice(), [0, 0, 5, 220..=225]) => {}
+        Some(crate::Opcode::ActorUndead)
+            if halcyon_protocol::ActorUndeadBody::read_exact(&m.body)
+                .is_ok_and(|body| (1500..=1505).contains(&body.actor)) => {}
         Some(
             crate::Opcode::ApplyBuffCompact
             | crate::Opcode::ModifyBuffDuration
@@ -128,11 +130,9 @@ fn sanitize(m: &mut Message) -> bool {
             super::messages::redact_player_info(&mut m.body);
         }
         Some(crate::Opcode::DraftRosterFull) if m.body.len() == 2590 => {
-            for row in m.body[..16 * 161].as_chunks_mut::<161>().0 {
-                if !row[105..141].starts_with(b"__Kindred_Player_Bot__") {
-                    row[25..57].fill(0);
-                    row[105..141].fill(0);
-                }
+            if let Ok(mut roster) = halcyon_protocol::DraftRosterBody::read_body(&m.body) {
+                roster.redact_non_bots();
+                let _ = roster.write_body(&mut m.body);
             }
         }
         Some(
@@ -144,32 +144,37 @@ fn sanitize(m: &mut Message) -> bool {
         Some(crate::Opcode::MoveToServerAuthoritative) if super::solo_bot_paths::recordable(m) => {}
         // Audited outbound gameplay opcodes only. Unknown and control messages stay out.
         Some(crate::Opcode::EntitySpawn)
-            if m.body.len() == 122
-                && (super::compact::recordable_structure(&m.body)
+            if halcyon_protocol::EntitySpawnBody::read_body(&m.body).is_ok_and(|spawn| {
+                super::compact::recordable_structure(&m.body)
                     || super::compact::recordable_minion_birth(&m.body)
                     || super::compact::recordable_camp_unit(&m.body)
-                    || (u16::try_from(u32::from_be_bytes(m.body[..4].try_into().unwrap()))
+                    || (u16::try_from(spawn.template)
                         .ok()
                         .and_then(EntityTemplate::from_raw)
                         .is_some_and(EntityTemplate::is_solo_lane_minion)
+                        && (52..=199).contains(&spawn.slot)
+                        && spawn.flag117 == 0
+                        && spawn.flag118 == 0
+                        && spawn.level == 1
                         && matches!(
-                            m.body[116..122],
-                            [52..=199, 0, 0, 1, 0..=2, 1] | [52..=199, 0, 0, 1, 3..=5, 2]
+                            (spawn.lane_index, spawn.team_index),
+                            (0..=2, 1) | (3..=5, 2)
                         ))
-                    || super::aral_spawn::recordable(&m.body)) => {}
+                    || super::aral_spawn::recordable(&m.body)
+            }) => {}
         Some(crate::Opcode::ModifyVisibility)
-            if matches!(
-                m.body.as_slice(),
-                [0, 0, _, _, 0..=7, 1, 0 | 15, 0, 0, 0, 0, 0, 0, 0]
-            ) => {}
+            if halcyon_protocol::VisibilityBody::read_body(&m.body).is_ok_and(|vis| {
+                m.body.len() == 14
+                    && vis.actor < 65536
+                    && vis.index <= 7
+                    && vis.state == 1
+                    && matches!(vis.masks, [0 | 15, 0])
+                    && m.body[8..] == [0; 6]
+            }) => {}
         Some(crate::Opcode::MoveTo)
-            if m.body.len() == 9
-                && (14..=199).contains(&m.body[0])
-                && m.body[1..]
-                    .as_chunks::<4>()
-                    .0
-                    .iter()
-                    .all(|b| f32::from_be_bytes(*b).is_finite()) => {}
+            if halcyon_protocol::MoveToBody::read_exact(&m.body).is_ok_and(|body| {
+                (14..=199).contains(&body.selector) && body.x.is_finite() && body.y.is_finite()
+            }) => {}
         // Only the authored hero-slot and target combinations have verified wire meanings.
         Some(crate::Opcode::InitCooldown) if super::native_cooldown::recordable(m) => {}
         Some(crate::Opcode::ModifyGameModeVar)
@@ -177,8 +182,10 @@ fn sanitize(m: &mut Message) -> bool {
         Some(crate::Opcode::MakeAnnouncement)
             if super::aral::announcements::recordable(&m.body) => {}
         Some(crate::Opcode::GrantAbility)
-            if matches!(m.body.as_slice(), [0, 0, 5, 220..=229, 0, 0, 0, operand]
-            if halcyon_sim::known_native_learn_operand(*operand)) => {}
+            if halcyon_protocol::GrantAbilityBody::read_exact(&m.body).is_ok_and(|body| {
+                (1500..=1509).contains(&body.actor)
+                    && u8::try_from(body.operand).is_ok_and(halcyon_sim::known_native_learn_operand)
+            }) => {}
         Some(
             crate::Opcode::FirePointProjectile
             | crate::Opcode::FireDirectedProjectile
@@ -243,15 +250,12 @@ fn sanitize(m: &mut Message) -> bool {
                 [0, 0, 5, 220..=229, 0, 0, 5, 220..=229, 2]
             ) => {}
         Some(crate::Opcode::PlayPointAbility)
-            if m.body.len() == 17
-                && matches!(m.body[..4], [0, 0, 5, 220..=229])
-                && matches!(m.body[16], 0 | 1 | 3)
-                && m.body[4..16]
-                    .as_chunks::<4>()
-                    .0
-                    .iter()
-                    .all(|v| f32::from_be_bytes(*v).is_finite())
-                && f32::from_be_bytes(m.body[8..12].try_into().unwrap()) == 0.0 => {}
+            if halcyon_protocol::PlayPointAbilityBody::read_exact(&m.body).is_ok_and(|body| {
+                (1500..=1509).contains(&body.actor)
+                    && matches!(body.selector, 0 | 1 | 3)
+                    && body.coordinates.iter().all(|v| v.is_finite())
+                    && body.coordinates[1] == 0.0
+            }) => {}
         Some(crate::Opcode::MoveAndFace) if super::ringo::recordable_face(m) => {}
         Some(crate::Opcode::SendAggroState)
             if halcyon_protocol::TowerAggro::decode(m).is_some_and(|state| {
@@ -265,20 +269,27 @@ fn sanitize(m: &mut Message) -> bool {
                 m.body.as_slice(),
                 [0, 0, 5, 220..=225, 255, 0] | [0, 0, 5, 220..=225, 0..=2, 1..=255]
             ) => {}
-        Some(crate::Opcode::SetRecommendedBuildPath) if matches!(m.body.as_slice(), [0, 0, _, _, value] if halcyon_protocol::RecommendedBuildPath::from_repr(*value).is_some()) =>
-            {}
+        Some(crate::Opcode::SetRecommendedBuildPath)
+            if halcyon_protocol::SetRecommendedBuildPathBody::read_exact(&m.body)
+                .is_ok_and(|body| body.actor < 65536) => {}
         Some(crate::Opcode::SceneReadinessRows)
-            if matches!(m.body.len(), 96 | 102) && m.body[96..].iter().all(|&v| v == 0) => {}
-        Some(crate::Opcode::StartMatch) if m.body.is_empty() || m.body == [0; 6] => {}
+            if halcyon_protocol::SceneReadinessRowsBody::read_prefix(&m.body).is_ok()
+                && matches!(m.body.len(), 96 | 102)
+                && m.body[96..].iter().all(|&v| v == 0) => {}
+        Some(crate::Opcode::StartMatch)
+            if halcyon_protocol::StartMatchBody::read_with_padding(&m.body)
+                .is_ok_and(|(_, tail)| tail.iter().all(|&v| v == 0)) => {}
         Some(crate::Opcode::HealthImpact) if m.body.len() == 22 && m.body[16..] == [0; 6] => {}
         Some(crate::Opcode::LevelUp)
-            if m.body.len() == 14 && m.body[4..] == [0, 0, 0, 1, 0, 0, 0, 0, 0, 0] => {}
+            if halcyon_protocol::LevelUpBody::read_padded_zero(&m.body)
+                .is_ok_and(|body| body.operand == 1) => {}
         Some(crate::Opcode::TeleportTo)
             if matches!(m.fields(),Ok(halcyon_protocol::Fields::ActorRelocation{actor:1500..=1505,xyz,flag:1,remaining:[0,0,0,0,0]}) if [
             [-78.18,1.3,0.88],[-81.81,1.3,1.97],[-77.03,1.3,-1.94],
             [79.66,1.5,-0.91],[78.60,1.5,-5.06],[83.22,1.5,0.72]
         ].contains(&xyz)) => {}
-        Some(crate::Opcode::ActorRespawn) if m.body.len() == 22 && m.body[16..] == [0; 6] => {}
+        Some(crate::Opcode::ActorRespawn)
+            if halcyon_protocol::ActorRespawnBody::read_padded_zero(&m.body).is_ok() => {}
         Some(crate::Opcode::ActorRespawnTimer)
             if matches!(
                 m.fields(),
@@ -286,8 +297,12 @@ fn sanitize(m: &mut Message) -> bool {
                     actor: 1500..=1505, seconds, remaining: [0, 0, 0, 0, 0, 0]
                 }) if seconds.is_finite() && seconds > 0.0
             ) => {}
-        Some(crate::Opcode::ActorDead | crate::Opcode::DestroyEntity)
-            if matches!(m.body.as_slice(), [0, 0, _, _, 0, 0]) => {}
+        Some(crate::Opcode::ActorDead)
+            if halcyon_protocol::ActorDeadBody::read_padded_zero(&m.body)
+                .is_ok_and(|body| body.actor < 65536) => {}
+        Some(crate::Opcode::DestroyEntity)
+            if halcyon_protocol::DestroyEntityBody::read_padded_zero(&m.body)
+                .is_ok_and(|body| body.actor < 65536) => {}
         Some(crate::Opcode::ActorDeath) if m.body.len() == 14 && m.body[8..] == [0; 6] => {}
         // A recorded vote contains only the authored three-seat view of this team.
         Some(crate::Opcode::TeamSurrenderStateChanged) if m.body.len() == 155 => {
@@ -313,19 +328,33 @@ fn sanitize(m: &mut Message) -> bool {
         Some(crate::Opcode::StopActor) if super::native_abilities::recordable_stop(m) => {}
         Some(crate::Opcode::CrystalShattered | crate::Opcode::RejectBuyItem)
             if m.body.is_empty() => {}
-        Some(crate::Opcode::PostMatchStats) if m.body.len() == 1612 => {}
+        Some(crate::Opcode::PostMatchStats)
+            if halcyon_protocol::StatisticsWireBody::read_exact(&m.body).is_ok() => {}
         Some(crate::Opcode::EndMatch)
-            if matches!(m.body.as_slice(), [0, 0, 0, 1 | 2, 0 | 2, 0]) => {}
+            if halcyon_protocol::EndMatchBody::read_with_padding(&m.body).is_ok_and(
+                |(body, tail)| {
+                    tail == [0]
+                        && matches!(body.team_word, 1 | 2)
+                        && matches!(
+                            body.reason,
+                            halcyon_protocol::EndMatchReason::CrystalShattered
+                                | halcyon_protocol::EndMatchReason::Surrender
+                        )
+                },
+            ) => {}
         Some(crate::Opcode::ReorderItem)
-            if m.body.len() == 6
-                && matches!(
-                    u32::from_be_bytes(m.body[..4].try_into().unwrap()),
-                    1500..=1505
-                )
-                && m.body[4] != m.body[5]
-                && m.body[4..]
-                    .iter()
-                    .all(|slot| usize::from(*slot) < halcyon_sim::ARAL_ITEM_CAPACITY) => {}
+            if matches!(
+                m.fields(),
+                Ok(halcyon_protocol::Fields::Live(
+                    halcyon_protocol::LiveFields::Item(halcyon_protocol::ItemAction::Reorder {
+                        actor: 1500..=1505,
+                        slots,
+                    })
+                )) if slots[0] != slots[1]
+                    && slots
+                        .iter()
+                        .all(|slot| usize::from(*slot) < halcyon_sim::ARAL_ITEM_CAPACITY)
+            ) => {}
         Some(crate::Opcode::CampVisibility) if m.body.len() == 6 => {}
         Some(
             crate::Opcode::MatchSettings

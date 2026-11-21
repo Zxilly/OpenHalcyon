@@ -70,59 +70,63 @@ pub(super) fn fields(op: u16, b: &[u8]) -> Option<Fields<'_>> {
         return Some(Fields::Live(LiveFields::Item(item)));
     }
     let expected = |n: usize| b.len() == n || b.len() == (n + 2).next_multiple_of(8) - 2;
-    let word = |i: usize| u32::from_be_bytes(b[i..i + 4].try_into().unwrap());
-    let half = |i: usize| u16::from_be_bytes(b[i..i + 2].try_into().unwrap());
     match op {
         // These directions are ignored by the 147219 dispatcher. Its outbound packers
         // give the meaningful body length independently of the transport padding.
-        crate::wire_opcode::RequestTargetAbility if expected(5) => {
+        crate::wire_opcode::RequestTargetAbility => {
+            let (body, _) = crate::RequestTargetAbilityBody::read_with_padding(b).ok()?;
             return Some(Fields::Live(LiveFields::AbilityTarget {
-                target: word(0),
-                selector: b[4],
+                target: body.target,
+                selector: body.selector,
             }));
         }
-        crate::wire_opcode::RequestPointAbility if expected(13) => {
+        crate::wire_opcode::RequestPointAbility => {
+            let (body, _) = crate::RequestPointAbilityBody::read_with_padding(b).ok()?;
             return Some(Fields::Live(LiveFields::AbilityPoint {
-                vector: std::array::from_fn(|i| f32::from_bits(word(4 * i))),
-                selector: b[12],
+                vector: body.coordinates,
+                selector: body.selector,
             }));
         }
-        crate::wire_opcode::RequestModifyBasicAttackTarget if expected(5) => {
+        crate::wire_opcode::RequestModifyBasicAttackTarget => {
+            let (body, _) = crate::RequestModifyBasicAttackTargetBody::read_with_padding(b).ok()?;
             return Some(Fields::Live(LiveFields::AttackTarget {
-                target: word(0),
-                flag: b[4],
+                target: body.target,
+                flag: body.flag,
             }));
         }
-        crate::wire_opcode::RequestUpgradeAbility if expected(1) => {
-            return Some(Fields::Live(LiveFields::LearnSelection(b[0])));
+        crate::wire_opcode::RequestUpgradeAbility => {
+            let (body, _) = crate::RequestUpgradeAbilityBody::read_with_padding(b).ok()?;
+            return Some(Fields::Live(LiveFields::LearnSelection(body.ability_slot)));
         }
-        crate::wire_opcode::RequestMovePoint if expected(8) => {
+        crate::wire_opcode::RequestMovePoint => {
+            let (body, _) = crate::MovePointRequestBody::read_with_padding(b).ok()?;
             return Some(Fields::Live(LiveFields::MovePoint {
-                x: f32::from_bits(word(0)),
-                y: f32::from_bits(word(4)),
+                x: body.x,
+                y: body.y,
             }));
         }
-        crate::wire_opcode::EquipTalent if expected(6) => {
-            return Some(Fields::Live(LiveFields::TalentEquipped(EquippedTalent {
-                actor: word(0),
-                selection: TalentSelection::from_wire(b[4])?,
-                level: b[5],
-            })));
+        crate::wire_opcode::EquipTalent => {
+            let (equipped, _) = EquippedTalent::read_with_padding(b).ok()?;
+            return Some(Fields::Live(LiveFields::TalentEquipped(equipped)));
         }
-        crate::wire_opcode::RequestEquipTalent if expected(4) && b[1..].iter().all(|&v| v == 0) => {
-            return Some(Fields::Live(LiveFields::TalentSelection(
-                TalentSelection::from_wire(b[0])?,
-            )));
+        crate::wire_opcode::RequestEquipTalent => {
+            if let Ok((wire, tail)) = crate::talent::RequestEquipTalentWire::read_with_padding(b)
+                && wire.reserved == [0; 3]
+                && tail.iter().all(|&v| v == 0)
+            {
+                return Some(Fields::Live(LiveFields::TalentSelection(wire.selection)));
+            }
         }
-        crate::wire_opcode::SetSurrenderStateRequest if expected(1) => {
-            return Some(Fields::Live(LiveFields::SurrenderRequest(b[0])));
+        crate::wire_opcode::SetSurrenderStateRequest => {
+            let (body, _) = crate::SurrenderRequestBody::read_with_padding(b).ok()?;
+            return Some(Fields::Live(LiveFields::SurrenderRequest(body.vote)));
         }
         crate::wire_opcode::RequestRecommendedBuildPath
-            if expected(1)
-                && b[1..].iter().all(|&byte| byte == 0)
-                && let Some(path) = super::RecommendedBuildPath::from_repr(b[0]) =>
+            if let Ok((body, tail)) =
+                crate::RequestRecommendedBuildPathBody::read_with_padding(b)
+                && tail.iter().all(|&byte| byte == 0) =>
         {
-            return Some(Fields::Live(LiveFields::RecommendedBuildPath(path)));
+            return Some(Fields::Live(LiveFields::RecommendedBuildPath(body.path)));
         }
         crate::wire_opcode::DraftRerollHero
         | crate::wire_opcode::DraftSelectPosition
@@ -150,11 +154,12 @@ pub(super) fn fields(op: u16, b: &[u8]) -> Option<Fields<'_>> {
                 remaining: &b[1..],
             });
         }
-        crate::wire_opcode::AutoActorBounce if expected(16) => {
+        crate::wire_opcode::AutoActorBounce => {
+            let (body, _) = crate::ActorBounceBody::read_with_padding(b).ok()?;
             return Some(Fields::Live(LiveFields::Motion {
-                reference: word(0),
-                values: [f32::from_bits(word(4)), f32::from_bits(word(8))],
-                enabled: b[12..16].iter().any(|&v| v != 0),
+                reference: body.actor,
+                values: [body.height, body.duration],
+                enabled: body.enabled != 0,
             }));
         }
         crate::wire_opcode::ShowFlyoutText => {
@@ -180,62 +185,59 @@ pub(super) fn fields(op: u16, b: &[u8]) -> Option<Fields<'_>> {
                 return Some(Fields::Live(LiveFields::TeamSurrenderBoard(board)));
             }
             return Some(Fields::Live(LiveFields::TwoTables {
-                first: word(0),
+                first: crate::fixed_body::read::<u32>(b).ok()?,
                 left: b[4..68].as_chunks::<4>().0.try_into().unwrap(),
                 right: b[84..148].as_chunks::<4>().0.try_into().unwrap(),
             }));
         }
-        crate::wire_opcode::KickPlayer if expected(66) => {
+        crate::wire_opcode::KickPlayer => {
+            let (body, _) = crate::KickPlayerBody::read_with_padding(b).ok()?;
             return Some(Fields::Live(LiveFields::KickPlayer {
                 player_uuid: b[..64].try_into().unwrap(),
-                disconnect_code: half(64),
+                disconnect_code: body.disconnect_code,
             }));
         }
-        crate::wire_opcode::AralRerollState if expected(82) => {
+        crate::wire_opcode::AralRerollState => {
+            let body = crate::AralRerollStateBody::read_body(b).ok()?;
             return Some(Fields::Live(LiveFields::AralRerollState {
-                cost: word(0),
-                limit: word(4),
-                used: word(8),
-                allow_override: b[76],
-                balance: word(77),
-                locked: b[81],
+                cost: body.cost,
+                limit: body.limit,
+                used: body.used,
+                allow_override: body.allow_override,
+                balance: body.balance,
+                locked: body.locked,
             }));
         }
         _ => {}
     }
-    let (words, has_halfword, bytes) = match op {
+    let (words, bytes) = match op {
         crate::wire_opcode::PlayerAfk
         | crate::wire_opcode::PlayerReconnected
         | crate::wire_opcode::DestroyZoneOfControl
         | crate::wire_opcode::ModifyBasicAttackTarget
-        | crate::wire_opcode::SyncWorldClock => (1, false, 0),
-        crate::wire_opcode::RequestCancelAbility => (0, false, 2),
-        crate::wire_opcode::AutoMoveTo => (5, false, 1),
-        crate::wire_opcode::AutoOrbit => (8, false, 0),
-        crate::wire_opcode::CancelAutoOrbit => (4, false, 0),
-        crate::wire_opcode::TeleportTo | crate::wire_opcode::PlayPointAbility => (4, false, 1),
-        crate::wire_opcode::PlayPfxAtLocation | crate::wire_opcode::MakeAnnouncement => {
-            (6, false, 0)
-        }
-        crate::wire_opcode::CreateZoneOfControl => (6, false, 1),
-        crate::wire_opcode::ModifyGameModeVar | crate::wire_opcode::TimeoutBuff => (2, false, 0),
-        crate::wire_opcode::ModifyBuffStack | crate::wire_opcode::DecrementBuffStack => {
-            (3, false, 0)
-        }
-        crate::wire_opcode::SetMinimapSpawnPhase => (2, false, 1),
-        crate::wire_opcode::SetRecommendedBuildPath => (1, false, 1),
+        | crate::wire_opcode::SyncWorldClock => (1, 0),
+        crate::wire_opcode::RequestCancelAbility => (0, 2),
+        crate::wire_opcode::AutoMoveTo => (5, 1),
+        crate::wire_opcode::AutoOrbit => (8, 0),
+        crate::wire_opcode::CancelAutoOrbit => (4, 0),
+        crate::wire_opcode::TeleportTo | crate::wire_opcode::PlayPointAbility => (4, 1),
+        crate::wire_opcode::PlayPfxAtLocation | crate::wire_opcode::MakeAnnouncement => (6, 0),
+        crate::wire_opcode::CreateZoneOfControl => (6, 1),
+        crate::wire_opcode::ModifyGameModeVar | crate::wire_opcode::TimeoutBuff => (2, 0),
+        crate::wire_opcode::ModifyBuffStack | crate::wire_opcode::DecrementBuffStack => (3, 0),
+        crate::wire_opcode::SetMinimapSpawnPhase => (2, 1),
+        crate::wire_opcode::SetRecommendedBuildPath => (1, 1),
         _ => return None,
     };
     let word_end = 4 * words;
-    let byte_start = word_end + 2 * usize::from(has_halfword);
-    let end = byte_start + bytes;
+    let end = word_end + bytes;
     if !expected(end) {
         return None;
     }
     Some(Fields::ActionWords(ActionWords {
         words: b[..word_end].as_chunks::<4>().0,
-        halfword: has_halfword.then(|| half(word_end)),
-        bytes: &b[byte_start..end],
+        halfword: None,
+        bytes: &b[word_end..end],
         remaining: &b[end..],
     }))
 }

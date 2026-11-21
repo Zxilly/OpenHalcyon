@@ -3,6 +3,21 @@ use crate::{EntitySpawnBody, Message, Opcode, invalid};
 use binrw::{BinRead, BinWrite};
 use std::io::{self, Cursor};
 
+/// 50-byte core prefix of `0x03F3` (`Opcode::HeroSpawn`) up through `max_hp`.
+#[derive(Clone, Copy, Debug, PartialEq, BinRead, BinWrite)]
+#[brw(big)]
+pub struct HeroSpawnPrefix {
+    pub template: u32,
+    pub skin: u32,
+    pub actor: u32,
+    pub team: u32,
+    pub flags16: u16,
+    pub position: [f32; 3],
+    pub forward: [f32; 3],
+    pub hp: f32,
+    pub max_hp: f32,
+}
+
 /// Exact 750-byte `0x03F3` (`Opcode::HeroSpawn`) body preserving all reserved intervals
 /// and the 4-byte alignment tail at `746..750`.
 #[derive(Clone, Debug, PartialEq, BinRead, BinWrite)]
@@ -179,6 +194,12 @@ impl HeroSpawnBody {
         }
         let mut cursor = Cursor::new(body);
         Self::read_be(&mut cursor).map_err(|_| invalid("invalid HeroSpawn body"))
+    }
+
+    /// Reads the 50-byte core `HeroSpawn` prefix (`template..=max_hp`) from any `50+`-byte body.
+    pub fn read_summary_prefix(body: &[u8]) -> io::Result<HeroSpawnPrefix> {
+        HeroSpawnPrefix::read_be(&mut Cursor::new(body))
+            .map_err(|_| invalid("truncated HeroSpawn prefix"))
     }
 
     /// Reads either an unpadded 746-byte replay body or a 750-byte aligned body.

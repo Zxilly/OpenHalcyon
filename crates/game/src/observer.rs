@@ -287,8 +287,9 @@ impl Room {
         }
         // Observer rosters must not disclose the UUIDs used by player admission.
         let mut m = snapshot(&self.world, &self.players, &self.picks);
-        for i in 0..self.players.len() {
-            m.body[i * 161 + 105..i * 161 + 141].fill(0);
+        if let Ok(mut roster) = halcyon_protocol::DraftRosterBody::read_body(&m.body) {
+            roster.redact_identities(self.players.len());
+            let _ = roster.write_body(&mut m.body);
         }
         m
     }

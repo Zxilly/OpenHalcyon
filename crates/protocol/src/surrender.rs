@@ -221,10 +221,10 @@ impl TeamSurrenderBoard {
 impl Message {
     /// The stock client emits state 1 on vote initiation. Other state bytes are preserved by the reader.
     pub fn aral_surrender_request() -> Self {
-        Self::known(
-            crate::Opcode::SetSurrenderStateRequest,
-            [SurrenderVote::Yes.raw()],
-        )
+        crate::SurrenderRequestBody {
+            vote: SurrenderVote::Yes.raw(),
+        }
+        .encode()
     }
 
     pub fn aral_surrender_board(
@@ -291,10 +291,11 @@ impl Message {
         if !(1..=2).contains(&winning_wire_team) {
             return Err(invalid("invalid surrender winning team"));
         }
-        Ok(Self::known(
-            crate::Opcode::EndMatch,
-            [0, 0, 0, winning_wire_team, 2, 0],
-        ))
+        Ok(crate::EndMatchBody {
+            team_word: u32::from(winning_wire_team),
+            reason: crate::EndMatchReason::Surrender,
+        }
+        .encode_padded())
     }
 
     pub fn surrender_result(winning_wire_team: u8) -> io::Result<Self> {

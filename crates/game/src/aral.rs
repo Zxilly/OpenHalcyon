@@ -254,11 +254,14 @@ pub(super) fn opening(room: &mut Room, team: Option<u8>) -> Batch {
             }
         }
     }
-    map_objects.sort_unstable_by_key(|m| std::cmp::Reverse(m.body[116]));
+    let spawn_slot = |message: &Message| {
+        halcyon_protocol::EntitySpawnBody::read_body(&message.body).map_or(0, |body| body.slot)
+    };
+    map_objects.sort_unstable_by_key(|m| std::cmp::Reverse(spawn_slot(m)));
     let initial = room.world.tick == 0 && team.is_none();
     let slots = map_objects
         .iter()
-        .filter_map(|message| 1_u16.checked_shl(u32::from(message.body[116])))
+        .filter_map(|message| 1_u16.checked_shl(u32::from(spawn_slot(message))))
         .fold(0, |map, mask| map | mask);
     batch.extend(map_objects);
     batch.extend(lane_minions);

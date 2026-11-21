@@ -1,7 +1,10 @@
 //! CE server messages. Unidentified fields use zero defaults.
 use super::Pick;
 use halcyon_protocol::{
-    Message,
+    ActorRespawnBody, ConsumeItemBody, DraftCatalogEntryBody, DraftModeAnnouncementBody,
+    DraftRosterBody, DraftSlotBody, EntitySpawnBody, FixedAscii, HeroSpawnBody, ItemGrantBody,
+    LevelUpBody, MatchSettingsBody, Message, PlayerInfoBody, PlayerInfoPrefix, SceneSettingsBody,
+    WorldClockBody,
     ce::{KnownQueue, NativeMode},
 };
 use halcyon_sim::{Entity, World};
@@ -12,43 +15,29 @@ pub(super) const GUEST_HANDLE: &str = "Guest";
 pub fn wire_id(id: u32) -> u16 {
     u16::try_from(1499 + id).unwrap_or(0xffff)
 }
-fn put_text(buf: &mut [u8], s: &str) {
-    let n = s.len().min(buf.len());
-    buf[..n].copy_from_slice(&s.as_bytes()[..n]);
-}
 fn mode_name(queue: &str) -> &'static str {
     // Operator queues retain their original IDs but use the registered scene asset.
     KnownQueue::parse(queue).map_or(NativeMode::CasualFive.asset(), KnownQueue::asset)
 }
 pub(super) fn scene_mode(queue: &str, flag: u8) -> Message {
-    let mut body = vec![0; 69];
-    put_text(&mut body[..64], mode_name(queue));
-    body[68] = flag;
-    Message::known(crate::Opcode::SceneSettings, body)
+    SceneSettingsBody::new(mode_name(queue), flag).encode()
 }
-fn settings(seat: usize, mode: &str, draft: bool) -> Message {
-    let mut b = vec![0; 101];
-    b[..4].copy_from_slice(&u32::from(wire_id(seat as u32 + 1)).to_be_bytes());
-    put_text(&mut b[32..96], mode);
-    b[100] = 1;
+fn settings(seat: usize, mode: &str, draft: bool) -> MatchSettingsBody {
+    let local_actor = u32::from(wire_id(seat as u32 + 1));
     if draft {
-        b[7] = 1;
-        b[10..12].fill(0xff);
-        b[16..18].fill(5);
-        b[96..100].copy_from_slice(&1f32.to_be_bytes());
+        MatchSettingsBody::draft_five(local_actor, mode)
+    } else {
+        MatchSettingsBody::world(local_actor, mode)
     }
-    Message::known(crate::Opcode::MatchSettings, b)
 }
 pub(super) fn world_settings(seat: usize, queue: &str) -> Message {
-    settings(seat, mode_name(queue), false)
+    settings(seat, mode_name(queue), false).encode()
 }
 
 /// The catalog is immutable across rooms on a host. Prepare the exact draft payloads once.
 pub(super) fn catalog_entries(data: Option<&halcyon_data::GameData>) -> std::sync::Arc<[[u8; 32]]> {
     fn entry(name: &str) -> [u8; 32] {
-        let mut body = [0; 32];
-        put_text(&mut body, name);
-        body
+        DraftCatalogEntryBody::new(name).name.into()
     }
     match data.filter(|d| !d.hero_names.is_empty()) {
         Some(data) => data
@@ -76,11 +65,13 @@ pub fn setup(
             NativeMode::RankedFold | NativeMode::CasualFold | NativeMode::Blitz | NativeMode::Aral
         )
     ) {
-        config.body[16..18].fill(3);
-        config.body[96..100].copy_from_slice(&5f32.to_be_bytes());
-        config.body[100] = world.entities[seat].team + 1;
+        config = MatchSettingsBody::draft_three(
+            config.local_actor,
+            mode_name(mode),
+            world.entities[seat].team + 1,
+        );
     }
-    let mut out = vec![config];
+    let mut out = vec![config.encode()];
     out.extend(draft_catalog(world, players, catalog, mode, picks));
     out
 }
@@ -93,119 +84,112 @@ pub(super) fn draft_catalog(
     picks: &[Pick],
 ) -> Vec<Message> {
     let parsed_mode = KnownQueue::parse(queue).map(KnownQueue::mode);
-    let mut mode = vec![0; 68];
-    if matches!(
+    let team_size = if matches!(
         parsed_mode,
         Some(
             NativeMode::CasualFold | NativeMode::RankedFold | NativeMode::Blitz | NativeMode::Aral
         )
     ) {
-        mode[..4].copy_from_slice(&3u32.to_be_bytes());
-    }
-    put_text(&mut mode[4..], mode_name(queue));
+        3
+    } else {
+        0
+    };
     let mut out = Vec::with_capacity(catalog.len() + 2);
-    out.push(Message::known(crate::Opcode::DraftModeAnnouncement, mode));
-    out.extend(
-        catalog
-            .iter()
-            .map(|entry| Message::known(crate::Opcode::DraftCatalogEntry, *entry)),
-    );
+    out.push(DraftModeAnnouncementBody::new(team_size, mode_name(queue)).encode());
+    out.extend(catalog.iter().map(|entry| {
+        DraftCatalogEntryBody {
+            name: FixedAscii(*entry),
+        }
+        .encode()
+    }));
     out.push(snapshot(world, players, picks));
     out
 }
-pub fn snapshot(world: &World, players: &[Uuid], picks: &[Pick]) -> Message {
-    let mut body = vec![0; 2590];
-    body[..4].copy_from_slice(&(300.0 - world.tick as f32 / 20.).max(0.).to_be_bytes());
-    body[4..8].copy_from_slice(&300f32.to_be_bytes());
-    for idx in 0..16 {
-        let r = &mut body[idx * 161..][..161];
-        r[9] = idx as u8;
-        r[12..15].fill(0xff);
-        r[17..21].fill(0xff);
+pub(super) fn snapshot_with_timers(
+    world: &World,
+    players: &[Uuid],
+    picks: &[Pick],
+    remaining_seconds: f32,
+    allotted_seconds: f32,
+) -> Message {
+    let slots = std::array::from_fn(|idx| {
+        let mut slot = DraftSlotBody::empty(idx as u8);
         if let Some((e, pick)) = world
             .entities
             .get(idx)
             .filter(|e| e.kind == halcyon_sim::Kind::Hero)
             .zip(picks.get(idx))
         {
-            r[8] = 1;
-            pick.preferences.write(r);
+            slot.occupied = 1;
+            slot.set_preferences(pick.preferences.to_wire());
             if pick.selected {
-                r[10] = 1;
-                r[11] = u8::from(pick.locked);
-                r[17..19].copy_from_slice(&e.type_id.to_be_bytes());
-                r[21..25].copy_from_slice(&pick.skin.to_be_bytes());
+                slot.selected = 1;
+                slot.locked = u8::from(pick.locked);
+                slot.template = e.type_id;
+                slot.skin = pick.skin;
             }
-            r[16] = e.team + 1;
-            r[19..21].copy_from_slice(&wire_id(e.id).to_be_bytes());
+            slot.team = e.team + 1;
+            slot.entity = wire_id(e.id);
             if let Some(uuid) = players.get(idx) {
-                put_text(&mut r[25..57], GUEST_HANDLE);
-                put_text(&mut r[105..141], &uuid.to_string());
+                slot.display_name = FixedAscii::from_str_trunc(GUEST_HANDLE);
+                slot.identity = FixedAscii::from_str_trunc(&uuid.to_string());
             } else {
-                put_text(&mut r[25..57], &format!("{} Bot", pick.name));
-                put_text(&mut r[105..141], "__Kindred_Player_Bot__");
+                slot.display_name = FixedAscii::from_str_trunc(&format!("{} Bot", pick.name));
+                slot.identity = FixedAscii::from_str_trunc("__Kindred_Player_Bot__");
             }
         }
-    }
-    Message::known(crate::Opcode::DraftRosterFull, body)
+        slot
+    });
+    DraftRosterBody::full(remaining_seconds, allotted_seconds, slots).encode_full()
+}
+pub fn snapshot(world: &World, players: &[Uuid], picks: &[Pick]) -> Message {
+    snapshot_with_timers(
+        world,
+        players,
+        picks,
+        (300.0 - world.tick as f32 / 20.).max(0.),
+        300.,
+    )
 }
 pub fn spawn(e: &Entity, picks: &[Pick], data: Option<&halcyon_data::GameData>) -> Message {
-    let mut b = vec![0; 750];
-    b[2..4].copy_from_slice(&e.type_id.to_be_bytes());
     let hero = if e.kind == halcyon_sim::Kind::Hero {
         picks.get(e.id as usize - 1)
     } else {
         None
     };
-    if let Some(p) = hero {
-        b[4..8].copy_from_slice(&p.skin.to_be_bytes());
-    }
-    b[10..12].copy_from_slice(&wire_id(e.id).to_be_bytes());
-    b[12..16].copy_from_slice(&(u32::from(e.team) + 1).to_be_bytes());
-    b[16..18].fill(0xff);
-    b[18..22].copy_from_slice(&e.position.x.to_be_bytes());
-    b[26..30].copy_from_slice(&e.position.y.to_be_bytes());
-    b[30..34].copy_from_slice(&1f32.to_be_bytes());
-    b[42..46].copy_from_slice(&e.hp.to_be_bytes());
-    b[46..50].copy_from_slice(&e.max_hp.to_be_bytes());
+    let mut body = HeroSpawnBody::new(
+        u32::from(e.type_id),
+        hero.map_or(0, |p| p.skin),
+        u32::from(wire_id(e.id)),
+        u32::from(e.team) + 1,
+        0,
+    );
+    body.position = [e.position.x, 0.0, e.position.y];
+    body.hp = e.hp;
+    body.max_hp = e.max_hp;
     let unit = data.and_then(|d| hero.and_then(|p| d.unit(&p.name)));
     if let Some(unit) = unit {
-        for (offset, value) in [(74, unit.move_speed), (98, unit.attack_speed), (226, 0.5)] {
-            b[offset..offset + 4].copy_from_slice(&value.to_be_bytes());
-        }
+        body.move_speed = unit.move_speed;
+        body.attack_speed = unit.attack_speed;
+        body.word226 = 0.5;
     }
     if hero.is_some() {
-        for (offset, value) in [
-            (122, e.energy),
-            (126, e.max_energy),
-            (190, e.armor()),
-            (202, e.shield()),
-            (214, e.weapon_power()),
-        ] {
-            b[offset..offset + 4].copy_from_slice(&value.to_be_bytes());
-        }
+        body.energy = e.energy;
+        body.max_energy = e.max_energy;
+        body.armor = e.armor();
+        body.shield = e.shield();
+        body.weapon_power = e.weapon_power();
     }
-    Message::known(crate::Opcode::HeroSpawn, b)
+    body.encode()
 }
 
 /// Android Solo full declarations keep these selectors for the hero's lifetime.
 pub(super) fn solo_hero_profile(message: &mut Message, entity: &Entity, tick: u64) {
-    let body = &mut message.body;
-    let selector = if entity.bot {
-        u32::from(entity.team)
-    } else {
-        u32::MAX
-    };
-    body[0x2c5..0x2c9].copy_from_slice(&selector.to_be_bytes());
-    body[0x2e5..0x2e9].copy_from_slice(&u32::MAX.to_be_bytes());
-    if tick == 0 {
-        // The ten Solo opening pads share the same measured ground height.
-        body[22..26].copy_from_slice(&0x3d75_be29_u32.to_be_bytes());
-        body[34..38].copy_from_slice(&(-0.0_f32).to_be_bytes());
-        // Initial per-team flags differ from later visibility checkpoints.
-        body[0x2c9..0x2d1].fill(1);
-        body[0x2d1 + usize::from(entity.team) + 1] = 15;
-    }
+    let mut body =
+        HeroSpawnBody::read_body(&message.body).expect("solo_hero_profile expects 750B HeroSpawn");
+    body.apply_solo_profile(entity.bot, entity.team, tick);
+    body.write_body(&mut message.body)
+        .expect("HeroSpawnBody fits 750B buffer");
 }
 
 pub(super) fn info(
@@ -217,7 +201,6 @@ pub(super) fn info(
 ) -> Message {
     let e = &world.entities[i];
     let p = &picks[i];
-    let mut b = vec![0; if full { 222 } else { 216 }];
     let bot = i >= players.len();
     let name = if bot && full {
         format!("{} Bot", p.name)
@@ -226,36 +209,41 @@ pub(super) fn info(
     } else {
         GUEST_HANDLE.into()
     };
-    put_text(&mut b[..64], &name);
+    let actor_id = u32::from(wire_id(e.id));
+    let hero_template = u32::from(e.type_id);
+    let team = e.team + 1;
     if full {
         let uuid = players
             .get(i)
             .map(ToString::to_string)
             .unwrap_or_else(|| "__Kindred_Player_Bot__".to_owned());
-        put_text(&mut b[64..128], &uuid);
-        for chunk in b[176..204].as_chunks_mut::<4>().0 {
-            chunk.copy_from_slice(&0x811c9dc5u32.to_be_bytes());
-        }
-        b[204..208].fill(0xff);
-        if !bot {
-            b[206] = 0;
-        }
+        PlayerInfoBody::full(PlayerInfoPrefix::full(
+            &name,
+            &uuid,
+            actor_id,
+            hero_template,
+            p.skin,
+            team,
+            bot,
+        ))
+    } else {
+        PlayerInfoBody::compact(PlayerInfoPrefix::compact(
+            &name,
+            actor_id,
+            hero_template,
+            p.skin,
+            team,
+            bot,
+        ))
     }
-    b[160..164].copy_from_slice(&u32::from(wire_id(e.id)).to_be_bytes());
-    b[164..168].copy_from_slice(&u32::from(e.type_id).to_be_bytes());
-    b[168..172].copy_from_slice(&p.skin.to_be_bytes());
-    b[172..176].copy_from_slice(&0x9241f10eu32.to_be_bytes());
-    b[209] = 2;
-    b[210] = e.team + 1;
-    b[212] = u8::from(bot);
-    b[215] = u8::from(!bot);
-    Message::known(crate::Opcode::PlayerInfo, b)
+    .encode()
 }
 
 /// Remove the private human handle and admission identity from a player-info body.
 pub(super) fn redact_player_info(body: &mut [u8]) {
-    if body[212] == 0 {
-        body[..128].fill(0);
+    if let Ok(mut info) = PlayerInfoBody::read_body(body) {
+        info.redact();
+        let _ = info.write_body(body);
     }
 }
 
@@ -265,19 +253,22 @@ pub(super) fn camp_marker_spawn(
     slot: u8,
     pos: halcyon_sim::Position,
 ) -> Message {
-    let mut body = [0u8; 122];
-    body[..4].copy_from_slice(&u32::from(template_raw).to_be_bytes());
-    body[4..8].copy_from_slice(&0x4dd5_b7d0_u32.to_be_bytes());
-    body[8..12].copy_from_slice(&actor_id.to_be_bytes());
-    body[12..16].copy_from_slice(&pos.x.to_be_bytes());
-    body[16..20].copy_from_slice(&0x3d75_be29_u32.to_be_bytes());
-    body[20..24].copy_from_slice(&pos.y.to_be_bytes());
-    body[32..36].copy_from_slice(&1.0_f32.to_be_bytes());
-    body[88..96].fill(1);
-    body[96] = 15;
-    body[112..116].copy_from_slice(&u32::MAX.to_be_bytes());
-    body[116..122].copy_from_slice(&[slot, 0, 0, 1, 255, 0]);
-    Message::known(crate::Opcode::EntitySpawn, body)
+    let mut body = EntitySpawnBody::new(
+        u32::from(template_raw),
+        EntitySpawnBody::JUNGLE_MINION_SKIN,
+        actor_id,
+        slot,
+        0,
+    );
+    body.position = [
+        pos.x,
+        f32::from_bits(EntitySpawnBody::GROUND_HEIGHT_BITS),
+        pos.y,
+    ];
+    body.forward = [0.0, 0.0, 1.0];
+    body.visibility_required = EntitySpawnBody::VISIBILITY_ALL_REQUIRED;
+    body.visibility_mask[0] = EntitySpawnBody::VISIBILITY_ACTIVE_MASK;
+    body.encode()
 }
 
 pub(super) fn append_5v5_camp_markers(out: &mut Vec<Message>, world: &World, viewer_index: u8) {
@@ -308,10 +299,10 @@ pub(super) fn append_5v5_camp_markers(out: &mut Vec<Message>, world: &World, vie
 }
 
 pub(super) fn world_clock(tick: u64) -> Message {
-    Message::known(
-        crate::Opcode::SyncWorldClock,
-        (tick as f32 / halcyon_sim::TICK_HZ as f32).to_be_bytes(),
-    )
+    WorldClockBody {
+        seconds: tick as f32 / halcyon_sim::TICK_HZ as f32,
+    }
+    .encode()
 }
 
 /// Replay chunks contain both roster forms before the first world spawn.
@@ -336,15 +327,12 @@ pub(super) fn world_header(
 }
 
 pub(super) fn item_grant(actor: u32, item: u32, instance: u32) -> Message {
-    Message::known(
-        crate::Opcode::ItemGrant,
-        [
-            actor.to_be_bytes(),
-            item.to_be_bytes(),
-            instance.to_be_bytes(),
-        ]
-        .concat(),
-    )
+    ItemGrantBody {
+        actor,
+        item,
+        instance,
+    }
+    .encode()
 }
 pub(super) fn append_inventory(out: &mut Vec<Message>, world: &World, entity: &Entity) {
     let actor = u32::from(wire_id(entity.id));
@@ -386,9 +374,14 @@ pub(super) fn append_purchase(
         for (stat, bonus) in world.item_modifiers(used.kind) {
             out.push(modifier(actor, stat, -bonus));
         }
-        let mut body = [actor.to_be_bytes(), used.instance.to_be_bytes()].concat();
-        body.extend(1u16.to_be_bytes());
-        out.push(Message::known(crate::Opcode::ConsumeItem, body));
+        out.push(
+            ConsumeItemBody {
+                actor,
+                instance: used.instance,
+                flags: 1,
+            }
+            .encode(),
+        );
     }
     let granted = receipt.granted;
     out.push(item_grant(actor, granted.kind.template(), granted.instance));
@@ -417,21 +410,26 @@ fn combat_event(event: &halcyon_sim::Event, visible: impl Fn(u32) -> bool) -> Op
         if !visible(id) {
             return None;
         }
-        let mut body = [0; 14];
-        body[..4].copy_from_slice(&u32::from(wire_id(id)).to_be_bytes());
-        body[4..8].copy_from_slice(&1_u32.to_be_bytes());
-        return Some(Message::known(crate::Opcode::LevelUp, body));
+        return Some(
+            LevelUpBody {
+                actor: u32::from(wire_id(id)),
+                operand: 1,
+            }
+            .encode_padded(),
+        );
     }
     if let Event::Respawn { id, position } = *event {
         if !visible(id) {
             return None;
         }
-        let mut body = [0; 22];
-        body[..4].copy_from_slice(&u32::from(wire_id(id)).to_be_bytes());
-        body[4..8].copy_from_slice(&position.x.to_be_bytes());
-        // OpenHalcyon's authoritative world is planar, with height zero.
-        body[12..16].copy_from_slice(&position.y.to_be_bytes());
-        return Some(Message::known(crate::Opcode::ActorRespawn, body));
+        return Some(
+            ActorRespawnBody {
+                actor: u32::from(wire_id(id)),
+                // OpenHalcyon's authoritative world is planar, with height zero.
+                position: [position.x, 0.0, position.y],
+            }
+            .encode_padded(),
+        );
     }
     let (target, source, operand) = match *event {
         Event::Damage {
@@ -761,5 +759,39 @@ mod mode_tests {
         ] {
             assert_eq!(mode_name(queue), name, "{queue}");
         }
+    }
+
+    #[test]
+    fn camp_marker_spawn_and_solo_hero_profile_match_golden_offsets() {
+        let marker =
+            super::camp_marker_spawn(2055, 345, 40, halcyon_sim::Position { x: 12.5, y: -7.25 });
+        assert_eq!(marker.opcode, crate::wire_opcode::EntitySpawn);
+        assert_eq!(marker.body.len(), 122);
+        assert_eq!(&marker.body[..4], &345u32.to_be_bytes());
+        assert_eq!(&marker.body[4..8], &0x4dd5_b7d0_u32.to_be_bytes());
+        assert_eq!(&marker.body[8..12], &2055u32.to_be_bytes());
+        assert_eq!(&marker.body[12..16], &12.5f32.to_be_bytes());
+        assert_eq!(&marker.body[16..20], &0x3d75_be29_u32.to_be_bytes());
+        assert_eq!(&marker.body[20..24], &(-7.25f32).to_be_bytes());
+        assert_eq!(&marker.body[24..32], &[0; 8]);
+        assert_eq!(&marker.body[32..36], &1.0_f32.to_be_bytes());
+        assert_eq!(&marker.body[88..96], &[1; 8]);
+        assert_eq!(marker.body[96], 15);
+        assert_eq!(&marker.body[112..116], &u32::MAX.to_be_bytes());
+        assert_eq!(&marker.body[116..122], &[40, 0, 0, 1, 255, 0]);
+
+        let world = halcyon_sim::World::new(1, 10);
+        let mut msg = super::spawn(&world.entities[0], &[], None);
+        super::solo_hero_profile(&mut msg, &world.entities[0], 0);
+        assert_eq!(msg.body.len(), 750);
+        assert_eq!(&msg.body[22..26], &0x3d75_be29_u32.to_be_bytes());
+        assert_eq!(&msg.body[34..38], &(-0.0_f32).to_be_bytes());
+        assert_eq!(&msg.body[0x2c5..0x2c9], &u32::MAX.to_be_bytes());
+        assert_eq!(&msg.body[0x2c9..0x2d1], &[1; 8]);
+        assert_eq!(
+            msg.body[0x2d1 + usize::from(world.entities[0].team) + 1],
+            15
+        );
+        assert_eq!(&msg.body[0x2e5..0x2e9], &u32::MAX.to_be_bytes());
     }
 }

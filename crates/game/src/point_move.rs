@@ -6,7 +6,7 @@ use super::{Pick, Room, messages, transport};
 pub(super) fn publish_aral(room: &mut Room, origin: usize, path: &Message) {
     let actor = &room.world.entities[origin];
     let visible: [bool; 2] = std::array::from_fn(|team| room.world.visible(team as u8, actor));
-    let slot = path.body[0];
+    let slot = halcyon_protocol::MoveToBody::read_body(&path.body).map_or(0, |body| body.selector);
     let mut shared = None;
     for (i, seat) in room.seats.iter().enumerate() {
         if i != origin
@@ -33,20 +33,19 @@ pub(super) fn submit(
     position: Position,
     body: &[u8],
 ) -> Option<Message> {
-    if body.len() != 14 || body[8..] != [0; 6] {
-        return None;
-    }
+    halcyon_protocol::MovePointRequestBody::read_padded_zero(body).ok()?;
     world.command(actor, Command::MoveTo(position)).ok()?;
     Some(destination(slot, position))
 }
 
 /// The native path action addresses the actor by the recipient's scene slot.
 pub(super) fn destination(slot: u8, point: Position) -> Message {
-    let mut body = [0; 9];
-    body[0] = slot;
-    body[1..5].copy_from_slice(&point.x.to_be_bytes());
-    body[5..9].copy_from_slice(&point.y.to_be_bytes());
-    Message::known(crate::Opcode::MoveTo, body)
+    halcyon_protocol::MoveToBody {
+        selector: slot,
+        x: point.x,
+        y: point.y,
+    }
+    .encode()
 }
 
 pub(super) fn aral_slot(actor: &Entity) -> Option<u8> {

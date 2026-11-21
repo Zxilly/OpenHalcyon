@@ -8,12 +8,9 @@ pub(super) struct ProjectedSlots([Option<std::num::NonZeroU32>; halcyon_sim::ARA
 pub(super) fn affects_owner(message: &Message, owner: u32) -> bool {
     match message.known_opcode() {
         Some(crate::Opcode::HeroSpawn) => {
-            message
-                .body
-                .get(8..12)
-                .and_then(|bytes| bytes.try_into().ok())
-                .map(u32::from_be_bytes)
-                == Some(owner)
+            halcyon_protocol::HeroSpawnBody::read_unpadded_or_padded(&message.body)
+                .ok()
+                .is_some_and(|body| body.actor == owner)
         }
         Some(crate::Opcode::DestroyEntity) => {
             halcyon_protocol::DestroyEntityBody::read_exact_or_padded(&message.body)

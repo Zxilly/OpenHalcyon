@@ -14,14 +14,14 @@ pub enum TalentSelection {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, BinRead, BinWrite)]
 #[brw(big)]
-struct RequestEquipTalentWire {
-    selection: TalentSelection,
-    reserved: [u8; 3],
+pub(crate) struct RequestEquipTalentWire {
+    pub(crate) selection: TalentSelection,
+    pub(crate) reserved: [u8; 3],
 }
 fixed_packet!(RequestEquipTalentWire, Opcode::RequestEquipTalent, 4);
 
 impl TalentSelection {
-    pub(super) fn from_wire(value: u8) -> Option<Self> {
+    pub const fn from_wire(value: u8) -> Option<Self> {
         match value {
             0 => Some(Self::Slot0),
             1 => Some(Self::Slot1),

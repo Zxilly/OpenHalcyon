@@ -1091,7 +1091,7 @@ impl Room {
             }));
         }
         let mut records = self.recommended_paths(None);
-        records.push(Message::known(crate::Opcode::StartMatch, []));
+        records.push(halcyon_protocol::StartMatchBody.encode());
         let marker = transport::TeamBatch::new(records);
         for peer in self.seats.iter().filter_map(Seat::gameplay_peer) {
             peer.send(transport::Delivery::Team(marker.clone()));
@@ -1338,26 +1338,27 @@ impl Room {
     }
     fn roster_with_echo(&self, except: Option<usize>, echo: Option<&Message>) -> Message {
         let legacy = self.legacy_aral();
-        let mut roster = if legacy {
+        let roster = if legacy {
             aral::roster(self, self.aral_remaining(), false)
+        } else if self.phase == crate::RoomPhase::HeroSelect {
+            messages::snapshot_with_timers(
+                &self.world,
+                &self.players,
+                &self.picks,
+                (300. - self.phase_start.elapsed().as_secs_f32()).max(0.),
+                300.,
+            )
+        } else if self.phase == crate::RoomPhase::Loading {
+            messages::snapshot_with_timers(
+                &self.world,
+                &self.players,
+                &self.picks,
+                (7. - self.phase_start.elapsed().as_secs_f32()).max(0.),
+                7.,
+            )
         } else {
             snapshot(&self.world, &self.players, &self.picks)
         };
-        if !legacy && self.phase == crate::RoomPhase::HeroSelect {
-            roster.body[..4].copy_from_slice(
-                &(300. - self.phase_start.elapsed().as_secs_f32())
-                    .max(0.)
-                    .to_be_bytes(),
-            );
-        }
-        if !legacy && self.phase == crate::RoomPhase::Loading {
-            roster.body[..4].copy_from_slice(
-                &(7. - self.phase_start.elapsed().as_secs_f32())
-                    .max(0.)
-                    .to_be_bytes(),
-            );
-            roster.body[4..8].copy_from_slice(&7f32.to_be_bytes());
-        }
         let ranked_045b = (!legacy)
             .then(|| {
                 self.draft_5v5
@@ -1436,14 +1437,11 @@ impl Room {
         let Ok(receipt) = self.world.try_purchase(actor_id, offer) else {
             return vec![];
         };
-        let mut ack = vec![Message::known(
-            crate::Opcode::BuyItem,
-            [actor.to_be_bytes(), item.to_be_bytes()].concat(),
-        )];
+        let mut ack = vec![halcyon_protocol::BuyItemBody { actor, item }.encode()];
         if let Some(receipt) = receipt {
             messages::append_purchase(&mut ack, &self.world, &receipt, true);
         } else if self.legacy_aral() && self.seats[i].world_actor_written {
-            ack.push(Message::known(crate::Opcode::RejectBuyItem, []));
+            ack.push(halcyon_protocol::RejectBuyItemBody.encode());
         } else {
             return vec![];
         }
@@ -1557,7 +1555,13 @@ impl Room {
                     self.enter_5v5_loading(i, &mut out);
                 }
                 if sync_after_pick {
-                    out.push(Message::known(crate::Opcode::EndMatch, [0, 0, 0, 0, 8, 0]));
+                    out.push(
+                        halcyon_protocol::EndMatchBody {
+                            team_word: 0,
+                            reason: halcyon_protocol::EndMatchReason::DraftSync,
+                        }
+                        .encode_padded(),
+                    );
                     self.seats[i].draft_sync_sent = true;
                 }
             }
@@ -1910,9 +1914,9 @@ impl Room {
                     }
                     if solo_scene && scene_confirmed {
                         self.phase(crate::RoomPhase::Running);
-                        out.push(Message::known(crate::Opcode::StartMatch, []));
+                        out.push(halcyon_protocol::StartMatchBody.encode());
                     } else if !solo_scene && self.phase == crate::RoomPhase::Running {
-                        out.push(Message::known(crate::Opcode::StartMatch, []));
+                        out.push(halcyon_protocol::StartMatchBody.encode());
                     }
                 } else if scene_requested {
                     let team = (self.phase == crate::RoomPhase::Running)
@@ -1948,12 +1952,18 @@ impl Room {
         if accepted_world_input {
             self.seats[i].preamble.confirm_world_input();
             self.phase(crate::RoomPhase::Running);
-            out.push(Message::known(crate::Opcode::StartMatch, []));
+            out.push(halcyon_protocol::StartMatchBody.encode());
             out.extend(first_point_ack);
         }
         if sync_after_pick {
             // Android's first 0x045E response precedes this one-time draft message.
-            out.push(Message::known(crate::Opcode::EndMatch, [0, 0, 0, 0, 8, 0]));
+            out.push(
+                halcyon_protocol::EndMatchBody {
+                    team_word: 0,
+                    reason: halcyon_protocol::EndMatchReason::DraftSync,
+                }
+                .encode_padded(),
+            );
             self.seats[i].draft_sync_sent = true;
         }
         if ch == 0 && scene_requested {

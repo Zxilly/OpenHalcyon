@@ -75,8 +75,8 @@ impl Delivery {
     fn declares_actor(&self, actor: u16, slot: u8) -> bool {
         self.messages().iter().any(|message| {
             message.is(crate::Opcode::HeroSpawn)
-                && message.body.get(10..12) == Some(actor.to_be_bytes().as_slice())
-                && message.body.get(745) == Some(&slot)
+                && halcyon_protocol::HeroSpawnBody::read_unpadded_or_padded(&message.body)
+                    .is_ok_and(|spawn| spawn.actor as u16 == actor && spawn.slot == slot)
         })
     }
 
@@ -399,11 +399,16 @@ async fn connection(mut sock: TcpStream, room: Shared, manager: Rooms) -> io::Re
     tokio::select! {biased; _=slow.changed()=>Err(bad("output queue full")),r=&mut write_loop=>r}
 }
 fn kick(player: Uuid) -> Message {
-    let mut body = [0; 66];
     let mut uuid = Uuid::encode_buffer();
-    body[..36].copy_from_slice(player.hyphenated().encode_lower(&mut uuid).as_bytes());
+    let player_uuid = halcyon_protocol::FixedAscii::<64>::from_str_trunc(
+        player.hyphenated().encode_lower(&mut uuid),
+    );
     // Native disconnect code zero requests an immediate return to menus.
-    Message::known(crate::Opcode::KickPlayer, body)
+    halcyon_protocol::KickPlayerBody {
+        player_uuid: player_uuid.into(),
+        disconnect_code: 0,
+    }
+    .encode()
 }
 
 fn allows_final_flush(reason: Option<RoomEndReason>) -> bool {

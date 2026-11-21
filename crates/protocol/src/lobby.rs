@@ -101,6 +101,11 @@ impl PlayerLoadedSceneBody {
         read_bin(body, Self::BODY_LEN, "invalid PlayerLoadedScene body")
     }
 
+    /// Reads the 72-byte prefix from any `PlayerLoadedScene` body with optional trailing bytes.
+    pub fn read_prefix(body: &[u8]) -> io::Result<Self> {
+        read_bin_variable(body, "truncated PlayerLoadedScene body")
+    }
+
     /// Reads the 78-byte cipher-padded frame, returning `(body, trailing_pad)`.
     pub fn read_padded(body: &[u8]) -> io::Result<(Self, [u8; 6])> {
         #[derive(BinRead)]
@@ -147,6 +152,11 @@ impl ConfirmSceneOwnerBody {
 
     pub fn read_body(body: &[u8]) -> io::Result<Self> {
         read_bin(body, Self::BODY_LEN, "invalid ConfirmSceneOwner body")
+    }
+
+    /// Reads the 5-byte prefix from any `ConfirmSceneOwner` body with optional trailing bytes.
+    pub fn read_prefix(body: &[u8]) -> io::Result<Self> {
+        read_bin_variable(body, "truncated ConfirmSceneOwner body")
     }
 
     /// Reads the 6-byte cipher-padded frame, returning `(body, trailing_pad_byte)`.
@@ -214,6 +224,20 @@ impl SceneSettingsBody {
     }
 }
 
+/// 100-byte prefix of `0x03E9` (`Opcode::MatchSettings`) preceding the trailing `team` byte.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, BinRead, BinWrite)]
+#[brw(big)]
+pub struct MatchSettingsPrefix {
+    pub local_actor: u32,
+    pub state_input: u32,
+    pub hero_template: u32,
+    pub skin_hash: u32,
+    pub team_sizes: [u8; 2],
+    pub reserved_18: [u8; 14],
+    pub mode: FixedAscii<64>,
+    pub word96: u32,
+}
+
 /// `0x03E9` (`Opcode::MatchSettings`, 101B) local seat, mode, and loading/draft configuration.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, BinRead, BinWrite)]
 #[brw(big)]
@@ -231,7 +255,23 @@ pub struct MatchSettingsBody {
 
 impl MatchSettingsBody {
     pub const BODY_LEN: usize = 101;
+    pub const PADDED_LEN: usize = 102;
+    pub const PREFIX_LEN: usize = 100;
     pub const UNSET_HERO_TEMPLATE: u32 = u16::MAX as u32;
+
+    /// Reads a 101-byte `MatchSettings` body or a 102-byte Blowfish-aligned wire body.
+    pub fn read_padded(body: &[u8]) -> io::Result<(Self, &[u8])> {
+        if !matches!(body.len(), Self::BODY_LEN | Self::PADDED_LEN) {
+            return Err(invalid("invalid padded MatchSettings body"));
+        }
+        let parsed = Self::read_body(&body[..Self::BODY_LEN])?;
+        Ok((parsed, &body[Self::BODY_LEN..]))
+    }
+
+    /// Reads the 100-byte prefix from any `MatchSettings` body with optional trailing bytes.
+    pub fn read_prefix(body: &[u8]) -> io::Result<MatchSettingsPrefix> {
+        read_bin_variable(body, "truncated game setup")
+    }
 
     /// Builds a draft-phase `MatchSettings` (`state_input = 1`, `hero_template = 0xffff`).
     pub fn draft(local_actor: u32, team_size: u8, mode: &str, word96: f32, team: u8) -> Self {
@@ -344,6 +384,18 @@ impl DraftCatalogEntryBody {
     pub fn encode(&self) -> Message {
         encode_bin(Opcode::DraftCatalogEntry, self, Self::BODY_LEN)
     }
+}
+
+/// 172-byte identity & hero summary prefix of `0x03EE` (`Opcode::PlayerInfo`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, BinRead, BinWrite)]
+#[brw(big)]
+pub struct PlayerInfoSummaryPrefix {
+    pub player_name: FixedAscii<64>,
+    pub player_uuid: FixedAscii<64>,
+    pub reserved_128: [u8; 32],
+    pub actor_id: u32,
+    pub hero_template: u32,
+    pub skin_hash: u32,
 }
 
 /// Common 216-byte prefix of `0x03EE` (`Opcode::PlayerInfo`).
@@ -523,6 +575,11 @@ impl PlayerInfoBody {
         read_bin_variable(body, "invalid PlayerInfo body")
     }
 
+    /// Reads the 172-byte identity & hero summary prefix from any `172+`-byte `PlayerInfo` body.
+    pub fn read_summary_prefix(body: &[u8]) -> io::Result<PlayerInfoSummaryPrefix> {
+        read_bin_variable(body, "truncated PlayerInfo summary")
+    }
+
     pub fn write_body(&self, dst: &mut [u8]) -> io::Result<usize> {
         write_bin(self, dst, self.wire_len())
     }
@@ -656,6 +713,11 @@ impl SceneReadinessRowsBody {
         read_bin(body, Self::BODY_LEN, "invalid SceneReadinessRows body")
     }
 
+    /// Reads the 96-byte readiness table from any `96+`-byte `SceneReadinessRows` body.
+    pub fn read_prefix(body: &[u8]) -> io::Result<Self> {
+        read_bin_variable(body, "truncated control entries")
+    }
+
     pub fn write_body(&self, dst: &mut [u8]) -> io::Result<usize> {
         write_bin(self, dst, Self::BODY_LEN)
     }
@@ -784,6 +846,13 @@ impl DraftSlotBody {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, BinRead, BinWrite)]
+#[brw(big)]
+struct DraftRosterTimers {
+    remaining: f32,
+    allotted: f32,
+}
+
 #[derive(BinRead, BinWrite)]
 #[brw(big)]
 struct DraftRosterWire {
@@ -828,8 +897,11 @@ impl BinRead for DraftRosterBody {
                 });
             }
         };
-        let remaining_seconds = f32::from_be_bytes(wire.slots[0].prefix_0[..4].try_into().unwrap());
-        let allotted_seconds = f32::from_be_bytes(wire.slots[0].prefix_0[4..8].try_into().unwrap());
+        let (remaining_seconds, allotted_seconds) = Self::read_timers(&wire.slots[0].prefix_0)
+            .map_err(|err| binrw::Error::AssertFail {
+                pos: 0,
+                message: err.to_string(),
+            })?;
         Ok(Self {
             remaining_seconds,
             allotted_seconds,
@@ -850,8 +922,11 @@ impl BinWrite for DraftRosterBody {
         _args: Self::Args<'_>,
     ) -> binrw::BinResult<()> {
         let mut slots = self.slots;
-        slots[0].prefix_0[..4].copy_from_slice(&self.remaining_seconds.to_be_bytes());
-        slots[0].prefix_0[4..8].copy_from_slice(&self.allotted_seconds.to_be_bytes());
+        Self::write_timers_to(
+            self.remaining_seconds,
+            self.allotted_seconds,
+            &mut slots[0].prefix_0,
+        );
         DraftRosterWire {
             slots,
             trailer: self.trailer,
@@ -896,9 +971,45 @@ impl DraftRosterBody {
         out
     }
 
+    fn write_timers_to(remaining: f32, allotted: f32, dst: &mut [u8; 8]) {
+        write_bin(
+            &DraftRosterTimers {
+                remaining,
+                allotted,
+            },
+            dst,
+            8,
+        )
+        .expect("8-byte timer header fits prefix_0");
+    }
+
     fn sync_slot0_timer_prefix(&mut self) {
-        self.slots[0].prefix_0[..4].copy_from_slice(&self.remaining_seconds.to_be_bytes());
-        self.slots[0].prefix_0[4..8].copy_from_slice(&self.allotted_seconds.to_be_bytes());
+        Self::write_timers_to(
+            self.remaining_seconds,
+            self.allotted_seconds,
+            &mut self.slots[0].prefix_0,
+        );
+    }
+
+    /// Clears admission UUID identities for the first `count` slots (observer snapshots).
+    pub fn redact_identities(&mut self, count: usize) {
+        for slot in self.slots.iter_mut().take(count) {
+            slot.identity = FixedAscii::default();
+        }
+    }
+
+    /// Clears display names and UUID identities on all non-bot slots (replay recording sanitization).
+    pub fn redact_non_bots(&mut self) {
+        for slot in &mut self.slots {
+            if !slot
+                .identity
+                .as_bytes()
+                .starts_with(b"__Kindred_Player_Bot__")
+            {
+                slot.display_name = FixedAscii::default();
+                slot.identity = FixedAscii::default();
+            }
+        }
     }
 
     pub const fn wire_len(&self) -> usize {
@@ -910,13 +1021,14 @@ impl DraftRosterBody {
     }
 
     pub fn read_timers(body: &[u8]) -> io::Result<(f32, f32)> {
-        #[derive(BinRead)]
-        #[br(big)]
-        struct Timers {
-            remaining: f32,
-            allotted: f32,
-        }
-        let timers: Timers = read_bin(body, 8, "invalid DraftRoster timer header")?;
+        let timers: DraftRosterTimers = read_bin(body, 8, "invalid DraftRoster timer header")?;
+        Ok((timers.remaining, timers.allotted))
+    }
+
+    /// Reads the 8-byte draft timer header from any `8+`-byte body.
+    pub fn read_timers_prefix(body: &[u8]) -> io::Result<(f32, f32)> {
+        let timers: DraftRosterTimers =
+            read_bin_variable(body, "invalid DraftRoster timer header")?;
         Ok((timers.remaining, timers.allotted))
     }
 
@@ -1346,5 +1458,35 @@ mod tests {
         for bad_len in [2583, 2585, 2589, 2591] {
             assert!(DraftRosterBody::read_body(&vec![0u8; bad_len]).is_err());
         }
+    }
+
+    #[test]
+    fn roster_redaction_clears_human_identities_and_preserves_bot_sentinel() {
+        let mut slots = std::array::from_fn(|i| DraftSlotBody::empty(i as u8));
+        slots[0].occupied = 1;
+        slots[0].display_name = FixedAscii::from_str_trunc("Guest");
+        slots[0].identity = FixedAscii::from_str_trunc("11111111-2222-4333-8444-555555555555");
+        slots[1].occupied = 1;
+        slots[1].display_name = FixedAscii::from_str_trunc("Ringo Bot");
+        slots[1].identity = FixedAscii::from_str_trunc("__Kindred_Player_Bot__");
+
+        let mut observer = DraftRosterBody::full(120.0, 300.0, slots);
+        observer.redact_identities(1);
+        assert_eq!(observer.slots[0].display_name.trimmed_bytes(), b"Guest");
+        assert!(observer.slots[0].identity.trimmed_bytes().is_empty());
+        assert_eq!(
+            observer.slots[1].identity.trimmed_bytes(),
+            b"__Kindred_Player_Bot__"
+        );
+
+        let mut recorded = DraftRosterBody::full(120.0, 300.0, slots);
+        recorded.redact_non_bots();
+        assert!(recorded.slots[0].display_name.trimmed_bytes().is_empty());
+        assert!(recorded.slots[0].identity.trimmed_bytes().is_empty());
+        assert_eq!(recorded.slots[1].display_name.trimmed_bytes(), b"Ringo Bot");
+        assert_eq!(
+            recorded.slots[1].identity.trimmed_bytes(),
+            b"__Kindred_Player_Bot__"
+        );
     }
 }

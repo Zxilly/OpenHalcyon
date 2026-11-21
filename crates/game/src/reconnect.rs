@@ -2,10 +2,6 @@
 use super::{Batch, Message, Pick, Room, messages, scene};
 use halcyon_sim::Entity;
 
-const MATCH_SETTINGS_BODY_BYTES: usize = 101;
-const MATCH_SETTINGS_HERO_TEMPLATE_OFFSET: usize = 8;
-const MATCH_SETTINGS_SKIN_HASH_OFFSET: usize = 12;
-const MATCH_SETTINGS_TEAM_OFFSET: usize = 100;
 const DRAFT_TRANSITION_BODY: [u8; 1] = [0];
 
 /// Returns `true` when a single-socket Solo control connection is rejoining an
@@ -38,15 +34,16 @@ pub(super) fn is_solo_rejoin(room: &Room, seat: usize, game: bool) -> bool {
 /// `0x03EE PlayerInfo` skin hash, causing `*KindredSkinManifest*` lookup to
 /// return `NULL` and the loading card texture worker to `SIGSEGV` at `0x18a1838`.
 pub(super) fn populate_world_settings(message: &mut Message, entity: &Entity, pick: &Pick) {
-    if !message.is(crate::Opcode::MatchSettings) || message.body.len() != MATCH_SETTINGS_BODY_BYTES
-    {
+    if !message.is(crate::Opcode::MatchSettings) {
         return;
     }
-    message.body[MATCH_SETTINGS_HERO_TEMPLATE_OFFSET..MATCH_SETTINGS_HERO_TEMPLATE_OFFSET + 4]
-        .copy_from_slice(&u32::from(entity.type_id).to_be_bytes());
-    message.body[MATCH_SETTINGS_SKIN_HASH_OFFSET..MATCH_SETTINGS_SKIN_HASH_OFFSET + 4]
-        .copy_from_slice(&pick.skin.to_be_bytes());
-    message.body[MATCH_SETTINGS_TEAM_OFFSET] = entity.team + 1;
+    let Ok(mut settings) = halcyon_protocol::MatchSettingsBody::read_body(&message.body) else {
+        return;
+    };
+    settings.hero_template = u32::from(entity.type_id);
+    settings.skin_hash = pick.skin;
+    settings.team = entity.team + 1;
+    let _ = settings.write_body(&mut message.body);
 }
 
 /// Populates the `MatchSettings` record inside a game-channel `world_header`
@@ -191,7 +188,10 @@ mod tests {
         assert_eq!(mode, b"*GameMode_5v5_SoloBots*");
         assert_eq!(remaining.first().copied(), Some(expected_team_wire));
         assert_eq!(
-            settings.body[MATCH_SETTINGS_TEAM_OFFSET],
+            halcyon_protocol::MatchSettingsBody::read_padded(&settings.body)
+                .unwrap()
+                .0
+                .team,
             expected_team_wire
         );
         assert_eq!(batch[11].opcode, wire_opcode::DraftTransitionToLoading);

@@ -71,25 +71,37 @@ impl View {
 
     pub fn declarations(&mut self, batch: &[Message]) {
         for m in batch {
-            let slot = match m.known_opcode() {
-                Some(crate::Opcode::EntitySpawn) => m.body.get(116),
-                Some(crate::Opcode::HeroSpawn) => m.body.get(745),
+            let (slot, wire, is_vain_node) = match m.known_opcode() {
+                Some(crate::Opcode::EntitySpawn) => {
+                    let Ok(spawn) = halcyon_protocol::EntitySpawnBody::read_body(&m.body) else {
+                        continue;
+                    };
+                    (
+                        spawn.slot,
+                        spawn.actor,
+                        spawn.template == u32::from(EntityTemplate::VainNode.as_raw()),
+                    )
+                }
+                Some(crate::Opcode::HeroSpawn) => {
+                    let Ok(spawn) =
+                        halcyon_protocol::HeroSpawnBody::read_unpadded_or_padded(&m.body)
+                    else {
+                        continue;
+                    };
+                    (
+                        spawn.slot,
+                        spawn.actor,
+                        spawn.template as u16 == EntityTemplate::VainNode.as_raw(),
+                    )
+                }
                 _ => continue,
             };
-            let Some(&slot @ 0..=199) = slot else {
+            if slot > 199 {
                 continue;
-            };
-            let wire = u32::from_be_bytes(m.body[8..12].try_into().unwrap());
+            }
             // Full declarations may use zero as an unset slot. Only the Solo
             // template-297 armory has a verified real registration there.
-            if slot == 0
-                && !(wire == 2000
-                    && (m.is(crate::Opcode::EntitySpawn)
-                        && m.body[..4]
-                            == u32::from(EntityTemplate::VainNode.as_raw()).to_be_bytes()
-                        || m.is(crate::Opcode::HeroSpawn)
-                            && m.body[2..4] == EntityTemplate::VainNode.as_raw().to_be_bytes()))
-            {
+            if slot == 0 && !(wire == 2000 && is_vain_node) {
                 continue;
             }
             let Some(id) = wire.checked_sub(1499) else {
@@ -247,8 +259,11 @@ impl ObserverScene {
             if !message.is(crate::Opcode::HeroSpawn) {
                 return true;
             }
-            let wire = u32::from_be_bytes(message.body[8..12].try_into().unwrap());
-            let Some(id) = wire.checked_sub(1499) else {
+            let Ok(spawn) = halcyon_protocol::HeroSpawnBody::read_unpadded_or_padded(&message.body)
+            else {
+                return false;
+            };
+            let Some(id) = spawn.actor.checked_sub(1499) else {
                 return false;
             };
             let Ok(i) = world.entities.binary_search_by_key(&id, |e| e.id) else {
@@ -276,9 +291,10 @@ impl ObserverScene {
             if message.opcode != crate::wire_opcode::DestroyEntity {
                 continue;
             }
-            let Some(id) =
-                u32::from_be_bytes(message.body[..4].try_into().unwrap()).checked_sub(1499)
-            else {
+            let Ok(destroy) = halcyon_protocol::DestroyEntityBody::read_body(&message.body) else {
+                continue;
+            };
+            let Some(id) = destroy.actor.checked_sub(1499) else {
                 continue;
             };
             match self {

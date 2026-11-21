@@ -978,11 +978,13 @@ pub(super) fn selector_spec(type_id: u16, selector: u8) -> Option<&'static Selec
 }
 
 pub(super) fn cancel_message(actor_wire: u32, selector: u8, cancel_shared: bool) -> Message {
-    let mut body = [0u8; 14];
-    body[0..4].copy_from_slice(&actor_wire.to_be_bytes());
-    body[4..8].copy_from_slice(&u32::from(selector).to_be_bytes());
-    body[9] = u8::from(cancel_shared);
-    Message::known(Opcode::CancelAbility, body)
+    halcyon_protocol::CancelAbilityBody {
+        actor: actor_wire,
+        reference: u32::from(selector),
+        is_item: 0,
+        cancel_shared: u8::from(cancel_shared),
+    }
+    .encode_padded()
 }
 
 pub(super) fn default_cast_message(
@@ -1360,15 +1362,14 @@ pub(super) fn receive(room: &mut Room, seat: usize, m: Message) -> Vec<Message> 
                         if dist_2d(origin, p) > range {
                             let clamped = clamp_point_to_range(origin, p, (range - 0.1).max(0.5));
                             target = CastTarget::Point(clamped);
-                            if reply.is(Opcode::PlayPointAbility) && reply.body.len() >= 17 {
-                                let height = f32::from_be_bytes(
-                                    reply.body[8..12].try_into().unwrap_or([0; 4]),
-                                );
-                                let selector = reply.body[16];
+                            if reply.is(Opcode::PlayPointAbility)
+                                && let Ok(point_body) =
+                                    halcyon_protocol::PlayPointAbilityBody::read_body(&reply.body)
+                            {
                                 reply = Message::ability_point_used(
                                     wire,
-                                    [clamped.x, height, clamped.y],
-                                    selector,
+                                    [clamped.x, point_body.coordinates[1], clamped.y],
+                                    point_body.selector,
                                 );
                             }
                         }
@@ -1391,10 +1392,11 @@ pub(super) fn receive(room: &mut Room, seat: usize, m: Message) -> Vec<Message> 
                             )
                             .is_ok()
                     {
-                        if let Some(selector) = m.body.get(4).copied()
-                            && m.known_opcode() == Some(Opcode::RequestTargetAbility)
+                        if m.known_opcode() == Some(Opcode::RequestTargetAbility)
+                            && let Ok(req) =
+                                halcyon_protocol::RequestTargetAbilityBody::read_body(&m.body)
                         {
-                            reply = Message::ability_target_used(wire, u32::MAX, selector);
+                            reply = Message::ability_target_used(wire, u32::MAX, req.selector);
                         }
                         CastTarget::Entity(id)
                     } else {

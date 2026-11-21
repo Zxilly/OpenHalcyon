@@ -715,10 +715,7 @@ pub(crate) fn sync_shops(room: &mut Room) {
 }
 
 pub(crate) fn mode_var_message(key: u32, word: u32) -> Message {
-    let mut body = [0u8; 14];
-    body[..4].copy_from_slice(&key.to_be_bytes());
-    body[4..8].copy_from_slice(&word.to_be_bytes());
-    Message::known(crate::Opcode::ModifyGameModeVar, body)
+    halcyon_protocol::ModifyGameModeVarBody { key, value: word }.encode_padded()
 }
 
 pub(crate) fn blitz_mode_var_snapshot(world: &World) -> Vec<Message> {
