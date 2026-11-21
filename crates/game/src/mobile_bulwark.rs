@@ -88,10 +88,7 @@ fn end(id: u32, p: Position) -> Batch {
         }
         .to_message()
         .expect("compact zone destruction"),
-        Message::known(
-            Opcode::DestroyEntity,
-            [id.to_be_bytes().as_slice(), &[0, 0]].concat(),
-        ),
+        halcyon_protocol::DestroyEntityBody { actor: id }.encode_padded(),
     ]
 }
 

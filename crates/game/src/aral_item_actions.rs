@@ -72,17 +72,18 @@ fn action(world: &World, event: &Event) -> Option<(u32, Batch)> {
             }
             .to_message()
             .ok()?;
-            let mut removed = [0; 10];
-            removed[..4].copy_from_slice(&target.to_be_bytes());
-            removed[4..8].copy_from_slice(&item.to_be_bytes());
-            removed[8..].copy_from_slice(&1u16.to_be_bytes());
             Some((
                 actor,
                 vec![
                     active,
                     application,
                     infusion_level(target, instance, level)?,
-                    Message::known(Opcode::ConsumeItem, removed),
+                    halcyon_protocol::ConsumeItemBody {
+                        actor: target,
+                        instance: item,
+                        flags: 1,
+                    }
+                    .encode(),
                 ],
             ))
         }
@@ -275,11 +276,14 @@ fn encode_sale(world: &World, sale: &halcyon_sim::ItemSale, wire_actor: u32) -> 
     for (stat, value) in world.item_modifiers(sale.sold.kind) {
         batch.push(messages::modifier(wire_actor, stat, -value));
     }
-    let mut removal = [0; 10];
-    removal[..4].copy_from_slice(&wire_actor.to_be_bytes());
-    removal[4..8].copy_from_slice(&sale.sold.instance.to_be_bytes());
-    removal[8..].copy_from_slice(&1u16.to_be_bytes());
-    batch.push(Message::known(Opcode::ConsumeItem, removal));
+    batch.push(
+        halcyon_protocol::ConsumeItemBody {
+            actor: wire_actor,
+            instance: sale.sold.instance,
+            flags: 1,
+        }
+        .encode(),
+    );
     batch.push(
         ResourceChange {
             actor: wire_actor,

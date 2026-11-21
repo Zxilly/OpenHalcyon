@@ -2,7 +2,15 @@
 //! the network sender's identity nor that the server applied the command.
 use std::io;
 
-use crate::{Message, Opcode, invalid};
+use crate::{Message, Opcode, fixed_body, invalid};
+use binrw::{BinRead, BinWrite};
+
+const REORDER_PREFIX_LEN: usize = 6;
+const ACTIVATE_SELF_PREFIX_LEN: usize = 4;
+const ACTIVATE_TARGET_PREFIX_LEN: usize = 8;
+const SELL_PREFIX_LEN: usize = 8;
+const ACTIVATE_POINT_PREFIX_LEN: usize = 16;
+const ACTIVATION_PREFIX_LEN: usize = 21;
 
 /// The activation receiver selects which operand it consumes. Unknown selectors
 /// and the inactive operands are retained in the wire view.
@@ -33,6 +41,74 @@ impl From<ItemActivationMode> for u8 {
             ItemActivationMode::Unknown(value) => value,
         }
     }
+}
+
+impl BinRead for ItemActivationMode {
+    type Args<'a> = ();
+
+    fn read_options<R: io::Read + io::Seek>(
+        reader: &mut R,
+        endian: binrw::Endian,
+        args: Self::Args<'_>,
+    ) -> binrw::BinResult<Self> {
+        u8::read_options(reader, endian, args).map(Self::from)
+    }
+}
+
+impl BinWrite for ItemActivationMode {
+    type Args<'a> = ();
+
+    fn write_options<W: io::Write + io::Seek>(
+        &self,
+        writer: &mut W,
+        endian: binrw::Endian,
+        args: Self::Args<'_>,
+    ) -> binrw::BinResult<()> {
+        u8::from(*self).write_options(writer, endian, args)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, BinRead, BinWrite)]
+#[brw(big)]
+struct SellItemWire {
+    actor: u32,
+    instance: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, BinRead, BinWrite)]
+#[brw(big)]
+struct ReorderItemWire {
+    actor: u32,
+    slots: [u8; 2],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, BinRead, BinWrite)]
+#[brw(big)]
+struct ActivateItemSelfWire {
+    instance: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, BinRead, BinWrite)]
+#[brw(big)]
+struct ActivateItemTargetWire {
+    arguments: [u32; 2],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, BinRead, BinWrite)]
+#[brw(big)]
+struct ActivateItemPointWire {
+    vector_bits: [u32; 3],
+    argument: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, BinRead, BinWrite)]
+#[brw(big)]
+struct ItemActivatedWire {
+    actor: u32,
+    instance: u32,
+    target_word: u32,
+    coordinate_bits: [u32; 2],
+    mode: ItemActivationMode,
 }
 
 #[derive(Debug, PartialEq)]
@@ -71,17 +147,18 @@ pub enum ItemAction<'a> {
 
 fn prefix_len(op: Opcode) -> Option<usize> {
     Some(match op {
-        Opcode::ReorderItem => 6,
-        Opcode::RequestActivateItemSelf => 4,
-        Opcode::RequestActivateItemTarget | Opcode::SellItem => 8,
-        Opcode::RequestActivateItemPoint => 16,
-        Opcode::ItemActivated => 21,
+        Opcode::ReorderItem => REORDER_PREFIX_LEN,
+        Opcode::RequestActivateItemSelf => ACTIVATE_SELF_PREFIX_LEN,
+        Opcode::RequestActivateItemTarget => ACTIVATE_TARGET_PREFIX_LEN,
+        Opcode::SellItem => SELL_PREFIX_LEN,
+        Opcode::RequestActivateItemPoint => ACTIVATE_POINT_PREFIX_LEN,
+        Opcode::ItemActivated => ACTIVATION_PREFIX_LEN,
         _ => return None,
     })
 }
 
 fn supported_len(prefix: usize, len: usize) -> bool {
-    len == prefix || len == (prefix + 2).next_multiple_of(8) - 2
+    len == prefix || len == fixed_body::padded_len(prefix)
 }
 
 impl<'a> ItemAction<'a> {
@@ -117,54 +194,75 @@ impl<'a> ItemAction<'a> {
     /// Writes the original native or block-aligned body. All region and suffix
     /// lengths are checked before writing. Bytes beyond the result are untouched.
     pub fn write_body(&self, dst: &mut [u8]) -> io::Result<usize> {
-        let (prefix, len) = self.lengths()?;
-        let body = dst
-            .get_mut(..len)
-            .ok_or_else(|| invalid("item action output is too small"))?;
-        let (head, tail) = body.split_at_mut(prefix);
-        match *self {
+        let result = match *self {
             Self::Sell {
-                actor, instance, ..
-            } => put_words(head, &[actor, instance]),
-            Self::Reorder { actor, slots } => {
-                put_words(head, &[actor]);
-                head[4..].copy_from_slice(&slots);
-            }
-            Self::Activate { instance, .. } => put_words(head, &[instance]),
-            Self::TargetRequest { arguments, .. } => put_words(head, &arguments),
+                actor,
+                instance,
+                suffix,
+            } => fixed_body::write_with_padding(
+                &SellItemWire { actor, instance },
+                SELL_PREFIX_LEN,
+                suffix,
+                dst,
+            ),
+            Self::Reorder { actor, slots } => fixed_body::write_with_padding(
+                &ReorderItemWire { actor, slots },
+                REORDER_PREFIX_LEN,
+                &[],
+                dst,
+            ),
+            Self::Activate { instance, suffix } => fixed_body::write_with_padding(
+                &ActivateItemSelfWire { instance },
+                ACTIVATE_SELF_PREFIX_LEN,
+                suffix,
+                dst,
+            ),
+            Self::TargetRequest { arguments, suffix } => fixed_body::write_with_padding(
+                &ActivateItemTargetWire { arguments },
+                ACTIVATE_TARGET_PREFIX_LEN,
+                suffix,
+                dst,
+            ),
             Self::VectorRequest {
                 vector_bits,
                 argument,
-                ..
-            } => {
-                put_words(
-                    head,
-                    &[vector_bits[0], vector_bits[1], vector_bits[2], argument],
-                );
-            }
+                suffix,
+            } => fixed_body::write_with_padding(
+                &ActivateItemPointWire {
+                    vector_bits,
+                    argument,
+                },
+                ACTIVATE_POINT_PREFIX_LEN,
+                suffix,
+                dst,
+            ),
             Self::Activation {
                 actor,
                 instance,
                 target_word,
                 coordinate_bits,
                 mode,
-                ..
-            } => {
-                put_words(
-                    head,
-                    &[
-                        actor,
-                        instance,
-                        target_word,
-                        coordinate_bits[0],
-                        coordinate_bits[1],
-                    ],
-                );
-                head[20] = mode.into();
+                suffix,
+            } => fixed_body::write_with_padding(
+                &ItemActivatedWire {
+                    actor,
+                    instance,
+                    target_word,
+                    coordinate_bits,
+                    mode,
+                },
+                ACTIVATION_PREFIX_LEN,
+                suffix,
+                dst,
+            ),
+        };
+        result.map_err(|err| {
+            if err.to_string().contains("suffix") {
+                invalid("unsupported item action suffix length")
+            } else {
+                invalid("item action output is too small")
             }
-        }
-        tail.copy_from_slice(self.suffix());
-        Ok(len)
+        })
     }
     pub fn to_message(&self) -> io::Result<Message> {
         let (_, len) = self.lengths()?;
@@ -178,44 +276,62 @@ impl<'a> ItemAction<'a> {
             .then(|| self.to_message().expect("six-byte reorder body"))
     }
     pub(super) fn decode(op: u16, body: &'a [u8]) -> Option<Self> {
-        let prefix = prefix_len(Opcode::try_from(op).ok()?)?;
-        if !supported_len(prefix, body.len()) {
-            return None;
-        }
-        let word = |offset: usize| u32::from_be_bytes(body[offset..offset + 4].try_into().unwrap());
-        let suffix = &body[prefix..];
-        Some(match op {
-            crate::wire_opcode::SellItem => Self::Sell {
-                actor: word(0),
-                instance: word(4),
-                suffix,
-            },
-            crate::wire_opcode::ReorderItem => Self::Reorder {
-                actor: word(0),
-                slots: [body[4], body[5]],
-            },
-            crate::wire_opcode::RequestActivateItemSelf => Self::Activate {
-                instance: word(0),
-                suffix,
-            },
-            crate::wire_opcode::RequestActivateItemTarget => Self::TargetRequest {
-                arguments: [word(0), word(4)],
-                suffix,
-            },
-            crate::wire_opcode::RequestActivateItemPoint => Self::VectorRequest {
-                vector_bits: [word(0), word(4), word(8)],
-                argument: word(12),
-                suffix,
-            },
-            crate::wire_opcode::ItemActivated => Self::Activation {
-                actor: word(0),
-                instance: word(4),
-                target_word: word(8),
-                coordinate_bits: [word(12), word(16)],
-                mode: body[20].into(),
-                suffix,
-            },
-            _ => unreachable!(),
+        Some(match Opcode::try_from(op).ok()? {
+            Opcode::SellItem => {
+                let (wire, suffix): (SellItemWire, _) =
+                    fixed_body::read_with_padding(body, SELL_PREFIX_LEN).ok()?;
+                Self::Sell {
+                    actor: wire.actor,
+                    instance: wire.instance,
+                    suffix,
+                }
+            }
+            Opcode::ReorderItem => {
+                let wire: ReorderItemWire =
+                    fixed_body::read_exact(body, REORDER_PREFIX_LEN).ok()?;
+                Self::Reorder {
+                    actor: wire.actor,
+                    slots: wire.slots,
+                }
+            }
+            Opcode::RequestActivateItemSelf => {
+                let (wire, suffix): (ActivateItemSelfWire, _) =
+                    fixed_body::read_with_padding(body, ACTIVATE_SELF_PREFIX_LEN).ok()?;
+                Self::Activate {
+                    instance: wire.instance,
+                    suffix,
+                }
+            }
+            Opcode::RequestActivateItemTarget => {
+                let (wire, suffix): (ActivateItemTargetWire, _) =
+                    fixed_body::read_with_padding(body, ACTIVATE_TARGET_PREFIX_LEN).ok()?;
+                Self::TargetRequest {
+                    arguments: wire.arguments,
+                    suffix,
+                }
+            }
+            Opcode::RequestActivateItemPoint => {
+                let (wire, suffix): (ActivateItemPointWire, _) =
+                    fixed_body::read_with_padding(body, ACTIVATE_POINT_PREFIX_LEN).ok()?;
+                Self::VectorRequest {
+                    vector_bits: wire.vector_bits,
+                    argument: wire.argument,
+                    suffix,
+                }
+            }
+            Opcode::ItemActivated => {
+                let (wire, suffix): (ItemActivatedWire, _) =
+                    fixed_body::read_with_padding(body, ACTIVATION_PREFIX_LEN).ok()?;
+                Self::Activation {
+                    actor: wire.actor,
+                    instance: wire.instance,
+                    target_word: wire.target_word,
+                    coordinate_bits: wire.coordinate_bits,
+                    mode: wire.mode,
+                    suffix,
+                }
+            }
+            _ => return None,
         })
     }
 
@@ -243,12 +359,6 @@ impl<'a> ItemAction<'a> {
             ) => Some(*coordinate_bits),
             _ => None,
         }
-    }
-}
-
-fn put_words(dst: &mut [u8], words: &[u32]) {
-    for (chunk, value) in dst.as_chunks_mut::<4>().0.iter_mut().zip(words) {
-        *chunk = value.to_be_bytes();
     }
 }
 

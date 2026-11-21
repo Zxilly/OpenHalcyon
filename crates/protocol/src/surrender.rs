@@ -1,8 +1,87 @@
 //! Native sixteen-entry team surrender board (`0x0473`) and three-seat ARAL projection.
-use crate::{Message, invalid};
+use crate::{Message, Opcode, fixed_body, invalid};
+use binrw::{BinRead, BinWrite};
 use std::io;
 
 pub const MAX_SURRENDER_SLOTS: usize = 16;
+const SURRENDER_BOARD_PREFIX_LEN: usize = 151;
+const SURRENDER_BOARD_WIRE_LEN: usize = 155;
+
+/// Observed phase values in `0x0473` (`TeamSurrenderStateChanged`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SurrenderPhase {
+    Idle,
+    Open,
+    Passed,
+    Failed,
+    Unknown(u8),
+}
+
+impl SurrenderPhase {
+    pub const fn from_wire(raw: u8) -> Self {
+        match raw {
+            0 => Self::Idle,
+            1 => Self::Open,
+            2 => Self::Passed,
+            3 => Self::Failed,
+            other => Self::Unknown(other),
+        }
+    }
+
+    pub const fn raw(self) -> u8 {
+        match self {
+            Self::Idle => 0,
+            Self::Open => 1,
+            Self::Passed => 2,
+            Self::Failed => 3,
+            Self::Unknown(other) => other,
+        }
+    }
+}
+
+/// Observed vote byte values per slot in `0x0473` and `0x0472`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SurrenderVote {
+    None,
+    Yes,
+    No,
+    Abstain,
+    Unknown(u8),
+}
+
+impl SurrenderVote {
+    pub const fn from_wire(raw: u8) -> Self {
+        match raw {
+            0 => Self::None,
+            1 => Self::Yes,
+            2 => Self::No,
+            3 => Self::Abstain,
+            other => Self::Unknown(other),
+        }
+    }
+
+    pub const fn raw(self) -> u8 {
+        match self {
+            Self::None => 0,
+            Self::Yes => 1,
+            Self::No => 2,
+            Self::Abstain => 3,
+            Self::Unknown(other) => other,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, BinRead, BinWrite)]
+#[brw(big)]
+struct SurrenderBoardWire {
+    deadline: f32,
+    actors: [u32; MAX_SURRENDER_SLOTS],
+    votes: [u8; MAX_SURRENDER_SLOTS],
+    cooldowns: [f32; MAX_SURRENDER_SLOTS],
+    wire_team: u8,
+    phase: u8,
+    count: u8,
+}
 
 fn valid_time(t: f32) -> bool {
     t.is_finite() && t >= 0.
@@ -33,15 +112,22 @@ fn encode_board(
     cooldowns: &[f32],
 ) -> Message {
     let count = actors.len();
-    let mut body = [0; 155];
-    body[..4].copy_from_slice(&deadline.to_be_bytes());
-    for i in 0..count {
-        body[4 + 4 * i..8 + 4 * i].copy_from_slice(&actors[i].to_be_bytes());
-        body[68 + i] = votes[i];
-        body[84 + 4 * i..88 + 4 * i].copy_from_slice(&cooldowns[i].to_be_bytes());
-    }
-    body[148..151].copy_from_slice(&[wire_team, phase, count as u8]);
-    Message::known(crate::Opcode::TeamSurrenderStateChanged, body)
+    let mut wire = SurrenderBoardWire {
+        deadline,
+        actors: [0; MAX_SURRENDER_SLOTS],
+        votes: [0; MAX_SURRENDER_SLOTS],
+        cooldowns: [0.0; MAX_SURRENDER_SLOTS],
+        wire_team,
+        phase,
+        count: count as u8,
+    };
+    wire.actors[..count].copy_from_slice(actors);
+    wire.votes[..count].copy_from_slice(votes);
+    wire.cooldowns[..count].copy_from_slice(cooldowns);
+    let mut body = vec![0; SURRENDER_BOARD_WIRE_LEN];
+    fixed_body::write(&wire, &mut body, SURRENDER_BOARD_PREFIX_LEN)
+        .expect("surrender board prefix fits 155-byte body");
+    Message::known(Opcode::TeamSurrenderStateChanged, body)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -57,17 +143,17 @@ pub struct AralSurrenderBoard {
 
 impl AralSurrenderBoard {
     pub(crate) fn read(b: &[u8]) -> Option<Self> {
-        if b[150] != 3 {
+        let wire: SurrenderBoardWire = fixed_body::read(b).ok()?;
+        if wire.count != 3 {
             return None;
         }
-        let word = |i: usize| u32::from_be_bytes(b[i..i + 4].try_into().unwrap());
         let board = Self {
-            wire_team: b[148],
-            phase: b[149],
-            deadline: f32::from_bits(word(0)),
-            actors: std::array::from_fn(|i| word(4 + 4 * i)),
-            votes: b[68..71].try_into().unwrap(),
-            cooldowns: std::array::from_fn(|i| f32::from_bits(word(84 + 4 * i))),
+            wire_team: wire.wire_team,
+            phase: wire.phase,
+            deadline: wire.deadline,
+            actors: wire.actors[..3].try_into().unwrap(),
+            votes: wire.votes[..3].try_into().unwrap(),
+            cooldowns: wire.cooldowns[..3].try_into().unwrap(),
         };
         board.valid().then_some(board)
     }
@@ -94,24 +180,22 @@ pub struct TeamSurrenderBoard {
 
 impl TeamSurrenderBoard {
     pub(crate) fn read(b: &[u8]) -> Option<Self> {
-        let count = usize::from(b[150]);
+        let wire: SurrenderBoardWire = fixed_body::read(b).ok()?;
+        let count = usize::from(wire.count);
         if !(1..=MAX_SURRENDER_SLOTS).contains(&count) {
             return None;
         }
-        let word = |i: usize| u32::from_be_bytes(b[i..i + 4].try_into().unwrap());
         let mut actors = [0; MAX_SURRENDER_SLOTS];
         let mut votes = [0; MAX_SURRENDER_SLOTS];
         let mut cooldowns = [0.0; MAX_SURRENDER_SLOTS];
-        for i in 0..count {
-            actors[i] = word(4 + 4 * i);
-            votes[i] = b[68 + i];
-            cooldowns[i] = f32::from_bits(word(84 + 4 * i));
-        }
+        actors[..count].copy_from_slice(&wire.actors[..count]);
+        votes[..count].copy_from_slice(&wire.votes[..count]);
+        cooldowns[..count].copy_from_slice(&wire.cooldowns[..count]);
         let board = Self {
-            wire_team: b[148],
-            phase: b[149],
-            count: b[150],
-            deadline: f32::from_bits(word(0)),
+            wire_team: wire.wire_team,
+            phase: wire.phase,
+            count: wire.count,
+            deadline: wire.deadline,
             actors,
             votes,
             cooldowns,
@@ -137,7 +221,10 @@ impl TeamSurrenderBoard {
 impl Message {
     /// The stock client emits state 1 on vote initiation. Other state bytes are preserved by the reader.
     pub fn aral_surrender_request() -> Self {
-        Self::known(crate::Opcode::SetSurrenderStateRequest, [1])
+        Self::known(
+            crate::Opcode::SetSurrenderStateRequest,
+            [SurrenderVote::Yes.raw()],
+        )
     }
 
     pub fn aral_surrender_board(

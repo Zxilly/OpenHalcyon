@@ -123,10 +123,7 @@ pub(super) fn append(out: &mut Batch, event: &Event, visible: impl Fn(u32) -> bo
             .expect("fixed Double Down cancel"),
         );
         for key in [3u32, 8, 9, 10] {
-            let mut body = [0; 14];
-            body[..4].copy_from_slice(&actor.to_be_bytes());
-            body[4..8].copy_from_slice(&key.to_be_bytes());
-            out.push(Message::known(crate::Opcode::ClearAbilityOverride, body));
+            out.push(halcyon_protocol::ClearAbilityOverrideBody { actor, key }.encode_padded());
         }
     } else {
         out.push(
@@ -145,11 +142,15 @@ pub(super) fn append(out: &mut Batch, event: &Event, visible: impl Fn(u32) -> bo
             .expect("fixed Double Down application"),
         );
         for key in [8u32, 9, 10] {
-            let mut body = [0; 14];
-            body[..4].copy_from_slice(&actor.to_be_bytes());
-            body[4..8].copy_from_slice(&key.to_be_bytes());
-            body[8..12].copy_from_slice(&3u32.to_be_bytes());
-            out.push(Message::known(crate::Opcode::OverrideAbility, body));
+            out.push(
+                halcyon_protocol::OverrideAbilityBody {
+                    actor,
+                    key,
+                    replacement: 3,
+                    flag: 0,
+                }
+                .encode_padded(),
+            );
         }
     }
     true
@@ -157,43 +158,54 @@ pub(super) fn append(out: &mut Batch, event: &Event, visible: impl Fn(u32) -> bo
 
 pub(super) fn references(m: &Message) -> Option<(u32, Option<u32>)> {
     let body = &m.body;
-    let target = match m.known_opcode() {
-        Some(crate::Opcode::ApplyBuffCompact) if matches!(m.fields(), Ok(halcyon_protocol::Fields::BuffApplication(v)) if v.prefix.source==v.prefix.target && v.prefix.definition==379 && v.prefix.duration_bits==0xbc00 && v.prefix.instance>1505 && v.suffix==[0;6]) => {
-            None
-        }
-        Some(crate::Opcode::CancelBuff)
-            if body.len() == 14
-                && u32::from_be_bytes(body[4..8].try_into().ok()?) > 1505
-                && body[8..] == [0; 6] =>
-        {
-            None
-        }
-        Some(crate::Opcode::PlayTargetAbility) if body.len() == 9 && body[8] == 3 => {
-            let target = u32::from_be_bytes(body[4..8].try_into().ok()?);
-            if !(1500..65535).contains(&target) {
+    let (wire, target) = match m.known_opcode() {
+        Some(crate::Opcode::ApplyBuffCompact) => {
+            let Ok(halcyon_protocol::Fields::BuffApplication(v)) = m.fields() else {
+                return None;
+            };
+            if v.prefix.source != v.prefix.target
+                || v.prefix.definition != 379
+                || v.prefix.duration_bits != 0xbc00
+                || v.prefix.instance <= 1505
+                || v.suffix != [0; 6]
+            {
                 return None;
             }
-            Some(target - 1499)
+            (v.prefix.target, None)
         }
-        Some(crate::Opcode::OverrideAbility)
-            if body.len() == 14
-                && body[4..7] == [0; 3]
-                && matches!(body[7], 8..=10)
-                && body[8..] == [0, 0, 0, 3, 0, 0] =>
-        {
-            None
+        Some(crate::Opcode::CancelBuff) => {
+            let bm = m.buff_mutation()?;
+            if bm.change != halcyon_protocol::BuffChange::Cancel
+                || bm.instance <= 1505
+                || bm.padding != [0; 6]
+            {
+                return None;
+            }
+            (bm.target, None)
         }
-        Some(crate::Opcode::ClearAbilityOverride)
-            if body.len() == 14
-                && body[4..7] == [0; 3]
-                && matches!(body[7], 3 | 8..=10)
-                && body[8..] == [0; 6] =>
-        {
-            None
+        Some(crate::Opcode::PlayTargetAbility) => {
+            let pt = halcyon_protocol::PlayTargetAbilityBody::read_exact(body).ok()?;
+            if pt.selector != 3 || !(1500..65535).contains(&pt.target) {
+                return None;
+            }
+            (pt.actor, Some(pt.target - 1499))
+        }
+        Some(crate::Opcode::OverrideAbility) => {
+            let ov = halcyon_protocol::OverrideAbilityBody::read_padded_zero(body).ok()?;
+            if !matches!(ov.key, 8..=10) || ov.replacement != 3 || ov.flag != 0 {
+                return None;
+            }
+            (ov.actor, None)
+        }
+        Some(crate::Opcode::ClearAbilityOverride) => {
+            let clr = halcyon_protocol::ClearAbilityOverrideBody::read_padded_zero(body).ok()?;
+            if !matches!(clr.key, 3 | 8..=10) {
+                return None;
+            }
+            (clr.actor, None)
         }
         _ => return None,
     };
-    let wire = u32::from_be_bytes(body[..4].try_into().ok()?);
     (1500..=1505).contains(&wire).then(|| (wire - 1499, target))
 }
 
@@ -210,11 +222,16 @@ pub(super) fn track(view: &mut super::tower_aggro::View, message: &Message) -> b
     };
     let active = &mut view.ringo_effects[(actor - 1) as usize];
     if message.is(crate::Opcode::ApplyBuffCompact) {
-        *active = Some(u32::from_be_bytes(message.body[10..14].try_into().unwrap()));
+        let Ok(halcyon_protocol::Fields::BuffApplication(v)) = message.fields() else {
+            return false;
+        };
+        *active = Some(v.prefix.instance);
         true
     } else {
-        let instance = u32::from_be_bytes(message.body[4..8].try_into().unwrap());
-        if *active != Some(instance) {
+        let Some(bm) = message.buff_mutation() else {
+            return false;
+        };
+        if *active != Some(bm.instance) {
             return false;
         }
         *active = None;

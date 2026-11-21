@@ -70,11 +70,12 @@ pub(super) fn restore(world: &World, team: Option<u8>, slot: u8) -> Option<Messa
 
 fn decrement(slot: u8) -> Message {
     let (_, instance) = profile(slot).unwrap();
-    let mut body = Vec::with_capacity(12);
-    body.extend(wire_id(slot).to_be_bytes());
-    body.extend(instance.to_be_bytes());
-    body.extend(1u32.to_be_bytes());
-    Message::known(Opcode::DecrementBuffStack, body)
+    halcyon_protocol::DecrementBuffStackBody {
+        target: wire_id(slot),
+        instance,
+        count: 1,
+    }
+    .encode()
 }
 
 pub(super) fn recordable(m: &Message) -> bool {
@@ -91,9 +92,13 @@ pub(super) fn recordable(m: &Message) -> bool {
         return false;
     };
     if m.is(Opcode::DecrementBuffStack) {
-        return matches!(m.body.get(12..), Some([] | [0, 0]))
-            && m.body[4..8] == instance.to_be_bytes()
-            && m.body[8..12] == 1_u32.to_be_bytes();
+        return matches!(
+            halcyon_protocol::DecrementBuffStackBody::read_with_padding(&m.body),
+            Ok((body, tail))
+                if (tail.is_empty() || tail == [0, 0])
+                    && body.instance == instance
+                    && body.count == 1
+        );
     }
     let Ok(Fields::BuffApplication(effect)) = m.fields() else {
         return false;

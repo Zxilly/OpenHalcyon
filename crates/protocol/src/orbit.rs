@@ -1,11 +1,33 @@
-use super::{Message, Opcode};
+use super::{Message, Opcode, fixed_body};
+use binrw::{BinRead, BinWrite};
+
+const ORBIT_START_PREFIX_LEN: usize = 32;
+const ORBIT_CANCEL_PREFIX_LEN: usize = 16;
 
 /// Recorded actor-anchored orbit coordinates, preserving original float bits.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, BinRead, BinWrite)]
+#[brw(big)]
 pub struct OrbitPosition {
     pub x_bits: u32,
     pub y_bits: u32,
     pub z_bits: u32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, BinRead, BinWrite)]
+#[brw(big)]
+struct OrbitStartWire {
+    actor: u32,
+    unknown: [u32; 2],
+    center: u32,
+    parameter: u32,
+    position: OrbitPosition,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, BinRead, BinWrite)]
+#[brw(big)]
+struct OrbitCancelWire {
+    actor: u32,
+    position: OrbitPosition,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -25,40 +47,37 @@ pub enum OrbitAction<'a> {
     },
 }
 
+fn opt_padding(tail: &[u8]) -> Option<Option<&[u8; 6]>> {
+    match tail {
+        [] => Some(None),
+        data => Some(Some(data.try_into().ok()?)),
+    }
+}
+
 impl Message {
     pub fn orbit_action(&self) -> Option<OrbitAction<'_>> {
-        let n = match self.opcode {
-            crate::wire_opcode::AutoOrbit => 32,
-            crate::wire_opcode::CancelAutoOrbit => 16,
-            _ => return None,
-        };
-        let (operands, tail) = self.body.split_at_checked(n)?;
-        let padding = match tail {
-            [] => None,
-            data => Some(data.try_into().ok()?),
-        };
-        let word = |w: &[u8; 4]| u32::from_be_bytes(*w);
-        let (header, coords) = operands.as_chunks::<4>().0.split_last_chunk::<3>()?;
-        let [x_bits, y_bits, z_bits] = coords.map(u32::from_be_bytes);
-        let position = OrbitPosition {
-            x_bits,
-            y_bits,
-            z_bits,
-        };
-        match header {
-            [actor, a, b, center, parameter] => Some(OrbitAction::Start {
-                actor: word(actor),
-                unknown: [word(a), word(b)],
-                center: word(center),
-                parameter: word(parameter),
-                position,
-                padding,
-            }),
-            [actor] => Some(OrbitAction::Cancel {
-                actor: word(actor),
-                position,
-                padding,
-            }),
+        match self.known_opcode()? {
+            Opcode::AutoOrbit => {
+                let (wire, tail): (OrbitStartWire, _) =
+                    fixed_body::read_with_padding(&self.body, ORBIT_START_PREFIX_LEN).ok()?;
+                Some(OrbitAction::Start {
+                    actor: wire.actor,
+                    unknown: wire.unknown,
+                    center: wire.center,
+                    parameter: wire.parameter,
+                    position: wire.position,
+                    padding: opt_padding(tail)?,
+                })
+            }
+            Opcode::CancelAutoOrbit => {
+                let (wire, tail): (OrbitCancelWire, _) =
+                    fixed_body::read_with_padding(&self.body, ORBIT_CANCEL_PREFIX_LEN).ok()?;
+                Some(OrbitAction::Cancel {
+                    actor: wire.actor,
+                    position: wire.position,
+                    padding: opt_padding(tail)?,
+                })
+            }
             _ => None,
         }
     }
@@ -66,39 +85,45 @@ impl Message {
 
 impl OrbitAction<'_> {
     pub fn to_message(&self) -> Message {
-        let mut body = Vec::new();
-        let (opcode, position, padding) = match *self {
+        match *self {
             Self::Start {
                 actor,
-                unknown: [a, b],
+                unknown,
                 center,
                 parameter,
                 position,
                 padding,
             } => {
-                body.reserve_exact(32 + padding.map_or(0, |v| v.len()));
-                for w in [actor, a, b, center, parameter] {
-                    body.extend(w.to_be_bytes());
-                }
-                (Opcode::AutoOrbit, position, padding)
+                let suffix = padding.map_or(&[][..], |v| &v[..]);
+                fixed_body::message_with_padding(
+                    Opcode::AutoOrbit,
+                    &OrbitStartWire {
+                        actor,
+                        unknown,
+                        center,
+                        parameter,
+                        position,
+                    },
+                    ORBIT_START_PREFIX_LEN,
+                    suffix,
+                )
+                .expect("orbit start padding is 0 or 6 bytes")
             }
             Self::Cancel {
                 actor,
                 position,
                 padding,
             } => {
-                body.reserve_exact(16 + padding.map_or(0, |v| v.len()));
-                body.extend(actor.to_be_bytes());
-                (Opcode::CancelAutoOrbit, position, padding)
+                let suffix = padding.map_or(&[][..], |v| &v[..]);
+                fixed_body::message_with_padding(
+                    Opcode::CancelAutoOrbit,
+                    &OrbitCancelWire { actor, position },
+                    ORBIT_CANCEL_PREFIX_LEN,
+                    suffix,
+                )
+                .expect("orbit cancel padding is 0 or 6 bytes")
             }
-        };
-        for coord in [position.x_bits, position.y_bits, position.z_bits] {
-            body.extend(coord.to_be_bytes());
         }
-        if let Some(bytes) = padding {
-            body.extend(bytes);
-        }
-        Message::known(opcode, body)
     }
 }
 

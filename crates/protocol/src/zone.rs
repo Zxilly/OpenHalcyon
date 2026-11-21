@@ -1,5 +1,35 @@
-use super::{Message, invalid};
+use super::{Message, Opcode, fixed_body};
+use binrw::{BinRead, BinWrite};
 use std::io;
+
+const ZONE_CREATE_PREFIX_LEN: usize = 25;
+const ZONE_RECT_PREFIX_LEN: usize = 24;
+const ZONE_DESTROY_PREFIX_LEN: usize = 4;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, BinRead, BinWrite)]
+#[brw(big)]
+struct ZoneCreateWire {
+    id: u32,
+    source: u32,
+    anchor: u32,
+    parameters: [u32; 3],
+    flag: u8,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, BinRead, BinWrite)]
+#[brw(big)]
+struct ZoneRectWire {
+    id: u32,
+    owner: u32,
+    p0_xz_bits: [u32; 2],
+    p1_xz_bits: [u32; 2],
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, BinRead, BinWrite)]
+#[brw(big)]
+struct ZoneDestroyWire {
+    id: u32,
+}
 
 /// Native actor-anchored and rectangular zone declarations and removal.
 #[derive(Debug, PartialEq, Eq)]
@@ -36,28 +66,38 @@ pub enum ZoneAction<'a> {
 impl Message {
     /// Decode the native prefix or its transport-aligned form.
     pub fn zone_action(&self) -> Option<ZoneAction<'_>> {
-        let body = &self.body;
-        let word = |i: usize| u32::from_be_bytes(body[i..i + 4].try_into().unwrap());
-        match (self.opcode, body.len()) {
-            (crate::wire_opcode::CreateZoneOfControl, 25 | 30) => Some(ZoneAction::Create {
-                id: word(0),
-                source: word(4),
-                anchor: word(8),
-                parameters: [word(12), word(16), word(20)],
-                flag: body[24],
-                suffix: &body[25..],
-            }),
-            (crate::wire_opcode::CreateRectZoneOfControl, 24 | 30) => Some(ZoneAction::Rectangle {
-                id: word(0),
-                owner: word(4),
-                p0_xz_bits: [word(8), word(12)],
-                p1_xz_bits: [word(16), word(20)],
-                suffix: &body[24..],
-            }),
-            (crate::wire_opcode::DestroyZoneOfControl, 4 | 6) => Some(ZoneAction::Destroy {
-                id: word(0),
-                suffix: &body[4..],
-            }),
+        match self.known_opcode()? {
+            Opcode::CreateZoneOfControl => {
+                let (wire, suffix): (ZoneCreateWire, _) =
+                    fixed_body::read_with_padding(&self.body, ZONE_CREATE_PREFIX_LEN).ok()?;
+                Some(ZoneAction::Create {
+                    id: wire.id,
+                    source: wire.source,
+                    anchor: wire.anchor,
+                    parameters: wire.parameters,
+                    flag: wire.flag,
+                    suffix,
+                })
+            }
+            Opcode::CreateRectZoneOfControl => {
+                let (wire, suffix): (ZoneRectWire, _) =
+                    fixed_body::read_with_padding(&self.body, ZONE_RECT_PREFIX_LEN).ok()?;
+                Some(ZoneAction::Rectangle {
+                    id: wire.id,
+                    owner: wire.owner,
+                    p0_xz_bits: wire.p0_xz_bits,
+                    p1_xz_bits: wire.p1_xz_bits,
+                    suffix,
+                })
+            }
+            Opcode::DestroyZoneOfControl => {
+                let (wire, suffix): (ZoneDestroyWire, _) =
+                    fixed_body::read_with_padding(&self.body, ZONE_DESTROY_PREFIX_LEN).ok()?;
+                Some(ZoneAction::Destroy {
+                    id: wire.id,
+                    suffix,
+                })
+            }
             _ => None,
         }
     }
@@ -65,7 +105,7 @@ impl Message {
 
 impl ZoneAction<'_> {
     pub fn to_message(&self) -> io::Result<Message> {
-        match self {
+        match *self {
             Self::Create {
                 id,
                 source,
@@ -73,36 +113,41 @@ impl ZoneAction<'_> {
                 parameters,
                 flag,
                 suffix,
-            } if matches!(suffix.len(), 0 | 5) => {
-                let mut body = Vec::with_capacity(25 + suffix.len());
-                for word in [id, source, anchor].into_iter().chain(parameters) {
-                    body.extend(word.to_be_bytes());
-                }
-                body.push(*flag);
-                body.extend_from_slice(suffix);
-                Ok(Message::known(crate::Opcode::CreateZoneOfControl, body))
-            }
+            } => fixed_body::message_with_padding(
+                Opcode::CreateZoneOfControl,
+                &ZoneCreateWire {
+                    id,
+                    source,
+                    anchor,
+                    parameters,
+                    flag,
+                },
+                ZONE_CREATE_PREFIX_LEN,
+                suffix,
+            ),
             Self::Rectangle {
                 id,
                 owner,
                 p0_xz_bits,
                 p1_xz_bits,
                 suffix,
-            } if matches!(suffix.len(), 0 | 6) => {
-                let mut body = Vec::with_capacity(24 + suffix.len());
-                for word in [id, owner].into_iter().chain(p0_xz_bits).chain(p1_xz_bits) {
-                    body.extend(word.to_be_bytes());
-                }
-                body.extend_from_slice(suffix);
-                Ok(Message::known(crate::Opcode::CreateRectZoneOfControl, body))
-            }
-            Self::Destroy { id, suffix } if matches!(suffix.len(), 0 | 2) => {
-                let mut body = Vec::with_capacity(4 + suffix.len());
-                body.extend(id.to_be_bytes());
-                body.extend_from_slice(suffix);
-                Ok(Message::known(crate::Opcode::DestroyZoneOfControl, body))
-            }
-            _ => Err(invalid("unsupported zone action suffix length")),
+            } => fixed_body::message_with_padding(
+                Opcode::CreateRectZoneOfControl,
+                &ZoneRectWire {
+                    id,
+                    owner,
+                    p0_xz_bits,
+                    p1_xz_bits,
+                },
+                ZONE_RECT_PREFIX_LEN,
+                suffix,
+            ),
+            Self::Destroy { id, suffix } => fixed_body::message_with_padding(
+                Opcode::DestroyZoneOfControl,
+                &ZoneDestroyWire { id },
+                ZONE_DESTROY_PREFIX_LEN,
+                suffix,
+            ),
         }
     }
 }

@@ -1,14 +1,22 @@
 //! Map pings and HUD quick messages from the recorded server stream.
-use crate::Message;
+use crate::{
+    Message, Opcode,
+    fixed_body::{self, fixed_packet},
+};
+use binrw::{BinRead, BinWrite};
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, BinRead, BinWrite)]
+#[brw(big)]
 pub struct MapPing {
     pub actor: u32,
+    #[br(map = target)]
+    #[bw(map = |value: &Option<u32>| value.unwrap_or(u32::MAX))]
     pub target: Option<u32>,
     pub position: [f32; 3],
     pub selector: u8,
     pub qualifier: u8,
 }
+fixed_packet!(MapPing, Opcode::Ping, 22);
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct HudQuickMessage {
@@ -20,42 +28,30 @@ pub struct HudQuickMessage {
     pub padding: Option<[u8; 5]>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, BinRead, BinWrite)]
+#[brw(big)]
+struct HudQuickWire {
+    actor: u32,
+    selector: u8,
+    #[br(map = target)]
+    #[bw(map = |value: &Option<u32>| value.unwrap_or(u32::MAX))]
+    target: Option<u32>,
+    value: f32,
+    operand: u32,
+}
+
+const HUD_QUICK_PREFIX_LEN: usize = 17;
+
 fn target(raw: u32) -> Option<u32> {
     (raw != u32::MAX).then_some(raw)
 }
 
-fn word(body: &[u8], offset: usize) -> u32 {
-    u32::from_be_bytes(body[offset..offset + 4].try_into().unwrap())
-}
-
 impl MapPing {
     pub(super) fn decode(body: &[u8]) -> Option<Self> {
-        if body.len() != 22 {
-            return None;
-        }
-        Some(Self {
-            actor: word(body, 0),
-            target: target(word(body, 4)),
-            position: std::array::from_fn(|i| f32::from_bits(word(body, 8 + 4 * i))),
-            selector: body[20],
-            qualifier: body[21],
-        })
+        Self::read_exact(body).ok()
     }
     pub fn message(&self) -> Message {
-        let mut body = [0; 22];
-        body[..4].copy_from_slice(&self.actor.to_be_bytes());
-        body[4..8].copy_from_slice(&self.target.unwrap_or(u32::MAX).to_be_bytes());
-        for (dest, value) in body[8..20]
-            .as_chunks_mut::<4>()
-            .0
-            .iter_mut()
-            .zip(self.position)
-        {
-            *dest = value.to_be_bytes();
-        }
-        body[20] = self.selector;
-        body[21] = self.qualifier;
-        Message::known(crate::Opcode::Ping, body)
+        self.encode()
     }
 }
 
@@ -71,29 +67,37 @@ impl HudQuickMessage {
     }
 
     pub(super) fn decode(body: &[u8]) -> Option<Self> {
-        if !matches!(body.len(), 17 | 22) {
-            return None;
-        }
+        let (wire, tail): (HudQuickWire, _) =
+            fixed_body::read_with_padding(body, HUD_QUICK_PREFIX_LEN).ok()?;
+        let padding = match tail {
+            [] => None,
+            data => Some(data.try_into().ok()?),
+        };
         Some(Self {
-            actor: word(body, 0),
-            selector: body[4],
-            target: target(word(body, 5)),
-            value: f32::from_bits(word(body, 9)),
-            operand: word(body, 13),
-            padding: body[17..].try_into().ok(),
+            actor: wire.actor,
+            selector: wire.selector,
+            target: wire.target,
+            value: wire.value,
+            operand: wire.operand,
+            padding,
         })
     }
     pub fn message(&self) -> Message {
-        let mut body = Vec::with_capacity(22);
-        body.extend(self.actor.to_be_bytes());
-        body.push(self.selector);
-        body.extend(self.target.unwrap_or(u32::MAX).to_be_bytes());
-        body.extend(self.value.to_be_bytes());
-        body.extend(self.operand.to_be_bytes());
-        if let Some(pad) = self.padding {
-            body.extend(pad);
-        }
-        Message::known(crate::Opcode::HUDQuickMessage, body)
+        let wire = HudQuickWire {
+            actor: self.actor,
+            selector: self.selector,
+            target: self.target,
+            value: self.value,
+            operand: self.operand,
+        };
+        let suffix = self.padding.as_ref().map_or(&[][..], |pad| &pad[..]);
+        fixed_body::message_with_padding(
+            Opcode::HUDQuickMessage,
+            &wire,
+            HUD_QUICK_PREFIX_LEN,
+            suffix,
+        )
+        .expect("HUD quick padding is 0 or 5 bytes")
     }
 }
 

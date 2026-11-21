@@ -1,5 +1,160 @@
-use super::{Message, invalid};
+use super::{Message, Opcode, fixed_body::fixed_packet, invalid};
+use binrw::{BinRead, BinWrite};
 use std::io;
+
+const SLOTS: usize = 16;
+const REPORT_BODY_LEN: usize = 1612;
+const REPORT_PADDED_LEN: usize = 1614;
+const EMPTY_SLOT_ID: u32 = u32::MAX;
+const EMPTY_ITEM_ID: u32 = 0x0000ffff;
+
+/// 1612-byte Structure-of-Arrays wire payload of `0x048D` (`Opcode::PostMatchStats`).
+#[derive(Clone, Debug, PartialEq, Default, BinRead, BinWrite)]
+#[brw(big)]
+pub struct StatisticsWireBody {
+    pub players: [u32; SLOTS],
+    pub teams: [u8; SLOTS],
+    pub slot_flags: [u8; SLOTS],
+    pub damage_to_heroes: [f32; SLOTS],
+    pub weapon_damage_to_heroes: [f32; SLOTS],
+    pub crystal_damage_to_heroes: [f32; SLOTS],
+    pub true_damage_to_heroes: [f32; SLOTS],
+    pub damage_to_structures: [f32; SLOTS],
+    pub ambient_gold_input: [f32; SLOTS],
+    pub lane_farm_at_five: [u16; SLOTS],
+    pub jungle_farm_at_five: [u16; SLOTS],
+    pub net_worth_at_five: [u16; SLOTS],
+    pub counter_jungle_farm: [u16; SLOTS],
+    pub deaths_by_turret: [u8; SLOTS],
+    pub scout_cam_uses: [u8; SLOTS],
+    pub smurf_score: [f32; SLOTS],
+    pub average_interactions_per_minute_alive: [f32; SLOTS],
+    pub items: [[u32; 10]; SLOTS],
+    pub item_builds: [u8; SLOTS],
+    pub auxiliary_words: [u32; 19],
+    pub average_net_worth_at_five: [f32; 2],
+    pub average_level_at_five: [f32; 2],
+    pub average_net_worth_at_ten: [f32; 2],
+    pub average_level_at_ten: [f32; 2],
+    pub first_blackclaw_capture_time: [f32; 2],
+    pub first_ghostwing_capture_time: [f32; 2],
+    pub first_outer_turret_kill_time: [f32; 2],
+    pub first_mezzanine_turret_kill_time: [f32; 2],
+    pub first_inner_turret_kill_time: [f32; 2],
+    pub first_armory_kill_time: [f32; 2],
+    pub team_ids: [u8; 2],
+    pub hero_kills_at_five: [u8; 2],
+    pub byte_630: [u8; 2],
+    pub hero_kills_at_ten: [u8; 2],
+    pub structure_kills_at_ten: [u8; 2],
+    pub blackclaw_captures: [u8; 2],
+    pub ghostwing_captures: [u8; 2],
+    pub structure_kills: [u8; 2],
+    pub minion_damage_ratio_inputs: [u32; 4],
+}
+fixed_packet!(StatisticsWireBody, Opcode::PostMatchStats, 1612);
+
+impl StatisticsWireBody {
+    pub fn slot(&self, i: usize) -> Option<PlayerStatistics> {
+        if i >= SLOTS {
+            return None;
+        }
+        Some(PlayerStatistics {
+            player: self.players[i],
+            team: self.teams[i],
+            slot_flag: self.slot_flags[i],
+            damage_to_heroes: self.damage_to_heroes[i],
+            weapon_damage_to_heroes: self.weapon_damage_to_heroes[i],
+            crystal_damage_to_heroes: self.crystal_damage_to_heroes[i],
+            true_damage_to_heroes: self.true_damage_to_heroes[i],
+            damage_to_structures: self.damage_to_structures[i],
+            ambient_gold_input: self.ambient_gold_input[i],
+            lane_farm_at_five: self.lane_farm_at_five[i],
+            jungle_farm_at_five: self.jungle_farm_at_five[i],
+            net_worth_at_five: self.net_worth_at_five[i],
+            counter_jungle_farm: self.counter_jungle_farm[i],
+            deaths_by_turret: self.deaths_by_turret[i],
+            scout_cam_uses: self.scout_cam_uses[i],
+            smurf_score: self.smurf_score[i],
+            average_interactions_per_minute_alive: self.average_interactions_per_minute_alive[i],
+            item_build: self.item_builds[i],
+            items: self.items[i],
+        })
+    }
+
+    pub fn set_slot(&mut self, i: usize, stats: &PlayerStatistics) -> io::Result<()> {
+        if i >= SLOTS || stats.player == EMPTY_SLOT_ID || !matches!(stats.team, 1 | 2) {
+            return Err(invalid("invalid occupied statistics slot"));
+        }
+        self.players[i] = stats.player;
+        self.teams[i] = stats.team;
+        self.slot_flags[i] = stats.slot_flag;
+        self.damage_to_heroes[i] = stats.damage_to_heroes;
+        self.weapon_damage_to_heroes[i] = stats.weapon_damage_to_heroes;
+        self.crystal_damage_to_heroes[i] = stats.crystal_damage_to_heroes;
+        self.true_damage_to_heroes[i] = stats.true_damage_to_heroes;
+        self.damage_to_structures[i] = stats.damage_to_structures;
+        self.ambient_gold_input[i] = stats.ambient_gold_input;
+        self.lane_farm_at_five[i] = stats.lane_farm_at_five;
+        self.jungle_farm_at_five[i] = stats.jungle_farm_at_five;
+        self.net_worth_at_five[i] = stats.net_worth_at_five;
+        self.counter_jungle_farm[i] = stats.counter_jungle_farm;
+        self.deaths_by_turret[i] = stats.deaths_by_turret;
+        self.scout_cam_uses[i] = stats.scout_cam_uses;
+        self.smurf_score[i] = stats.smurf_score;
+        self.average_interactions_per_minute_alive[i] = stats.average_interactions_per_minute_alive;
+        self.item_builds[i] = stats.item_build;
+        self.items[i] = stats.items;
+        Ok(())
+    }
+
+    pub fn team(&self, i: usize) -> Option<TeamStatistics> {
+        if i >= 2 {
+            return None;
+        }
+        Some(TeamStatistics {
+            team: self.team_ids[i],
+            average_net_worth_at_five: self.average_net_worth_at_five[i],
+            average_level_at_five: self.average_level_at_five[i],
+            average_net_worth_at_ten: self.average_net_worth_at_ten[i],
+            average_level_at_ten: self.average_level_at_ten[i],
+            first_blackclaw_capture_time: self.first_blackclaw_capture_time[i],
+            first_ghostwing_capture_time: self.first_ghostwing_capture_time[i],
+            first_outer_turret_kill_time: self.first_outer_turret_kill_time[i],
+            first_mezzanine_turret_kill_time: self.first_mezzanine_turret_kill_time[i],
+            first_inner_turret_kill_time: self.first_inner_turret_kill_time[i],
+            first_armory_kill_time: self.first_armory_kill_time[i],
+            hero_kills_at_five: self.hero_kills_at_five[i],
+            byte_630: self.byte_630[i],
+            hero_kills_at_ten: self.hero_kills_at_ten[i],
+            structure_kills_at_ten: self.structure_kills_at_ten[i],
+            blackclaw_captures: self.blackclaw_captures[i],
+            ghostwing_captures: self.ghostwing_captures[i],
+            structure_kills: self.structure_kills[i],
+        })
+    }
+
+    pub fn set_team(&mut self, i: usize, team: &TeamStatistics) {
+        self.team_ids[i] = team.team;
+        self.average_net_worth_at_five[i] = team.average_net_worth_at_five;
+        self.average_level_at_five[i] = team.average_level_at_five;
+        self.average_net_worth_at_ten[i] = team.average_net_worth_at_ten;
+        self.average_level_at_ten[i] = team.average_level_at_ten;
+        self.first_blackclaw_capture_time[i] = team.first_blackclaw_capture_time;
+        self.first_ghostwing_capture_time[i] = team.first_ghostwing_capture_time;
+        self.first_outer_turret_kill_time[i] = team.first_outer_turret_kill_time;
+        self.first_mezzanine_turret_kill_time[i] = team.first_mezzanine_turret_kill_time;
+        self.first_inner_turret_kill_time[i] = team.first_inner_turret_kill_time;
+        self.first_armory_kill_time[i] = team.first_armory_kill_time;
+        self.hero_kills_at_five[i] = team.hero_kills_at_five;
+        self.byte_630[i] = team.byte_630;
+        self.hero_kills_at_ten[i] = team.hero_kills_at_ten;
+        self.structure_kills_at_ten[i] = team.structure_kills_at_ten;
+        self.blackclaw_captures[i] = team.blackclaw_captures;
+        self.ghostwing_captures[i] = team.ghostwing_captures;
+        self.structure_kills[i] = team.structure_kills;
+    }
+}
 
 /// Structure-of-arrays record. Unknown columns and trailing bytes stay in Message::body.
 #[derive(Debug, PartialEq)]
@@ -29,67 +184,30 @@ pub struct PlayerStatistics {
     /// Empty item positions use 0x0000ffff.
     pub items: [u32; 10],
 }
-const TEAM_IDS: usize = 0x62c;
-const RATIOS: usize = 0x63c;
-const FLOAT_COLUMNS: [usize; 8] = [0x60, 0xa0, 0xe0, 0x120, 0x160, 0x1a0, 0x280, 0x2c0];
-const HALF_COLUMNS: [usize; 4] = [0x1e0, 0x200, 0x220, 0x240];
-const TEAMS: usize = 0x40;
-const SLOT_FLAGS: usize = 0x50;
-const SLOTS: usize = 16;
-
-fn item_offset(slot: usize, item: usize) -> usize {
-    0x300 + 40 * slot + 4 * item
-}
 
 pub(super) fn complete(body: &[u8]) -> bool {
-    matches!(body.len(), 1612 | 1614)
+    matches!(body.len(), REPORT_BODY_LEN | REPORT_PADDED_LEN)
 }
 
 impl MatchStatistics<'_> {
+    fn wire(&self) -> StatisticsWireBody {
+        StatisticsWireBody::read_body(self.0).expect("complete 0x048d statistics body")
+    }
+
     /// Two wire team IDs associated with the report's team records.
     pub fn team_ids(&self) -> [u8; 2] {
-        [self.0[TEAM_IDS], self.0[TEAM_IDS + 1]]
+        self.wire().team_ids
     }
 
     /// Four original BE32 float bit patterns feeding two minion damage ratios.
     /// In each pair the second value is the minion contribution and the first is the remainder.
     pub fn minion_damage_ratio_inputs(&self) -> [u32; 4] {
-        std::array::from_fn(|i| {
-            let start = RATIOS + 4 * i;
-            u32::from_be_bytes(self.0[start..start + 4].try_into().unwrap())
-        })
+        self.wire().minion_damage_ratio_inputs
     }
 
     /// Returns the raw slot, including any unused/sentinel player identifier.
     pub fn slot(&self, i: usize) -> Option<PlayerStatistics> {
-        if i >= SLOTS {
-            return None;
-        }
-        let b = self.0;
-        let word = |p: usize| u32::from_be_bytes(b[p..p + 4].try_into().unwrap());
-        let float = |p: usize| f32::from_bits(word(p + 4 * i));
-        let half = |p: usize| u16::from_be_bytes(b[p + 2 * i..p + 2 * i + 2].try_into().unwrap());
-        Some(PlayerStatistics {
-            player: word(4 * i),
-            team: b[TEAMS + i],
-            slot_flag: b[SLOT_FLAGS + i],
-            damage_to_heroes: float(FLOAT_COLUMNS[0]),
-            weapon_damage_to_heroes: float(FLOAT_COLUMNS[1]),
-            crystal_damage_to_heroes: float(FLOAT_COLUMNS[2]),
-            true_damage_to_heroes: float(FLOAT_COLUMNS[3]),
-            damage_to_structures: float(FLOAT_COLUMNS[4]),
-            ambient_gold_input: float(FLOAT_COLUMNS[5]),
-            lane_farm_at_five: half(HALF_COLUMNS[0]),
-            jungle_farm_at_five: half(HALF_COLUMNS[1]),
-            net_worth_at_five: half(HALF_COLUMNS[2]),
-            counter_jungle_farm: half(HALF_COLUMNS[3]),
-            deaths_by_turret: b[0x260 + i],
-            scout_cam_uses: b[0x270 + i],
-            smurf_score: float(FLOAT_COLUMNS[6]),
-            average_interactions_per_minute_alive: float(FLOAT_COLUMNS[7]),
-            item_build: b[0x580 + i],
-            items: std::array::from_fn(|j| word(item_offset(i, j))),
-        })
+        self.wire().slot(i)
     }
 }
 
@@ -99,7 +217,7 @@ pub struct MatchStatisticsMut<'a>(&'a mut [u8]);
 
 impl<'a> MatchStatisticsMut<'a> {
     pub fn new(message: &'a mut Message) -> io::Result<Self> {
-        if !message.is(crate::Opcode::PostMatchStats) || !complete(&message.body) {
+        if !message.is(Opcode::PostMatchStats) || !complete(&message.body) {
             return Err(invalid("expected a complete 0x048d report"));
         }
         Ok(Self(&mut message.body))
@@ -111,52 +229,14 @@ impl<'a> MatchStatisticsMut<'a> {
         i: usize,
         edit: impl FnOnce(&mut PlayerStatistics),
     ) -> io::Result<()> {
-        let mut stats = MatchStatistics(self.0)
-            .slot(i)
-            .ok_or_else(|| invalid("slot out of range"))?;
-        if stats.player == u32::MAX {
+        let mut wire = StatisticsWireBody::read_body(self.0)?;
+        let mut stats = wire.slot(i).ok_or_else(|| invalid("slot out of range"))?;
+        if stats.player == EMPTY_SLOT_ID {
             return Err(invalid("cannot edit an unused statistics slot"));
         }
         edit(&mut stats);
-        self.write_slot(i, &stats)
-    }
-
-    fn write_slot(&mut self, i: usize, stats: &PlayerStatistics) -> io::Result<()> {
-        if stats.player == u32::MAX || !matches!(stats.team, 1 | 2) {
-            return Err(invalid("invalid occupied statistics slot"));
-        }
-        self.0[4 * i..4 * i + 4].copy_from_slice(&stats.player.to_be_bytes());
-        self.0[TEAMS + i] = stats.team;
-        self.0[SLOT_FLAGS + i] = stats.slot_flag;
-        for (column, value) in FLOAT_COLUMNS.into_iter().zip([
-            stats.damage_to_heroes,
-            stats.weapon_damage_to_heroes,
-            stats.crystal_damage_to_heroes,
-            stats.true_damage_to_heroes,
-            stats.damage_to_structures,
-            stats.ambient_gold_input,
-            stats.smurf_score,
-            stats.average_interactions_per_minute_alive,
-        ]) {
-            let offset = column + 4 * i;
-            self.0[offset..offset + 4].copy_from_slice(&value.to_be_bytes());
-        }
-        for (column, value) in HALF_COLUMNS.into_iter().zip([
-            stats.lane_farm_at_five,
-            stats.jungle_farm_at_five,
-            stats.net_worth_at_five,
-            stats.counter_jungle_farm,
-        ]) {
-            let offset = column + 2 * i;
-            self.0[offset..offset + 2].copy_from_slice(&value.to_be_bytes());
-        }
-        self.0[0x260 + i] = stats.deaths_by_turret;
-        self.0[0x270 + i] = stats.scout_cam_uses;
-        self.0[0x580 + i] = stats.item_build;
-        for (j, value) in stats.items.into_iter().enumerate() {
-            let offset = item_offset(i, j);
-            self.0[offset..offset + 4].copy_from_slice(&value.to_be_bytes());
-        }
+        wire.set_slot(i, &stats)?;
+        wire.write_body(self.0)?;
         Ok(())
     }
 
@@ -164,15 +244,17 @@ impl<'a> MatchStatisticsMut<'a> {
         if !matches!(ids, [1, 2] | [2, 1]) {
             return Err(invalid("expected both statistics teams"));
         }
-        self.0[TEAM_IDS..TEAM_IDS + 2].copy_from_slice(&ids);
+        let mut wire = StatisticsWireBody::read_body(self.0)?;
+        wire.team_ids = ids;
+        wire.write_body(self.0)?;
         Ok(())
     }
 
     pub fn set_minion_damage_ratio_inputs(&mut self, bits: [u32; 4]) {
-        for (i, value) in bits.into_iter().enumerate() {
-            let offset = RATIOS + 4 * i;
-            self.0[offset..offset + 4].copy_from_slice(&value.to_be_bytes());
-        }
+        let mut wire = StatisticsWireBody::read_body(self.0).expect("complete 0x048d report");
+        wire.minion_damage_ratio_inputs = bits;
+        wire.write_body(self.0)
+            .expect("complete 0x048d report output");
     }
 }
 
@@ -201,45 +283,17 @@ pub struct TeamStatistics {
 
 impl MatchStatistics<'_> {
     pub fn team(&self, i: usize) -> Option<TeamStatistics> {
-        if i >= 2 {
-            return None;
-        }
-        let word = |column: usize| {
-            let off = column + 4 * i;
-            f32::from_be_bytes(self.0[off..off + 4].try_into().unwrap())
-        };
-        Some(TeamStatistics {
-            team: self.0[TEAM_IDS + i],
-            average_net_worth_at_five: word(0x5dc),
-            average_level_at_five: word(0x5e4),
-            average_net_worth_at_ten: word(0x5ec),
-            average_level_at_ten: word(0x5f4),
-            first_blackclaw_capture_time: word(0x5fc),
-            first_ghostwing_capture_time: word(0x604),
-            first_outer_turret_kill_time: word(0x60c),
-            first_mezzanine_turret_kill_time: word(0x614),
-            first_inner_turret_kill_time: word(0x61c),
-            first_armory_kill_time: word(0x624),
-            hero_kills_at_five: self.0[0x62e + i],
-            byte_630: self.0[0x630 + i],
-            hero_kills_at_ten: self.0[0x632 + i],
-            structure_kills_at_ten: self.0[0x634 + i],
-            blackclaw_captures: self.0[0x636 + i],
-            ghostwing_captures: self.0[0x638 + i],
-            structure_kills: self.0[0x63a + i],
-        })
+        self.wire().team(i)
     }
 
     /// Nineteen BE32 values forwarded by the reader as a separate block.
     pub fn auxiliary_words(&self) -> [u32; 19] {
-        std::array::from_fn(|i| {
-            let off = 0x590 + 4 * i;
-            u32::from_be_bytes(self.0[off..off + 4].try_into().unwrap())
-        })
+        self.wire().auxiliary_words
     }
 }
 
 /// Original report from an authoritative producer. Auxiliary words require an explicit source.
+#[derive(Clone, Debug, PartialEq)]
 pub struct StatisticsReport {
     pub players: Vec<PlayerStatistics>,
     pub teams: [TeamStatistics; 2],
@@ -252,8 +306,7 @@ impl StatisticsReport {
         if self.players.is_empty() || self.players.len() > SLOTS {
             return Err(invalid("invalid statistics roster length"));
         }
-        let mut body = vec![0; 1612];
-        let mut view = MatchStatisticsMut(&mut body);
+        let mut wire = StatisticsWireBody::default();
         for (i, p) in self.players.iter().enumerate() {
             if self.players[..i]
                 .iter()
@@ -261,53 +314,23 @@ impl StatisticsReport {
             {
                 return Err(invalid("duplicate statistics player"));
             }
-            view.write_slot(i, p)?;
+            wire.set_slot(i, p)?;
         }
         for i in self.players.len()..SLOTS {
-            view.0[4 * i..4 * i + 4].fill(255);
-            view.0[TEAMS + i] = 255;
-            for j in 0..10 {
-                let offset = item_offset(i, j);
-                view.0[offset..offset + 4].copy_from_slice(&0xffffu32.to_be_bytes());
-            }
+            wire.players[i] = EMPTY_SLOT_ID;
+            wire.teams[i] = 255;
+            wire.items[i] = [EMPTY_ITEM_ID; 10];
         }
-        view.set_team_ids([self.teams[0].team, self.teams[1].team])?;
+        let ids = [self.teams[0].team, self.teams[1].team];
+        if !matches!(ids, [1, 2] | [2, 1]) {
+            return Err(invalid("expected both statistics teams"));
+        }
         for (i, t) in self.teams.iter().enumerate() {
-            let floats = [
-                t.average_net_worth_at_five,
-                t.average_level_at_five,
-                t.average_net_worth_at_ten,
-                t.average_level_at_ten,
-                t.first_blackclaw_capture_time,
-                t.first_ghostwing_capture_time,
-                t.first_outer_turret_kill_time,
-                t.first_mezzanine_turret_kill_time,
-                t.first_inner_turret_kill_time,
-                t.first_armory_kill_time,
-            ];
-            for (j, val) in floats.into_iter().enumerate() {
-                let off = 0x5dc + 8 * j + 4 * i;
-                view.0[off..off + 4].copy_from_slice(&val.to_be_bytes());
-            }
-            let bytes = [
-                t.hero_kills_at_five,
-                t.byte_630,
-                t.hero_kills_at_ten,
-                t.structure_kills_at_ten,
-                t.blackclaw_captures,
-                t.ghostwing_captures,
-                t.structure_kills,
-            ];
-            for (j, val) in bytes.into_iter().enumerate() {
-                view.0[0x62e + 2 * j + i] = val;
-            }
+            wire.set_team(i, t);
         }
-        for (i, val) in self.auxiliary_words.iter().enumerate() {
-            let off = 0x590 + 4 * i;
-            view.0[off..off + 4].copy_from_slice(&val.to_be_bytes());
-        }
-        view.set_minion_damage_ratio_inputs(self.minion_damage_ratio_inputs);
-        Ok(Message::known(crate::Opcode::PostMatchStats, body))
+        wire.auxiliary_words = self.auxiliary_words;
+        wire.minion_damage_ratio_inputs = self.minion_damage_ratio_inputs;
+        Ok(wire.encode())
     }
 }
 

@@ -42,36 +42,31 @@ impl Announcements {
 }
 
 fn append(out: &mut Vec<Message>, key: u32, killer: Option<u32>) {
+    let wire_key = halcyon_protocol::AnnouncementKey::from_wire(key);
     for recipient in (1500..=1505).rev().chain([NONE]) {
-        let words = [
-            recipient,
-            killer.unwrap_or(recipient),
-            key,
-            if killer.is_some() { 125 } else { NONE },
-            NONE,
-            NONE,
-        ];
-        let mut body = Vec::with_capacity(24);
-        for word in words {
-            body.extend_from_slice(&word.to_be_bytes());
-        }
-        out.push(Message::known(crate::Opcode::MakeAnnouncement, body));
+        out.push(
+            halcyon_protocol::AnnouncementBody {
+                recipient,
+                subject: killer.unwrap_or(recipient),
+                key: wire_key,
+                arg: if killer.is_some() { 125 } else { NONE },
+                param1: NONE,
+                param2: NONE,
+            }
+            .encode(),
+        );
     }
 }
 
 pub(crate) fn recordable(body: &[u8]) -> bool {
-    let Ok(words): Result<&[[u8; 4]; 6], _> = body.as_chunks::<4>().0.try_into() else {
+    let Ok(packet) = halcyon_protocol::AnnouncementBody::read_exact(body) else {
         return false;
     };
-    if body.len() != 24 {
-        return false;
-    }
-    let [recipient, subject, key, arg, a, b] = words.map(u32::from_be_bytes);
-    (recipient == NONE || (1500..=1505).contains(&recipient))
-        && [a, b] == [NONE; 2]
-        && match key {
-            FIRST_WAVE => subject == recipient && arg == NONE,
-            FIRST_BLOOD => (1500..=1505).contains(&subject) && arg == 125,
+    (packet.recipient == NONE || (1500..=1505).contains(&packet.recipient))
+        && [packet.param1, packet.param2] == [NONE; 2]
+        && match packet.key.to_wire() {
+            FIRST_WAVE => packet.subject == packet.recipient && packet.arg == NONE,
+            FIRST_BLOOD => (1500..=1505).contains(&packet.subject) && packet.arg == 125,
             _ => false,
         }
 }

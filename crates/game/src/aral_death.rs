@@ -107,11 +107,10 @@ pub(super) fn flush(room: &mut Room, now: u64) {
         {
             continue;
         }
-        let mut body = [0; 6];
-        body[..4].copy_from_slice(&u32::from(wire_id(death.id)).to_be_bytes());
-        let mut out = vec![Message::known(crate::Opcode::ActorDead, body)];
+        let actor = u32::from(wire_id(death.id));
+        let mut out = vec![halcyon_protocol::ActorDeadBody { actor }.encode_padded()];
         if death.minion {
-            out.push(Message::known(crate::Opcode::DestroyEntity, body));
+            out.push(halcyon_protocol::DestroyEntityBody { actor }.encode_padded());
             if legacy {
                 for team in 0..2 {
                     if death.teams & (1 << team) != 0 {

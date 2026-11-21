@@ -107,14 +107,12 @@ impl Paths {
 }
 
 fn authoritative_goal(slot: u8, destination: Position) -> Message {
-    Fields::ServerMove {
+    halcyon_protocol::ServerMoveBody {
         selector: slot,
         values: [destination.x, SOLO_HEIGHT, destination.y],
         flag: 1,
-        remaining: &[],
     }
-    .movement_message()
-    .expect("fixed Solo authoritative goal layout")
+    .encode()
 }
 
 pub(super) fn recordable(message: &Message) -> bool {
