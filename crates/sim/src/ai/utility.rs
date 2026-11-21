@@ -1,9 +1,12 @@
 //! Layer 4 zero-allocation Utility AI, smooth response curves,
 //! 61-hero data-driven Ability Role Classifier, and active-item intent scoring.
 
-use super::super::*;
 use super::macro_bt::MacroMode;
 use super::threat::ThreatAssessment;
+use crate::BasicItem;
+use crate::Command;
+use crate::Kind;
+use crate::Room;
 use halcyon_data::{
     AbilityForm, GameData, all_hero_ability_slots,
     combat_content::{Ability, AbilityVariable},
@@ -1053,7 +1056,7 @@ impl Room<'_> {
                 }),
                 _ => Some(Command::ActivateItem {
                     instance: best.instance,
-                    target: item_actives::ItemTarget::SelfCast,
+                    target: crate::items::actives::ItemTarget::SelfCast,
                 }),
             },
             ActiveItemCategory::SpeedEngageEscape => match best.item {
@@ -1062,14 +1065,14 @@ impl Room<'_> {
                 }),
                 _ => Some(Command::ActivateItem {
                     instance: best.instance,
-                    target: item_actives::ItemTarget::SelfCast,
+                    target: crate::items::actives::ItemTarget::SelfCast,
                 }),
             },
             ActiveItemCategory::TeamHeal
             | ActiveItemCategory::AttackSpeedSlow
             | ActiveItemCategory::TargetSlow => Some(Command::ActivateItem {
                 instance: best.instance,
-                target: item_actives::ItemTarget::SelfCast,
+                target: crate::items::actives::ItemTarget::SelfCast,
             }),
         }
     }
@@ -1078,6 +1081,9 @@ impl Room<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::HeldItem;
+    use crate::World;
+    use halcyon_data::GameData;
     use halcyon_data::combat_content::DamageVariable;
     use std::collections::BTreeSet;
     use std::path::Path;
@@ -1286,7 +1292,7 @@ mod tests {
         let mut w = World::new(7, 6);
         w.use_six_human_roster().unwrap();
         w.use_aral_lane().unwrap();
-        w.shop.sprint = Some(shop::SprintRule {
+        w.shop.sprint = Some(crate::items::shop::SprintRule {
             speed: 2.0,
             duration: 40,
             cooldown: 3000,
@@ -1362,7 +1368,7 @@ mod tests {
             crucible_cmd,
             Command::ActivateItem {
                 instance: 50_003,
-                target: item_actives::ItemTarget::SelfCast,
+                target: crate::items::actives::ItemTarget::SelfCast,
             }
         );
         w.order(0, crucible_cmd).unwrap();
@@ -1374,7 +1380,7 @@ mod tests {
             fountain_cmd,
             Command::ActivateItem {
                 instance: 50_000,
-                target: item_actives::ItemTarget::SelfCast,
+                target: crate::items::actives::ItemTarget::SelfCast,
             }
         );
         w.order(0, fountain_cmd).unwrap();
@@ -1392,7 +1398,7 @@ mod tests {
             atlas_cmd,
             Command::ActivateItem {
                 instance: 50_001,
-                target: item_actives::ItemTarget::SelfCast,
+                target: crate::items::actives::ItemTarget::SelfCast,
             }
         );
         w.order(0, atlas_cmd).unwrap();
@@ -1405,7 +1411,7 @@ mod tests {
             shiver_cmd,
             Command::ActivateItem {
                 instance: 50_002,
-                target: item_actives::ItemTarget::SelfCast,
+                target: crate::items::actives::ItemTarget::SelfCast,
             }
         );
         w.order(0, shiver_cmd).unwrap();

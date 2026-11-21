@@ -2,7 +2,11 @@
 
 use super::macro_bt::MacroMode;
 use super::threat::ThreatAssessment;
-use super::*;
+use crate::Command;
+use crate::Entity;
+use crate::Kind;
+use crate::Room;
+use crate::TICK_HZ;
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Priority {
@@ -16,7 +20,7 @@ enum Priority {
 impl Room<'_> {
     /// Deterministic baseline target selector (used by non-hero actors, legacy validation,
     /// and direct baseline tests).
-    pub(super) fn choose_target(&self, e: &Entity) -> Option<&Entity> {
+    pub(crate) fn choose_target(&self, e: &Entity) -> Option<&Entity> {
         let sensor = if matches!(e.kind, Kind::Tower | Kind::Crystal) {
             e.stats.range.min(e.stats.sight())
         } else {
@@ -81,7 +85,7 @@ impl Room<'_> {
 
     /// Macro-mode and threat-aware target selection for Layer 3 + Layer 4 hero bots.
     /// Guarantees deterministic `entity.id` tie-breaking across all candidate targets.
-    pub(super) fn choose_target_modern(
+    pub(crate) fn choose_target_modern(
         &self,
         caster: usize,
         mode: MacroMode,
@@ -228,6 +232,8 @@ impl Room<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Position;
+    use crate::World;
     #[derive(bevy_ecs::component::Component)]
     struct TestTag;
     #[derive(bevy_ecs::component::Component)]

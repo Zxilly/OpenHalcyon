@@ -6,12 +6,19 @@ use super::threat::ThreatAssessment;
 use super::utility::{
     AbilityRole, ClassifiedAbility, TargetPattern, UtilityContext, score_classified_ability,
 };
-use super::*;
+use crate::AbilitySlot;
+use crate::CastTarget;
+use crate::Command;
+use crate::Entity;
+use crate::Kind;
+use crate::Position;
+use crate::Room;
+use halcyon_data::EntityTemplate;
 
 impl Room<'_> {
     /// Evaluates support/escape/combat abilities using Layer 4 response-curve utility
     /// while preserving all modeled hero-specific triggers.
-    pub(super) fn hero_utility_cast_order(
+    pub(crate) fn hero_utility_cast_order(
         &self,
         caster: usize,
         enemy: Option<&Entity>,
@@ -90,7 +97,8 @@ impl Room<'_> {
                 .is_some_and(|k| self.tick < k.recast_until[slot.idx()]);
             let allow_lvl1_ult = slot == AbilitySlot::C
                 && self.hero_kit_enabled()
-                && crate::hero_kits::kit_spec(hero.type_id).is_some_and(|s| s.ult_from_level_one);
+                && crate::heroes::kits::kit_spec(hero.type_id)
+                    .is_some_and(|s| s.ult_from_level_one);
             if (hero.ability_ranks[slot.idx()] == 0 && !allow_lvl1_ult)
                 || (hero.cooldown[slot.idx()] > self.tick && !kit_recast)
             {
@@ -358,7 +366,7 @@ impl Room<'_> {
     }
 
     /// Legacy hero combat order retained for `Layout::Validation` baseline parity.
-    pub(super) fn hero_combat_order_legacy(
+    pub(crate) fn hero_combat_order_legacy(
         &self,
         caster: usize,
         enemy: &Entity,

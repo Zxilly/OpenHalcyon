@@ -1,6 +1,12 @@
 //! Deterministic, zero-allocation Layer 4 threat & influence map evaluation.
 
-use super::super::*;
+use crate::Entity;
+use crate::Kind;
+use crate::Position;
+use crate::Room;
+use crate::TICK_HZ;
+use crate::VisionDeviceKind;
+use crate::ecs::rules::Layout;
 
 /// Normalized influence and danger assessment around an actor or probe point.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -66,7 +72,7 @@ impl Room<'_> {
         p.x.is_finite()
             && p.y.is_finite()
             && (self.layout.walkable(p)
-                || (self.map_5v5.is_some() && map_5v5::in_5v5_bounds(p))
+                || (self.map_5v5.is_some() && crate::maps::sovereigns_5v5::in_5v5_bounds(p))
                 || self
                     .native_navigation
                     .as_ref()
@@ -82,7 +88,7 @@ impl Room<'_> {
             return true;
         }
         match self.layout {
-            Layout::SoloMid { .. } => solo_side::steer(from, to).is_some(),
+            Layout::SoloMid { .. } => crate::maps::solo_side::steer(from, to).is_some(),
             Layout::Validation
             | Layout::Aral { .. }
             | Layout::HalcyonFold { .. }
@@ -230,19 +236,28 @@ impl Room<'_> {
             }
         };
 
-        for field in self.entities.spells::<sigil::Field>() {
+        for field in self
+            .entities
+            .spells::<crate::heroes::native::sigil::Field>()
+        {
             let (team, center, radius) = field.hazard_circle();
             if team != hero.team && self.sees_position(hero.team, center) {
                 add_hazard(center, radius, 0.35);
             }
         }
-        for field in self.entities.spells::<bulwark::Field>() {
+        for field in self
+            .entities
+            .spells::<crate::heroes::native::bulwark::Field>()
+        {
             let (team, center, radius) = field.hazard_circle(self);
             if team != hero.team && self.sees_position(hero.team, center) {
                 add_hazard(center, radius, 0.40);
             }
         }
-        for water in self.entities.spells::<lorelai::Water>() {
+        for water in self
+            .entities
+            .spells::<crate::heroes::native::lorelai::Water>()
+        {
             if let Some((team, pos, radius)) = water.hazard_circle()
                 && team != hero.team
                 && self.sees_position(hero.team, pos)
@@ -396,6 +411,9 @@ impl Room<'_> {
 mod tests {
     use super::*;
 
+    use crate::Command;
+    use crate::World;
+    use halcyon_data::GameData;
     #[test]
     fn threat_map_kites_undefended_turret_and_engages_when_minions_tank() {
         let mut w = World::new(3, 0);
@@ -452,10 +470,11 @@ mod tests {
         enemy_trap_owner.team = 1;
         enemy_trap_owner.position = Position { x: 21.0, y: 1.0 };
         w.entities.push(enemy_trap_owner);
-        w.entities.spawn_spell(lorelai::Water::test_hazard_at(
-            1,
-            Position { x: 21.5, y: 0.0 },
-        ));
+        w.entities
+            .spawn_spell(crate::heroes::native::lorelai::Water::test_hazard_at(
+                1,
+                Position { x: 21.5, y: 0.0 },
+            ));
         let hazard_threat = w.evaluate_threat(w.index(1).unwrap());
         assert!(hazard_threat.hazard_threat > 0.15);
         assert!(hazard_threat.hazard_repulsion.x < 0.0);

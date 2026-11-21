@@ -1,7 +1,12 @@
 //! Layer 3 deterministic macro Behavior Tree built on `bonsai-bt 0.14.0`.
 
-use super::super::*;
 use super::threat::ThreatAssessment;
+use crate::Entity;
+use crate::Kind;
+use crate::Position;
+use crate::Room;
+use crate::TICK_HZ;
+use crate::ecs::rules::Layout;
 use bonsai_bt::{
     Action, BT, Behavior, Event as BtEvent, Failure, Running, Select, Status, UpdateArgs,
 };
@@ -785,6 +790,7 @@ impl Room<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::World;
     use halcyon_data::BotDifficulty;
 
     #[test]
@@ -838,7 +844,7 @@ mod tests {
         // 2. Spawn reachable neutral camp nearby -> JungleFarm
         let camp_stats = w.entities[h1].stats;
         let camp_id = w.spawn_with_stats(
-            native_camps::NEUTRAL_TEAM,
+            crate::maps::native_camps::NEUTRAL_TEAM,
             Kind::Neutral,
             camp_stats,
             Position { x: -6.0, y: 0.0 },
@@ -870,7 +876,7 @@ mod tests {
             let mut obj_stats = camp_stats;
             obj_stats.id = obj_type;
             let obj_id = w.spawn_with_stats(
-                native_camps::NEUTRAL_TEAM,
+                crate::maps::native_camps::NEUTRAL_TEAM,
                 Kind::Neutral,
                 obj_stats,
                 Position { x: 5.0, y: 0.0 },
