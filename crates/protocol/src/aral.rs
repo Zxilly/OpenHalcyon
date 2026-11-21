@@ -28,13 +28,13 @@ impl<'a> AralRoster<'a> {
     }
 
     pub fn remaining_seconds(&self) -> f32 {
-        DraftRosterBody::read_timers(self.wire)
+        DraftRosterBody::read_timers(&self.wire[..8])
             .expect("validated ARAL roster header")
             .0
     }
 
     pub fn allotted_seconds(&self) -> f32 {
-        DraftRosterBody::read_timers(self.wire)
+        DraftRosterBody::read_timers(&self.wire[..8])
             .expect("validated ARAL roster header")
             .1
     }

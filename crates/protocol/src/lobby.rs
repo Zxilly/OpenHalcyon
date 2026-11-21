@@ -3,7 +3,20 @@ use crate::{FixedAscii, Message, Opcode, invalid};
 use binrw::{BinRead, BinWrite};
 use std::io::{self, Cursor, Read, Seek, SeekFrom, Write};
 
-fn read_bin<T>(body: &[u8], reason: &'static str) -> io::Result<T>
+fn read_bin<T>(body: &[u8], expected_len: usize, reason: &'static str) -> io::Result<T>
+where
+    T: for<'a> BinRead<Args<'a> = ()>,
+{
+    if body.len() != expected_len {
+        return Err(invalid(reason));
+    }
+    let mut cursor = Cursor::new(body);
+    let value = T::read_be(&mut cursor).map_err(|_| invalid(reason))?;
+    debug_assert_eq!(cursor.position(), expected_len as u64);
+    Ok(value)
+}
+
+fn read_bin_variable<T>(body: &[u8], reason: &'static str) -> io::Result<T>
 where
     T: for<'a> BinRead<Args<'a> = ()>,
 {
@@ -51,7 +64,7 @@ impl RegisterPlayerUuidBody {
     }
 
     pub fn read_body(body: &[u8]) -> io::Result<Self> {
-        read_bin(body, "truncated RegisterPlayerUuid body")
+        read_bin(body, Self::BODY_LEN, "invalid RegisterPlayerUuid body")
     }
 
     pub fn write_body(&self, dst: &mut [u8]) -> io::Result<usize> {
@@ -85,7 +98,23 @@ impl PlayerLoadedSceneBody {
     }
 
     pub fn read_body(body: &[u8]) -> io::Result<Self> {
-        read_bin(body, "truncated PlayerLoadedScene body")
+        read_bin(body, Self::BODY_LEN, "invalid PlayerLoadedScene body")
+    }
+
+    /// Reads the 78-byte cipher-padded frame, returning `(body, trailing_pad)`.
+    pub fn read_padded(body: &[u8]) -> io::Result<(Self, [u8; 6])> {
+        #[derive(BinRead)]
+        #[br(big)]
+        struct Padded {
+            inner: PlayerLoadedSceneBody,
+            pad: [u8; 6],
+        }
+        let parsed: Padded = read_bin(
+            body,
+            Self::PADDED_LEN,
+            "invalid padded PlayerLoadedScene body",
+        )?;
+        Ok((parsed.inner, parsed.pad))
     }
 
     pub fn write_body(&self, dst: &mut [u8]) -> io::Result<usize> {
@@ -117,7 +146,7 @@ impl ConfirmSceneOwnerBody {
     pub const PADDED_LEN: usize = 6;
 
     pub fn read_body(body: &[u8]) -> io::Result<Self> {
-        read_bin(body, "truncated ConfirmSceneOwner body")
+        read_bin(body, Self::BODY_LEN, "invalid ConfirmSceneOwner body")
     }
 
     /// Reads the 6-byte cipher-padded frame, returning `(body, trailing_pad_byte)`.
@@ -128,10 +157,11 @@ impl ConfirmSceneOwnerBody {
             inner: ConfirmSceneOwnerBody,
             pad: u8,
         }
-        if body.len() != Self::PADDED_LEN {
-            return Err(invalid("invalid padded ConfirmSceneOwner length"));
-        }
-        let parsed: Padded = read_bin(body, "invalid padded ConfirmSceneOwner body")?;
+        let parsed: Padded = read_bin(
+            body,
+            Self::PADDED_LEN,
+            "invalid padded ConfirmSceneOwner body",
+        )?;
         Ok((parsed.inner, parsed.pad))
     }
 
@@ -172,7 +202,7 @@ impl SceneSettingsBody {
     }
 
     pub fn read_body(body: &[u8]) -> io::Result<Self> {
-        read_bin(body, "truncated SceneSettings body")
+        read_bin(body, Self::BODY_LEN, "invalid SceneSettings body")
     }
 
     pub fn write_body(&self, dst: &mut [u8]) -> io::Result<usize> {
@@ -244,7 +274,7 @@ impl MatchSettingsBody {
     }
 
     pub fn read_body(body: &[u8]) -> io::Result<Self> {
-        read_bin(body, "truncated MatchSettings body")
+        read_bin(body, Self::BODY_LEN, "invalid MatchSettings body")
     }
 
     pub fn write_body(&self, dst: &mut [u8]) -> io::Result<usize> {
@@ -275,7 +305,7 @@ impl DraftModeAnnouncementBody {
     }
 
     pub fn read_body(body: &[u8]) -> io::Result<Self> {
-        read_bin(body, "truncated DraftModeAnnouncement body")
+        read_bin(body, Self::BODY_LEN, "invalid DraftModeAnnouncement body")
     }
 
     pub fn write_body(&self, dst: &mut [u8]) -> io::Result<usize> {
@@ -304,7 +334,7 @@ impl DraftCatalogEntryBody {
     }
 
     pub fn read_body(body: &[u8]) -> io::Result<Self> {
-        read_bin(body, "truncated DraftCatalogEntry body")
+        read_bin(body, Self::BODY_LEN, "invalid DraftCatalogEntry body")
     }
 
     pub fn write_body(&self, dst: &mut [u8]) -> io::Result<usize> {
@@ -490,7 +520,7 @@ impl PlayerInfoBody {
     }
 
     pub fn read_body(body: &[u8]) -> io::Result<Self> {
-        read_bin(body, "invalid PlayerInfo body")
+        read_bin_variable(body, "invalid PlayerInfo body")
     }
 
     pub fn write_body(&self, dst: &mut [u8]) -> io::Result<usize> {
@@ -570,7 +600,11 @@ impl AralRerollStateBody {
         }
 
         if body.len() == Self::NATIVE_LEN {
-            let prefix: NativePrefix = read_bin(body, "truncated AralRerollState body")?;
+            let prefix: NativePrefix = read_bin(
+                body,
+                Self::NATIVE_LEN,
+                "invalid native AralRerollState body",
+            )?;
             return Ok(Self {
                 cost: prefix.cost,
                 limit: prefix.limit,
@@ -582,7 +616,7 @@ impl AralRerollStateBody {
                 reserved_tail: [0; 4],
             });
         }
-        read_bin(body, "truncated AralRerollState body")
+        read_bin(body, Self::BODY_LEN, "invalid AralRerollState body")
     }
 
     pub fn write_body(&self, dst: &mut [u8]) -> io::Result<usize> {
@@ -619,7 +653,7 @@ impl SceneReadinessRowsBody {
     pub const BODY_LEN: usize = 96;
 
     pub fn read_body(body: &[u8]) -> io::Result<Self> {
-        read_bin(body, "truncated SceneReadinessRows body")
+        read_bin(body, Self::BODY_LEN, "invalid SceneReadinessRows body")
     }
 
     pub fn write_body(&self, dst: &mut [u8]) -> io::Result<usize> {
@@ -662,7 +696,7 @@ impl DraftPreferenceFlags {
     }
 
     pub fn read_body(body: &[u8]) -> io::Result<Self> {
-        read_bin(body, "truncated DraftPreferenceFlags body")
+        read_bin(body, Self::BODY_LEN, "invalid DraftPreferenceFlags body")
     }
 
     pub fn write_body(&self, dst: &mut [u8]) -> io::Result<usize> {
@@ -742,7 +776,7 @@ impl DraftSlotBody {
     }
 
     pub fn read_body(body: &[u8]) -> io::Result<Self> {
-        read_bin(body, "truncated DraftSlotBody")
+        read_bin(body, Self::BODY_LEN, "invalid DraftSlotBody")
     }
 
     pub fn write_body(&self, dst: &mut [u8]) -> io::Result<usize> {
@@ -882,12 +916,12 @@ impl DraftRosterBody {
             remaining: f32,
             allotted: f32,
         }
-        let timers: Timers = read_bin(body, "truncated DraftRoster timer header")?;
+        let timers: Timers = read_bin(body, 8, "invalid DraftRoster timer header")?;
         Ok((timers.remaining, timers.allotted))
     }
 
     pub fn read_body(body: &[u8]) -> io::Result<Self> {
-        read_bin(body, "invalid DraftRoster body")
+        read_bin_variable(body, "invalid DraftRoster body")
     }
 
     pub fn write_body(&self, dst: &mut [u8]) -> io::Result<usize> {
@@ -895,7 +929,13 @@ impl DraftRosterBody {
     }
 
     pub fn encode_aral(&self) -> Message {
-        encode_bin(Opcode::DraftRosterAral, self, self.wire_len())
+        if self.padding.is_none() {
+            encode_bin(Opcode::DraftRosterAral, self, Self::BODY_LEN)
+        } else {
+            let mut unpadded = self.clone();
+            unpadded.padding = None;
+            encode_bin(Opcode::DraftRosterAral, &unpadded, Self::BODY_LEN)
+        }
     }
 
     pub fn encode_full(&self) -> Message {
@@ -1178,6 +1218,14 @@ mod tests {
         assert_eq!(aral_view.decode_body().unwrap(), aral);
         assert!(DraftRosterBody::read_body(&full_msg.body[..2589]).is_err());
 
+        // `encode_aral` always emits the unpadded 2584B ARAL roster even if padding was set.
+        let mut aral_with_pad = aral.clone();
+        aral_with_pad.padding = Some([1, 2, 3, 4, 5, 6]);
+        let forced_aral = aral_with_pad.encode_aral();
+        assert_eq!(forced_aral.opcode, Opcode::DraftRosterAral.raw());
+        assert_eq!(forced_aral.body.len(), DraftRosterBody::BODY_LEN);
+        assert_eq!(forced_aral.body, aral_msg.body);
+
         // Timer bit patterns (including -0.0 and signaling NaN) must round-trip losslessly.
         let mut raw_nan = vec![0u8; DraftRosterBody::BODY_LEN];
         raw_nan[..4].copy_from_slice(&0x7f80_0051u32.to_be_bytes());
@@ -1198,16 +1246,26 @@ mod tests {
         );
 
         let loaded = PlayerLoadedSceneBody::new("Guest", 2, 1502);
-        let loaded_msg = loaded.encode_padded();
+        let unpadded_msg = loaded.encode();
+        assert_eq!(unpadded_msg.opcode, Opcode::PlayerLoadedScene.raw());
+        assert_eq!(unpadded_msg.body.len(), 72);
+        assert_eq!(
+            PlayerLoadedSceneBody::read_body(&unpadded_msg.body).unwrap(),
+            loaded
+        );
+
+        let mut loaded_msg = loaded.encode_padded();
         assert_eq!(loaded_msg.opcode, Opcode::PlayerLoadedScene.raw());
         assert_eq!(loaded_msg.body.len(), 78);
         assert_eq!(&loaded_msg.body[..6], b"Guest\0");
         assert_eq!(&loaded_msg.body[64..68], &2u32.to_be_bytes());
         assert_eq!(&loaded_msg.body[68..72], &1502u32.to_be_bytes());
         assert_eq!(&loaded_msg.body[72..78], &[0; 6]);
+        assert!(PlayerLoadedSceneBody::read_body(&loaded_msg.body).is_err());
+        loaded_msg.body[72..78].copy_from_slice(&[1, 2, 3, 4, 5, 6]);
         assert_eq!(
-            PlayerLoadedSceneBody::read_body(&loaded_msg.body).unwrap(),
-            loaded
+            PlayerLoadedSceneBody::read_padded(&loaded_msg.body).unwrap(),
+            (loaded, [1, 2, 3, 4, 5, 6])
         );
 
         let owner = ConfirmSceneOwnerBody {
@@ -1229,5 +1287,64 @@ mod tests {
         let five = MatchSettingsBody::draft_five(1500, "*GameMode_5v5_Casual*");
         assert_eq!(five.team_sizes, [5, 5]);
         assert_eq!(five.word96, 1.0f32.to_bits());
+    }
+
+    #[test]
+    fn decoders_reject_short_and_oversized_slices() {
+        fn assert_rejects<T>(len: usize, f: impl Fn(&[u8]) -> io::Result<T>) {
+            assert!(f(&vec![0u8; len.saturating_sub(1)]).is_err());
+            assert!(f(&vec![0u8; len + 1]).is_err());
+        }
+
+        assert_rejects(
+            RegisterPlayerUuidBody::BODY_LEN,
+            RegisterPlayerUuidBody::read_body,
+        );
+        assert_rejects(
+            PlayerLoadedSceneBody::BODY_LEN,
+            PlayerLoadedSceneBody::read_body,
+        );
+        assert_rejects(
+            PlayerLoadedSceneBody::PADDED_LEN,
+            PlayerLoadedSceneBody::read_padded,
+        );
+        assert_rejects(
+            ConfirmSceneOwnerBody::BODY_LEN,
+            ConfirmSceneOwnerBody::read_body,
+        );
+        assert_rejects(
+            ConfirmSceneOwnerBody::PADDED_LEN,
+            ConfirmSceneOwnerBody::read_padded,
+        );
+        assert_rejects(SceneSettingsBody::BODY_LEN, SceneSettingsBody::read_body);
+        assert_rejects(MatchSettingsBody::BODY_LEN, MatchSettingsBody::read_body);
+        assert_rejects(
+            DraftModeAnnouncementBody::BODY_LEN,
+            DraftModeAnnouncementBody::read_body,
+        );
+        assert_rejects(
+            DraftCatalogEntryBody::BODY_LEN,
+            DraftCatalogEntryBody::read_body,
+        );
+        assert_rejects(
+            SceneReadinessRowsBody::BODY_LEN,
+            SceneReadinessRowsBody::read_body,
+        );
+        assert_rejects(
+            DraftPreferenceFlags::BODY_LEN,
+            DraftPreferenceFlags::read_body,
+        );
+        assert_rejects(DraftSlotBody::BODY_LEN, DraftSlotBody::read_body);
+        assert_rejects(8, DraftRosterBody::read_timers);
+
+        for bad_len in [215, 217, 221, 223] {
+            assert!(PlayerInfoBody::read_body(&vec![0u8; bad_len]).is_err());
+        }
+        for bad_len in [81, 83, 85, 87] {
+            assert!(AralRerollStateBody::read_body(&vec![0u8; bad_len]).is_err());
+        }
+        for bad_len in [2583, 2585, 2589, 2591] {
+            assert!(DraftRosterBody::read_body(&vec![0u8; bad_len]).is_err());
+        }
     }
 }
