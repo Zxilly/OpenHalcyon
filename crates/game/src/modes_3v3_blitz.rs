@@ -825,17 +825,8 @@ pub(crate) fn talent_response(
         return Vec::new();
     }
     let hero = &room.world.entities[seat];
-    let level = if selection == TalentSelection::NoTalent {
-        0
-    } else {
-        let Some(lvl) = room
-            .talent_levels
-            .get(seat)
-            .and_then(|levels| levels.get(&hero.type_id))
-        else {
-            return Vec::new();
-        };
-        lvl.get()
+    let Some(level) = super::authorize_talent_level(room, seat, hero.type_id, selection) else {
+        return Vec::new();
     };
     let slot = match selection {
         TalentSelection::Slot0 => BlitzTalentSlot::Slot0,
@@ -2032,5 +2023,52 @@ mod tests {
                 && u32::from_be_bytes(m.body[..4].try_into().unwrap()) == COUNTDOWN_PAUSED_KEY
                 && u32::from_be_bytes(m.body[4..8].try_into().unwrap()) == 1
         }));
+    }
+
+    #[tokio::test]
+    async fn unlock_all_talents_authorizes_baron_talents_at_ce_levels_in_blitz() {
+        let rooms = Rooms::new("127.0.0.1".parse().unwrap(), "127.0.0.1".into(), 1, None);
+        rooms.set_unlock_all_talents(true);
+        let id = Uuid::new_v4();
+        let players = six_players();
+        rooms
+            .reserve(Reservation {
+                talent_levels: Vec::new(),
+                match_id: id,
+                players: players.clone(),
+                teams: vec![0, 1, 0, 1, 0, 1],
+                mode: "blitz_pvp_revamp".into(),
+                difficulty: None,
+            })
+            .unwrap();
+        let shared = rooms.room(id).unwrap();
+        for (seat, &p) in players.iter().enumerate() {
+            let mut room = shared.lock().unwrap();
+            let (tx, _) = mpsc::channel(16);
+            room.attach(p, tx, watch::channel(false).0).unwrap();
+            room.receive(seat, 0, Message::known(crate::Opcode::DraftLockHero, []))
+                .unwrap();
+        }
+        for &p in &players {
+            let mut room = shared.lock().unwrap();
+            let (tx, _) = mpsc::channel(16);
+            room.attach(p, tx, watch::channel(false).0).unwrap();
+        }
+        let mut room = shared.lock().unwrap();
+        room.world.entities[0].type_id = EntityTemplate::Baron.as_raw();
+        for (sel, expected_level) in [
+            (TalentSelection::Slot0, 10u8),
+            (TalentSelection::Slot1, 10u8),
+            (TalentSelection::Slot2, 5u8),
+            (TalentSelection::NoTalent, 0u8),
+        ] {
+            let ack = room.receive(0, 1, sel.request()).unwrap();
+            assert_eq!(ack.len(), 2);
+            assert!(matches!(
+                ack[1].fields().unwrap(),
+                Fields::Live(LiveFields::TalentEquipped(eq))
+                    if eq.actor == 1500 && eq.selection == sel && eq.level == expected_level
+            ));
+        }
     }
 }

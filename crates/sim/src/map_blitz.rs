@@ -443,35 +443,30 @@ impl Room<'_> {
             h.max_hp = (h.max_hp - old.hp_bonus).max(1.0);
             h.hp = h.hp.min(h.max_hp);
         }
-        // Clear any modeled talent state first, then re-apply if the active slot has a modeled talent.
+        // Clear any modeled or HeroKit talent state first, then re-apply if the active slot resolves.
         {
             let h = &mut self.entities[i];
             h.long_shot = None;
             h.mobile_bulwark_bonus = None;
             h.speed_loader = None;
+            if let Some(k) = h.hero_kit.as_deref_mut() {
+                k.talent = None;
+            }
         }
         if slot == BlitzTalentSlot::NoTalent {
             return Ok(());
         }
+        let mut applied_real_talent = false;
         if let Some(d) = data
             && let Some(nz) = std::num::NonZeroU8::new(level)
         {
             let type_id = self.entities[i].type_id;
-            let named = match (EntityTemplate::from_raw(type_id), slot) {
-                (Some(EntityTemplate::Ringo), BlitzTalentSlot::Slot0) => {
-                    Some(halcyon_data::ModeledTalent::LongShot.as_str())
-                }
-                (Some(EntityTemplate::Lyra), BlitzTalentSlot::Slot1) => {
-                    Some(halcyon_data::ModeledTalent::MobileBulwark.as_str())
-                }
-                (Some(EntityTemplate::Gwen), BlitzTalentSlot::Slot0) => {
-                    Some(halcyon_data::ModeledTalent::SpeedLoader.as_str())
-                }
-                _ => None,
-            };
-            if let Some(name) = named {
-                let _ = self.set_named_talent(actor, Some((name, nz)), d);
+            if let Some(name) = Self::hero_talent_id(type_id, slot as u8, Some(d)) {
+                applied_real_talent = self.set_named_talent(actor, Some((name, nz)), d).is_ok();
             }
+        }
+        if applied_real_talent {
+            return Ok(());
         }
         let lvl = f32::from(level);
         let applied = match slot {
@@ -842,6 +837,62 @@ mod tests {
     }
 
     #[test]
+    fn blitz_minions_and_bots_march_past_turrets_without_stalling() {
+        let mut w = blitz_world();
+        w.set_modern_ai(true);
+        for idx in 0..w.entities.len() {
+            if w.entities[idx].kind == Kind::Hero {
+                w.entities[idx].bot = true;
+            }
+        }
+        // Step past BLITZ_WAVE_START (10s) + 30s of lane march.
+        for _ in 0..(40 * TICK_HZ) {
+            w.step();
+        }
+        let max_t0_minion_x = w
+            .entities
+            .iter()
+            .filter(|e| e.kind == Kind::Minion && e.team == 0)
+            .map(|e| e.position.x)
+            .fold(f32::NEG_INFINITY, f32::max);
+        let min_t1_minion_x = w
+            .entities
+            .iter()
+            .filter(|e| e.kind == Kind::Minion && e.team == 1)
+            .map(|e| e.position.x)
+            .fold(f32::INFINITY, f32::min);
+        assert!(
+            max_t0_minion_x > -8.0,
+            "Team 0 Blitz minions stalled before mid: max_x={max_t0_minion_x}"
+        );
+        assert!(
+            min_t1_minion_x < 8.0,
+            "Team 1 Blitz minions stalled before mid: min_x={min_t1_minion_x}"
+        );
+
+        let team0_primary = w
+            .entities
+            .iter()
+            .find(|e| e.kind == Kind::Hero && e.team == 0)
+            .unwrap();
+        let team1_primary = w
+            .entities
+            .iter()
+            .find(|e| e.kind == Kind::Hero && e.team == 1)
+            .unwrap();
+        assert!(
+            team0_primary.position.x > -25.0 && team0_primary.position.y < 18.0,
+            "Team 0 primary laner must push lane instead of stalling/jungling: {:?}",
+            team0_primary.position
+        );
+        assert!(
+            team1_primary.position.x < 25.0 && team1_primary.position.y < 18.0,
+            "Team 1 primary laner must push lane instead of stalling/jungling: {:?}",
+            team1_primary.position
+        );
+    }
+
+    #[test]
     #[ignore = "requires local delivery and A001/server_data_extra map assets"]
     fn blitz_loads_a001_navmesh_blitz_store_sentries_and_modeled_talents() {
         let base = std::env::var_os("HALCYON_DELIVERY").unwrap();
@@ -852,6 +903,7 @@ mod tests {
         w.assign_teams(&[0, 1, 0, 1, 0, 1]).unwrap();
         w.select_hero(0, "Ringo", &data).unwrap();
         w.select_hero(1, "Lyra", &data).unwrap();
+        w.select_hero(2, "Baron", &data).unwrap();
         w.use_blitz().unwrap();
         w.use_catalog_store(halcyon_data::items::StoreSettings::BlitzRevamp);
         if let Some(entries) =
@@ -873,12 +925,58 @@ mod tests {
         // Sorrowblade succeeds with 6,000 starting Blitz gold.
         w.purchase(1, BasicItem::Sorrowblade).unwrap();
 
-        // Equip Ringo LongShot (Slot0, Lv5) + Lyra MobileBulwark (Slot1, Lv10).
+        // Equip Ringo LongShot (Slot0, Lv5) + Lyra MobileBulwark (Slot1, Lv10) + Baron Epic (Slot1, Lv10).
+        let baron_wp_before = w.entities[2].weapon_power();
         w.equip_blitz_talent(1, BlitzTalentSlot::Slot0, 5, Some(&data))
             .unwrap();
         assert!(w.entities[0].long_shot.is_some());
         w.equip_blitz_talent(2, BlitzTalentSlot::Slot1, 10, Some(&data))
             .unwrap();
         assert!(w.entities[1].mobile_bulwark_bonus.is_some());
+        w.equip_blitz_talent(3, BlitzTalentSlot::Slot1, 10, Some(&data))
+            .unwrap();
+        assert_eq!(
+            w.entities[2]
+                .hero_kit
+                .as_deref()
+                .and_then(|k| k.talent.as_ref())
+                .map(|t| (t.id.as_str(), t.level.get())),
+            Some(("Talent_Baron_EndlessMortars", 10))
+        );
+        assert!(
+            (w.entities[2].weapon_power() - baron_wp_before).abs() < 0.001,
+            "real Baron talent must not add synthetic flat weapon bonuses"
+        );
+
+        // Verify real A001 navmesh lane marching for minions and bots without turret stalls.
+        w.set_modern_ai(true);
+        for idx in 0..w.entities.len() {
+            if w.entities[idx].kind == Kind::Hero {
+                w.entities[idx].bot = true;
+            }
+        }
+        for _ in 0..(40 * TICK_HZ) {
+            w.step();
+        }
+        let max_t0_minion_x = w
+            .entities
+            .iter()
+            .filter(|e| e.kind == Kind::Minion && e.team == 0)
+            .map(|e| e.position.x)
+            .fold(f32::NEG_INFINITY, f32::max);
+        let min_t1_minion_x = w
+            .entities
+            .iter()
+            .filter(|e| e.kind == Kind::Minion && e.team == 1)
+            .map(|e| e.position.x)
+            .fold(f32::INFINITY, f32::min);
+        assert!(
+            max_t0_minion_x > -10.0,
+            "A001 navmesh Team 0 Blitz minions stalled: max_x={max_t0_minion_x}"
+        );
+        assert!(
+            min_t1_minion_x < 10.0,
+            "A001 navmesh Team 1 Blitz minions stalled: min_x={min_t1_minion_x}"
+        );
     }
 }

@@ -624,3 +624,119 @@ fn live_data_validates_all_30_batch_a_heroes_and_all_189_talents() {
     let e = w.step();
     assert!(!e.is_empty());
 }
+
+#[test]
+fn baron_casts_succeed_during_continuous_joystick_move_and_leap_lands_cleanly() {
+    let baron = kit_spec_by_hero_id("Baron").expect("Baron spec");
+    let (mut w, hid, _, _) = prepare_hero_matchup(baron, 701);
+    w.command(hid, Command::Learn(AbilitySlot::A)).unwrap();
+    w.command(hid, Command::Learn(AbilitySlot::B)).unwrap();
+    w.entities[0].level = 9;
+    w.entities[0].skill_points = 9;
+    w.command(hid, Command::Learn(AbilitySlot::C)).unwrap();
+
+    // 1. Cast Baron A (0.2s windup, castable_during_movement = true) while issuing Joystick MoveTo every tick.
+    let start_pos = w.entities[0].position;
+    let aim = Position {
+        x: start_pos.x + 5.0,
+        y: start_pos.y,
+    };
+    w.command(
+        hid,
+        Command::Cast {
+            slot: AbilitySlot::A,
+            target: CastTarget::Point(aim),
+        },
+    )
+    .unwrap();
+    let mut saw_a_cast = false;
+    for step_idx in 0..8 {
+        let move_goal = Position {
+            x: start_pos.x - 10.0,
+            y: start_pos.y + step_idx as f32 * 0.1,
+        };
+        w.command(hid, Command::MoveTo(move_goal)).unwrap();
+        for ev in w.step() {
+            if matches!(
+                ev,
+                Event::Cast {
+                    source,
+                    slot: AbilitySlot::A,
+                    ..
+                } if source == hid
+            ) {
+                saw_a_cast = true;
+            }
+        }
+    }
+    assert!(
+        saw_a_cast,
+        "continuous Joystick MoveTo must not cancel Baron A windup"
+    );
+    assert!(
+        w.entities[0].position.x < start_pos.x - 0.5,
+        "Baron A must allow moving during and after windup"
+    );
+
+    // 2. Cast Baron B (Jump Jets) + Baron C while moving continuously.
+    let b_origin = w.entities[0].position;
+    let b_goal = Position {
+        x: b_origin.x + 6.0,
+        y: b_origin.y + 1.0,
+    };
+    w.command(
+        hid,
+        Command::Cast {
+            slot: AbilitySlot::B,
+            target: CastTarget::Point(b_goal),
+        },
+    )
+    .unwrap();
+    w.command(
+        hid,
+        Command::MoveTo(Position {
+            x: b_origin.x - 3.0,
+            y: b_origin.y,
+        }),
+    )
+    .unwrap();
+    let evs_b = step_ticks(&mut w, 4);
+    assert!(evs_b.iter().any(|ev| matches!(
+        ev,
+        Event::Cast {
+            source,
+            slot: AbilitySlot::B,
+            ..
+        } if *source == hid
+    )));
+    assert!(w.entities[0].position.x > b_origin.x + 3.0);
+
+    w.command(
+        hid,
+        Command::Cast {
+            slot: AbilitySlot::C,
+            target: CastTarget::Point(Position {
+                x: b_origin.x + 15.0,
+                y: 0.0,
+            }),
+        },
+    )
+    .unwrap();
+    w.command(
+        hid,
+        Command::MoveTo(Position {
+            x: b_origin.x - 5.0,
+            y: 0.0,
+        }),
+    )
+    .unwrap();
+    let evs_c = step_ticks(&mut w, 4);
+    assert!(evs_c.iter().any(|ev| matches!(
+        ev,
+        Event::Cast {
+            source,
+            slot: AbilitySlot::C,
+            ..
+        } if *source == hid
+    )));
+}

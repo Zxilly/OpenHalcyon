@@ -377,6 +377,48 @@ pub(crate) fn find_talent(id: &str) -> Option<&'static TalentSpec> {
     ALL_TALENTS.iter().find(|t| t.id == id)
 }
 
+/// Resolve the canonical published talent ID (`Talent_<Hero>_<Name>`) for `(type_id, rarity)`,
+/// preferring published talents with an `official_id` in `GameData` before compiled specs.
+pub(crate) fn find_hero_talent_by_rarity(
+    type_id: u16,
+    rarity: TalentRarity,
+    data: Option<&GameData>,
+) -> Option<&'static str> {
+    let matches_hero = |hero_id: &str| {
+        data.is_some_and(|d| d.type_id(hero_id) == Some(type_id))
+            || crate::hero_kits::kit_spec_by_hero_id(hero_id)
+                .is_some_and(|ks| ks.type_id == type_id)
+            || crate::EntityTemplate::from_raw(type_id)
+                .is_some_and(|t| format!("{t:?}").eq_ignore_ascii_case(hero_id))
+    };
+    let rarity_str = match rarity {
+        TalentRarity::Rare => "rare",
+        TalentRarity::Epic => "epic",
+        TalentRarity::Legendary => "legendary",
+        TalentRarity::Generic => return None,
+    };
+    if let Some(d) = data {
+        for talent in d.extra.combat_content().talents() {
+            if talent.official_id.is_none() || talent.rarity.as_deref() != Some(rarity_str) {
+                continue;
+            }
+            if let Some(hero) = talent.hero.as_deref()
+                && matches_hero(hero)
+                && let Some(spec) = find_talent(&talent.id)
+            {
+                return Some(spec.id);
+            }
+        }
+    }
+    ALL_TALENTS.iter().find_map(|spec| {
+        if spec.rarity != rarity || spec.id == "Talent_Ringo_AnotherRound" {
+            return None;
+        }
+        let hero_id = spec.hero_id?;
+        matches_hero(hero_id).then_some(spec.id)
+    })
+}
+
 /// Evaluate a modifier label on `talent_id` at `(level, cp, wp)`, preferring `GameData` if loaded.
 pub(crate) fn eval_talent_mod(
     talent_id: &str,

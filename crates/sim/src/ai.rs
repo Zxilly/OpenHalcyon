@@ -57,7 +57,10 @@ impl Room<'_> {
     ) -> Command {
         let e = &self.entities[i];
         let home = self.layout.home(e);
-        let enemy_goal = if matches!(self.layout, Layout::Aral { .. }) {
+        let enemy_goal = if matches!(
+            self.layout,
+            Layout::Aral { .. } | Layout::HalcyonFold { .. } | Layout::Blitz { .. }
+        ) {
             self.aral_march_goal(e)
         } else {
             self.layout.objective(1 - e.team)
@@ -213,8 +216,14 @@ impl Room<'_> {
         }
 
         if let Some(front) = self.rally[e.team as usize] {
+            let dir = if e.team == 0 { 1.0 } else { -1.0 };
+            let forward_rally = !matches!(
+                self.layout,
+                Layout::Aral { .. } | Layout::HalcyonFold { .. } | Layout::Blitz { .. }
+            ) || (dir * front.x >= dir * e.position.x - 6.0
+                && front.dist(home) > 25.0);
             let candidate = front.advance(home, 1.5);
-            if self.is_position_walkable(candidate) {
+            if forward_rally && self.is_position_walkable(candidate) {
                 return Command::MoveTo(candidate);
             }
         }
@@ -229,7 +238,10 @@ impl Room<'_> {
     fn decide_legacy(&self, i: usize) -> Command {
         let e = &self.entities[i];
         let home = self.layout.home(e);
-        let enemy = if matches!(self.layout, Layout::Aral { .. }) {
+        let enemy = if matches!(
+            self.layout,
+            Layout::Aral { .. } | Layout::HalcyonFold { .. } | Layout::Blitz { .. }
+        ) {
             self.aral_march_goal(e)
         } else {
             self.layout.objective(1 - e.team)

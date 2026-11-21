@@ -70,6 +70,7 @@ type Shared = Arc<Mutex<Room>>;
 pub struct Rooms(Arc<Manager>);
 struct Manager {
     free_aral_reroll: AtomicBool,
+    unlock_all_talents: AtomicBool,
     bind_ip: IpAddr,
     replay_directory: Mutex<Option<std::path::PathBuf>>,
     gate: Mutex<admission::Gate>,
@@ -132,6 +133,30 @@ impl Seat {
 }
 mod draft_preferences;
 mod native_hud;
+pub(crate) fn authorize_talent_level(
+    room: &Room,
+    seat: usize,
+    hero_type_id: u16,
+    selection: halcyon_protocol::TalentSelection,
+) -> Option<u8> {
+    use halcyon_protocol::TalentSelection;
+    if selection == TalentSelection::NoTalent {
+        return Some(0);
+    }
+    if let Some(level) = room
+        .talent_levels
+        .get(seat)
+        .and_then(|levels| levels.get(&hero_type_id))
+    {
+        return Some(level.get());
+    }
+    room.unlock_all_talents.then_some(match selection {
+        TalentSelection::Slot0 | TalentSelection::Slot1 => 10,
+        TalentSelection::Slot2 => 5,
+        TalentSelection::NoTalent => 0,
+    })
+}
+
 struct Pick {
     preferences: draft_preferences::Preferences,
     name: String,
@@ -154,6 +179,7 @@ struct FederationOrigin {
 
 struct Room {
     free_aral_reroll: bool,
+    unlock_all_talents: bool,
     federation: Option<FederationOrigin>,
     draft_5v5: Option<draft_5v5::Draft5v5>,
     scene_views: Vec<tower_aggro::View>,
@@ -231,6 +257,7 @@ impl Rooms {
         let capacity = capacity.min(ports.slots());
         let this = Self(Arc::new(Manager {
             free_aral_reroll: AtomicBool::default(),
+            unlock_all_talents: AtomicBool::default(),
             gate: Mutex::new(admission::Gate::new(policy)?),
             monitor_started: AtomicBool::default(),
             ports,
@@ -261,6 +288,13 @@ impl Rooms {
     }
     pub fn free_aral_reroll(&self) -> bool {
         self.0.free_aral_reroll.load(Ordering::Relaxed)
+    }
+    /// Unlock all hero talents in-match with CE official levels (`10/10/5`) when inventory has no explicit grant.
+    pub fn set_unlock_all_talents(&self, enabled: bool) {
+        self.0.unlock_all_talents.store(enabled, Ordering::Relaxed);
+    }
+    pub fn unlock_all_talents(&self) -> bool {
+        self.0.unlock_all_talents.load(Ordering::Relaxed)
     }
     pub fn set_finish_handler(&self, handler: Finish) {
         *self.0.finish.lock().unwrap() = Some(handler);
@@ -833,6 +867,7 @@ impl Rooms {
         let t = Utc::now();
         let mut room = Room {
             free_aral_reroll: self.free_aral_reroll(),
+            unlock_all_talents: self.unlock_all_talents(),
             federation,
             draft_5v5,
             ringo_attacks: Default::default(),
@@ -1657,7 +1692,11 @@ impl Room {
                 halcyon_protocol::LiveFields::LearnSelection(_)
                 | halcyon_protocol::LiveFields::AbilityPoint { .. }
                 | halcyon_protocol::LiveFields::AbilityTarget { .. },
-            ) if game => {
+            )
+            | Fields::Outbound(halcyon_protocol::OutboundAction {
+                operands: halcyon_protocol::OutboundOperands::AbilityAlternate { .. },
+                ..
+            }) if game => {
                 out = native_abilities::receive(self, i, ch, m);
             }
             Fields::Live(halcyon_protocol::LiveFields::SurrenderRequest(vote))

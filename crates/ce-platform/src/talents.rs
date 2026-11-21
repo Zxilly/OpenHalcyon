@@ -36,8 +36,52 @@ enum CappedMarker {
     Empty,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TalentTier {
+    Rare,
+    Epic,
+    Legendary,
+}
+
+impl TalentTier {
+    fn parse(rarity: &str) -> Option<Self> {
+        match rarity {
+            "rare" => Some(Self::Rare),
+            "epic" => Some(Self::Epic),
+            "legendary" => Some(Self::Legendary),
+            _ => None,
+        }
+    }
+
+    fn from_official_id(id: &str) -> Option<Self> {
+        id.rsplit_once('_')
+            .and_then(|(_, suffix)| Self::parse(suffix))
+    }
+
+    const fn default_level(self) -> u32 {
+        match self {
+            Self::Rare | Self::Epic => 10,
+            Self::Legendary => 5,
+        }
+    }
+
+    fn default_requirements(self) -> (bool, LevelRequirements) {
+        match self {
+            Self::Rare => (
+                false,
+                LevelRequirements::Costs(BTreeMap::from([
+                    ("[fragments]".to_owned(), 90),
+                    ("silver".to_owned(), 1300),
+                ])),
+            ),
+            Self::Epic | Self::Legendary => (true, LevelRequirements::AtCap(CappedMarker::Empty)),
+        }
+    }
+}
+
 struct Definition {
     public: PublicTalent,
+    tier: Option<TalentTier>,
     level_row: Option<(u32, bool, LevelRequirements)>,
 }
 
@@ -60,17 +104,43 @@ struct ProjectedTalent<'a> {
 }
 
 impl Definition {
-    fn project(&self, progress: TalentProgress) -> Value {
+    fn unlocked_progress(&self, raw: TalentProgress, unlock_all: bool) -> TalentProgress {
+        if !unlock_all {
+            return raw;
+        }
+        let Some(tier) = self.tier else {
+            return raw;
+        };
+        TalentProgress {
+            level: raw.level.max(tier.default_level()),
+            fragments: raw.fragments.max(1),
+        }
+    }
+
+    fn project(&self, progress: TalentProgress, unlock_all: bool) -> Value {
+        let progress = self.unlocked_progress(progress, unlock_all);
         let known = self
             .level_row
             .as_ref()
             .filter(|(level, _, _)| *level == progress.level);
         let empty = LevelRequirements::Costs(BTreeMap::new());
+        let tier_default = (unlock_all && known.is_none())
+            .then_some(self.tier)
+            .flatten()
+            .filter(|tier| progress.level == tier.default_level())
+            .map(|tier| tier.default_requirements());
+        let (max_level, level_requirements) = if let Some((_, capped, requirements)) = known {
+            (*capped, requirements)
+        } else if let Some((capped, requirements)) = &tier_default {
+            (*capped, requirements)
+        } else {
+            (false, &empty)
+        };
         serde_json::to_value(ProjectedTalent {
             public: &self.public,
             progress,
-            max_level: known.is_some_and(|(_, capped, _)| *capped),
-            level_requirements: known.map_or(&empty, |(_, _, requirements)| requirements),
+            max_level,
+            level_requirements,
         })
         .expect("public talent projection")
     }
@@ -82,14 +152,25 @@ impl Catalog {
             let (Some(id), Some(hero)) = (&talent.official_id, &talent.hero) else {
                 continue;
             };
+            let tier = talent
+                .rarity
+                .as_deref()
+                .and_then(TalentTier::parse)
+                .or_else(|| TalentTier::from_official_id(id));
             self.definitions
                 .entry(id.clone())
+                .and_modify(|existing| {
+                    if existing.tier.is_none() {
+                        existing.tier = tier;
+                    }
+                })
                 .or_insert_with(|| Definition {
                     public: PublicTalent {
                         id: id.clone(),
                         def: format!("*{}*", talent.id),
                         hero: format!("*{hero}*"),
                     },
+                    tier,
                     // The pack's cost sample does not identify an account level.
                     level_row: None,
                 });
@@ -131,7 +212,15 @@ impl Catalog {
                     Ok::<_, Error>((level, capped, requirements))
                 })
                 .transpose()?;
-            definitions.insert(id.clone(), Definition { public, level_row });
+            let tier = TalentTier::from_official_id(id);
+            definitions.insert(
+                id.clone(),
+                Definition {
+                    public,
+                    tier,
+                    level_row,
+                },
+            );
         }
         Ok(Self {
             definitions,
@@ -250,13 +339,15 @@ impl Platform {
         player: Uuid,
         talent_id: &str,
     ) -> Result<Option<TalentProgress>, Error> {
-        if !self.talents.definitions.contains_key(talent_id) {
+        let Some(definition) = self.talents.definitions.get(talent_id) else {
             return Ok(None);
-        }
-        Ok(Some(self.talents.balances(
-            talent_id,
-            &self.talent_inventory(player).await?,
-        )))
+        };
+        let progress = self
+            .talents
+            .balances(talent_id, &self.talent_inventory(player).await?);
+        Ok(Some(
+            definition.unlocked_progress(progress, self.unlock_all_talents),
+        ))
     }
 
     pub(crate) async fn talents_for(&self, player: Uuid) -> Result<Value, Error> {
@@ -268,7 +359,10 @@ impl Platform {
             .map(|(id, definition)| {
                 (
                     id.clone(),
-                    definition.project(self.talents.balances(id, &inventory)),
+                    definition.project(
+                        self.talents.balances(id, &inventory),
+                        self.unlock_all_talents,
+                    ),
                 )
             })
             .collect();
@@ -493,7 +587,7 @@ mod tests {
             )
             .unwrap();
             let talent = &catalog.definitions["example"];
-            let fresh = talent.project(TalentProgress::default());
+            let fresh = talent.project(TalentProgress::default(), false);
             assert_eq!(
                 (
                     fresh["maxLevel"].clone(),
@@ -504,10 +598,13 @@ mod tests {
                     serde_json::to_value(BTreeMap::<String, u64>::new()).unwrap()
                 )
             );
-            let at_ten = talent.project(TalentProgress {
-                level: 10,
-                fragments: 2,
-            });
+            let at_ten = talent.project(
+                TalentProgress {
+                    level: 10,
+                    fragments: 2,
+                },
+                false,
+            );
             assert_eq!(at_ten["maxLevel"], capped);
             assert_eq!(
                 at_ten["levelRequirements"],
@@ -515,5 +612,58 @@ mod tests {
             );
             assert_eq!(at_ten["fragments"], 2);
         }
+    }
+
+    #[test]
+    fn unlock_all_talents_projects_official_ce_levels_and_requirements() {
+        let mut catalog = Catalog::parse(Value::Object(Map::new())).unwrap();
+        for (id, tier, def) in [
+            ("baron_rare", TalentTier::Rare, "*Talent_Baron_TalentA*"),
+            ("baron_epic", TalentTier::Epic, "*Talent_Baron_TalentB*"),
+            (
+                "baron_legendary",
+                TalentTier::Legendary,
+                "*Talent_Baron_TalentC*",
+            ),
+        ] {
+            catalog.definitions.insert(
+                id.to_owned(),
+                Definition {
+                    public: PublicTalent {
+                        id: id.to_owned(),
+                        hero: "*Baron*".to_owned(),
+                        def: def.to_owned(),
+                    },
+                    tier: Some(tier),
+                    level_row: None,
+                },
+            );
+        }
+
+        // Default mode keeps unowned talents locked at 0/0.
+        assert_eq!(
+            catalog.definitions["baron_rare"].project(TalentProgress::default(), false)["level"],
+            0
+        );
+
+        // Unlocked mode sets Rare=10, Epic=10 (maxLevel), Legendary=5 (maxLevel).
+        let rare = catalog.definitions["baron_rare"].project(TalentProgress::default(), true);
+        assert_eq!(rare["level"], 10);
+        assert_eq!(rare["fragments"], 1);
+        assert_eq!(rare["maxLevel"], false);
+        assert_eq!(rare["levelRequirements"]["[fragments]"], 90);
+        assert_eq!(rare["levelRequirements"]["silver"], 1300);
+
+        let epic = catalog.definitions["baron_epic"].project(TalentProgress::default(), true);
+        assert_eq!(epic["level"], 10);
+        assert_eq!(epic["fragments"], 1);
+        assert_eq!(epic["maxLevel"], true);
+        assert_eq!(epic["levelRequirements"], "");
+
+        let leg = catalog.definitions["baron_legendary"].project(TalentProgress::default(), true);
+        assert_eq!(leg["level"], 5);
+        assert_eq!(leg["fragments"], 1);
+        assert_eq!(leg["maxLevel"], true);
+        assert_eq!(leg["levelRequirements"], "");
     }
 }

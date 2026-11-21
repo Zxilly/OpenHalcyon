@@ -364,10 +364,29 @@ impl Room<'_> {
             .count()
     }
 
+    fn is_primary_3v3_laner(&self, hero: &Entity) -> bool {
+        if !matches!(
+            self.layout,
+            Layout::HalcyonFold { .. } | Layout::Blitz { .. }
+        ) {
+            return false;
+        }
+        let mut living = 0usize;
+        let mut lowest_id = u32::MAX;
+        for h in &self.entities {
+            if h.kind == Kind::Hero && h.team == hero.team && h.hp > 0.0 {
+                living += 1;
+                lowest_id = lowest_id.min(h.id);
+            }
+        }
+        living >= 2 && hero.id == lowest_id
+    }
+
     /// Mode-agnostic query returning the highest-priority contestable or threatening objective
     /// for hero `hero_idx`, deterministically broken by `entity.id`.
     pub fn best_objective_for(&self, hero_idx: usize) -> Option<ObjectiveInfo> {
         let hero = &self.entities[hero_idx];
+        let primary_laner = self.is_primary_3v3_laner(hero);
         let hp_ratio = (hero.hp / hero.max_hp.max(1.0)).clamp(0.0, 1.0);
         let enemy_crystal_pos = self.layout.objective(1 - hero.team);
         // Never abandon an active crystal finish to walk across the map for an objective.
@@ -410,6 +429,17 @@ impl Room<'_> {
                         enemies = enemies.saturating_add(1);
                     }
                 }
+            }
+
+            if primary_laner
+                && !is_captured_enemy_boss
+                && matches!(
+                    kind,
+                    ObjectiveKind::Sentry | ObjectiveKind::MinionMine | ObjectiveKind::GoldMine
+                )
+                && (dist > 18.0 || allies >= 1)
+            {
+                continue;
             }
 
             if !is_captured_enemy_boss {
@@ -596,6 +626,9 @@ impl Room<'_> {
         if threat.nearby_enemy_heroes > 0 || threat.in_enemy_turret_range {
             return None;
         }
+        if hero.position.y < 16.0 && self.is_primary_3v3_laner(hero) {
+            return None;
+        }
         let mut best: Option<(f32, u32, Position)> = None;
         for camp in &self.entities {
             if camp.kind != Kind::Neutral || camp.hp <= 0.0 {
@@ -637,7 +670,10 @@ impl Room<'_> {
     fn build_macro_context(&self, hero_idx: usize, threat: &ThreatAssessment) -> MacroContext {
         let hero = &self.entities[hero_idx];
         let home = self.layout.home(hero);
-        let lane_goal = if matches!(self.layout, Layout::Aral { .. }) {
+        let lane_goal = if matches!(
+            self.layout,
+            Layout::Aral { .. } | Layout::HalcyonFold { .. } | Layout::Blitz { .. }
+        ) {
             self.aral_march_goal(hero)
         } else {
             self.layout.objective(1 - hero.team)

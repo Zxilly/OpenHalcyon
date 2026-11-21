@@ -84,6 +84,22 @@ pub(super) struct LongShot {
     pub cooldown: f32,
 }
 impl super::Room<'_> {
+    /// Resolve the published talent identifier for `(type_id, wire_slot)` where `0 => Rare`,
+    /// `1 => Epic`, `2 => Legendary`.
+    pub fn hero_talent_id(
+        type_id: u16,
+        wire_slot: u8,
+        data: Option<&GameData>,
+    ) -> Option<&'static str> {
+        let rarity = match wire_slot {
+            0 => crate::talents_runtime::TalentRarity::Rare,
+            1 => crate::talents_runtime::TalentRarity::Epic,
+            2 => crate::talents_runtime::TalentRarity::Legendary,
+            _ => return None,
+        };
+        crate::talents_runtime::find_hero_talent_by_rarity(type_id, rarity, data)
+    }
+
     /// Applies a trusted seat's already authenticated, named talent. Numeric wire slots
     /// do not identify a talent by themselves. Callers should clear on unequip.
     pub fn set_named_talent(

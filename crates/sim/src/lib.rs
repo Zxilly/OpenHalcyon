@@ -1237,9 +1237,15 @@ impl Room<'_> {
             }
             Command::Stop => {}
         }
-        self.entities[i].cast = None;
-        self.entities[i].status.channel = 0;
-        self.entities[i].status.channel_until = 0;
+        let keep_kit_cast = matches!(cmd, Command::MoveTo(_) | Command::Attack(_))
+            && self.entities[i]
+                .cast
+                .is_some_and(|c| c.hero_kit_rank.is_some() || c.release <= self.tick);
+        if !keep_kit_cast {
+            self.entities[i].cast = None;
+            self.entities[i].status.channel = 0;
+            self.entities[i].status.channel_until = 0;
+        }
         item_actives::cancel_teleport_channel(&mut self.entities[i]);
         if self.entities[i].order != cmd {
             self.entities[i].winding = None;
@@ -1317,16 +1323,19 @@ impl Room<'_> {
                     }
                 }
                 Layout::SoloMid { .. } => solo_side::steer(e.position, p),
-                Layout::Aral { .. } => state.layout.clear(e.position, p).then_some(p),
-                Layout::HalcyonFold { .. } | Layout::Blitz { .. } => {
-                    if e.kind == Kind::Minion
+                Layout::Aral { .. } | Layout::HalcyonFold { .. } | Layout::Blitz { .. } => {
+                    let goal = if e.kind == Kind::Minion
                         && e.order == Command::MoveTo(p)
                         && p == state.layout.objective(1 - e.team)
                     {
-                        let goal = aral::march_goal(e, p);
-                        state.layout.clear(e.position, goal).then_some(goal)
+                        aral::march_goal(e, p)
                     } else {
-                        state.layout.clear(e.position, p).then_some(p)
+                        p
+                    };
+                    if let Some(map) = &mut state.native_navigation {
+                        map.next_unit(e, state.tick, goal, &mut state.nav_budget)
+                    } else {
+                        state.layout.clear(e.position, goal).then_some(goal)
                     }
                 }
             }
@@ -1450,12 +1459,16 @@ impl Room<'_> {
                 e.lane_step = Some((waypoint, followed));
             }
             e.position = pos;
-            if e.kind == Kind::Hero
-                && let Some(map) = &mut state.native_navigation
-            {
+            if let Some(map) = &mut state.native_navigation {
                 map.moved(e.id, pos);
             }
-            if e.kind == Kind::Hero && e.bot && matches!(state.layout, Layout::SoloMid { .. }) {
+            if e.kind == Kind::Hero
+                && e.bot
+                && matches!(
+                    state.layout,
+                    Layout::SoloMid { .. } | Layout::HalcyonFold { .. } | Layout::Blitz { .. }
+                )
+            {
                 events.push(Event::SoloBotPath {
                     id: e.id,
                     waypoint,
@@ -1710,13 +1723,23 @@ impl Room<'_> {
                     || hero.winding.is_some()
                     || hero.status.channel_until >= self.tick)
             {
-                let _ = self.order(i, Command::MoveTo(self.layout.home(hero)));
+                self.entities[i].cast = None;
+                let _ = self.order(i, Command::MoveTo(self.layout.home(&self.entities[i])));
             }
             if self.entities[i].status.channel_until >= self.tick {
                 continue;
             }
             if self.entities[i].cast.is_some() {
                 self.advance_cast(i, events);
+                if let Some(c) = self.entities[i].cast
+                    && c.hero_kit_rank.is_some()
+                    && self
+                        .active_ability_spec(i, c.slot)
+                        .is_some_and(|ab| ab.castable_during_movement)
+                    && let Command::MoveTo(p) = self.entities[i].order
+                {
+                    self.walk_diagnosed::<DIAG>(i, p, events, diagnostics.as_deref_mut());
+                }
                 continue;
             }
             let e = &self.entities[i];

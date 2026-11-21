@@ -1211,8 +1211,8 @@ fn baron_b_cast(
     if rank >= 5 {
         ctx.set_unstoppable(ctx.caster, 1.0);
     }
-    if ctx.room.spell_motion_clear(ctx.caster_pos(), goal) {
-        ctx.room.place_spell_actor(ctx.caster, goal, ctx.events);
+    if let Some(landing) = ctx.room.project_spell_landing(goal) {
+        ctx.room.place_spell_actor(ctx.caster, landing, ctx.events);
     }
     let spd = ctx.eval_var(
         "Ability__Baron__B",

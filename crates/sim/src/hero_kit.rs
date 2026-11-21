@@ -4171,8 +4171,7 @@ impl Room<'_> {
         self.abilities.hero_kits.is_some()
     }
 
-    #[allow(dead_code)]
-    pub(crate) fn enable_builtin_hero_kits(&mut self) {
+    pub fn enable_builtin_hero_kits(&mut self) {
         let book = std::sync::Arc::make_mut(&mut self.abilities);
         if book.hero_kits.is_none() {
             book.hero_kits = Some(HeroKitBook::builtin());
@@ -4349,11 +4348,58 @@ impl Room<'_> {
         e.level >= needed
     }
 
+    pub(crate) fn kit_effective_range(&self, i: usize, slot: AbilitySlot) -> Option<f32> {
+        let e = self.entities.get(i)?;
+        let ab = self.active_ability_spec(i, slot)?;
+        let eval_rank = e.ability_ranks[slot.idx()].max(1);
+        let bonus = self.kit_bonus_stats(i);
+        let inputs = EvalInputs {
+            cp: e.item_stats.crystal + bonus.crystal_flat,
+            wp: e.stats.weapon + bonus.weapon_flat,
+            bonus_wp: e.item_stats.bonus_weapon + bonus.weapon_flat,
+            bonus_hp: e.bonus_hp,
+            alt: (e.max_energy - 200.0).max(0.0),
+            bonus_as: (e.item_stats.attack_speed + bonus.attack_speed).max(0.0),
+        };
+        let mut range = if let Some(book) = &self.abilities.hero_kits {
+            book.eval_value(e.type_id, ab.ability_id, eval_rank, ab.range, inputs)
+        } else {
+            ab.range.eval_fallback(eval_rank, inputs)
+        };
+        if let Some(t) = e.hero_kit.as_deref().and_then(|k| k.talent.as_ref()) {
+            let loaded = self.abilities.hero_kits.as_ref().map(|b| &b.talents);
+            range += talents_runtime::talent_bonus_range(t, slot, inputs.cp, inputs.wp, loaded);
+        }
+        Some(range.max(1.5))
+    }
+
+    pub(crate) fn project_spell_landing(&self, goal: Position) -> Option<Position> {
+        if let Some(map) = &self.native_navigation {
+            if map.has_ground(goal) {
+                Some(goal)
+            } else {
+                map.project_within(goal, 3.0)
+            }
+        } else {
+            self.layout.walkable(goal).then_some(goal)
+        }
+    }
+
     pub(crate) fn kit_castable(
         &self,
         i: usize,
         slot: AbilitySlot,
         target: CastTarget,
+    ) -> Result<(u8, f32, f32, u64, bool), &'static str> {
+        self.kit_castable_with_leeway(i, slot, target, 0.0)
+    }
+
+    pub(crate) fn kit_castable_with_leeway(
+        &self,
+        i: usize,
+        slot: AbilitySlot,
+        target: CastTarget,
+        extra_range: f32,
     ) -> Result<(u8, f32, f32, u64, bool), &'static str> {
         if !self.hero_kit_enabled() {
             return Err("ability unavailable");
@@ -4518,12 +4564,8 @@ impl Room<'_> {
             }
         }
 
-        let mut range = eval_f(ab.range);
-        if let Some(t) = e.hero_kit.as_deref().and_then(|k| k.talent.as_ref()) {
-            let loaded = self.abilities.hero_kits.as_ref().map(|b| &b.talents);
-            range += talents_runtime::talent_bonus_range(t, slot, inputs.cp, inputs.wp, loaded);
-        }
-        range = range.max(1.5);
+        let range = self.kit_effective_range(i, slot).unwrap_or(6.0);
+        let range_limit = range + 0.75 + extra_range.max(0.0);
 
         match (ab.targeting, target) {
             (CastTargeting::TargetEnemy, CastTarget::Entity(id)) => {
@@ -4532,7 +4574,7 @@ impl Room<'_> {
                 if t.team == e.team || t.hp <= 0.0 {
                     return Err("invalid target");
                 }
-                if e.position.dist(t.position) > range + 0.75 {
+                if e.position.dist(t.position) > range_limit {
                     return Err("cast out of range");
                 }
             }
@@ -4551,7 +4593,7 @@ impl Room<'_> {
                 if ab.targeting == CastTargeting::TargetAlly && j == i {
                     return Err("cannot target self");
                 }
-                if e.position.dist(t.position) > range + 0.75 {
+                if e.position.dist(t.position) > range_limit {
                     return Err("cast out of range");
                 }
             }
@@ -4561,13 +4603,13 @@ impl Room<'_> {
                 if t.kind != Kind::Hero || t.hp <= 0.0 {
                     return Err("invalid hero target");
                 }
-                if e.position.dist(t.position) > range + 0.75 {
+                if e.position.dist(t.position) > range_limit {
                     return Err("cast out of range");
                 }
             }
             (CastTargeting::GroundPoint, CastTarget::Point(p))
             | (CastTargeting::TargetLocationOrEntity, CastTarget::Point(p)) => {
-                if range < 180.0 && e.position.dist(p) > range + 0.75 {
+                if range < 180.0 && e.position.dist(p) > range_limit {
                     return Err("cast out of range");
                 }
             }

@@ -28,6 +28,8 @@ pub struct Config {
     pub admission: halcyon_game::AdmissionPolicy,
     #[serde(default)]
     pub free_aral_reroll: bool,
+    #[serde(default)]
+    pub unlock_all_talents: bool,
     pub max_rooms: usize,
     pub seats_per_match: usize,
     pub database: PathBuf,
@@ -100,6 +102,7 @@ impl Config {
             .to_string();
         let config = Self {
             free_aral_reroll: false,
+            unlock_all_talents: false,
             instance_id: Uuid::new_v4(),
             public_host: host.clone(),
             bootstrap_listen: SocketAddr::new(bound, 8080),

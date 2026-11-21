@@ -1008,10 +1008,118 @@ pub(super) fn default_cast_message(
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct ActorTeamRef {
     pub id: u32,
     pub team: u8,
+    pub pos: Position,
+    pub alive: bool,
+}
+
+fn dist_2d(a: Position, b: Position) -> f32 {
+    (a.x - b.x).hypot(a.y - b.y)
+}
+
+fn clamp_point_to_range(origin: Position, target: Position, max_range: f32) -> Position {
+    let d = dist_2d(origin, target);
+    if d <= max_range || d <= 1e-6 {
+        return target;
+    }
+    let scale = max_range / d;
+    Position {
+        x: origin.x + (target.x - origin.x) * scale,
+        y: origin.y + (target.y - origin.y) * scale,
+    }
+}
+
+fn nearest_actor(
+    actors: &[ActorTeamRef],
+    caster_id: u32,
+    anchor: Position,
+    max_dist: f32,
+    want_team: u8,
+    exclude_self: bool,
+) -> Option<&ActorTeamRef> {
+    let mut best: Option<(f32, &ActorTeamRef)> = None;
+    for actor in actors {
+        if !actor.alive || actor.team != want_team || (exclude_self && actor.id == caster_id) {
+            continue;
+        }
+        let d = dist_2d(anchor, actor.pos);
+        if d <= max_dist && best.is_none_or(|(bd, _)| (d, actor.id) < (bd, actor.id)) {
+            best = Some((d, actor));
+        }
+    }
+    best.map(|(_, actor)| actor)
+}
+
+fn resolve_target_entity(
+    caster_id: u32,
+    team: u8,
+    input: CatalogInputKind,
+    target: u32,
+    actors: &[ActorTeamRef],
+) -> Option<(CastTarget, u32)> {
+    if target == u32::MAX {
+        if !matches!(
+            input,
+            CatalogInputKind::SelfOnly
+                | CatalogInputKind::AllyOrSelf
+                | CatalogInputKind::PointOrSelf
+                | CatalogInputKind::PointOrTarget
+        ) {
+            return None;
+        }
+        return Some((CastTarget::SelfCast, u32::MAX));
+    }
+    let target_id = target.checked_sub(1499)?;
+    let target_entity = actors.iter().find(|e| e.id == target_id)?;
+    match input {
+        CatalogInputKind::SelfOnly => {
+            (target_entity.id == caster_id).then_some((CastTarget::SelfCast, u32::MAX))
+        }
+        CatalogInputKind::AllyOrSelf => {
+            if target_entity.team != team {
+                return None;
+            }
+            if target_entity.id == caster_id {
+                Some((CastTarget::SelfCast, u32::MAX))
+            } else {
+                Some((CastTarget::Entity(target_entity.id), target))
+            }
+        }
+        CatalogInputKind::TargetActor => (target_entity.id != caster_id)
+            .then_some((CastTarget::Entity(target_entity.id), target)),
+        CatalogInputKind::PointOrSelf | CatalogInputKind::PointOrTarget => {
+            if target_entity.id == caster_id {
+                Some((CastTarget::SelfCast, u32::MAX))
+            } else {
+                Some((CastTarget::Entity(target_entity.id), target))
+            }
+        }
+        CatalogInputKind::Point => None,
+    }
+}
+
+fn quick_point_for_target(
+    caster_id: u32,
+    team: u8,
+    caster_pos: Position,
+    target: u32,
+    actors: &[ActorTeamRef],
+) -> Option<Position> {
+    if target != u32::MAX {
+        let target_id = target.checked_sub(1499)?;
+        return actors.iter().find(|e| e.id == target_id).map(|e| e.pos);
+    }
+    if let Some(enemy) = nearest_actor(actors, caster_id, caster_pos, 14.0, 1 - team, true) {
+        return Some(enemy.pos);
+    }
+    let dir = if team == 0 { 2.0 } else { -2.0 };
+    Some(Position {
+        x: caster_pos.x + dir,
+        y: caster_pos.y,
+    })
 }
 
 pub(super) fn decode_cast_intent(
@@ -1022,6 +1130,10 @@ pub(super) fn decode_cast_intent(
     m: &Message,
 ) -> Option<CatalogCastIntent> {
     let wire = u32::from(wire_id(caster_id));
+    let caster_pos = actors
+        .iter()
+        .find(|e| e.id == caster_id)
+        .map_or(Position::default(), |e| e.pos);
     match m.known_opcode() {
         Some(Opcode::RequestPointAbility) => {
             let Ok(Fields::Live(LiveFields::AbilityPoint { vector, selector })) = m.fields() else {
@@ -1031,16 +1143,41 @@ pub(super) fn decode_cast_intent(
                 return None;
             }
             let spec = selector_spec(hero, selector)?;
-            if !spec.input.accepts_point() || matches!(spec.role, CatalogSlotRole::Cancel(_)) {
+            if matches!(spec.role, CatalogSlotRole::Cancel(_)) {
                 return None;
             }
+            let tapped = Position {
+                x: vector[0],
+                y: vector[2],
+            };
+            if spec.input.accepts_point() {
+                return Some(CatalogCastIntent::Cast {
+                    slot: spec.role.slot(),
+                    target: CastTarget::Point(tapped),
+                    reply: Message::ability_point_used(wire, vector, selector),
+                });
+            }
+            let (cast_target, reply_target) = match spec.input {
+                CatalogInputKind::SelfOnly => (CastTarget::SelfCast, u32::MAX),
+                CatalogInputKind::AllyOrSelf => {
+                    if let Some(ally) = nearest_actor(actors, caster_id, tapped, 4.5, team, true) {
+                        (CastTarget::Entity(ally.id), u32::from(wire_id(ally.id)))
+                    } else {
+                        (CastTarget::SelfCast, u32::MAX)
+                    }
+                }
+                CatalogInputKind::TargetActor => {
+                    let enemy = nearest_actor(actors, caster_id, tapped, 4.5, 1 - team, true)?;
+                    (CastTarget::Entity(enemy.id), u32::from(wire_id(enemy.id)))
+                }
+                CatalogInputKind::Point
+                | CatalogInputKind::PointOrSelf
+                | CatalogInputKind::PointOrTarget => unreachable!(),
+            };
             Some(CatalogCastIntent::Cast {
                 slot: spec.role.slot(),
-                target: CastTarget::Point(Position {
-                    x: vector[0],
-                    y: vector[2],
-                }),
-                reply: Message::ability_point_used(wire, vector, selector),
+                target: cast_target,
+                reply: Message::ability_target_used(wire, reply_target, selector),
             })
         }
         Some(Opcode::RequestTargetAbility) => {
@@ -1055,60 +1192,87 @@ pub(super) fn decode_cast_intent(
                 });
             }
             if !spec.input.accepts_target() {
-                return None;
+                let pt = quick_point_for_target(caster_id, team, caster_pos, target, actors)?;
+                return Some(CatalogCastIntent::Cast {
+                    slot: spec.role.slot(),
+                    target: CastTarget::Point(pt),
+                    reply: Message::ability_point_used(wire, [pt.x, 0.0, pt.y], selector),
+                });
             }
-            let (cast_target, reply_target) = if target == u32::MAX {
-                if !matches!(
-                    spec.input,
-                    CatalogInputKind::SelfOnly
-                        | CatalogInputKind::AllyOrSelf
-                        | CatalogInputKind::PointOrSelf
-                        | CatalogInputKind::PointOrTarget
-                ) {
-                    return None;
-                }
-                (CastTarget::SelfCast, u32::MAX)
-            } else {
-                let target_id = target.checked_sub(1499)?;
-                let target_entity = actors.iter().find(|e| e.id == target_id)?;
-                match spec.input {
-                    CatalogInputKind::SelfOnly => {
-                        if target_entity.id != caster_id {
-                            return None;
-                        }
-                        (CastTarget::SelfCast, u32::MAX)
-                    }
-                    CatalogInputKind::AllyOrSelf => {
-                        if target_entity.team != team {
-                            return None;
-                        }
-                        if target_entity.id == caster_id {
-                            (CastTarget::SelfCast, u32::MAX)
-                        } else {
-                            (CastTarget::Entity(target_entity.id), target)
-                        }
-                    }
-                    CatalogInputKind::TargetActor => {
-                        if target_entity.id == caster_id {
-                            return None;
-                        }
-                        (CastTarget::Entity(target_entity.id), target)
-                    }
-                    CatalogInputKind::PointOrSelf | CatalogInputKind::PointOrTarget => {
-                        if target_entity.id == caster_id {
-                            (CastTarget::SelfCast, u32::MAX)
-                        } else {
-                            (CastTarget::Entity(target_entity.id), target)
-                        }
-                    }
-                    CatalogInputKind::Point => return None,
-                }
-            };
+            let (cast_target, reply_target) =
+                resolve_target_entity(caster_id, team, spec.input, target, actors)?;
             Some(CatalogCastIntent::Cast {
                 slot: spec.role.slot(),
                 target: cast_target,
                 reply: Message::ability_target_used(wire, reply_target, selector),
             })
+        }
+        Some(Opcode::RequestActivateAbilityUnseen) => {
+            let Ok(Fields::Outbound(halcyon_protocol::OutboundAction {
+                operands:
+                    halcyon_protocol::OutboundOperands::AbilityAlternate {
+                        words: [target, x_bits, y_bits, z_bits],
+                        byte: selector,
+                    },
+                ..
+            })) = m.fields()
+            else {
+                return None;
+            };
+            let spec = selector_spec(hero, selector)?;
+            if matches!(spec.role, CatalogSlotRole::Cancel(_)) {
+                return Some(CatalogCastIntent::Cancel {
+                    reply: cancel_message(wire, selector, true),
+                });
+            }
+            let vector = [
+                f32::from_bits(x_bits),
+                f32::from_bits(y_bits),
+                f32::from_bits(z_bits),
+            ];
+            let has_finite_point =
+                vector.iter().all(|v| v.is_finite()) && (vector[0] != 0.0 || vector[2] != 0.0);
+            if spec.input.accepts_target()
+                && target != 0
+                && target != u32::MAX
+                && let Some((cast_target, reply_target)) =
+                    resolve_target_entity(caster_id, team, spec.input, target, actors)
+            {
+                return Some(CatalogCastIntent::Cast {
+                    slot: spec.role.slot(),
+                    target: cast_target,
+                    reply: Message::ability_target_used(wire, reply_target, selector),
+                });
+            }
+            if spec.input.accepts_point() && has_finite_point {
+                return Some(CatalogCastIntent::Cast {
+                    slot: spec.role.slot(),
+                    target: CastTarget::Point(Position {
+                        x: vector[0],
+                        y: vector[2],
+                    }),
+                    reply: Message::ability_point_used(wire, vector, selector),
+                });
+            }
+            if spec.input.accepts_target()
+                && let Some((cast_target, reply_target)) =
+                    resolve_target_entity(caster_id, team, spec.input, target, actors)
+            {
+                return Some(CatalogCastIntent::Cast {
+                    slot: spec.role.slot(),
+                    target: cast_target,
+                    reply: Message::ability_target_used(wire, reply_target, selector),
+                });
+            }
+            if spec.input == CatalogInputKind::Point {
+                let pt = quick_point_for_target(caster_id, team, caster_pos, target, actors)?;
+                return Some(CatalogCastIntent::Cast {
+                    slot: spec.role.slot(),
+                    target: CastTarget::Point(pt),
+                    reply: Message::ability_point_used(wire, [pt.x, 0.0, pt.y], selector),
+                });
+            }
+            None
         }
         _ => None,
     }
@@ -1158,7 +1322,11 @@ pub(super) fn receive(room: &mut Room, seat: usize, m: Message) -> Vec<Message> 
             native_abilities::witness(room, id, None, &grant, None);
             vec![m, grant]
         }
-        Some(Opcode::RequestPointAbility | Opcode::RequestTargetAbility) => {
+        Some(
+            Opcode::RequestPointAbility
+            | Opcode::RequestTargetAbility
+            | Opcode::RequestActivateAbilityUnseen,
+        ) => {
             let actors: Vec<ActorTeamRef> = room
                 .world
                 .entities
@@ -1166,6 +1334,8 @@ pub(super) fn receive(room: &mut Room, seat: usize, m: Message) -> Vec<Message> 
                 .map(|e| ActorTeamRef {
                     id: e.id,
                     team: e.team,
+                    pos: e.position,
+                    alive: e.hp > 0.0,
                 })
                 .collect();
             let Some(intent) = decode_cast_intent(hero, id, team, &actors, &m) else {
@@ -1179,9 +1349,30 @@ pub(super) fn receive(room: &mut Room, seat: usize, m: Message) -> Vec<Message> 
                 }
                 CatalogCastIntent::Cast {
                     slot,
-                    target,
+                    mut target,
                     mut reply,
                 } => {
+                    if let CastTarget::Point(p) = target
+                        && let Some(range) = room.world.effective_cast_range(id, slot)
+                        && range < 180.0
+                    {
+                        let origin = room.world.entities[seat].position;
+                        if dist_2d(origin, p) > range {
+                            let clamped = clamp_point_to_range(origin, p, (range - 0.1).max(0.5));
+                            target = CastTarget::Point(clamped);
+                            if reply.is(Opcode::PlayPointAbility) && reply.body.len() >= 17 {
+                                let height = f32::from_be_bytes(
+                                    reply.body[8..12].try_into().unwrap_or([0; 4]),
+                                );
+                                let selector = reply.body[16];
+                                reply = Message::ability_point_used(
+                                    wire,
+                                    [clamped.x, height, clamped.y],
+                                    selector,
+                                );
+                            }
+                        }
+                    }
                     let effective_target = if room
                         .world
                         .command(id, Command::Cast { slot, target })
@@ -1363,9 +1554,24 @@ mod tests {
     #[test]
     fn all_61_heroes_wire_selectors_convert_0411_0412_to_0415_0416_043c() {
         let entities = [
-            ActorTeamRef { id: 1, team: 0 },
-            ActorTeamRef { id: 2, team: 0 },
-            ActorTeamRef { id: 3, team: 1 },
+            ActorTeamRef {
+                id: 1,
+                team: 0,
+                pos: Position { x: 0.0, y: 0.0 },
+                alive: true,
+            },
+            ActorTeamRef {
+                id: 2,
+                team: 0,
+                pos: Position { x: 2.0, y: 0.0 },
+                alive: true,
+            },
+            ActorTeamRef {
+                id: 3,
+                team: 1,
+                pos: Position { x: 4.0, y: 0.0 },
+                alive: true,
+            },
         ];
         let enemy_wire = u32::from(wire_id(3));
         let ally_wire = u32::from(wire_id(2));
@@ -1888,6 +2094,131 @@ mod tests {
                     "hero {type_id} selector {selector} missing {expected:?} in {emitted:?}"
                 );
             }
+        }
+    }
+
+    #[tokio::test]
+    async fn baron_out_of_range_0412_clamps_and_0411_0413_quick_cast_emit_valid_replies() {
+        let rooms = Rooms::new("127.0.0.1".parse().unwrap(), "127.0.0.1".into(), 1, None);
+        let id = Uuid::new_v4();
+        rooms
+            .reserve(Reservation {
+                match_id: id,
+                players: vec![Uuid::new_v4(), Uuid::new_v4()],
+                teams: vec![0, 1],
+                talent_levels: Vec::new(),
+                difficulty: None,
+                mode: KnownQueue::CasualFive.as_str().into(),
+            })
+            .unwrap();
+        let shared = rooms.room(id).unwrap();
+        let (tx0, mut rx0) = mpsc::channel(64);
+        let (tx1, _rx1) = mpsc::channel(64);
+        {
+            let mut room = shared.lock().unwrap();
+            room.phase(crate::RoomPhase::Running);
+            for (seat_idx, tx) in [tx0, tx1].into_iter().enumerate() {
+                room.seats[seat_idx].peers[1] = Some(Peer {
+                    generation: 1,
+                    tx,
+                    stalled: watch::channel(false).0,
+                });
+            }
+            room.world.enable_builtin_hero_kits();
+            room.world.entities[0].type_id = 261; // Baron (selectors 1, 2, 3)
+            room.world.entities[0].level = 9;
+            room.world.entities[0].skill_points = 9;
+            room.world.entities[0].energy = 1000.0;
+            room.world.entities[0].max_energy = 1000.0;
+            room.world.entities[0].position = Position { x: 20.0, y: 0.0 };
+            room.world.entities[1].position = Position { x: 25.0, y: 0.0 };
+            let hero_id = room.world.entities[0].id;
+            let enemy_id = room.world.entities[1].id;
+            room.visible[0].insert(enemy_id);
+            room.visible[1].insert(hero_id);
+
+            // Learn Baron A (learn index 0 -> selector 1).
+            room.receive(
+                0,
+                1,
+                Message::known(Opcode::RequestUpgradeAbility, [0, 0, 0, 0, 0, 0]),
+            )
+            .unwrap();
+            let _ = drain_deliveries(&mut rx0);
+
+            // 1. Out-of-range 0x0412 (25m away) clamps inside Baron A's 8m range and survives 0x03F4 moves!
+            let mut pt_body = [0u8; 14];
+            pt_body[0..4].copy_from_slice(&(45.0f32).to_be_bytes());
+            pt_body[4..8].copy_from_slice(&0.0f32.to_be_bytes());
+            pt_body[8..12].copy_from_slice(&(0.0f32).to_be_bytes());
+            pt_body[12] = 1;
+            room.receive(0, 1, Message::known(Opcode::RequestPointAbility, pt_body))
+                .unwrap();
+
+            let mut emitted = Vec::new();
+            for _ in 0..8 {
+                let _ = room.receive(0, 1, Message::movement(15.0, 0.0));
+                room.tick();
+                emitted.extend(drain_deliveries(&mut rx0));
+            }
+            let clamped_reply = emitted
+                .iter()
+                .find(|m| m.is(Opcode::PlayPointAbility) && m.body.get(16) == Some(&1))
+                .expect("Baron A out-of-range + joystick move must emit 0x0416");
+            let x = f32::from_be_bytes(clamped_reply.body[4..8].try_into().unwrap());
+            assert!(
+                (27.0..=28.0).contains(&x),
+                "expected clamped Baron A X in [27.0, 28.0], got {x}"
+            );
+
+            // 2. Joystick quick-cast 0x0411 targeting enemy actor 1501 converts cleanly to Baron A point cast.
+            let mut tgt_body = [0u8; 6];
+            tgt_body[0..4].copy_from_slice(&1501u32.to_be_bytes());
+            tgt_body[4] = 1;
+            room.receive(0, 1, Message::known(Opcode::RequestTargetAbility, tgt_body))
+                .unwrap();
+            let mut quick_emitted = Vec::new();
+            for _ in 0..8 {
+                room.tick();
+                quick_emitted.extend(drain_deliveries(&mut rx0));
+            }
+            assert!(
+                quick_emitted
+                    .iter()
+                    .any(|m| m.is(Opcode::PlayPointAbility) && m.body.get(16) == Some(&1)),
+                "0x0411 quick-cast on Point ability must emit 0x0416"
+            );
+
+            // Allow a charge to regenerate before testing 0x0413 on Baron A.
+            for _ in 0..105 {
+                room.tick();
+            }
+            let _ = drain_deliveries(&mut rx0);
+
+            // 3. 0x0413 vector/unseen ability packet decodes & emits PlayPointAbility for Baron A.
+            let mut vec_body = Vec::with_capacity(17);
+            vec_body.extend_from_slice(&u32::MAX.to_be_bytes());
+            vec_body.extend_from_slice(&(23.0f32).to_be_bytes());
+            vec_body.extend_from_slice(&0.0f32.to_be_bytes());
+            vec_body.extend_from_slice(&(1.0f32).to_be_bytes());
+            vec_body.push(1);
+            room.receive(
+                0,
+                1,
+                Message::known(Opcode::RequestActivateAbilityUnseen, vec_body),
+            )
+            .unwrap();
+            let mut unseen_emitted = Vec::new();
+            for _ in 0..8 {
+                room.tick();
+                unseen_emitted.extend(drain_deliveries(&mut rx0));
+            }
+            assert!(
+                unseen_emitted
+                    .iter()
+                    .any(|m| m.is(Opcode::PlayPointAbility) && m.body.get(16) == Some(&1)),
+                "0x0413 packet must emit 0x0416"
+            );
         }
     }
 }

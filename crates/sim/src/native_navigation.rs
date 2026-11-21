@@ -1,6 +1,9 @@
 use super::*;
 use halcyon_data::{NativeMaps, NavMesh, RouteSearch};
-use std::{collections::VecDeque, sync::Arc};
+use std::{
+    collections::{BTreeMap, VecDeque},
+    sync::Arc,
+};
 
 const PROJECT_RADIUS: f32 = 8.;
 const REPLAN_DISTANCE: f32 = 1.25;
@@ -51,6 +54,7 @@ pub(super) struct NativeNavigation {
     polyanya: Option<Arc<halcyon_data::polyanya::Mesh>>,
     search: RouteSearch,
     routes: [Route; 10],
+    unit_routes: BTreeMap<u32, Route>,
     brushes: Vec<Brush>,
     fountains: [Vec<Triangle>; 2],
     shops: [Option<Position>; 2],
@@ -89,6 +93,7 @@ impl NativeNavigation {
             polyanya,
             search: RouteSearch::default(),
             routes: std::array::from_fn(|_| Route::default()),
+            unit_routes: BTreeMap::new(),
             brushes: level
                 .brushes
                 .iter()
@@ -117,7 +122,8 @@ impl NativeNavigation {
     }
 
     pub(super) fn digest(&self, hash: &mut impl std::io::Write) {
-        serde_json::to_writer(hash, &self.routes).expect("finite native navigation");
+        serde_json::to_writer(&mut *hash, &self.routes).expect("finite native navigation");
+        serde_json::to_writer(hash, &self.unit_routes).expect("finite unit navigation");
     }
 
     pub(super) fn can_see(&self, viewer: Position, target: Position) -> bool {
@@ -171,27 +177,33 @@ impl NativeNavigation {
             route.retry_at = 0;
             route.expected = None;
         }
+        self.unit_routes.remove(&actor);
     }
 
     pub(super) fn moved(&mut self, actor: u32, position: Position) {
         if let Some(route) = self.routes.get_mut(actor.saturating_sub(1) as usize) {
             route.expected = Some(position);
+        } else if let Some(route) = self.unit_routes.get_mut(&actor) {
+            route.expected = Some(position);
         }
     }
 
-    pub(super) fn next(
-        &mut self,
-        actor: &Entity,
+    #[allow(clippy::too_many_arguments)]
+    fn advance_cached_route(
+        walk: &NavMesh,
+        polyanya: Option<&halcyon_data::polyanya::Mesh>,
+        search: &mut RouteSearch,
+        cache: &mut Route,
+        pos: Position,
         tick: u64,
         goal: Position,
         budget: &mut u8,
     ) -> Option<Position> {
-        let cache = self.routes.get_mut(actor.id.checked_sub(1)? as usize)?;
-        if cache.expected.is_some_and(|pos| pos != actor.position) {
+        if cache.expected.is_some_and(|expected| expected != pos) {
             cache.steps.clear();
             cache.goal = None;
         }
-        cache.expected = Some(actor.position);
+        cache.expected = Some(pos);
         let changed = cache
             .goal
             .is_none_or(|old| old.dist(goal) > REPLAN_DISTANCE);
@@ -203,25 +215,18 @@ impl NativeNavigation {
             *budget -= 1;
             cache.goal = Some(goal);
             cache.retry_at = tick + 10;
-            cache.steps = self
-                .polyanya
-                .as_deref()
+            cache.steps = polyanya
                 .and_then(|poly| {
                     halcyon_data::navmesh_polyanya::polyanya_route(
-                        &self.walk,
+                        walk,
                         poly,
-                        horizontal(actor.position),
+                        horizontal(pos),
                         horizontal(goal),
                         PROJECT_RADIUS,
                     )
                 })
                 .or_else(|| {
-                    self.walk.route_with_graph(
-                        horizontal(actor.position),
-                        horizontal(goal),
-                        PROJECT_RADIUS,
-                        &mut self.search,
-                    )
+                    walk.route_with_graph(horizontal(pos), horizontal(goal), PROJECT_RADIUS, search)
                 })
                 .into_iter()
                 .flatten()
@@ -229,13 +234,11 @@ impl NativeNavigation {
                 .collect();
         }
         while let Some(&front) = cache.steps.front() {
-            if front == actor.position || actor.position.dist(front) <= 1e-4 {
+            if front == pos || pos.dist(front) <= 1e-4 {
                 cache.steps.pop_front();
             } else if let Some(&second) = cache.steps.get(1)
-                && actor.position.dist(front) <= 0.45
-                && self
-                    .walk
-                    .ground_segment(horizontal(actor.position), horizontal(second))
+                && pos.dist(front) <= 0.45
+                && walk.ground_segment(horizontal(pos), horizontal(second))
             {
                 cache.steps.pop_front();
             } else {
@@ -243,6 +246,53 @@ impl NativeNavigation {
             }
         }
         cache.steps.front().copied()
+    }
+
+    pub(super) fn next(
+        &mut self,
+        actor: &Entity,
+        tick: u64,
+        goal: Position,
+        budget: &mut u8,
+    ) -> Option<Position> {
+        let cache = self.routes.get_mut(actor.id.checked_sub(1)? as usize)?;
+        Self::advance_cached_route(
+            &self.walk,
+            self.polyanya.as_deref(),
+            &mut self.search,
+            cache,
+            actor.position,
+            tick,
+            goal,
+            budget,
+        )
+    }
+
+    pub(super) fn next_unit(
+        &mut self,
+        actor: &Entity,
+        tick: u64,
+        goal: Position,
+        budget: &mut u8,
+    ) -> Option<Position> {
+        if self
+            .walk
+            .ground_segment(horizontal(actor.position), horizontal(goal))
+        {
+            self.unit_routes.remove(&actor.id);
+            return Some(goal);
+        }
+        let cache = self.unit_routes.entry(actor.id).or_default();
+        Self::advance_cached_route(
+            &self.walk,
+            self.polyanya.as_deref(),
+            &mut self.search,
+            cache,
+            actor.position,
+            tick,
+            goal,
+            budget,
+        )
     }
 }
 

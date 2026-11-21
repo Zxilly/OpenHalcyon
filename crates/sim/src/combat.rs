@@ -81,13 +81,13 @@ fn skill(hero: u16, slot: AbilitySlot) -> Option<Skill> {
 }
 #[derive(Debug, Clone, Copy, Serialize)]
 pub(super) struct Cast {
-    slot: AbilitySlot,
+    pub(super) slot: AbilitySlot,
     target: CastTarget,
-    release: u64,
+    pub(super) release: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) verse: Option<verse::Channel>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    hero_kit_rank: Option<u8>,
+    pub(super) hero_kit_rank: Option<u8>,
 }
 /// These controllers are only armed by Catherine and Yates. Lane units keep a single empty
 /// slot. The serialized fields stay in their original order for replay checkpoints.
@@ -599,6 +599,18 @@ impl Room<'_> {
             .copied()
     }
 
+    pub fn effective_cast_range(&self, actor: u32, slot: AbilitySlot) -> Option<f32> {
+        let i = self.index(actor)?;
+        let e = &self.entities[i];
+        if let Some(skill) = self.modeled_skill(e.type_id, slot) {
+            let rank = usize::from(e.ability_ranks[slot.idx()].checked_sub(1)?);
+            return Some(self.rules(skill, rank).range);
+        }
+        self.hero_kit_enabled()
+            .then(|| self.kit_effective_range(i, slot))
+            .flatten()
+    }
+
     pub(super) fn can_cast(&self, i: usize, slot: AbilitySlot, target: CastTarget) -> bool {
         self.castable(i, slot, target).is_ok()
             || (self.modeled_skill(self.entities[i].type_id, slot).is_none()
@@ -822,7 +834,10 @@ impl Room<'_> {
         self.entities[i].cast = None;
         if c.hero_kit_rank.is_some() {
             let src = self.entities[i].id;
-            if self.kit_castable(i, c.slot, c.target).is_err() {
+            if self
+                .kit_castable_with_leeway(i, c.slot, c.target, 1.5)
+                .is_err()
+            {
                 return;
             }
             events.push(Event::Cast {

@@ -87,6 +87,7 @@ pub struct Platform {
     tokens: Tokens,
     grants: notify::Grants,
     native_state_updates: bool,
+    unlock_all_talents: bool,
     xmpp: xmpp::Chat,
     sites: ping::Sites,
     versions: Mutex<HashMap<Uuid, (Uuid, u64)>>,
@@ -151,6 +152,7 @@ impl Platform {
             tokens: Tokens::new(secret)?,
             grants: Default::default(),
             native_state_updates: false,
+            unlock_all_talents: false,
             xmpp: Default::default(),
             sites: Default::default(),
             versions: Default::default(),
@@ -206,6 +208,19 @@ impl Platform {
                 "configure state updates before sharing the platform",
             ))?
             .native_state_updates = enabled;
+        Ok(())
+    }
+
+    /// Unlock all hero talents with Vainglory CE official guest levels (`10/10/5`).
+    pub fn configure_unlock_all_talents(
+        platform: &mut Arc<Self>,
+        enabled: bool,
+    ) -> Result<(), Error> {
+        Arc::get_mut(platform)
+            .ok_or(Error::Config(
+                "configure talent defaults before sharing the platform",
+            ))?
+            .unlock_all_talents = enabled;
         Ok(())
     }
 

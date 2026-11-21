@@ -24,45 +24,51 @@ pub(super) fn talent_response(
         return Vec::new();
     }
     let hero = &room.world.entities[seat];
-    let level = if selection == TalentSelection::NoTalent {
-        0
-    } else {
-        let Some(level) = room
-            .talent_levels
-            .get(seat)
-            .and_then(|levels| levels.get(&hero.type_id))
-        else {
-            return Vec::new();
-        };
-        level.get()
+    let Some(level) = super::authorize_talent_level(room, seat, hero.type_id, selection) else {
+        return Vec::new();
     };
+    let actor = hero.id;
+    let hero_type_id = hero.type_id;
     // One independently identified Mobile Bulwark carried slot 1 and level 10.
     // The reserved level is home-authorized. Other native selections still have only numeric evidence.
-    if hero.type_id == halcyon_data::EntityTemplate::Lyra.as_raw()
+    if room.unlock_all_talents
         && let Some(data) = room.data.as_deref()
     {
-        let actor = hero.id;
-        let talent = (selection == TalentSelection::Slot1 && level == 10).then(|| {
-            (
-                halcyon_data::ModeledTalent::MobileBulwark.as_str(),
-                std::num::NonZeroU8::new(10).unwrap(),
-            )
-        });
-        // Older content packages can still serve the numeric equip response.
-        let _ = room.world.set_named_talent(actor, talent, data);
-    }
-    let hero = &room.world.entities[seat];
-    if hero.type_id == halcyon_data::EntityTemplate::Gwen.as_raw()
-        && let Some(data) = room.data.as_deref()
-    {
-        let talent = (selection == TalentSelection::Slot0 && level == 1).then(|| {
-            (
-                halcyon_data::ModeledTalent::SpeedLoader.as_str(),
-                std::num::NonZeroU8::MIN,
-            )
-        });
-        let actor = hero.id;
-        let _ = room.world.set_named_talent(actor, talent, data);
+        let wire_slot = match selection {
+            TalentSelection::Slot0 => Some(0u8),
+            TalentSelection::Slot1 => Some(1u8),
+            TalentSelection::Slot2 => Some(2u8),
+            TalentSelection::NoTalent => None,
+        };
+        let resolved = wire_slot
+            .and_then(|slot| halcyon_sim::World::hero_talent_id(hero_type_id, slot, Some(data)))
+            .zip(std::num::NonZeroU8::new(level));
+        let _ = room.world.set_named_talent(actor, resolved, data);
+    } else {
+        if hero_type_id == halcyon_data::EntityTemplate::Lyra.as_raw()
+            && let Some(data) = room.data.as_deref()
+        {
+            let talent = (selection == TalentSelection::Slot1 && level == 10).then(|| {
+                (
+                    halcyon_data::ModeledTalent::MobileBulwark.as_str(),
+                    std::num::NonZeroU8::new(10).unwrap(),
+                )
+            });
+            // Older content packages can still serve the numeric equip response.
+            let _ = room.world.set_named_talent(actor, talent, data);
+        }
+        let hero = &room.world.entities[seat];
+        if hero.type_id == halcyon_data::EntityTemplate::Gwen.as_raw()
+            && let Some(data) = room.data.as_deref()
+        {
+            let talent = (selection == TalentSelection::Slot0 && level == 1).then(|| {
+                (
+                    halcyon_data::ModeledTalent::SpeedLoader.as_str(),
+                    std::num::NonZeroU8::MIN,
+                )
+            });
+            let _ = room.world.set_named_talent(actor, talent, data);
+        }
     }
     let hero = &room.world.entities[seat];
     let equipped = EquippedTalent {

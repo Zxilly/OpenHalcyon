@@ -100,6 +100,7 @@ fn open_local_services(c: &Config) -> Result<LocalServices> {
         c.game_port_range,
     )?;
     rooms.set_free_aral_reroll(c.free_aral_reroll);
+    rooms.set_unlock_all_talents(c.unlock_all_talents);
     if let Some(dir) = &c.replay_dir {
         rooms.set_replay_directory(dir)?;
     }
@@ -256,6 +257,7 @@ async fn serve_endpoints(
     };
     Platform::configure_ping_sites(&mut ce, c.ping_sites)?;
     Platform::configure_native_state_updates(&mut ce, c.native_state_updates)?;
+    Platform::configure_unlock_all_talents(&mut ce, c.unlock_all_talents)?;
     if let Some(provider) = c.provider {
         Platform::configure_provider(&mut ce, provider)?;
     }

@@ -465,6 +465,11 @@ impl Room<'_> {
             t.team
         };
         self.entities.forget_target(i);
+        if kind != Kind::Hero
+            && let Some(map) = &mut self.state.native_navigation
+        {
+            map.forget_route(id);
+        }
         if self.hero_kit_enabled() || self.entities[i].hero_kit.is_some() {
             self.kit_on_death(i);
         }

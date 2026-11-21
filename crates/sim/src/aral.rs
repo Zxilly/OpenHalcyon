@@ -169,20 +169,29 @@ impl Room<'_> {
     }
 }
 
+const LANE_WAYPOINTS: [(f32, f32); 15] = [
+    (-63.0, 7.5),
+    (-54.0, 7.2),
+    (-45.0, 5.5),
+    (-35.78, 5.8),
+    (-26.0, 5.5),
+    (-17.06, 6.5),
+    (0.0, 5.0),
+    (17.06, 6.5),
+    (26.0, 5.5),
+    (35.78, 5.8),
+    (45.0, 5.5),
+    (54.0, 7.2),
+    (63.0, 7.5),
+    (68.0, 12.5),
+    (71.28, 12.93),
+];
+
 pub(super) fn march_goal(actor: &Entity, objective: Position) -> Position {
-    // Route through the three measured positions on each side. Exact navmesh
-    // splines are unknown. The next objective is always in the enemy direction.
+    // Route along the navmesh-verified lane corridor clear of turret obstacles.
     let direction = if actor.team == 0 { 1. } else { -1. };
-    for (x, z) in [
-        (-54., 2.92),
-        (-35.78, 1.17),
-        (-17.06, 1.93),
-        (17.06, 1.93),
-        (35.78, 1.17),
-        (54., 2.92),
-        (68.59, 19.97),
-    ] {
-        if direction * actor.position.x < x - 0.3 {
+    for &(x, z) in &LANE_WAYPOINTS {
+        if direction * actor.position.x < x - 1.0 {
             return Position {
                 x: direction * x,
                 y: z,
