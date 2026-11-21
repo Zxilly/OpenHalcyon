@@ -629,7 +629,7 @@ impl Message {
             },
 
             Some(Opcode::ServerHelloAck) => Fields::Heartbeat,
-            Some(Opcode::DraftClient0455 | Opcode::DraftLockHero) => Fields::HeroLock,
+            Some(Opcode::DraftReadyAccept | Opcode::DraftLockHero) => Fields::HeroLock,
             Some(Opcode::RequestMoveJoystick) => {
                 let MoveCmd { x, y } = MoveCmd::read_body(b)?;
                 Fields::Movement { x, y }

@@ -103,7 +103,7 @@ fn packed_words_keep_their_types_and_bit_patterns() {
     let mut roster = [0u8; 2134];
     roster[273..275].copy_from_slice(&0x0515u16.to_be_bytes());
     roster[1769..1771].copy_from_slice(&0x1234u16.to_be_bytes());
-    let roster = StaticActionLayout::for_opcode(halcyon_protocol::wire_opcode::Unresolved045B)
+    let roster = StaticActionLayout::for_opcode(halcyon_protocol::wire_opcode::DraftRosterRanked)
         .unwrap()
         .read(&roster)
         .unwrap();

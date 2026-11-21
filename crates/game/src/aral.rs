@@ -218,7 +218,7 @@ pub(super) fn refresh(room: &mut Room, seat: usize) -> Batch {
         body[4..8].copy_from_slice(&5_u32.to_be_bytes());
         body[76] = 1;
         body[77..81].copy_from_slice(&3_u32.to_be_bytes());
-        batch.push(Message::known(crate::Opcode::AralDraftMarker, body));
+        batch.push(Message::known(crate::Opcode::AralRerollState, body));
         batch.push(roster(room, room.aral_remaining(), false));
         room.seats[seat].draft_sync_sent = true;
     }
@@ -782,7 +782,7 @@ mod tests {
                 }
                 assert_eq!(
                     sync,
-                    Message::known(crate::Opcode::AralDraftMarker, expected)
+                    Message::known(crate::Opcode::AralRerollState, expected)
                 );
                 let second = next(&mut clients[0], &cipher).await;
                 assert_eq!(second.opcode, crate::wire_opcode::DraftRosterAral);

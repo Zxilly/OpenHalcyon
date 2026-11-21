@@ -491,7 +491,7 @@ async fn setup(
         let lock = if matches!(workload, Workload::NativeSolo) {
             Opcode::DraftLockHero
         } else {
-            Opcode::DraftClient0455
+            Opcode::DraftReadyAccept
         };
         s.write(Message::known(lock, [0; 6])).await?;
         s.until(lock).await?;

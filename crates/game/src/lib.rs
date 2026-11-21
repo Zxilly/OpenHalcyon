@@ -1412,7 +1412,7 @@ impl Room {
             && m.is(crate::Opcode::DraftSelectHero)
             && !self.seats[i].draft_sync_sent;
         let seen = &mut self.seats[i].seen[ch];
-        if !m.is(crate::Opcode::DraftClient0455) && seen.len() < 32 && seen.insert(m.opcode) {
+        if !m.is(crate::Opcode::DraftReadyAccept) && seen.len() < 32 && seen.insert(m.opcode) {
             let generation = self.seats[i].peers[ch].as_ref().map(|peer| peer.generation);
             self.event(
                 EventKind::Protocol,

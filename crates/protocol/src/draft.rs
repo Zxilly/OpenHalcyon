@@ -112,7 +112,9 @@ impl DraftAction {
         let be32 = |off: usize| u32::from_be_bytes(body[off..off + 4].try_into().unwrap());
         let be16 = |off: usize| u16::from_be_bytes(body[off..off + 2].try_into().unwrap());
         match opcode {
-            wire_opcode::Unresolved045D if accepts_body_len(opcode, body.len(), 4).is_some() => {
+            wire_opcode::DraftSelectTeamOrSlot
+                if accepts_body_len(opcode, body.len(), 4).is_some() =>
+            {
                 let word = be32(0);
                 Some(Self::SelectSlotOrTeam {
                     slot: (word & 0xff) as u8,
@@ -128,7 +130,7 @@ impl DraftAction {
                     flags: if body.len() >= 6 { be16(4) } else { 0 },
                 })
             }
-            wire_opcode::Unresolved0460 if accepts_body_len(opcode, body.len(), 1).is_some() => {
+            wire_opcode::DraftSelectRole if accepts_body_len(opcode, body.len(), 1).is_some() => {
                 Some(Self::SelectRole { selector: body[0] })
             }
             wire_opcode::DraftSelectPosition
@@ -154,34 +156,34 @@ impl DraftAction {
             wire_opcode::DraftLockHero if accepts_body_len(opcode, body.len(), 1).is_some() => {
                 Some(Self::LockHero { confirm: body[0] })
             }
-            wire_opcode::Unresolved0464 if accepts_body_len(opcode, body.len(), 4).is_some() => {
+            wire_opcode::DraftSelectBan if accepts_body_len(opcode, body.len(), 4).is_some() => {
                 Some(Self::SelectBan { hero_id: be32(0) })
             }
-            wire_opcode::Unresolved0465 if accepts_body_len(opcode, body.len(), 1).is_some() => {
+            wire_opcode::DraftConfirmBan if accepts_body_len(opcode, body.len(), 1).is_some() => {
                 Some(Self::ConfirmBan { confirm: body[0] })
             }
-            wire_opcode::Unresolved0466 if accepts_body_len(opcode, body.len(), 4).is_some() => {
+            wire_opcode::DraftSkipBan if accepts_body_len(opcode, body.len(), 4).is_some() => {
                 Some(Self::SkipBan { flags: be32(0) })
             }
-            wire_opcode::Unresolved0467 if accepts_body_len(opcode, body.len(), 2).is_some() => {
+            wire_opcode::DraftSwapRequest if accepts_body_len(opcode, body.len(), 2).is_some() => {
                 Some(Self::SwapRequest {
                     first: body[0],
                     second: body[1],
                 })
             }
-            wire_opcode::Unresolved0468 if accepts_body_len(opcode, body.len(), 2).is_some() => {
+            wire_opcode::DraftSwapResponse if accepts_body_len(opcode, body.len(), 2).is_some() => {
                 Some(Self::SwapResponse {
                     first: body[0],
                     second: body[1],
                 })
             }
-            wire_opcode::Unresolved0469 if accepts_body_len(opcode, body.len(), 2).is_some() => {
+            wire_opcode::DraftSwapCancel if accepts_body_len(opcode, body.len(), 2).is_some() => {
                 Some(Self::SwapCancel {
                     first: body[0],
                     second: body[1],
                 })
             }
-            wire_opcode::Unresolved046A if accepts_body_len(opcode, body.len(), 2).is_some() => {
+            wire_opcode::DraftSwapDecline if accepts_body_len(opcode, body.len(), 2).is_some() => {
                 Some(Self::SwapDecline {
                     first: body[0],
                     second: body[1],
@@ -204,7 +206,7 @@ impl DraftAction {
             Self::SelectSlotOrTeam { slot } => {
                 let mut b = [0u8; 6];
                 b[..4].copy_from_slice(&u32::from(slot).to_be_bytes());
-                Message::known(Opcode::Unresolved045D, b)
+                Message::known(Opcode::DraftSelectTeamOrSlot, b)
             }
             Self::SelectHero { hero_id, flags } => {
                 let mut b = [0u8; 6];
@@ -218,7 +220,7 @@ impl DraftAction {
                 b[4..6].copy_from_slice(&flags.to_be_bytes());
                 Message::known(Opcode::DraftSelectSkin, b)
             }
-            Self::SelectRole { selector } => padded_one(Opcode::Unresolved0460, selector),
+            Self::SelectRole { selector } => padded_one(Opcode::DraftSelectRole, selector),
             Self::SelectPosition { position } => padded_one(
                 Opcode::DraftSelectPosition,
                 position.map_or(u8::MAX, DraftPosition::to_wire),
@@ -231,37 +233,37 @@ impl DraftAction {
             Self::SelectBan { hero_id } => {
                 let mut b = [0u8; 6];
                 b[..4].copy_from_slice(&hero_id.to_be_bytes());
-                Message::known(Opcode::Unresolved0464, b)
+                Message::known(Opcode::DraftSelectBan, b)
             }
-            Self::ConfirmBan { confirm } => padded_one(Opcode::Unresolved0465, confirm),
+            Self::ConfirmBan { confirm } => padded_one(Opcode::DraftConfirmBan, confirm),
             Self::SkipBan { flags } => {
                 let mut b = [0u8; 6];
                 b[..4].copy_from_slice(&flags.to_be_bytes());
-                Message::known(Opcode::Unresolved0466, b)
+                Message::known(Opcode::DraftSkipBan, b)
             }
             Self::SwapRequest { first, second } => {
                 let mut b = [0u8; 6];
                 b[0] = first;
                 b[1] = second;
-                Message::known(Opcode::Unresolved0467, b)
+                Message::known(Opcode::DraftSwapRequest, b)
             }
             Self::SwapResponse { first, second } => {
                 let mut b = [0u8; 6];
                 b[0] = first;
                 b[1] = second;
-                Message::known(Opcode::Unresolved0468, b)
+                Message::known(Opcode::DraftSwapResponse, b)
             }
             Self::SwapCancel { first, second } => {
                 let mut b = [0u8; 6];
                 b[0] = first;
                 b[1] = second;
-                Message::known(Opcode::Unresolved0469, b)
+                Message::known(Opcode::DraftSwapCancel, b)
             }
             Self::SwapDecline { first, second } => {
                 let mut b = [0u8; 6];
                 b[0] = first;
                 b[1] = second;
-                Message::known(Opcode::Unresolved046A, b)
+                Message::known(Opcode::DraftSwapDecline, b)
             }
             Self::ReadyControl { control } => padded_one(Opcode::DraftReadyControl, control),
         }
@@ -320,7 +322,7 @@ impl Default for RankedDraftSeat {
     }
 }
 
-/// Authoritative Ranked Ban/Pick/Swap snapshot encoded to `0x045B` (`Unresolved045B`, 2134B).
+/// Authoritative Ranked Ban/Pick/Swap snapshot encoded to `0x045B` (`DraftRosterRanked`, 2134B).
 ///
 /// Layout matches `sub_82D514` (`+4..+20` four BE32 words, `+24..+264` sixty BE32 words,
 /// ten 166-byte seat rows at `+264..+1924` with paired BE16 fields at row `+9` and `+11`,
@@ -362,7 +364,7 @@ impl RankedDraftStatePacket {
         }
         body[2124..2128].copy_from_slice(&self.timer_remaining_seconds.to_be_bytes());
         body[2128..2132].copy_from_slice(&self.timer_total_seconds.to_be_bytes());
-        Message::known(Opcode::Unresolved045B, body)
+        Message::known(Opcode::DraftRosterRanked, body)
     }
 
     pub fn decode(body: &[u8]) -> io::Result<Self> {
@@ -497,7 +499,7 @@ mod tests {
             timer_total_seconds: 30.0,
         };
         let msg = packet.encode();
-        assert_eq!(msg.opcode, wire_opcode::Unresolved045B);
+        assert_eq!(msg.opcode, wire_opcode::DraftRosterRanked);
         assert_eq!(msg.body.len(), RankedDraftStatePacket::BODY_LEN);
         assert!(StaticActionLayout::for_opcode(msg.opcode).is_some());
         let decoded = RankedDraftStatePacket::decode(&msg.body).unwrap();

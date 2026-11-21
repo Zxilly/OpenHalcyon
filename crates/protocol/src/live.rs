@@ -48,7 +48,7 @@ pub enum LiveFields<'a> {
         player_uuid: &'a [u8; 64],
         disconnect_code: u16,
     },
-    /// `0x0480` (`AralDraftMarker`) ARAL hero-reroll state decoded at `0x82d890`
+    /// `0x0480` (`AralRerollState`) ARAL hero-reroll state decoded at `0x82d890`
     /// and consumed by the ARAL draft UI at `0xad4250`.
     AralRerollState {
         /// `+0x00` (BE32): reroll cost (`w1` to `0xb32be4`).
@@ -191,7 +191,7 @@ pub(super) fn fields(op: u16, b: &[u8]) -> Option<Fields<'_>> {
                 disconnect_code: half(64),
             }));
         }
-        crate::wire_opcode::AralDraftMarker if expected(82) => {
+        crate::wire_opcode::AralRerollState if expected(82) => {
             return Some(Fields::Live(LiveFields::AralRerollState {
                 cost: word(0),
                 limit: word(4),
@@ -309,7 +309,7 @@ mod tests {
         assert_eq!(left[15], [64, 65, 66, 67]);
         assert_eq!(right[15], [144, 145, 146, 147]);
         assert!(matches!(
-            fields(crate::wire_opcode::AralDraftMarker, &b[..86]),
+            fields(crate::wire_opcode::AralRerollState, &b[..86]),
             Some(Fields::Live(LiveFields::AralRerollState {
                 cost: 0x0001_0203,
                 limit: 0x0405_0607,
@@ -325,7 +325,7 @@ mod tests {
         observed[76] = 1;
         observed[77..81].copy_from_slice(&3u32.to_be_bytes());
         assert!(matches!(
-            fields(crate::wire_opcode::AralDraftMarker, &observed),
+            fields(crate::wire_opcode::AralRerollState, &observed),
             Some(Fields::Live(LiveFields::AralRerollState {
                 cost: 1,
                 limit: 5,

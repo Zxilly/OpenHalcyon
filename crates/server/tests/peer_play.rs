@@ -651,12 +651,12 @@ async fn party_game_survives_two_home_elections_and_replays_result_once() {
         until(&mut c, &cipher, wire_opcode::DraftRosterFull).await;
         c.write_all(
             &cipher
-                .encode(&Message::new(wire_opcode::DraftClient0455, [0; 6]))
+                .encode(&Message::new(wire_opcode::DraftReadyAccept, [0; 6]))
                 .unwrap(),
         )
         .await
         .unwrap();
-        until(&mut c, &cipher, wire_opcode::DraftClient0455).await;
+        until(&mut c, &cipher, wire_opcode::DraftReadyAccept).await;
         controls.push(c);
     }
     let mut games = Vec::new();
@@ -1285,12 +1285,12 @@ async fn local_friend_spectates_read_only_and_revokes_on_exit() {
     control
         .write_all(
             &cipher
-                .encode(&Message::new(wire_opcode::DraftClient0455, [0; 6]))
+                .encode(&Message::new(wire_opcode::DraftReadyAccept, [0; 6]))
                 .unwrap(),
         )
         .await
         .unwrap();
-    until(&mut control, &cipher, wire_opcode::DraftClient0455).await;
+    until(&mut control, &cipher, wire_opcode::DraftReadyAccept).await;
     let mut game = login(&addr, player_id, &cipher).await;
     until(&mut game, &cipher, wire_opcode::HeroSpawn).await;
 
@@ -1938,12 +1938,12 @@ async fn public_and_ce_players_share_a_pool_and_cross_home_match_chat() {
         until(&mut c, &cipher, wire_opcode::DraftRosterFull).await;
         c.write_all(
             &cipher
-                .encode(&Message::new(wire_opcode::DraftClient0455, [0; 6]))
+                .encode(&Message::new(wire_opcode::DraftReadyAccept, [0; 6]))
                 .unwrap(),
         )
         .await
         .unwrap();
-        until(&mut c, &cipher, wire_opcode::DraftClient0455).await;
+        until(&mut c, &cipher, wire_opcode::DraftReadyAccept).await;
         controls.push(c);
     }
     for player in &players {

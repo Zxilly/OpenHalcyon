@@ -948,7 +948,7 @@ mod tests {
             assert_eq!(ch, 0);
             let pkt_msg = initial
                 .iter()
-                .find(|m| m.opcode == crate::wire_opcode::Unresolved045B)
+                .find(|m| m.opcode == crate::wire_opcode::DraftRosterRanked)
                 .expect("ranked attach must include 0x045B packet");
             let pkt = RankedDraftStatePacket::decode(&pkt_msg.body).unwrap();
             assert_eq!(pkt.phase, RankedWirePhase::Ban);
@@ -1077,7 +1077,7 @@ mod tests {
                     .unwrap();
                 assert!(
                     sel.iter()
-                        .any(|m| m.opcode == crate::wire_opcode::Unresolved045B)
+                        .any(|m| m.opcode == crate::wire_opcode::DraftRosterRanked)
                 );
                 let lock = r
                     .receive(seat, 0, DraftAction::LockHero { confirm: 1 }.encode())
@@ -1185,7 +1185,7 @@ mod tests {
                 .unwrap();
             let pkt_msg = pref_reply
                 .iter()
-                .find(|m| m.opcode == crate::wire_opcode::Unresolved045B)
+                .find(|m| m.opcode == crate::wire_opcode::DraftRosterRanked)
                 .unwrap();
             let decoded = RankedDraftStatePacket::decode(&pkt_msg.body).unwrap();
             assert_eq!(decoded.seats[0].position, 2);

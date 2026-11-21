@@ -82,13 +82,12 @@ fn alternate_move_and_ability_words_preserve_variant_and_bits() {
     );
     assert_eq!(view.to_message(), ability);
 
-    let pair = OutboundLayout::for_opcode(halcyon_protocol::wire_opcode::Unresolved0467).unwrap();
+    let pair = OutboundLayout::for_opcode(halcyon_protocol::wire_opcode::DraftSwapRequest).unwrap();
     assert_eq!(
         pair.read(&[0x80, 3]).unwrap().operands,
         OutboundOperands::Bytes([0x80, 3])
     );
-    let unknown =
-        OutboundLayout::for_opcode(halcyon_protocol::wire_opcode::Unresolved0466).unwrap();
+    let unknown = OutboundLayout::for_opcode(halcyon_protocol::wire_opcode::DraftSkipBan).unwrap();
     assert_eq!(
         unknown.read(&[1, 2, 3, 4]).unwrap().operands,
         OutboundOperands::Opaque

@@ -51,17 +51,17 @@ impl OutboundLayout {
                 OutboundOperands::Words([word(0), word(4)])
             }
             Some(
-                crate::Opcode::Unresolved045D
-                | crate::Opcode::Unresolved0464
+                crate::Opcode::DraftSelectTeamOrSlot
+                | crate::Opcode::DraftSelectBan
                 | crate::Opcode::RequestLevelLogicEvent,
             ) => OutboundOperands::Word(word(0)),
             Some(
-                crate::Opcode::DraftClient0455
-                | crate::Opcode::Unresolved0465
+                crate::Opcode::DraftReadyAccept
+                | crate::Opcode::DraftConfirmBan
                 | crate::Opcode::SpectatorExitMatchRequest
                 | crate::Opcode::Unresolved047B,
             ) => OutboundOperands::Byte(payload[0]),
-            Some(crate::Opcode::Unresolved0467 | crate::Opcode::Unresolved0468) => {
+            Some(crate::Opcode::DraftSwapRequest | crate::Opcode::DraftSwapResponse) => {
                 OutboundOperands::Bytes([payload[0], payload[1]])
             }
             _ => OutboundOperands::Opaque,
@@ -218,14 +218,19 @@ pub const OUTBOUND_LAYOUTS: &[OutboundLayout] = &[
         Some("ActionRequestActivateItem"),
     ),
     entry(crate::wire_opcode::Unresolved0450, Some(1), false, None),
-    entry(crate::wire_opcode::DraftClient0455, Some(1), true, None),
+    entry(crate::wire_opcode::DraftReadyAccept, Some(1), true, None),
     entry(crate::wire_opcode::DraftRerollHero, Some(1), true, None),
     entry(crate::wire_opcode::Unresolved0457, Some(1), false, None),
     entry(crate::wire_opcode::DraftRefreshRequest, Some(1), true, None),
-    entry(crate::wire_opcode::Unresolved045D, Some(4), true, None),
+    entry(
+        crate::wire_opcode::DraftSelectTeamOrSlot,
+        Some(4),
+        true,
+        None,
+    ),
     entry(crate::wire_opcode::DraftSelectHero, Some(8), true, None),
     entry(crate::wire_opcode::DraftSelectSkin, Some(4), true, None),
-    entry(crate::wire_opcode::Unresolved0460, Some(1), false, None),
+    entry(crate::wire_opcode::DraftSelectRole, Some(1), false, None),
     entry(crate::wire_opcode::DraftSelectPosition, Some(1), true, None),
     entry(
         crate::wire_opcode::DraftSelectBuildPath,
@@ -234,13 +239,13 @@ pub const OUTBOUND_LAYOUTS: &[OutboundLayout] = &[
         None,
     ),
     entry(crate::wire_opcode::DraftLockHero, Some(1), true, None),
-    entry(crate::wire_opcode::Unresolved0464, Some(4), true, None),
-    entry(crate::wire_opcode::Unresolved0465, Some(1), true, None),
-    entry(crate::wire_opcode::Unresolved0466, Some(4), true, None),
-    entry(crate::wire_opcode::Unresolved0467, Some(2), true, None),
-    entry(crate::wire_opcode::Unresolved0468, Some(2), true, None),
-    entry(crate::wire_opcode::Unresolved0469, Some(2), false, None),
-    entry(crate::wire_opcode::Unresolved046A, Some(2), false, None),
+    entry(crate::wire_opcode::DraftSelectBan, Some(4), true, None),
+    entry(crate::wire_opcode::DraftConfirmBan, Some(1), true, None),
+    entry(crate::wire_opcode::DraftSkipBan, Some(4), true, None),
+    entry(crate::wire_opcode::DraftSwapRequest, Some(2), true, None),
+    entry(crate::wire_opcode::DraftSwapResponse, Some(2), true, None),
+    entry(crate::wire_opcode::DraftSwapCancel, Some(2), false, None),
+    entry(crate::wire_opcode::DraftSwapDecline, Some(2), false, None),
     entry(crate::wire_opcode::DraftReadyControl, Some(1), true, None),
     entry(crate::wire_opcode::SceneReadyConfirm, Some(1), true, None),
     entry(

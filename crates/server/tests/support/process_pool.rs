@@ -312,12 +312,12 @@ async fn connect_5v5_sockets(
         }
         s.write_all(
             &cipher
-                .encode(&Message::new(wire_opcode::DraftClient0455, [0; 6]))
+                .encode(&Message::new(wire_opcode::DraftReadyAccept, [0; 6]))
                 .unwrap(),
         )
         .await
         .unwrap();
-        until(&mut s, cipher, wire_opcode::DraftClient0455).await;
+        until(&mut s, cipher, wire_opcode::DraftReadyAccept).await;
         sockets.push(s);
     }
     for (index, (player, _)) in identities.iter().enumerate() {

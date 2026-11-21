@@ -167,7 +167,7 @@ pub const STATIC_ACTIONS: &[StaticActionLayout] = &[
     entry(crate::wire_opcode::ServerHelloAck, None, &[]),
     entry(crate::wire_opcode::PlayerDeserter, None, &[at(W, 0)]),
     entry(
-        crate::wire_opcode::PauseOrReady,
+        crate::wire_opcode::ShowMatchPrepSequence,
         Some("ActionShowMatchPrepSequence"),
         &[],
     ),
@@ -222,7 +222,7 @@ pub const STATIC_ACTIONS: &[StaticActionLayout] = &[
         &[span(F, 1, 4, 4)],
     ),
     entry(
-        crate::wire_opcode::PlayAbilityUnseen,
+        crate::wire_opcode::PlayAbility,
         Some("ActionPlayAbility"),
         &[span(W, 0, 2, 4), span(F, 8, 3, 4)],
     ),
@@ -272,7 +272,7 @@ pub const STATIC_ACTIONS: &[StaticActionLayout] = &[
         &[span(W, 0, 2, 4)],
     ),
     entry(
-        crate::wire_opcode::Unresolved045B,
+        crate::wire_opcode::DraftRosterRanked,
         None,
         &[
             span(W, 4, 4, 4),
