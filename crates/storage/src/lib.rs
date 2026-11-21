@@ -1,5 +1,8 @@
 mod accounts;
-mod schema;
+pub mod ce_stats;
+pub mod community_queues;
+mod migrations;
+pub mod schema;
 
 use diesel::{Connection, connection::SimpleConnection, sqlite::SqliteConnection};
 use std::{
@@ -8,7 +11,8 @@ use std::{
 };
 use uuid::Uuid;
 
-pub use accounts::{AccountStore, PasswordAccount};
+pub use accounts::{AccountStore, PasswordAccount, session_owner, touch_presence};
+pub use migrations::{adopt_legacy_ce_match_stats, adopt_legacy_platform_schema, ensure_schema};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {

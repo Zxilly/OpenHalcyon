@@ -1,8 +1,5 @@
 use crate::{CommunityError, Result, schema::community_players};
 use diesel::{dsl::exists, prelude::*, sql_types::Text};
-use diesel_migrations::{EmbeddedMigrations, embed_migrations};
-
-pub(crate) const MIGRATIONS: EmbeddedMigrations = embed_migrations!();
 
 diesel::define_sql_function!(fn unixepoch() -> BigInt);
 diesel::define_sql_function!(#[sql_name = "unixepoch"] fn unixepoch_after(base: Text, modifier: Text) -> BigInt);

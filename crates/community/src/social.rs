@@ -246,14 +246,8 @@ fn friend_view(db: &mut SqliteConnection, actor: &str) -> Result<Value> {
 }
 
 /// Verify friendship and presence in the caller's spectator admission transaction.
-pub fn may_spectate(db: &rusqlite::Connection, viewer: &str, friend: &str) -> Result<bool> {
-    db.query_row(
-        "SELECT EXISTS(
-            SELECT 1 FROM community_friends f JOIN community_players p ON p.id=f.friend
-            WHERE f.player=? AND f.friend=? AND p.invisible=0
-         )",
-        [viewer, friend],
-        |row| row.get(0),
-    )
-    .map_err(Into::into)
+pub fn may_spectate(db: &mut SqliteConnection, viewer: &str, friend: &str) -> Result<bool> {
+    Ok(halcyon_storage::community_queues::may_spectate(
+        db, viewer, friend,
+    )?)
 }
