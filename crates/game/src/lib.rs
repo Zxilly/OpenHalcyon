@@ -1927,12 +1927,12 @@ impl Room {
         modes_3v3_blitz::publish_tick(self, &events);
         let (observer_camps, team_camps) = self.drain_5v5_camp_messages();
         self.solo_structure_snapshot.observe(&events);
+        if legacy && self.world.winner.is_none() {
+            self.advance_absences();
+        }
+        aral_death::flush(self, self.world.tick);
+        aral_death::schedule(self, &events);
         if legacy {
-            if self.world.winner.is_none() {
-                self.advance_absences();
-            }
-            aral_death::flush(self, self.world.tick);
-            aral_death::schedule(self, &events);
             aral_death::publish_approaches(self, &events);
         }
         self.publish_aral_items(&events);
@@ -1965,6 +1965,7 @@ impl Room {
         if legacy {
             aral::announcements::publish(self, &events);
         }
+        scene::sync_5v5_shops(self);
         if legacy || self.solo_scene() {
             for (i, (seat, actor)) in self.seats.iter().zip(&self.world.entities).enumerate() {
                 if !seat.world_actor_written

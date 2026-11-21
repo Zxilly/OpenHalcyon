@@ -216,8 +216,126 @@ pub(super) fn initial_structures(room: &mut Room) {
     if !batch.is_empty() {
         super::structure_effects::append_solo(&mut batch, &mut effects);
         super::structure_effects::append_crystal_start(&mut batch, &effects);
+        if let Some((actor, _, message)) = halcyon_protocol::SoloStructure::base_shopkeeper(team) {
+            batch.push(message);
+            batch.extend(halcyon_protocol::SoloStructure::shopkeeper_opening_buffs(
+                actor,
+            ));
+            room.scene_views[0].shop_base_declared = true;
+        }
         room.scene_views[0].declarations(&batch);
         peer.send(super::transport::Delivery::Private(batch));
+    }
+}
+
+/// Keeps 5v5 base/river shopkeepers (`329`/`330`) and `Buff_Shop_AllowStorePurchase` (`174`)
+/// synchronized on confirmed human seats across both `5v5_bots_solo` and 5v5 PvP.
+pub(super) fn sync_5v5_shops(room: &mut Room) {
+    let solo_active = room.solo_scene() && room.seats[0].control_world;
+    if !solo_active && !room.world.is_5v5_enabled() {
+        return;
+    }
+    let river_ready = room.world.is_5v5_enabled()
+        && room.world.tick >= halcyon_sim::map_5v5::RIVER_SHOP_SPAWN_TICK;
+    for seat_idx in 0..room.seats.len() {
+        let peer_ch = if room.seats[seat_idx].peers[1].is_some() {
+            Some(1usize)
+        } else if room.seats[seat_idx].peers[0].is_some()
+            && room.seats[seat_idx].world_actor_written
+            && room.seats[seat_idx].preamble.confirmed()
+        {
+            Some(0usize)
+        } else {
+            None
+        };
+        let Some(ch) = peer_ch else {
+            continue;
+        };
+        let Some((actor_id, team)) = room
+            .world
+            .entities
+            .get(seat_idx)
+            .filter(|e| e.kind == halcyon_sim::Kind::Hero)
+            .map(|e| (e.id, e.team))
+        else {
+            continue;
+        };
+        let mut batch = Vec::new();
+        if !room.scene_views[seat_idx].shop_base_declared
+            && let Some((actor, _, message)) =
+                halcyon_protocol::SoloStructure::base_shopkeeper(team)
+        {
+            let mut decl = vec![message];
+            decl.extend(halcyon_protocol::SoloStructure::shopkeeper_opening_buffs(
+                actor,
+            ));
+            room.scene_views[seat_idx].declarations(&decl);
+            room.scene_views[seat_idx].shop_base_declared = true;
+            batch.extend(decl);
+        }
+        if river_ready && !room.scene_views[seat_idx].shop_river_declared {
+            let mut decl = Vec::new();
+            for right in [false, true] {
+                if let Some(slot) = room.solo_slots.river_shop_slot(right) {
+                    let (actor, message) =
+                        halcyon_protocol::SoloStructure::river_shopkeeper(right, slot);
+                    decl.push(message);
+                    decl.extend(halcyon_protocol::SoloStructure::shopkeeper_opening_buffs(
+                        actor,
+                    ));
+                }
+            }
+            if !decl.is_empty() {
+                room.scene_views[seat_idx].declarations(&decl);
+                room.scene_views[seat_idx].shop_river_declared = true;
+                batch.extend(decl);
+            }
+        }
+        let wire_actor = u32::from(messages::wire_id(actor_id));
+        if !room.scene_views[seat_idx].shop_can_icon_sent {
+            batch.push(halcyon_protocol::SoloStructure::shop_can_icon_message(
+                wire_actor,
+                0x10_0000 + seat_idx as u32,
+            ));
+            room.scene_views[seat_idx].shop_can_icon_sent = true;
+        }
+        if let Some(keeper_actor) = room.world.shop_5v5_keeper_for_actor(actor_id) {
+            let due = room.scene_views[seat_idx].shop_allow_next_tick;
+            if due.is_none_or(|tick| room.world.tick >= tick) {
+                let seq = room.scene_views[seat_idx].shop_allow_seq;
+                room.scene_views[seat_idx].shop_allow_seq = seq.wrapping_add(1);
+                let instance = 0x20_0000 + (seat_idx as u32) * 0x1_0000 + (seq & 0xFFFF);
+                batch.push(
+                    halcyon_protocol::SoloStructure::shop_allow_purchase_message(
+                        wire_actor,
+                        keeper_actor,
+                        instance,
+                    ),
+                );
+                room.scene_views[seat_idx].shop_allow_active_instance = Some(instance);
+                room.scene_views[seat_idx].shop_allow_next_tick =
+                    Some(room.world.tick + halcyon_sim::TICK_HZ);
+            }
+        } else if let Some(active_instance) =
+            room.scene_views[seat_idx].shop_allow_active_instance.take()
+        {
+            room.scene_views[seat_idx].shop_allow_next_tick = None;
+            if let Ok(cancel) = (halcyon_protocol::BuffMutation {
+                target: wire_actor,
+                instance: active_instance,
+                change: halcyon_protocol::BuffChange::Cancel,
+                padding: &[],
+            })
+            .to_message()
+            {
+                batch.push(cancel);
+            }
+        }
+        if !batch.is_empty()
+            && let Some(peer) = &room.seats[seat_idx].peers[ch]
+        {
+            peer.send(super::transport::Delivery::Private(batch));
+        }
     }
 }
 
@@ -565,7 +683,25 @@ mod tests {
                     break;
                 }
                 if m.is(crate::Opcode::EntitySpawn) {
-                    compact_structures.push(u32::from_be_bytes(m.body[..4].try_into().unwrap()));
+                    let template = u32::from_be_bytes(m.body[..4].try_into().unwrap());
+                    compact_structures.push(template);
+                    if reconnect && matches!(template, 339..=341) {
+                        let actor = u32::from_be_bytes(m.body[8..12].try_into().unwrap());
+                        let expected = match actor {
+                            2008 => (8, 3000f32),
+                            2009 => (9, 3000.),
+                            2010 => (10, 3000.),
+                            2046 => (24, 4000.),
+                            2051 => (25, 5000.),
+                            2060 => (26, 3800.),
+                            2065 => (27, 5000.),
+                            2074 => (28, 4000.),
+                            2079 => (29, 5000.),
+                            _ => panic!("unexpected friendly tower {actor}"),
+                        };
+                        assert_eq!(m.body[116], expected.0);
+                        assert_eq!(m.body[36..40], expected.1.to_be_bytes());
+                    }
                 }
                 if m.is(crate::Opcode::ApplyBuffExtended) {
                     assert!(crate::structure_effects::recordable(&m));
@@ -585,23 +721,6 @@ mod tests {
                     let template = u16::from_be_bytes(m.body[2..4].try_into().unwrap());
                     if matches!(template, 295 | 296 | 339..=341) {
                         full_structures.push(template);
-                        if reconnect {
-                            let actor = u32::from_be_bytes(m.body[8..12].try_into().unwrap());
-                            let expected = match actor {
-                                2008 => (8, 3000f32),
-                                2009 => (9, 3000.),
-                                2010 => (10, 3000.),
-                                2046 => (24, 4000.),
-                                2051 => (25, 5000.),
-                                2060 => (26, 3800.),
-                                2065 => (27, 5000.),
-                                2074 => (28, 4000.),
-                                2079 => (29, 5000.),
-                                _ => panic!("unexpected friendly tower {actor}"),
-                            };
-                            assert_eq!(m.body[745], expected.0);
-                            assert_eq!(m.body[42..46], expected.1.to_be_bytes());
-                        }
                     }
                     let id = u16::from_be_bytes(m.body[10..12].try_into().unwrap());
                     if (1500..1510).contains(&id) {
@@ -628,12 +747,14 @@ mod tests {
                 );
                 assert!(!restored.iter().any(|row| row.0 == 2007));
                 assert!(hero_ids.len() < 10 && hero_ids.contains(&1500));
-                full_structures.sort_unstable();
+                assert!(full_structures.is_empty());
+                compact_structures.sort_unstable();
                 assert_eq!(
-                    full_structures,
-                    [339, 339, 339, 340, 340, 340, 341, 341, 341]
+                    compact_structures,
+                    [
+                        295, 297, 297, 297, 339, 339, 339, 340, 340, 340, 341, 341, 341
+                    ]
                 );
-                assert_eq!(compact_structures, [295]);
             } else {
                 assert_eq!(
                     variables,
@@ -741,6 +862,29 @@ mod tests {
                     assert_eq!(effect.prefix.target, 2006);
                     assert_eq!(effect.prefix.instance, instance);
                     assert_eq!(effect.prefix.definition, [205, 180][i % 2]);
+                }
+                let shop = next(&mut socket, &cipher).await;
+                assert_eq!(shop.opcode, crate::wire_opcode::EntitySpawn);
+                assert_eq!(u32::from_be_bytes(shop.body[..4].try_into().unwrap()), 329);
+                assert_eq!(
+                    u32::from_be_bytes(shop.body[8..12].try_into().unwrap()),
+                    halcyon_protocol::SoloStructure::BASE_SHOP_LEFT_ACTOR
+                );
+                assert_eq!(
+                    shop.body[116],
+                    halcyon_protocol::SoloStructure::BASE_SHOP_LEFT_SLOT
+                );
+                for expected_def in [177u16, 27u16] {
+                    let buff = next(&mut socket, &cipher).await;
+                    assert_eq!(buff.opcode, crate::wire_opcode::ApplyBuffCompact);
+                    let Fields::BuffApplication(effect) = buff.fields().unwrap() else {
+                        panic!("expected shopkeeper buff");
+                    };
+                    assert_eq!(
+                        effect.prefix.target,
+                        halcyon_protocol::SoloStructure::BASE_SHOP_LEFT_ACTOR
+                    );
+                    assert_eq!(effect.prefix.definition, expected_def);
                 }
             }
             send(
@@ -1483,5 +1627,329 @@ mod tests {
                 .any(|m| m.is(crate::Opcode::MoveToCorrection)
                     && m.body[..4] == 1501u32.to_be_bytes())
         );
+    }
+
+    fn setup_confirmed_solo_room(
+        mode: &str,
+    ) -> (
+        crate::Rooms,
+        Uuid,
+        tokio::sync::mpsc::Receiver<crate::transport::Delivery>,
+    ) {
+        let rooms = Rooms::new("127.0.0.1".parse().unwrap(), "127.0.0.1".into(), 1, None);
+        let id = Uuid::new_v4();
+        let player = Uuid::new_v4();
+        rooms
+            .reserve(Reservation {
+                talent_levels: Vec::new(),
+                match_id: id,
+                players: vec![player],
+                teams: vec![0],
+                mode: mode.into(),
+                difficulty: None,
+            })
+            .unwrap();
+        let shared = rooms.room(id).unwrap();
+        let (tx, rx) = mpsc::channel(4096);
+        {
+            let mut r = shared.lock().unwrap();
+            r.admitted = true;
+            r.phase(crate::RoomPhase::Running);
+            r.seats[0].control_world = true;
+            r.seats[0].world_actor_written = true;
+            r.seats[0].preamble.observe(
+                &Message::known(crate::Opcode::RequestSceneSnapshot, [0; 6]),
+                1500,
+            );
+            r.seats[0].preamble.observe(
+                &Message::known(crate::Opcode::ConfirmSceneOwner, [0, 0, 5, 220, 1, 0]),
+                1500,
+            );
+            r.seats[0].preamble.observe(
+                &Message::known(crate::Opcode::SceneReadyConfirm, [0; 6]),
+                1500,
+            );
+            r.seats[0].peers[0] = Some(crate::Peer {
+                generation: 1,
+                tx,
+                stalled: watch::channel(false).0,
+            });
+        }
+        (rooms, id, rx)
+    }
+
+    #[tokio::test]
+    async fn solo_5v5_destroys_dead_minions_via_040b_and_recycles_slots_past_three_minutes() {
+        let (rooms, id, mut rx) = setup_confirmed_solo_room("5v5_bots_solo");
+        let shared = rooms.room(id).unwrap();
+        {
+            let mut r = shared.lock().unwrap();
+            r.world.use_solo_mid_lane().unwrap();
+            // Position human hero in mid lane so wave clashes are continuously visible,
+            // and fast-forward past opening crystal grace to accumulate 3.5+ minutes of waves.
+            r.world.entities[0].position = halcyon_sim::Position { x: 0.0, y: 0.0 };
+            r.world.entities[0].hp = 50_000.0;
+            r.world.entities[0].max_hp = 50_000.0;
+        }
+        let mut live_slots: std::collections::BTreeMap<u8, u32> = std::collections::BTreeMap::new();
+        let mut live_actors: std::collections::BTreeMap<u32, u8> =
+            std::collections::BTreeMap::new();
+        let mut destroyed = 0usize;
+        let mut dead_announcements = 0usize;
+        for _ in 0..4200 {
+            shared.lock().unwrap().tick();
+            while let Ok(delivery) = rx.try_recv() {
+                for m in delivery.into_records() {
+                    if m.is(crate::Opcode::EntitySpawn) && m.body.len() == 122 {
+                        let slot = m.body[116];
+                        if slot >= 52 {
+                            let actor = u32::from_be_bytes(m.body[8..12].try_into().unwrap());
+                            if let Some(prev) = live_slots.insert(slot, actor) {
+                                assert_eq!(
+                                    prev, actor,
+                                    "slot {slot} reused for actor {actor} before 0x040B destroyed {prev}"
+                                );
+                            }
+                            live_actors.insert(actor, slot);
+                            assert!(
+                                live_slots.len() < 148,
+                                "client pool grew unboundedly ({} live slots)",
+                                live_slots.len()
+                            );
+                        }
+                    } else if m.is(crate::Opcode::ActorDead) {
+                        dead_announcements += 1;
+                    } else if m.is(crate::Opcode::DestroyEntity) {
+                        destroyed += 1;
+                        let actor = u32::from_be_bytes(m.body[..4].try_into().unwrap());
+                        if let Some(slot) = live_actors.remove(&actor) {
+                            live_slots.remove(&slot);
+                        }
+                    }
+                }
+            }
+        }
+        assert!(
+            destroyed >= 10,
+            "expected sustained 0x040B DestroyEntity releases over 3.5 minutes, saw {destroyed}"
+        );
+        assert!(dead_announcements >= destroyed);
+
+        // Verify a minion declared earlier that later dies in fog ALSO emits 0x040B DestroyEntity.
+        let fog_minion = {
+            let mut r = shared.lock().unwrap();
+            let minion_id = r
+                .world
+                .entities
+                .iter()
+                .find(|e| e.kind == halcyon_sim::Kind::Minion && e.team == 1)
+                .map(|e| e.id)
+                .unwrap();
+            let home_pos = halcyon_sim::Position { x: 0.0, y: 0.0 };
+            r.world.entities[0].position = home_pos;
+            r.world
+                .entities
+                .find_mut(|e| e.id == minion_id)
+                .unwrap()
+                .position = home_pos;
+            r.tick();
+            r.world
+                .entities
+                .find_mut(|e| e.id == minion_id)
+                .unwrap()
+                .position = halcyon_sim::Position { x: 80.0, y: 80.0 };
+            r.tick();
+            // Simulate World::step() removing a minion that died while in fog of war.
+            let fog_death = [halcyon_sim::Event::Death {
+                id: minion_id,
+                killer: 2,
+            }];
+            r.world.entities.retain(|e| e.id != minion_id);
+            crate::aral_death::schedule(&mut r, &fog_death);
+            r.replicate(&fog_death);
+            minion_id
+        };
+        while rx.try_recv().is_ok() {}
+        let mut saw_fog_destroy = false;
+        let wire_fog = u32::from(messages::wire_id(fog_minion));
+        for _ in 0..85 {
+            shared.lock().unwrap().tick();
+            while let Ok(delivery) = rx.try_recv() {
+                for m in delivery.into_records() {
+                    if m.is(crate::Opcode::DestroyEntity) && m.body[..4] == wire_fog.to_be_bytes() {
+                        saw_fog_destroy = true;
+                    }
+                }
+            }
+        }
+        assert!(
+            saw_fog_destroy,
+            "minion killed in fog must still emit 0x040B"
+        );
+    }
+
+    #[tokio::test]
+    async fn solo_and_5v5_shops_grant_store_access_buff_174_and_cancel_on_exit() {
+        let (rooms, id, mut rx) = setup_confirmed_solo_room("5v5_bots_solo");
+        let shared = rooms.room(id).unwrap();
+        {
+            let mut r = shared.lock().unwrap();
+            r.world.use_sovereigns_rise_5v5(None).unwrap();
+        }
+        let drain_all = |rx: &mut mpsc::Receiver<Delivery>| -> Vec<Message> {
+            let mut out = Vec::new();
+            while let Ok(d) = rx.try_recv() {
+                out.extend(d.into_records());
+            }
+            out
+        };
+
+        // Tick 0 at base: expect BaseShop 329 (6530) + Buff 177/27 + Buff 173 + Buff 174 on hero 1500.
+        shared.lock().unwrap().tick();
+        let open_msgs = drain_all(&mut rx);
+        assert!(open_msgs.iter().any(|m| {
+            m.is(crate::Opcode::EntitySpawn)
+                && u32::from_be_bytes(m.body[..4].try_into().unwrap()) == 329
+                && u32::from_be_bytes(m.body[8..12].try_into().unwrap())
+                    == halcyon_protocol::SoloStructure::BASE_SHOP_LEFT_ACTOR
+        }));
+        let mut saw_173 = false;
+        let mut allow_inst = None;
+        for m in &open_msgs {
+            if let Ok(Fields::BuffApplication(b)) = m.fields()
+                && b.prefix.target == 1500
+            {
+                if b.prefix.definition == 173 {
+                    saw_173 = true;
+                }
+                if b.prefix.definition == 174 {
+                    assert_eq!(
+                        b.prefix.source,
+                        halcyon_protocol::SoloStructure::BASE_SHOP_LEFT_ACTOR
+                    );
+                    assert_eq!(b.prefix.duration_bits, 0x3e00);
+                    assert_eq!(b.extras.unwrap().words[2], 451);
+                    allow_inst = Some(b.prefix.instance);
+                }
+            }
+        }
+        assert!(saw_173, "expected Buff_Shop_CanShopIcon (173)");
+        let allow_inst = allow_inst.expect("expected Buff_Shop_AllowStorePurchase (174)");
+
+        // Walk outside shop -> expect CancelBuff (0x0445) for the active Buff 174 instance.
+        {
+            let mut r = shared.lock().unwrap();
+            r.world.entities[0].position = halcyon_sim::Position { x: 0.0, y: 0.0 };
+        }
+        shared.lock().unwrap().tick();
+        let exit_msgs = drain_all(&mut rx);
+        assert!(
+            exit_msgs.iter().any(|m| {
+                matches!(
+                    m.buff_mutation(),
+                    Some(muta)
+                        if muta.target == 1500
+                            && muta.instance == allow_inst
+                            && muta.change == halcyon_protocol::BuffChange::Cancel
+                )
+            }),
+            "expected CancelBuff when leaving shop range"
+        );
+
+        // At 4:00 (RIVER_SHOP_SPAWN_TICK), RiverShop 330 (6532/6533) spawns and LRiverShop grants 174.
+        {
+            let mut r = shared.lock().unwrap();
+            r.world.tick = halcyon_sim::map_5v5::RIVER_SHOP_SPAWN_TICK;
+            r.world.entities[0].position = halcyon_sim::Position { x: -16.3, y: -33.6 };
+        }
+        shared.lock().unwrap().tick();
+        let river_msgs = drain_all(&mut rx);
+        let river_decls: Vec<_> = river_msgs
+            .iter()
+            .filter(|m| {
+                m.is(crate::Opcode::EntitySpawn)
+                    && u32::from_be_bytes(m.body[..4].try_into().unwrap()) == 330
+            })
+            .map(|m| u32::from_be_bytes(m.body[8..12].try_into().unwrap()))
+            .collect();
+        assert_eq!(
+            river_decls,
+            [
+                halcyon_protocol::SoloStructure::RIVER_SHOP_LEFT_ACTOR,
+                halcyon_protocol::SoloStructure::RIVER_SHOP_RIGHT_ACTOR,
+            ]
+        );
+        assert!(river_msgs.iter().any(|m| {
+            matches!(
+                m.fields(),
+                Ok(Fields::BuffApplication(b))
+                    if b.prefix.target == 1500
+                        && b.prefix.source
+                            == halcyon_protocol::SoloStructure::RIVER_SHOP_LEFT_ACTOR
+                        && b.prefix.definition == 174
+            )
+        }));
+    }
+
+    #[tokio::test]
+    async fn enemy_turrets_2011_and_2012_spawn_compact_03f2_after_tick_zero() {
+        let (rooms, id, mut rx) = setup_confirmed_solo_room("5v5_bots_solo");
+        let shared = rooms.room(id).unwrap();
+        {
+            let mut r = shared.lock().unwrap();
+            r.world.use_solo_mid_lane().unwrap();
+        }
+        shared.lock().unwrap().tick();
+        while rx.try_recv().is_ok() {}
+
+        {
+            let mut r = shared.lock().unwrap();
+            r.world.tick = 1800;
+            for (wire, hp) in [(2011u32, 2438.125f32), (2012u32, 2750.0f32)] {
+                let e = r.world.entities.find_mut(|e| e.id == wire - 1499).unwrap();
+                e.hp = hp;
+            }
+            let pos_2012 = r
+                .world
+                .entities
+                .iter()
+                .find(|e| e.id == 2012 - 1499)
+                .unwrap()
+                .position;
+            r.world.entities[0].position = pos_2012;
+            r.tick();
+            let pos_2011 = r
+                .world
+                .entities
+                .iter()
+                .find(|e| e.id == 2011 - 1499)
+                .unwrap()
+                .position;
+            r.world.entities[0].position = pos_2011;
+            r.tick();
+        }
+
+        let mut seen = Vec::new();
+        while let Ok(d) = rx.try_recv() {
+            for m in d.into_records() {
+                if m.is(crate::Opcode::HeroSpawn) {
+                    let tpl = u16::from_be_bytes(m.body[2..4].try_into().unwrap());
+                    assert!(
+                        !matches!(tpl, 295..=297 | 339..=341),
+                        "structure template {tpl} fell back to 0x03F3"
+                    );
+                }
+                if m.is(crate::Opcode::EntitySpawn) && m.body.len() == 122 {
+                    let actor = u32::from_be_bytes(m.body[8..12].try_into().unwrap());
+                    if matches!(actor, 2011 | 2012) {
+                        let tpl = u32::from_be_bytes(m.body[..4].try_into().unwrap());
+                        let hp = f32::from_be_bytes(m.body[36..40].try_into().unwrap());
+                        seen.push((actor, tpl, m.body[116], hp));
+                    }
+                }
+            }
+        }
+        seen.sort_by_key(|row| row.0);
+        assert_eq!(seen, [(2011, 340, 11, 2438.125), (2012, 340, 12, 2750.0)]);
     }
 }

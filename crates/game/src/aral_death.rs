@@ -1,6 +1,8 @@
-//! Finish a witnessed ARAL death after the measured presentation delay.
+//! Finish a witnessed death across ARAL and 5v5/3v3/Blitz after the presentation delay.
 use super::*;
 use halcyon_sim::Kind;
+
+const MAX_SEATS: usize = 10;
 
 pub(super) struct Pending {
     id: u32,
@@ -8,28 +10,62 @@ pub(super) struct Pending {
     due: u64,
     teams: u8,
     // An attached but unready socket must not inherit another socket's declaration.
-    generations: [Option<u64>; aral::SEATS],
+    generations: [Option<u64>; MAX_SEATS],
     observers: Vec<mpsc::WeakSender<Batch>>,
 }
 
 pub(super) fn schedule(room: &mut Room, events: &[Event]) {
+    let legacy = room.legacy_aral();
+    let solo_scene = !legacy && room.solo_scene() && room.seats[0].control_world;
     for event in events {
         let Event::Death { id, .. } = *event else {
             continue;
         };
         let minion = match room.world.entities.binary_search_by_key(&id, |e| e.id) {
             Ok(i) if room.world.entities[i].kind == Kind::Hero => false,
-            // World::step removes only dead minions. ARAL's wave consists solely of 287..289.
+            // World::step removes dead Minion and Neutral actors; keep structures in place.
             Err(_) => true,
             _ => continue,
         };
+        let observers = room.death_observers();
+        let mut generations = [None; MAX_SEATS];
+        let mut teams = 0u8;
+        if !legacy {
+            for (index, (seat, actor)) in room
+                .seats
+                .iter()
+                .zip(&room.world.entities)
+                .enumerate()
+                .take(MAX_SEATS)
+            {
+                let known = if solo_scene {
+                    room.scene_views
+                        .get(index)
+                        .is_some_and(|view| view.knows(id))
+                } else {
+                    room.visible[usize::from(actor.team)].contains(&id)
+                };
+                if known {
+                    teams |= 1 << actor.team;
+                    if let Some(peer) = seat.gameplay_peer() {
+                        generations[index] = Some(peer.generation);
+                    }
+                }
+            }
+            if solo_scene && minion && room.scene_views.first().is_some_and(|view| view.knows(id)) {
+                room.solo_slots.defer_destroy(id);
+            }
+            if generations.iter().all(Option::is_none) && observers.is_empty() {
+                continue;
+            }
+        }
         room.dead_actors.push(Pending {
             id,
             minion,
             due: room.world.tick + halcyon_sim::TICK_HZ * if minion { 38 } else { 18 } / 10,
-            generations: [None; aral::SEATS],
-            teams: 0,
-            observers: room.death_observers(),
+            generations,
+            teams,
+            observers,
         });
     }
 }
@@ -37,7 +73,12 @@ pub(super) fn schedule(room: &mut Room, events: &[Event]) {
 pub(super) fn witness(pending: &mut [Pending], id: u32, team: u8, seats: &[Seat], world: &World) {
     if let Some(death) = pending.iter_mut().rev().find(|d| d.id == id) {
         death.teams |= 1 << team;
-        for (index, (seat, actor)) in seats.iter().zip(&world.entities).enumerate() {
+        for (index, (seat, actor)) in seats
+            .iter()
+            .zip(&world.entities)
+            .enumerate()
+            .take(MAX_SEATS)
+        {
             if actor.team == team
                 && let Some(peer) = seat.gameplay_peer()
             {
@@ -48,6 +89,7 @@ pub(super) fn witness(pending: &mut [Pending], id: u32, team: u8, seats: &[Seat]
 }
 
 pub(super) fn flush(room: &mut Room, now: u64) {
+    let legacy = room.legacy_aral();
     // The window contains only the last 3.8 seconds of actual deaths.
     let mut i = 0;
     while i < room.dead_actors.len() {
@@ -70,21 +112,31 @@ pub(super) fn flush(room: &mut Room, now: u64) {
         let mut out = vec![Message::known(crate::Opcode::ActorDead, body)];
         if death.minion {
             out.push(Message::known(crate::Opcode::DestroyEntity, body));
-            for team in 0..2 {
-                if death.teams & (1 << team) != 0 {
-                    room.aral_slots.destroy_sent(death.id, team);
+            if legacy {
+                for team in 0..2 {
+                    if death.teams & (1 << team) != 0 {
+                        room.aral_slots.destroy_sent(death.id, team);
+                    }
                 }
+            } else {
+                room.solo_slots.destroy_sent(death.id);
             }
         }
         if !death.observers.is_empty() {
             room.publish_witnessed_death(&death.observers, &out);
         }
         let batch = transport::TeamBatch::new(out);
-        for (seat, gen_at_death) in room.seats.iter().zip(death.generations) {
+        for (index, (seat, gen_at_death)) in room.seats.iter().zip(death.generations).enumerate() {
             if let Some(peer) = seat.gameplay_peer()
                 && Some(peer.generation) == gen_at_death
             {
                 peer.send(transport::Delivery::Team(batch.clone()));
+                if !legacy
+                    && death.minion
+                    && let Some(view) = room.scene_views.get_mut(index)
+                {
+                    view.release_effect(death.id);
+                }
             }
         }
     }
