@@ -1,11 +1,10 @@
-use halcyon_protocol::Message;
+use halcyon_protocol::{EntitySpawnBody, HeroSpawnBody, Message};
 use halcyon_sim::{Entity, Kind, World};
 
 use super::{Pick, compact, messages};
 
 const FIRST_MINION_SLOT: u8 = 52;
 const ACTOR_SLOTS: u8 = 200;
-const FULL_SLOT_OFFSET: usize = 745;
 
 const RIVER_LEFT_SLOT_KEY: u32 = u32::MAX - 1;
 const RIVER_RIGHT_SLOT_KEY: u32 = u32::MAX;
@@ -17,9 +16,11 @@ pub(super) struct ActorSlots {
     reported_full: bool,
 }
 
-fn set_full(message: &mut Message, slot: u8) {
-    debug_assert_eq!(message.opcode, crate::wire_opcode::HeroSpawn);
-    message.body[FULL_SLOT_OFFSET] = slot;
+fn spawn_with_slot(message: &Message, slot: u8) -> Message {
+    let mut body =
+        HeroSpawnBody::read_body(&message.body).expect("messages::spawn emits 750B HeroSpawn");
+    body.slot = slot;
+    body.encode()
 }
 
 impl ActorSlots {
@@ -77,9 +78,8 @@ impl ActorSlots {
                     return compact::camp_unit(entity, slot);
                 }
                 return Some(compact::minion(entity, slot, fresh).unwrap_or_else(|| {
-                    let mut message = messages::spawn(entity, picks, data);
-                    set_full(&mut message, slot);
-                    message
+                    let message = messages::spawn(entity, picks, data);
+                    spawn_with_slot(&message, slot)
                 }));
             }
             if !std::mem::replace(&mut self.reported_full, true) {
@@ -89,29 +89,30 @@ impl ActorSlots {
         }
         let slot = self.fixed(entity)?;
         Some(compact::structure(world.tick, entity).unwrap_or_else(|| {
-            let mut message = messages::spawn(entity, picks, data);
+            let raw = messages::spawn(entity, picks, data);
+            let mut body =
+                HeroSpawnBody::read_body(&raw.body).expect("messages::spawn emits 750B HeroSpawn");
             if entity.kind == Kind::Tower {
                 // Use the stationary tower skin and terrain height. Dynamic aim
                 // and timer words from replay snapshots are not authoritative here.
-                message.body[4..8].copy_from_slice(&0xc10b_41dau32.to_be_bytes());
-                message.body[22..26].copy_from_slice(&0x3d75_be29u32.to_be_bytes());
-                let facing: f32 = if entity.team == 0 { 1. } else { -1. };
-                message.body[30..34].copy_from_slice(&facing.to_be_bytes());
+                body.skin = EntitySpawnBody::STRUCTURE_SKIN;
+                body.position[1] = f32::from_bits(EntitySpawnBody::GROUND_HEIGHT_BITS);
+                body.forward[0] = if entity.team == 0 { 1. } else { -1. };
             }
             if entity.kind == Kind::Armory {
                 let profile = halcyon_protocol::SoloStructure::at_slot(slot)
                     .expect("fixed Solo armory slot")
-                    .message(u32::from(messages::wire_id(entity.id)));
-                message.body[4..8].copy_from_slice(&profile.body[4..8]);
-                message.body[22..26].copy_from_slice(&profile.body[16..20]);
-                message.body[30..42].copy_from_slice(&profile.body[24..36]);
+                    .spawn_body(u32::from(messages::wire_id(entity.id)));
+                body.skin = profile.skin;
+                body.position[1] = profile.position[1];
+                body.forward = profile.forward;
             }
             if entity.kind == Kind::Hero {
-                messages::solo_hero_profile(&mut message, entity, world.tick);
-                super::hero_progress::set_spawn(world, &mut message, entity);
+                body.apply_solo_profile(entity.bot, entity.team, world.tick);
+                super::hero_progress::set_spawn(world, &mut body, entity);
             }
-            set_full(&mut message, slot);
-            message
+            body.slot = slot;
+            body.encode()
         }))
     }
 

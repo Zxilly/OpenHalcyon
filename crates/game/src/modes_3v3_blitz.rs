@@ -8,17 +8,13 @@ use super::scene::mode_variables::{
 use super::{Batch, Room, messages, point_move, transport};
 use halcyon_data::EntityTemplate;
 use halcyon_protocol::{
-    BuffApplication, BuffChange, BuffMutation, BuffPrefix, Flyout, FlyoutText, Message,
-    SoloStructure, ce::KnownQueue,
+    BuffApplication, BuffChange, BuffMutation, BuffPrefix, EntitySpawnBody, Flyout, FlyoutText,
+    HeroSpawnBody, Message, SoloStructure, ce::KnownQueue,
 };
 use halcyon_sim::{
     BlitzTalentSlot, Entity, Event, Kind, TICK_HZ, World, map_blitz::BLITZ_DURATION_TICKS,
 };
 
-const STRUCTURE_SKIN: u32 = 0xc10b_41da;
-const MINION_SKIN: u32 = 0xeb39_ce55;
-const JUNGLE_MINION_SKIN: u32 = 0x4dd5_b7d0;
-const GROUND_HEIGHT_BITS: u32 = 0x3d75_be29;
 const SCENERY_ACTOR_BASE: u32 = 2000;
 const JUNGLE_SHOP_SLOT: u8 = 16;
 const FIRST_HERO_SLOT: u8 = 17;
@@ -34,7 +30,7 @@ const PERMANENT_DURATION_BITS: u16 = 0xbc00;
 pub(crate) const fn non_hero_skin(template: EntityTemplate) -> Option<u32> {
     match template {
         EntityTemplate::RangedMinion | EntityTemplate::LeadMinion | EntityTemplate::TankMinion => {
-            Some(MINION_SKIN)
+            Some(EntitySpawnBody::MINION_SKIN)
         }
         EntityTemplate::VainCrystalHome3v3
         | EntityTemplate::VainCrystalAway3v3
@@ -46,7 +42,7 @@ pub(crate) const fn non_hero_skin(template: EntityTemplate) -> Option<u32> {
         | EntityTemplate::HfBaseTurret
         | EntityTemplate::HfMiddleTurret
         | EntityTemplate::HfOuterTurret
-        | EntityTemplate::HfVainTurret => Some(STRUCTURE_SKIN),
+        | EntityTemplate::HfVainTurret => Some(EntitySpawnBody::STRUCTURE_SKIN),
         EntityTemplate::JungleMinionGoldMiner
         | EntityTemplate::JungleMinionCrystalMiner
         | EntityTemplate::BlitzMiddleSentry
@@ -62,7 +58,7 @@ pub(crate) const fn non_hero_skin(template: EntityTemplate) -> Option<u32> {
         | EntityTemplate::HfCrystalMiner
         | EntityTemplate::HfGoldMiner
         | EntityTemplate::HfKrakenJungle
-        | EntityTemplate::HfKrakenCaptured => Some(JUNGLE_MINION_SKIN),
+        | EntityTemplate::HfKrakenCaptured => Some(EntitySpawnBody::JUNGLE_MINION_SKIN),
         _ => None,
     }
 }
@@ -270,29 +266,23 @@ pub(crate) fn structure_spawn(world: &World, entity: &Entity) -> Option<Message>
     if !entity.hp.is_finite() || !entity.max_hp.is_finite() || entity.hp <= 0.0 {
         return None;
     }
-    let mut body = [0u8; 122];
-    body[..4].copy_from_slice(&u32::from(entity.type_id).to_be_bytes());
-    body[4..8].copy_from_slice(&STRUCTURE_SKIN.to_be_bytes());
-    body[8..12].copy_from_slice(&u32::from(messages::wire_id(entity.id)).to_be_bytes());
-    put_floats(
-        &mut body,
-        12,
-        [entity.position.x, height, entity.position.y],
+    let mut body = EntitySpawnBody::new(
+        u32::from(entity.type_id),
+        EntitySpawnBody::STRUCTURE_SKIN,
+        u32::from(messages::wire_id(entity.id)),
+        slot,
+        entity.team + 1,
     );
-    put_floats(&mut body, 24, forward);
-    put_floats(&mut body, 36, [entity.hp, entity.max_hp]);
+    body.position = [entity.position.x, height, entity.position.y];
+    body.forward = forward;
+    body.hp = entity.hp;
+    body.max_hp = entity.max_hp;
     if entity.kind == Kind::Tower {
-        put_floats(&mut body, 64, [1.0]);
+        body.word64 = 1.0;
     }
-    put_floats(&mut body, 84, [profile_word84]);
-    body[88..104].fill(1);
-    body[97 + usize::from(entity.team)] = 15;
-    body[112..116].fill(u8::MAX);
-    body[116] = slot;
-    body[119] = 1;
-    body[120] = u8::MAX;
-    body[121] = entity.team + 1;
-    Some(Message::known(crate::Opcode::EntitySpawn, body))
+    body.word84 = profile_word84;
+    body.set_team_visibility(1, EntitySpawnBody::VISIBILITY_ACTIVE_MASK);
+    Some(body.encode())
 }
 
 struct ScenerySpec {
@@ -355,43 +345,38 @@ pub(crate) fn scenery(blitz: bool) -> Vec<Message> {
             direction,
             hp,
         } = spec;
-        let team = if slot == JUNGLE_SHOP_SLOT {
-            2
+        let team_index = if slot == JUNGLE_SHOP_SLOT {
+            0
         } else {
-            slot / 8
+            slot / 8 + 1
         };
-        let mut body = [0u8; 122];
-        let skin = non_hero_skin(template).unwrap_or(STRUCTURE_SKIN);
-        body[..4].copy_from_slice(&u32::from(template.as_raw()).to_be_bytes());
-        body[4..8].copy_from_slice(&skin.to_be_bytes());
-        body[8..12].copy_from_slice(&(SCENERY_ACTOR_BASE + u32::from(slot)).to_be_bytes());
-        put_floats(&mut body, 12, position);
-        put_floats(&mut body, 24, direction);
-        put_floats(&mut body, 36, [hp, hp]);
-        put_floats(&mut body, 84, [12.0]);
-        body[88..96].fill(1);
-        if matches!(
+        let skin = non_hero_skin(template).unwrap_or(EntitySpawnBody::STRUCTURE_SKIN);
+        let mut body = EntitySpawnBody::new(
+            u32::from(template.as_raw()),
+            skin,
+            SCENERY_ACTOR_BASE + u32::from(slot),
+            slot,
+            team_index,
+        );
+        body.position = position;
+        body.forward = direction;
+        body.hp = hp;
+        body.max_hp = hp;
+        body.word84 = 12.0;
+        let mask_fill = if matches!(
             template,
             EntityTemplate::NeutralJungleMinionStore
                 | EntityTemplate::JungleShopCenter
                 | EntityTemplate::BlitzJungleShopCenter
         ) {
-            put_floats(&mut body, 52, [2.5]);
-            put_floats(&mut body, 64, [1.0]);
-            body[96..104].fill(3);
-        }
-        if team < 2 {
-            body[97 + usize::from(team)] = 15;
-            body[121] = team + 1;
+            body.radius = 2.5;
+            body.word64 = 1.0;
+            3
         } else {
-            body[96] = 15;
-            body[121] = 0;
-        }
-        body[112..116].fill(u8::MAX);
-        body[116] = slot;
-        body[119] = 1;
-        body[120] = u8::MAX;
-        out.push(Message::known(crate::Opcode::EntitySpawn, body));
+            0
+        };
+        body.set_team_visibility(mask_fill, EntitySpawnBody::VISIBILITY_ACTIVE_MASK);
+        out.push(body.encode());
     }
     out
 }
@@ -479,40 +464,32 @@ pub(crate) fn entity_spawn(slot: u8, entity: &Entity) -> Option<Message> {
     } else {
         3.6
     };
-    let mut body = [0u8; 122];
-    body[..4].copy_from_slice(&u32::from(template.as_raw()).to_be_bytes());
-    body[4..8].copy_from_slice(&skin.to_be_bytes());
-    body[8..12].copy_from_slice(&u32::from(messages::wire_id(entity.id)).to_be_bytes());
-    put_floats(
-        &mut body,
-        12,
-        [
-            entity.position.x,
-            f32::from_bits(GROUND_HEIGHT_BITS),
-            entity.position.y,
-        ],
+    let team_index = if entity.team < 2 { entity.team + 1 } else { 0 };
+    let mut body = EntitySpawnBody::new(
+        u32::from(template.as_raw()),
+        skin,
+        u32::from(messages::wire_id(entity.id)),
+        slot,
+        team_index,
     );
-    put_floats(&mut body, 24, forward);
-    put_floats(&mut body, 36, [hp, entity.max_hp]);
-    put_floats(&mut body, 52, [radius]);
-    put_floats(&mut body, 64, [1.0]);
-    put_floats(&mut body, 84, [1.0]);
-    body[88..96].fill(1);
-    if entity.team < 2 {
-        body[97 + usize::from(entity.team)] = 15;
-    } else {
-        body[96] = 15;
-    }
-    body[112..116].fill(u8::MAX);
-    body[116] = slot;
-    body[119] = 1;
-    body[120] = if entity.team < 2 && entity.kind == Kind::Minion {
+    body.position = [
+        entity.position.x,
+        f32::from_bits(EntitySpawnBody::GROUND_HEIGHT_BITS),
+        entity.position.y,
+    ];
+    body.forward = forward;
+    body.hp = hp;
+    body.max_hp = entity.max_hp;
+    body.radius = radius;
+    body.word64 = 1.0;
+    body.word84 = 1.0;
+    body.lane_index = if entity.team < 2 && entity.kind == Kind::Minion {
         1 + 3 * entity.team
     } else {
-        u8::MAX
+        EntitySpawnBody::NO_LANE_INDEX
     };
-    body[121] = if entity.team < 2 { entity.team + 1 } else { 0 };
-    Some(Message::known(crate::Opcode::EntitySpawn, body))
+    body.set_team_visibility(0, EntitySpawnBody::VISIBILITY_ACTIVE_MASK);
+    Some(body.encode())
 }
 
 fn hero_spawn(room: &Room, entity: &Entity, slot: u8, solo: bool) -> Message {
@@ -526,8 +503,10 @@ fn hero_spawn(room: &Room, entity: &Entity, slot: u8, solo: bool) -> Message {
     if solo {
         messages::solo_hero_profile(&mut decl, entity, room.world.tick);
     }
-    decl.body[745] = slot;
-    decl
+    let mut body =
+        HeroSpawnBody::read_body(&decl.body).expect("full_spawn produces 750B HeroSpawn");
+    body.slot = slot;
+    body.encode()
 }
 
 fn append_opening_with_slot(
@@ -869,17 +848,6 @@ pub(crate) fn talent_response(
         room.publish_observers(&batch);
     }
     batch
-}
-
-fn put_floats<const N: usize>(body: &mut [u8], offset: usize, values: [f32; N]) {
-    for (word, value) in body[offset..offset + N * 4]
-        .as_chunks_mut::<4>()
-        .0
-        .iter_mut()
-        .zip(values)
-    {
-        word.copy_from_slice(&value.to_be_bytes());
-    }
 }
 
 #[cfg(test)]
@@ -1658,7 +1626,7 @@ mod tests {
                 );
                 assert_eq!(
                     u32::from_be_bytes(shop.body[4..8].try_into().unwrap()),
-                    JUNGLE_MINION_SKIN
+                    EntitySpawnBody::JUNGLE_MINION_SKIN
                 );
                 let mut buff_pairs = Vec::new();
                 for msg in &opening {
@@ -1729,7 +1697,7 @@ mod tests {
                             && u32::from_be_bytes(m.body[..4].try_into().unwrap())
                                 == u32::from(EntityTemplate::HfKrakenCaptured.as_raw())
                             && u32::from_be_bytes(m.body[4..8].try_into().unwrap())
-                                == JUNGLE_MINION_SKIN
+                                == EntitySpawnBody::JUNGLE_MINION_SKIN
                     }),
                     "expected captured Kraken 364 on 0x03F2 with JUNGLE_MINION_SKIN"
                 );

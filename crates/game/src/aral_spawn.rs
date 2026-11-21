@@ -1,11 +1,8 @@
 use halcyon_data::EntityTemplate;
-use halcyon_protocol::Message;
+use halcyon_protocol::{EntitySpawnBody, EntityStatMask, HeroSpawnBody, Message};
 use halcyon_sim::{Entity, Kind, World};
 
 use super::{Pick, messages, messages::wire_id, point_move};
-
-const STRUCTURE_SKIN: u32 = 0xc10b41da;
-const MINION_SKIN: u32 = 0xeb39ce55;
 
 /// One actual ARAL tower or crystal, registered at its observed map slot.
 pub(super) fn structure(world: &World, entity: &Entity) -> Option<Message> {
@@ -37,23 +34,19 @@ pub(super) fn structure(world: &World, entity: &Entity) -> Option<Message> {
     if !sane(entity) {
         return None;
     }
-    let mut body = base(entity, STRUCTURE_SKIN, slot);
-    floats(
-        &mut body,
-        12,
-        [entity.position.x, height, entity.position.y],
-    );
-    floats(&mut body, 24, forward);
-    floats(&mut body, 36, [entity.hp, entity.max_hp]);
-    floats(&mut body, 84, [profile_word84]);
+    let mut body = base(entity, EntitySpawnBody::STRUCTURE_SKIN, slot);
+    body.position = [entity.position.x, height, entity.position.y];
+    body.forward = forward;
+    body.hp = entity.hp;
+    body.max_hp = entity.max_hp;
+    body.word84 = profile_word84;
     if entity.kind == Kind::Tower {
-        floats(&mut body, 64, [1.0]);
+        body.word64 = 1.0;
     }
-    body[88..104].fill(1);
-    body[97 + usize::from(entity.team)] = 15;
-    body[119] = 1;
-    body[120] = u8::MAX;
-    Some(Message::known(crate::Opcode::EntitySpawn, body))
+    body.set_team_visibility(1, EntitySpawnBody::VISIBILITY_ACTIVE_MASK);
+    body.level = 1;
+    body.lane_index = EntitySpawnBody::NO_LANE_INDEX;
+    Some(body.encode())
 }
 
 /// Fixed map scenery. These actors have no simulation, vision, or economic effect.
@@ -61,10 +54,10 @@ pub(super) fn scenery() -> impl Iterator<Item = Message> {
     [0, 2, 8, 10]
         .into_iter()
         .filter_map(scenery_body)
-        .map(|body| Message::known(crate::Opcode::EntitySpawn, body))
+        .map(|body| body.encode())
 }
 
-fn scenery_body(slot: u8) -> Option<[u8; 122]> {
+fn scenery_body(slot: u8) -> Option<EntitySpawnBody> {
     let (template, position, direction, hp) = match slot {
         0 => (
             EntityTemplate::NeutralJungleMinionStore,
@@ -93,26 +86,26 @@ fn scenery_body(slot: u8) -> Option<[u8; 122]> {
         _ => return None,
     };
     let team = slot / 8;
-    let mut body = [0; 122];
-    body[..4].copy_from_slice(&u32::from(template.as_raw()).to_be_bytes());
-    body[4..8].copy_from_slice(&STRUCTURE_SKIN.to_be_bytes());
-    body[8..12].copy_from_slice(&(2000 + u32::from(slot)).to_be_bytes());
-    floats(&mut body, 12, position);
-    floats(&mut body, 24, direction);
-    floats(&mut body, 36, [hp, hp]);
-    floats(&mut body, 84, [12.0]);
-    body[88..96].fill(1);
-    if template == EntityTemplate::NeutralJungleMinionStore {
-        floats(&mut body, 52, [2.5]);
-        floats(&mut body, 64, [1.0]);
-        body[96..104].fill(3);
-    }
-    body[97 + usize::from(team)] = 15;
-    body[112..116].fill(255);
-    body[116] = slot;
-    body[119] = 1;
-    body[120] = 255;
-    body[121] = team + 1;
+    let mut body = EntitySpawnBody::new(
+        u32::from(template.as_raw()),
+        EntitySpawnBody::STRUCTURE_SKIN,
+        2000 + u32::from(slot),
+        slot,
+        team + 1,
+    );
+    body.position = position;
+    body.forward = direction;
+    body.hp = hp;
+    body.max_hp = hp;
+    body.word84 = 12.0;
+    let mask_fill = if template == EntityTemplate::NeutralJungleMinionStore {
+        body.radius = 2.5;
+        body.word64 = 1.0;
+        3
+    } else {
+        0
+    };
+    body.set_team_visibility(mask_fill, EntitySpawnBody::VISIBILITY_ACTIVE_MASK);
     Some(body)
 }
 
@@ -168,12 +161,14 @@ impl WaveSlots {
         {
             Some(pristine_minion(entity, slot))
         } else {
-            let mut full = messages::spawn(entity, picks, data);
+            let full = messages::spawn(entity, picks, data);
+            let mut body =
+                HeroSpawnBody::read_body(&full.body).expect("messages::spawn emits 750B HeroSpawn");
             if native_minion {
-                full.body[4..8].copy_from_slice(&MINION_SKIN.to_be_bytes());
+                body.skin = EntitySpawnBody::MINION_SKIN;
             }
-            full.body[745] = slot;
-            Some(full)
+            body.slot = slot;
+            Some(body.encode())
         }
     }
 
@@ -209,14 +204,14 @@ impl WaveSlots {
 }
 
 fn pristine_minion(entity: &Entity, slot: u8) -> Message {
-    let mut body = base(entity, MINION_SKIN, slot);
-    floats(&mut body, 12, [entity.position.x, 0.0, entity.position.y]);
-    floats(&mut body, 24, [0.0, 0.0, 1.0]);
-    body[97 + usize::from(entity.team)] = 1;
-    body[117] = 1;
-    body[119] = entity.level;
-    body[120] = entity.team;
-    Message::known(crate::Opcode::EntitySpawn, body)
+    let mut body = base(entity, EntitySpawnBody::MINION_SKIN, slot);
+    body.position = [entity.position.x, 0.0, entity.position.y];
+    body.forward = [0.0, 0.0, 1.0];
+    body.visibility_mask[1 + usize::from(entity.team)] = EntitySpawnBody::VISIBILITY_PRISTINE_MASK;
+    body.set_stat_mask(EntityStatMask::Pristine);
+    body.level = entity.level;
+    body.lane_index = entity.team;
+    body.encode()
 }
 
 /// Established visibility deltas for a newly declared, pristine ARAL wave actor.
@@ -230,24 +225,32 @@ pub(super) struct InitialVisibility {
 
 impl InitialVisibility {
     pub(super) fn read(declaration: &Message) -> Option<Self> {
-        let b = &declaration.body;
-        if !declaration.is(crate::Opcode::EntitySpawn)
-            || b.len() != 122
-            || b[117] != 1
-            || !recordable(b)
-        {
+        if !declaration.is(crate::Opcode::EntitySpawn) {
             return None;
         }
-        let actor = u32::from_be_bytes(b[8..12].try_into().unwrap());
-        let team = b[121];
+        let spawn = EntitySpawnBody::read_body(&declaration.body).ok()?;
+        if spawn.stat_mask() != EntityStatMask::Pristine || !is_recordable(&spawn) {
+            return None;
+        }
+        let actor = spawn.actor;
+        let team = spawn.team_index;
         let mut changed = 0;
         for index in 0..8u8 {
             if index == 3 - team {
                 continue;
             }
             let i = usize::from(index);
-            let mask = if index == team { 15 } else { 0 };
-            if [b[88 + i], b[96 + i], b[104 + i]] != [1, mask, 0] {
+            let mask = if index == team {
+                EntitySpawnBody::VISIBILITY_ACTIVE_MASK
+            } else {
+                0
+            };
+            if [
+                spawn.visibility_required[i],
+                spawn.visibility_mask[i],
+                spawn.visibility_aux[i],
+            ] != [1, mask, 0]
+            {
                 changed |= 1 << index;
             }
         }
@@ -261,18 +264,27 @@ impl InitialVisibility {
         (0..8)
             .filter(move |&index| self.changed & (1 << index) != 0)
             .map(move |index| {
-                let mask = if index == self.team { 15 } else { 0 };
+                let mask = if index == self.team {
+                    EntitySpawnBody::VISIBILITY_ACTIVE_MASK
+                } else {
+                    0
+                };
                 Message::actor_visibility(self.actor, index, 1, [mask, 0])
             })
     }
 }
 
 pub(super) fn recordable(body: &[u8]) -> bool {
-    if body.len() != 122 || body[112..116] != [255; 4] {
+    EntitySpawnBody::read_body(body)
+        .ok()
+        .is_some_and(|spawn| is_recordable(&spawn))
+}
+
+fn is_recordable(spawn: &EntitySpawnBody) -> bool {
+    if spawn.word112 != u32::MAX {
         return false;
     }
-    let template = u32::from_be_bytes(body[..4].try_into().unwrap());
-    let Some(template) = u16::try_from(template)
+    let Some(template) = u16::try_from(spawn.template)
         .ok()
         .and_then(EntityTemplate::from_raw)
     else {
@@ -282,20 +294,38 @@ pub(super) fn recordable(body: &[u8]) -> bool {
         template,
         EntityTemplate::VisionBeacon | EntityTemplate::NeutralJungleMinionStore
     ) {
-        return scenery_body(body[116]).is_some_and(|scenery| body == scenery);
+        return scenery_body(spawn.slot).is_some_and(|scenery| spawn.bit_eq(&scenery));
     }
-    match (template, &body[116..122]) {
+    match (
+        template,
+        [
+            spawn.slot,
+            spawn.flag117,
+            spawn.flag118,
+            spawn.level,
+            spawn.lane_index,
+            spawn.team_index,
+        ],
+    ) {
         (EntityTemplate::VainCrystalHome3v3, [1, 0, 0, 1, 255, 1])
         | (EntityTemplate::VainCrystalAway3v3, [9, 0, 0, 1, 255, 2])
         | (EntityTemplate::Turret, [5..=7, 0, 0, 1, 255, 1] | [13..=15, 0, 0, 1, 255, 2])
         | (EntityTemplate::VainTurret, [3..=4, 0, 0, 1, 255, 1] | [11..=12, 0, 0, 1, 255, 2]) => {
-            body[4..8] == STRUCTURE_SKIN.to_be_bytes()
-                && body[8..12] == (2000 + u32::from(body[116])).to_be_bytes()
+            spawn.skin == EntitySpawnBody::STRUCTURE_SKIN
+                && spawn.actor == 2000 + u32::from(spawn.slot)
         }
         (kind, [22..=199, 1, 0, 2..=4, 0, 1] | [22..=199, 1, 0, 2..=4, 1, 2])
             if kind.is_aral_lane_minion() =>
         {
-            body[4..8] == MINION_SKIN.to_be_bytes() && body[36..88] == [0; 52]
+            spawn.skin == EntitySpawnBody::MINION_SKIN
+                && spawn.hp.to_bits() == 0
+                && spawn.max_hp.to_bits() == 0
+                && spawn.reserved_44 == [0; 8]
+                && spawn.radius.to_bits() == 0
+                && spawn.reserved_56 == [0; 8]
+                && spawn.word64.to_bits() == 0
+                && spawn.reserved_68 == [0; 16]
+                && spawn.word84.to_bits() == 0
         }
         _ => false,
     }
@@ -312,25 +342,15 @@ fn sane(entity: &Entity) -> bool {
         && entity.hp <= entity.max_hp
 }
 
-fn base(entity: &Entity, skin: u32, slot: u8) -> [u8; 122] {
-    let mut body = [0; 122];
-    body[..4].copy_from_slice(&u32::from(entity.type_id).to_be_bytes());
-    body[4..8].copy_from_slice(&skin.to_be_bytes());
-    body[8..12].copy_from_slice(&u32::from(wire_id(entity.id)).to_be_bytes());
-    body[112..116].fill(u8::MAX);
-    body[116] = slot;
-    body[121] = entity.team + 1;
-    body
-}
-
-fn floats<const N: usize>(body: &mut [u8], offset: usize, values: [f32; N]) {
-    for (word, value) in body[offset..offset + N * 4]
-        .as_chunks_mut::<4>()
-        .0
-        .iter_mut()
-        .zip(values)
-    {
-        word.copy_from_slice(&value.to_be_bytes());
+fn base(entity: &Entity, skin: u32, slot: u8) -> EntitySpawnBody {
+    EntitySpawnBody {
+        template: u32::from(entity.type_id),
+        skin,
+        actor: u32::from(wire_id(entity.id)),
+        word112: u32::MAX,
+        slot,
+        team_index: entity.team + 1,
+        ..Default::default()
     }
 }
 

@@ -1,10 +1,9 @@
 use halcyon_data::EntityTemplate;
-use halcyon_protocol::Message;
+use halcyon_protocol::{EntitySpawnBody, EntityStatMask, Message};
 use halcyon_sim::{Entity, Kind};
 
 use super::messages::wire_id;
 
-const BODY_LEN: usize = 122;
 /// Fixed native Solo structure slots. Towers on different lanes share templates.
 pub(super) fn structure_slot(e: &Entity) -> Option<u8> {
     let fallback = match (e.kind, EntityTemplate::from_raw(e.type_id)?, e.team) {
@@ -39,49 +38,64 @@ pub(super) fn structure(tick: u64, e: &Entity) -> Option<Message> {
         return None;
     }
     let profile = halcyon_protocol::SoloStructure::at_slot(structure_slot(e)?)?;
-    let mut msg = profile.message(u32::from(wire_id(e.id)));
-    if msg.body[12..16] != e.position.x.to_be_bytes()
-        || msg.body[20..24] != e.position.y.to_be_bytes()
+    let mut body = profile.spawn_body(u32::from(wire_id(e.id)));
+    if body.position[0].to_bits() != e.position.x.to_bits()
+        || body.position[2].to_bits() != e.position.y.to_bits()
     {
         return None;
     }
-    msg.body[36..40].copy_from_slice(&e.hp.to_be_bytes());
-    msg.body[40..44].copy_from_slice(&e.max_hp.to_be_bytes());
-    Some(msg)
+    body.hp = e.hp;
+    body.max_hp = e.max_hp;
+    Some(body.encode())
 }
 
 pub(super) fn recordable_structure(body: &[u8]) -> bool {
-    if body.len() != BODY_LEN {
-        return false;
-    }
-    let Some(profile) = halcyon_protocol::SoloStructure::at_slot(body[116]) else {
+    let Ok(spawn) = EntitySpawnBody::read_body(body) else {
         return false;
     };
-    let hp = f32::from_be_bytes(body[36..40].try_into().unwrap());
-    let max = f32::from_be_bytes(body[40..44].try_into().unwrap());
-    if !hp.is_finite() || !max.is_finite() || hp <= 0. || hp > max {
+    let Some(profile) = halcyon_protocol::SoloStructure::at_slot(spawn.slot) else {
+        return false;
+    };
+    if !spawn.hp.is_finite()
+        || !spawn.max_hp.is_finite()
+        || spawn.hp <= 0.
+        || spawn.hp > spawn.max_hp
+    {
         return false;
     }
-    let expected = profile.message(profile.actor());
-    body[..36] == expected.body[..36] && body[44..] == expected.body[44..]
+    let mut expected = profile.spawn_body(profile.actor());
+    expected.hp = spawn.hp;
+    expected.max_hp = spawn.max_hp;
+    spawn.bit_eq(&expected)
 }
 
 /// Fresh births use the native template defaults at the measured route anchor.
-fn pristine_minion(template: u32, actor: u32, slot: u8, team: u8, side: i8) -> Message {
-    let mut b = [0; BODY_LEN];
-    put_word(&mut b, 0, template);
-    put_word(&mut b, 4, 0xeb39ce55);
-    put_word(&mut b, 8, actor);
+fn pristine_minion_body(
+    template: u32,
+    actor: u32,
+    slot: u8,
+    team: u8,
+    side: i8,
+) -> EntitySpawnBody {
     let x = if side == 0 { 70f32 } else { 75f32 };
-    put_word(&mut b, 12, if team == 0 { -x } else { x }.to_bits());
-    put_word(&mut b, 20, (5. * f32::from(side)).to_bits());
-    put_word(&mut b, 16, 0x3d75_be29);
-    put_word(&mut b, 32, 1f32.to_bits());
-    b[88..96].fill(1);
-    b[97 + usize::from(team)] = 1;
-    put_word(&mut b, 112, u32::MAX);
-    b[116..122].copy_from_slice(&[slot, 1, 0, 1, (3 * team as i8 + 1 + side) as u8, team + 1]);
-    Message::known(crate::Opcode::EntitySpawn, b)
+    let mut body = EntitySpawnBody::new(
+        template,
+        EntitySpawnBody::MINION_SKIN,
+        actor,
+        slot,
+        team + 1,
+    );
+    body.position = [
+        if team == 0 { -x } else { x },
+        f32::from_bits(EntitySpawnBody::GROUND_HEIGHT_BITS),
+        5. * f32::from(side),
+    ];
+    body.forward = [0.0, 0.0, 1.0];
+    body.visibility_required = EntitySpawnBody::VISIBILITY_ALL_REQUIRED;
+    body.visibility_mask[1 + usize::from(team)] = EntitySpawnBody::VISIBILITY_PRISTINE_MASK;
+    body.set_stat_mask(EntityStatMask::Pristine);
+    body.lane_index = (3 * team as i8 + 1 + side) as u8;
+    body
 }
 
 pub(super) fn camp_unit(entity: &Entity, slot: u8) -> Option<Message> {
@@ -89,76 +103,90 @@ pub(super) fn camp_unit(entity: &Entity, slot: u8) -> Option<Message> {
     if entity.kind != Kind::Neutral || !template.is_solo_camp_unit() {
         return None;
     }
-    let mut body = [0; BODY_LEN];
-    put_word(&mut body, 0, u32::from(template.as_raw()));
-    put_word(&mut body, 4, 0x4dd5b7d0);
-    put_word(&mut body, 8, u32::from(wire_id(entity.id)));
-    for (offset, value) in [
-        (12, entity.position.x),
-        (16, f32::from_bits(0x3d75_be29)),
-        (20, entity.position.y),
-        (32, 1.),
-        (36, entity.hp),
-        (40, entity.max_hp),
-        (52, 3.6),
-        (64, 1.),
-        (84, 1.),
-    ] {
-        put_word(&mut body, offset, value.to_bits());
-    }
-    body[88..96].fill(1);
-    body[96] = 15;
-    put_word(&mut body, 112, u32::MAX);
-    body[116..122].copy_from_slice(&[slot, 0, 0, 1, 255, 0]);
-    recordable_camp_unit(&body).then(|| Message::known(crate::Opcode::EntitySpawn, body))
+    let mut body = EntitySpawnBody::new(
+        u32::from(template.as_raw()),
+        EntitySpawnBody::JUNGLE_MINION_SKIN,
+        u32::from(wire_id(entity.id)),
+        slot,
+        0,
+    );
+    body.position = [
+        entity.position.x,
+        f32::from_bits(EntitySpawnBody::GROUND_HEIGHT_BITS),
+        entity.position.y,
+    ];
+    body.forward = [0.0, 0.0, 1.0];
+    body.hp = entity.hp;
+    body.max_hp = entity.max_hp;
+    body.radius = 3.6;
+    body.word64 = 1.0;
+    body.word84 = 1.0;
+    body.set_team_visibility(0, EntitySpawnBody::VISIBILITY_ACTIVE_MASK);
+    is_recordable_camp_unit(&body).then(|| body.encode())
+}
+
+fn is_recordable_camp_unit(spawn: &EntitySpawnBody) -> bool {
+    (52..=199).contains(&spawn.slot)
+        && spawn.flag117 == 0
+        && spawn.flag118 == 0
+        && spawn.level == 1
+        && spawn.lane_index == EntitySpawnBody::NO_LANE_INDEX
+        && spawn.team_index == 0
+        && u16::try_from(spawn.template)
+            .ok()
+            .and_then(EntityTemplate::from_raw)
+            .is_some_and(EntityTemplate::is_solo_camp_unit)
+        && spawn.skin == EntitySpawnBody::JUNGLE_MINION_SKIN
+        && (2122..65535).contains(&spawn.actor)
+        && spawn.position[0].is_finite()
+        && spawn.position[2].is_finite()
+        && spawn.hp.is_finite()
+        && spawn.max_hp.is_finite()
+        && spawn.hp > 0.
+        && spawn.hp <= spawn.max_hp
+        && spawn.visibility_required == EntitySpawnBody::VISIBILITY_ALL_REQUIRED
+        && spawn.visibility_mask == [15, 0, 0, 0, 0, 0, 0, 0]
+        && spawn.visibility_aux == [0; 8]
+        && spawn.word112 == u32::MAX
+        && spawn.position[1].to_bits() == EntitySpawnBody::GROUND_HEIGHT_BITS
+        && spawn.forward[0].to_bits() == 0
+        && spawn.forward[1].to_bits() == 0
+        && spawn.forward[2].to_bits() == 1_f32.to_bits()
+        && spawn.radius.to_bits() == 3.6_f32.to_bits()
+        && spawn.word64.to_bits() == 1_f32.to_bits()
+        && spawn.word84.to_bits() == 1_f32.to_bits()
+        && spawn.reserved_44 == [0; 8]
+        && spawn.reserved_56 == [0; 8]
+        && spawn.reserved_68 == [0; 16]
 }
 
 pub(super) fn recordable_camp_unit(body: &[u8]) -> bool {
-    if body.len() != BODY_LEN || !matches!(body[116..], [52..=199, 0, 0, 1, 255, 0]) {
-        return false;
-    }
-    let word = |i| u32::from_be_bytes(body[i..i + 4].try_into().unwrap());
-    let f = |i| f32::from_bits(word(i));
-    u16::try_from(word(0))
+    EntitySpawnBody::read_body(body)
         .ok()
-        .and_then(EntityTemplate::from_raw)
-        .is_some_and(EntityTemplate::is_solo_camp_unit)
-        && word(4) == 0x4dd5b7d0
-        && (2122..65535).contains(&word(8))
-        && [12, 20, 36, 40].into_iter().all(|i| f(i).is_finite())
-        && f(36) > 0.
-        && f(36) <= f(40)
-        && body[88..97] == [1, 1, 1, 1, 1, 1, 1, 1, 15]
-        && body[97..112] == [0; 15]
-        && word(112) == u32::MAX
-        && [
-            (16, 0x3d75_be29),
-            (32, 1_f32.to_bits()),
-            (52, 3.6_f32.to_bits()),
-            (64, 1_f32.to_bits()),
-            (84, 1_f32.to_bits()),
-        ]
-        .into_iter()
-        .all(|(i, value)| word(i) == value)
-        && [24, 28, 44, 48, 56, 60, 68, 72, 76, 80]
-            .into_iter()
-            .all(|i| word(i) == 0)
+        .is_some_and(|spawn| is_recordable_camp_unit(&spawn))
 }
 
 pub(super) fn recordable_minion_birth(b: &[u8]) -> bool {
-    if b.len() != BODY_LEN || !(52..200).contains(&b[116]) || !(1..=2).contains(&b[121]) {
+    let Ok(spawn) = EntitySpawnBody::read_body(b) else {
+        return false;
+    };
+    if !(52..200).contains(&spawn.slot) || !(1..=2).contains(&spawn.team_index) {
         return false;
     }
-    let template = u32::from_be_bytes(b[..4].try_into().unwrap());
-    let actor = u32::from_be_bytes(b[8..12].try_into().unwrap());
-    let side = i16::from(b[120]) - 3 * i16::from(b[121] - 1) - 1;
+    let side = i16::from(spawn.lane_index) - 3 * i16::from(spawn.team_index - 1) - 1;
     (-1..=1).contains(&side)
-        && u16::try_from(template)
+        && u16::try_from(spawn.template)
             .ok()
             .and_then(EntityTemplate::from_raw)
             .is_some_and(EntityTemplate::is_solo_lane_minion)
-        && (2122..65535).contains(&actor)
-        && pristine_minion(template, actor, b[116], b[121] - 1, side as i8).body == b
+        && (2122..65535).contains(&spawn.actor)
+        && spawn.bit_eq(&pristine_minion_body(
+            spawn.template,
+            spawn.actor,
+            spawn.slot,
+            spawn.team_index - 1,
+            side as i8,
+        ))
 }
 
 /// Subsequent visibility entries and reconnects carry current numeric state.
@@ -184,44 +212,39 @@ pub(super) fn minion(entity: &Entity, slot: u8, fresh: bool) -> Option<Message> 
         _ => return None,
     };
     if fresh && entity.level == 1 && entity.hp == default_hp && entity.max_hp == default_hp {
-        return Some(pristine_minion(
-            u32::from(entity.type_id),
-            u32::from(wire_id(entity.id)),
-            slot,
-            entity.team,
-            entity.solo_side,
-        ));
+        return Some(
+            pristine_minion_body(
+                u32::from(entity.type_id),
+                u32::from(wire_id(entity.id)),
+                slot,
+                entity.team,
+                entity.solo_side,
+            )
+            .encode(),
+        );
     }
-    let mut body = [0; BODY_LEN];
-    put_word(&mut body, 0, u32::from(entity.type_id));
-    put_word(&mut body, 4, 0xeb39ce55);
-    put_word(&mut body, 8, u32::from(wire_id(entity.id)));
-    let forward = if entity.team == 0 { 1.0_f32 } else { -1.0 };
-    for (offset, value) in [
-        (12, entity.position.x),
-        (16, f32::from_bits(0x3d75_be29)),
-        (20, entity.position.y),
-        (24, forward),
-        (36, entity.hp),
-        (40, entity.max_hp),
-        (52, 3.5),
-        (64, 1.0),
-        (84, 1.0),
-    ] {
-        put_word(&mut body, offset, value.to_bits());
-    }
-    body[88..96].fill(1);
-    body[97 + usize::from(entity.team)] = 15;
-    put_word(&mut body, 112, u32::MAX);
-    body[116] = slot;
-    body[119] = 1;
-    body[120] = (3 * entity.team as i8 + 1 + entity.solo_side) as u8;
-    body[121] = entity.team + 1;
-    Some(Message::known(crate::Opcode::EntitySpawn, body))
-}
-
-fn put_word(body: &mut [u8], offset: usize, value: u32) {
-    body[offset..offset + 4].copy_from_slice(&value.to_be_bytes());
+    let forward_x = if entity.team == 0 { 1.0_f32 } else { -1.0 };
+    let mut body = EntitySpawnBody::new(
+        u32::from(entity.type_id),
+        EntitySpawnBody::MINION_SKIN,
+        u32::from(wire_id(entity.id)),
+        slot,
+        entity.team + 1,
+    );
+    body.position = [
+        entity.position.x,
+        f32::from_bits(EntitySpawnBody::GROUND_HEIGHT_BITS),
+        entity.position.y,
+    ];
+    body.forward = [forward_x, 0.0, 0.0];
+    body.hp = entity.hp;
+    body.max_hp = entity.max_hp;
+    body.radius = 3.5;
+    body.word64 = 1.0;
+    body.word84 = 1.0;
+    body.lane_index = (3 * entity.team as i8 + 1 + entity.solo_side) as u8;
+    body.set_team_visibility(0, EntitySpawnBody::VISIBILITY_ACTIVE_MASK);
+    Some(body.encode())
 }
 
 #[cfg(test)]

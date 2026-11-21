@@ -1,5 +1,5 @@
 //! Opening 5v5 Solo compact structure declarations from the Android 147219 replay.
-use crate::Message;
+use crate::{EntitySpawnBody, Message};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SoloStructure {
@@ -83,28 +83,8 @@ impl SoloStructure {
         self.slot
     }
 
-    /// Encodes a pristine opening board using the authoritative server actor ID.
-    pub fn message(self, actor: u32) -> Message {
-        let mut body = [0; 122];
-        let mut word = |offset: usize, value: u32| {
-            body[offset..offset + 4].copy_from_slice(&value.to_be_bytes());
-        };
-        word(0, u32::from(self.template));
-        word(
-            4,
-            if self.template == 297 {
-                0x4a2e_ed42
-            } else {
-                0xc10b_41da
-            },
-        );
-        word(8, actor);
-        word(12, self.x.to_bits());
-        word(16, if self.slot == 8 { 0 } else { 0x3d75_be29 });
-        word(20, self.z.to_bits());
-        for (i, component) in self.heading_bits().into_iter().enumerate() {
-            word(24 + i * 4, component);
-        }
+    /// Builds the typed 122-byte `0x03F2` opening body using the authoritative server actor ID.
+    pub fn spawn_body(self, actor: u32) -> EntitySpawnBody {
         let hp: f32 = match self.template {
             295 | 296 => 20_000.,
             297 => 4_350.,
@@ -113,18 +93,32 @@ impl SoloStructure {
             341 => 5_000.,
             _ => unreachable!("validated by at_slot"),
         };
-        word(36, hp.to_bits());
-        word(40, hp.to_bits());
+        let skin = if self.template == 297 {
+            EntitySpawnBody::ARMORY_SKIN
+        } else {
+            EntitySpawnBody::STRUCTURE_SKIN
+        };
+        let height = if self.slot == 8 {
+            0.0
+        } else {
+            f32::from_bits(EntitySpawnBody::GROUND_HEIGHT_BITS)
+        };
+        let mut body =
+            EntitySpawnBody::new(u32::from(self.template), skin, actor, self.slot, self.team);
+        body.position = [self.x, height, self.z];
+        body.forward = self.heading_bits().map(f32::from_bits);
+        body.hp = hp;
+        body.max_hp = hp;
         if matches!(self.template, 339..=341) {
-            word(64, 1f32.to_bits());
+            body.word64 = 1.0;
         }
-        word(84, 1f32.to_bits());
-        word(112, u32::MAX);
-        body[88..104].fill(1);
-        body[96 + usize::from(self.team)] = 15;
-        body[116] = self.slot;
-        body[119..122].copy_from_slice(&[1, 255, self.team]);
-        Message::known(crate::Opcode::EntitySpawn, body)
+        body.word84 = 1.0;
+        body.with_team_visibility(1, EntitySpawnBody::VISIBILITY_ACTIVE_MASK)
+    }
+
+    /// Encodes a pristine opening board using the authoritative server actor ID.
+    pub fn message(self, actor: u32) -> Message {
+        self.spawn_body(actor).encode()
     }
 
     // Native headings retain signed zero and slightly asymmetric rotation rounding.
@@ -147,7 +141,6 @@ impl SoloStructure {
     }
 }
 
-const SHOPKEEPER_SKIN: u32 = 0xb535_88b5;
 const SHOPKEEPER_HP: f32 = 450.0;
 const BUFF_INVULNERABLE: u16 = 27;
 const BUFF_SHOP_CAN_ICON: u16 = 173;
@@ -235,30 +228,22 @@ impl SoloStructure {
         pos_bits: [u32; 3],
         heading_bits: [u32; 3],
     ) -> Message {
-        let mut body = [0u8; 122];
-        let mut word = |offset: usize, value: u32| {
-            body[offset..offset + 4].copy_from_slice(&value.to_be_bytes());
-        };
-        word(0, u32::from(template));
-        word(4, SHOPKEEPER_SKIN);
-        word(8, actor);
-        for (i, comp) in pos_bits.into_iter().enumerate() {
-            word(12 + i * 4, comp);
-        }
-        for (i, comp) in heading_bits.into_iter().enumerate() {
-            word(24 + i * 4, comp);
-        }
-        word(36, SHOPKEEPER_HP.to_bits());
-        word(40, SHOPKEEPER_HP.to_bits());
-        word(52, 2.5f32.to_bits());
-        word(64, 1.0f32.to_bits());
-        word(84, 1.0f32.to_bits());
-        word(112, u32::MAX);
-        body[88..96].fill(1);
-        body[96 + usize::from(wire_team)] = 15;
-        body[116] = slot;
-        body[119..122].copy_from_slice(&[1, 255, wire_team]);
-        Message::known(crate::Opcode::EntitySpawn, body)
+        let mut body = EntitySpawnBody::new(
+            u32::from(template),
+            EntitySpawnBody::SHOPKEEPER_SKIN,
+            actor,
+            slot,
+            wire_team,
+        );
+        body.position = pos_bits.map(f32::from_bits);
+        body.forward = heading_bits.map(f32::from_bits);
+        body.hp = SHOPKEEPER_HP;
+        body.max_hp = SHOPKEEPER_HP;
+        body.radius = 2.5;
+        body.word64 = 1.0;
+        body.word84 = 1.0;
+        body.with_team_visibility(0, EntitySpawnBody::VISIBILITY_ACTIVE_MASK)
+            .encode()
     }
 
     /// Opening `Buff_Shop_GrantStoreAccess_5v5Base` (`177`) and `Buff_Invulnerable` (`27`)

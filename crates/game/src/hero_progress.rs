@@ -1,21 +1,12 @@
-use halcyon_protocol::Message;
+use halcyon_protocol::{AttributeChange, HeroSpawnBody, Message, ResourceChange};
 use halcyon_sim::{Entity, Event, Kind, World};
 
 use super::messages::{append_combat, wire_id};
 
-/// Fixed wire offsets in `0x03F3` (`HeroSpawn`) decoded by `libGameKindred.so` at `0x828a10`.
-const SPAWN_LEVEL_OFFSET: usize = 294; // 0x126 -> actor attribute 40 (level)
-const SPAWN_SKILL_POINTS_OFFSET: usize = 314; // 0x13a -> actor attribute 29 (ability upgrade points)
-const SPAWN_XP_OFFSET: usize = 318; // 0x13e -> actor resource 8 (current XP)
-const SPAWN_XP_REQUIRED_OFFSET: usize = 322; // 0x142 -> actor attribute 39 (XP to next level)
-/// Must stay zero so `0x828a58` takes the standard stat table path (`Message::set_spawn_gold`).
-const SPAWN_STAT_MASK_OFFSET: usize = 326; // 0x146
-const SPAWN_ACTIVE_FLAG_OFFSET: usize = 705;
-
 const RESOURCE_XP: u8 = 8;
 const ATTRIBUTE_XP_REQUIRED: u8 = 39;
 
-pub(super) fn set_spawn(world: &World, message: &mut Message, actor: &Entity) {
+pub(super) fn set_spawn(world: &World, body: &mut HeroSpawnBody, actor: &Entity) {
     if actor.kind != Kind::Hero {
         return;
     }
@@ -28,21 +19,15 @@ pub(super) fn set_spawn(world: &World, message: &mut Message, actor: &Entity) {
             + income.passive_awards
             + income.last_hit_bounties
             + income.lane_proximity_awards;
-        message
-            .set_spawn_gold(actor.gold as f32, worth as f32)
+        body.set_gold(actor.gold as f32, worth as f32)
             .expect("native full hero baseline");
     }
-    let body = &mut message.body;
-    body[SPAWN_LEVEL_OFFSET..SPAWN_LEVEL_OFFSET + 4]
-        .copy_from_slice(&f32::from(actor.level).to_be_bytes());
-    body[SPAWN_SKILL_POINTS_OFFSET..SPAWN_SKILL_POINTS_OFFSET + 4]
-        .copy_from_slice(&f32::from(actor.skill_points).to_be_bytes());
-    body[SPAWN_XP_OFFSET..SPAWN_XP_OFFSET + 4].copy_from_slice(&actor.xp.to_be_bytes());
-    body[SPAWN_XP_REQUIRED_OFFSET..SPAWN_XP_REQUIRED_OFFSET + 4]
-        .copy_from_slice(&required.to_be_bytes());
-    body[SPAWN_STAT_MASK_OFFSET..SPAWN_STAT_MASK_OFFSET + 4].copy_from_slice(&0u32.to_be_bytes());
-    body[SPAWN_ACTIVE_FLAG_OFFSET..SPAWN_ACTIVE_FLAG_OFFSET + 4]
-        .copy_from_slice(&1u32.to_be_bytes());
+    body.level = f32::from(actor.level);
+    body.skill_points = f32::from(actor.skill_points);
+    body.xp = actor.xp;
+    body.xp_required = required;
+    body.alt_stat_mask = 0;
+    body.active_flag = HeroSpawnBody::ACTIVE_FLAG;
 }
 
 /// Newly declared heroes already have their post-tick XP and level in 0x03F3.
@@ -55,7 +40,16 @@ pub(super) fn append(
     match *event {
         Event::XpGain { id, amount } => {
             if previously_declared(id) {
-                out.push(Message::entity_stat(wire_id(id), amount, RESOURCE_XP));
+                out.push(
+                    ResourceChange {
+                        actor: u32::from(wire_id(id)),
+                        value: amount,
+                        index: RESOURCE_XP,
+                        set_mode: 0,
+                        flags: [0, 0],
+                    }
+                    .message(),
+                );
             }
         }
         Event::Level { id, level } => {
@@ -65,7 +59,7 @@ pub(super) fn append(
             if previously_declared(id) {
                 append_combat(out, event, |_| true);
                 out.push(
-                    halcyon_protocol::AttributeChange {
+                    AttributeChange {
                         actor: u32::from(wire_id(id)),
                         source: u32::MAX,
                         value: required,
@@ -90,6 +84,12 @@ mod tests {
     use tokio::sync::{mpsc, watch};
     use uuid::Uuid;
 
+    const SPAWN_LEVEL_OFFSET: usize = 294;
+    const SPAWN_SKILL_POINTS_OFFSET: usize = 314;
+    const SPAWN_XP_OFFSET: usize = 318;
+    const SPAWN_XP_REQUIRED_OFFSET: usize = 322;
+    const SPAWN_STAT_MASK_OFFSET: usize = 326;
+
     fn word(body: &[u8], offset: usize) -> u32 {
         u32::from_be_bytes(body[offset..offset + 4].try_into().unwrap())
     }
@@ -105,8 +105,9 @@ mod tests {
                 world.use_solo_mid_lane().unwrap();
             }
             let hero = &world.entities[0];
-            let mut message = Message::known(crate::Opcode::HeroSpawn, [0; 750]);
-            set_spawn(&world, &mut message, hero);
+            let mut spawn = HeroSpawnBody::default();
+            set_spawn(&world, &mut spawn, hero);
+            let message = spawn.encode();
             for (offset, value) in [
                 (294, if aral { 4.0_f32 } else { 1.0 }),
                 (314, if aral { 4.0 } else { 1.0 }),
@@ -120,8 +121,9 @@ mod tests {
 
             let mut spent = hero.clone();
             spent.skill_points = 0;
-            let mut spent_message = Message::known(crate::Opcode::HeroSpawn, [0; 750]);
-            set_spawn(&world, &mut spent_message, &spent);
+            let mut spent_spawn = HeroSpawnBody::default();
+            set_spawn(&world, &mut spent_spawn, &spent);
+            let spent_message = spent_spawn.encode();
             assert_eq!(
                 word(&spent_message.body, SPAWN_SKILL_POINTS_OFFSET),
                 0.0_f32.to_bits()
@@ -138,8 +140,9 @@ mod tests {
         assert_eq!(world.entities[0].level, 1);
         assert_eq!(world.entities[0].skill_points, 1);
 
-        let mut spawn = Message::known(crate::Opcode::HeroSpawn, [0; 750]);
-        set_spawn(&world, &mut spawn, &world.entities[0]);
+        let mut spawn_body = HeroSpawnBody::default();
+        set_spawn(&world, &mut spawn_body, &world.entities[0]);
+        let spawn = spawn_body.encode();
         assert_eq!(
             word(&spawn.body, SPAWN_SKILL_POINTS_OFFSET),
             1.0_f32.to_bits()
@@ -155,8 +158,9 @@ mod tests {
         let _ = world.step();
         assert_eq!(world.entities[0].skill_points, 0);
 
-        let mut after_learn = Message::known(crate::Opcode::HeroSpawn, [0; 750]);
-        set_spawn(&world, &mut after_learn, &world.entities[0]);
+        let mut after_body = HeroSpawnBody::default();
+        set_spawn(&world, &mut after_body, &world.entities[0]);
+        let after_learn = after_body.encode();
         assert_eq!(
             word(&after_learn.body, SPAWN_SKILL_POINTS_OFFSET),
             0.0_f32.to_bits()

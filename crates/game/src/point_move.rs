@@ -1,4 +1,4 @@
-use halcyon_protocol::Message;
+use halcyon_protocol::{HeroSpawnBody, Message};
 use halcyon_sim::{Command, Entity, Kind, Position, World};
 
 use super::{Pick, Room, messages, transport};
@@ -62,17 +62,19 @@ pub(super) fn full_spawn(
     data: Option<&halcyon_data::GameData>,
     legacy_aral: bool,
 ) -> Message {
-    let mut declaration = messages::spawn(actor, picks, data);
+    let raw = messages::spawn(actor, picks, data);
+    let mut body =
+        HeroSpawnBody::read_body(&raw.body).expect("messages::spawn emits 750B HeroSpawn");
     if legacy_aral && let Some(slot) = aral_slot(actor) {
-        declaration.body[745] = slot;
+        body.slot = slot;
         let (height, heading) = if actor.team == 0 {
             (1.297_397_4_f32, 1.0_f32)
         } else {
             (1.777_397_4, -1.0)
         };
-        declaration.body[22..26].copy_from_slice(&height.to_be_bytes());
-        declaration.body[30..34].copy_from_slice(&heading.to_be_bytes());
+        body.position[1] = height;
+        body.forward[0] = heading;
     }
-    super::hero_progress::set_spawn(world, &mut declaration, actor);
-    declaration
+    super::hero_progress::set_spawn(world, &mut body, actor);
+    body.encode()
 }
