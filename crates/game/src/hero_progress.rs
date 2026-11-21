@@ -3,6 +3,18 @@ use halcyon_sim::{Entity, Event, Kind, World};
 
 use super::messages::{append_combat, wire_id};
 
+/// Fixed wire offsets in `0x03F3` (`HeroSpawn`) decoded by `libGameKindred.so` at `0x828a10`.
+const SPAWN_LEVEL_OFFSET: usize = 294; // 0x126 -> actor attribute 40 (level)
+const SPAWN_SKILL_POINTS_OFFSET: usize = 314; // 0x13a -> actor attribute 29 (ability upgrade points)
+const SPAWN_XP_OFFSET: usize = 318; // 0x13e -> actor resource 8 (current XP)
+const SPAWN_XP_REQUIRED_OFFSET: usize = 322; // 0x142 -> actor attribute 39 (XP to next level)
+/// Must stay zero so `0x828a58` takes the standard stat table path (`Message::set_spawn_gold`).
+const SPAWN_STAT_MASK_OFFSET: usize = 326; // 0x146
+const SPAWN_ACTIVE_FLAG_OFFSET: usize = 705;
+
+const RESOURCE_XP: u8 = 8;
+const ATTRIBUTE_XP_REQUIRED: u8 = 39;
+
 pub(super) fn set_spawn(world: &World, message: &mut Message, actor: &Entity) {
     if actor.kind != Kind::Hero {
         return;
@@ -21,11 +33,16 @@ pub(super) fn set_spawn(world: &World, message: &mut Message, actor: &Entity) {
             .expect("native full hero baseline");
     }
     let body = &mut message.body;
-    body[294..298].copy_from_slice(&f32::from(actor.level).to_be_bytes());
-    body[318..322].copy_from_slice(&actor.xp.to_be_bytes());
-    body[322..326].copy_from_slice(&required.to_be_bytes());
-    body[326..330].copy_from_slice(&0u32.to_be_bytes());
-    body[705..709].copy_from_slice(&1u32.to_be_bytes());
+    body[SPAWN_LEVEL_OFFSET..SPAWN_LEVEL_OFFSET + 4]
+        .copy_from_slice(&f32::from(actor.level).to_be_bytes());
+    body[SPAWN_SKILL_POINTS_OFFSET..SPAWN_SKILL_POINTS_OFFSET + 4]
+        .copy_from_slice(&f32::from(actor.skill_points).to_be_bytes());
+    body[SPAWN_XP_OFFSET..SPAWN_XP_OFFSET + 4].copy_from_slice(&actor.xp.to_be_bytes());
+    body[SPAWN_XP_REQUIRED_OFFSET..SPAWN_XP_REQUIRED_OFFSET + 4]
+        .copy_from_slice(&required.to_be_bytes());
+    body[SPAWN_STAT_MASK_OFFSET..SPAWN_STAT_MASK_OFFSET + 4].copy_from_slice(&0u32.to_be_bytes());
+    body[SPAWN_ACTIVE_FLAG_OFFSET..SPAWN_ACTIVE_FLAG_OFFSET + 4]
+        .copy_from_slice(&1u32.to_be_bytes());
 }
 
 /// Newly declared heroes already have their post-tick XP and level in 0x03F3.
@@ -38,7 +55,7 @@ pub(super) fn append(
     match *event {
         Event::XpGain { id, amount } => {
             if previously_declared(id) {
-                out.push(Message::entity_stat(wire_id(id), amount, 8));
+                out.push(Message::entity_stat(wire_id(id), amount, RESOURCE_XP));
             }
         }
         Event::Level { id, level } => {
@@ -52,7 +69,7 @@ pub(super) fn append(
                         actor: u32::from(wire_id(id)),
                         source: u32::MAX,
                         value: required,
-                        index: 39,
+                        index: ATTRIBUTE_XP_REQUIRED,
                         layer: 0,
                         set_mode: 1,
                     }
@@ -92,6 +109,7 @@ mod tests {
             set_spawn(&world, &mut message, hero);
             for (offset, value) in [
                 (294, if aral { 4.0_f32 } else { 1.0 }),
+                (314, if aral { 4.0 } else { 1.0 }),
                 (318, 0.0),
                 (322, if aral { 90.0 } else { 68.0 }),
             ] {
@@ -99,7 +117,51 @@ mod tests {
             }
             assert_eq!(word(&message.body, 326), 0);
             assert_eq!(word(&message.body, 705), 1);
+
+            let mut spent = hero.clone();
+            spent.skill_points = 0;
+            let mut spent_message = Message::known(crate::Opcode::HeroSpawn, [0; 750]);
+            set_spawn(&world, &mut spent_message, &spent);
+            assert_eq!(
+                word(&spent_message.body, SPAWN_SKILL_POINTS_OFFSET),
+                0.0_f32.to_bits()
+            );
+            assert_eq!(word(&spent_message.body, SPAWN_STAT_MASK_OFFSET), 0);
         }
+    }
+
+    #[test]
+    fn level_one_learn_and_level_up_sync_spawn_skill_points() {
+        let mut world = World::new(11, 1);
+        world.use_solo_mid_lane().unwrap();
+        let hero_id = world.entities[0].id;
+        assert_eq!(world.entities[0].level, 1);
+        assert_eq!(world.entities[0].skill_points, 1);
+
+        let mut spawn = Message::known(crate::Opcode::HeroSpawn, [0; 750]);
+        set_spawn(&world, &mut spawn, &world.entities[0]);
+        assert_eq!(
+            word(&spawn.body, SPAWN_SKILL_POINTS_OFFSET),
+            1.0_f32.to_bits()
+        );
+        assert_eq!(word(&spawn.body, SPAWN_STAT_MASK_OFFSET), 0);
+
+        world
+            .command(
+                hero_id,
+                halcyon_sim::Command::Learn(halcyon_sim::AbilitySlot::A),
+            )
+            .unwrap();
+        let _ = world.step();
+        assert_eq!(world.entities[0].skill_points, 0);
+
+        let mut after_learn = Message::known(crate::Opcode::HeroSpawn, [0; 750]);
+        set_spawn(&world, &mut after_learn, &world.entities[0]);
+        assert_eq!(
+            word(&after_learn.body, SPAWN_SKILL_POINTS_OFFSET),
+            0.0_f32.to_bits()
+        );
+        assert_eq!(word(&after_learn.body, SPAWN_STAT_MASK_OFFSET), 0);
     }
 
     #[tokio::test]
@@ -141,9 +203,17 @@ mod tests {
             .iter()
             .find(|m| m.is(crate::Opcode::HeroSpawn) && word(&m.body, 8) == 1500)
             .unwrap();
-        assert_eq!(word(&declared.body, 294), 2f32.to_bits());
-        assert_eq!(word(&declared.body, 318), 0.18f32.to_bits());
-        assert_eq!(word(&declared.body, 322), 84f32.to_bits());
+        assert_eq!(word(&declared.body, SPAWN_LEVEL_OFFSET), 2f32.to_bits());
+        assert_eq!(
+            word(&declared.body, SPAWN_SKILL_POINTS_OFFSET),
+            1f32.to_bits()
+        );
+        assert_eq!(word(&declared.body, SPAWN_XP_OFFSET), 0.18f32.to_bits());
+        assert_eq!(
+            word(&declared.body, SPAWN_XP_REQUIRED_OFFSET),
+            84f32.to_bits()
+        );
+        assert_eq!(word(&declared.body, SPAWN_STAT_MASK_OFFSET), 0);
         assert!(!out.iter().any(|m| matches!(
             m.opcode,
             crate::wire_opcode::ModifyActorResource

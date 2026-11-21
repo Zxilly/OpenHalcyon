@@ -3,6 +3,7 @@ use halcyon_protocol::skin_hash;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
+    borrow::Cow,
     collections::{BTreeMap, BTreeSet},
     io,
     path::Path,
@@ -79,18 +80,87 @@ pub struct OfficialSkin {
     pub limited_edition_end_epoch: i64,
 }
 
+/// Default skin key in `KindredSkinManifest.def` for a hero identifier.
+/// Four legacy internal hero identifiers map to their public skin prefix.
+pub fn default_skin_name(hero: &str) -> Cow<'static, str> {
+    match hero {
+        "Hero009" => Cow::Borrowed("Krul_DefaultSkin"),
+        "Hero010" => Cow::Borrowed("Skaarf_DefaultSkin"),
+        "Hero016" => Cow::Borrowed("Rona_DefaultSkin"),
+        "Sayoc" => Cow::Borrowed("Taka_DefaultSkin"),
+        _ => Cow::Owned(format!("{hero}_DefaultSkin")),
+    }
+}
+
+/// Authoritative client `lookup2` hash for a hero's default skin.
+pub fn default_skin_hash(hero: &str) -> u32 {
+    skin_hash(&default_skin_name(hero))
+}
+
 #[derive(Debug)]
 struct Choices {
     default: u32,
     advertised: BTreeSet<u32>,
 }
 
-fn hash_matches(name: &str, numeric: u32, hex: &str) -> bool {
-    skin_hash(name) == numeric
-        && hex
-            .strip_prefix("0x")
-            .and_then(|value| u32::from_str_radix(value, 16).ok())
-            == Some(numeric)
+/// Pre-fix `lookup2` tail bug (bytes `8..10` placed at bits `0..23` instead of
+/// `8..31`) present in older `heroes_and_skins.json` supplements for names with
+/// `len % 12 >= 9`. Used only to validate legacy supplement files before
+/// normalizing every stored hash to the true client `skin_hash`.
+fn legacy_tail0_skin_hash(name: &str) -> u32 {
+    const GOLDEN_RATIO: u32 = 0x9e37_79b9;
+    const SKIN_SEED: u32 = 0x1234_5678;
+
+    fn mix(a: &mut u32, b: &mut u32, c: &mut u32) {
+        *a = a.wrapping_sub(*b).wrapping_sub(*c) ^ (*c >> 13);
+        *b = b.wrapping_sub(*c).wrapping_sub(*a) ^ (*a << 8);
+        *c = c.wrapping_sub(*a).wrapping_sub(*b) ^ (*b >> 13);
+        *a = a.wrapping_sub(*b).wrapping_sub(*c) ^ (*c >> 12);
+        *b = b.wrapping_sub(*c).wrapping_sub(*a) ^ (*a << 16);
+        *c = c.wrapping_sub(*a).wrapping_sub(*b) ^ (*b >> 5);
+        *a = a.wrapping_sub(*b).wrapping_sub(*c) ^ (*c >> 3);
+        *b = b.wrapping_sub(*c).wrapping_sub(*a) ^ (*a << 10);
+        *c = c.wrapping_sub(*a).wrapping_sub(*b) ^ (*b >> 15);
+    }
+
+    let (mut a, mut b, mut c) = (GOLDEN_RATIO, GOLDEN_RATIO, SKIN_SEED);
+    let (chunks, rem) = name.as_bytes().as_chunks::<12>();
+    let add =
+        |acc: u32, bytes: &[u8]| acc.wrapping_add(u32::from_le_bytes(bytes.try_into().unwrap()));
+    for chunk in chunks {
+        a = add(a, &chunk[..4]);
+        b = add(b, &chunk[4..8]);
+        c = add(c, &chunk[8..]);
+        mix(&mut a, &mut b, &mut c);
+    }
+    let mut tail = [0u8; 12];
+    tail[..rem.len()].copy_from_slice(rem);
+    a = add(a, &tail[..4]);
+    b = add(b, &tail[4..8]);
+    c = add(c.wrapping_add(name.len() as u32), &tail[8..]);
+    mix(&mut a, &mut b, &mut c);
+    c
+}
+
+fn validate_and_normalize_hash(name: &str, numeric: &mut u32, hex: &mut String) -> bool {
+    let hex_matches = hex
+        .strip_prefix("0x")
+        .and_then(|value| u32::from_str_radix(value, 16).ok())
+        == Some(*numeric);
+    if !hex_matches {
+        return false;
+    }
+    let canonical = skin_hash(name);
+    let accepted =
+        *numeric == canonical || (name.len() % 12 >= 9 && *numeric == legacy_tail0_skin_hash(name));
+    if !accepted {
+        return false;
+    }
+    if *numeric != canonical {
+        *numeric = canonical;
+        *hex = format!("{canonical:#010x}");
+    }
+    true
 }
 #[derive(Debug)]
 pub(crate) struct SkinIndex(BTreeMap<String, Choices>, Catalog);
@@ -134,7 +204,7 @@ impl SkinIndex {
         Self::build(catalog, &draft.heroes, &draft.skins)
     }
 
-    fn build(catalog: Catalog, heroes: &[String], skins: &[String]) -> io::Result<Self> {
+    fn build(mut catalog: Catalog, heroes: &[String], skins: &[String]) -> io::Result<Self> {
         let invalid = || {
             io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -143,6 +213,15 @@ impl SkinIndex {
         };
         let advertised: BTreeSet<_> = skins.iter().map(String::as_str).collect();
         let playable: BTreeSet<_> = heroes.iter().map(String::as_str).collect();
+        for record in &mut catalog.official_skins {
+            if !validate_and_normalize_hash(
+                &record.skin_key,
+                &mut record.skin_hash_u32,
+                &mut record.skin_hash_hex,
+            ) {
+                return Err(invalid());
+            }
+        }
         let mut owners = BTreeMap::new();
         for record in &catalog.official_skins {
             let owner = record
@@ -150,22 +229,17 @@ impl SkinIndex {
                 .strip_prefix('*')
                 .and_then(|h| h.strip_suffix('*'))
                 .ok_or_else(invalid)?;
-            if !hash_matches(
-                &record.skin_key,
-                record.skin_hash_u32,
-                &record.skin_hash_hex,
-            ) || owners.insert(record.skin_key.as_str(), owner).is_some()
-            {
+            if owners.insert(record.skin_key.as_str(), owner).is_some() {
                 return Err(invalid());
             }
         }
         let mut attached = BTreeSet::new();
         let mut index = BTreeMap::new();
-        for hero in &catalog.heroes {
-            if !hash_matches(
+        for hero in &mut catalog.heroes {
+            if !validate_and_normalize_hash(
                 &hero.default_skin,
-                hero.default_skin_hash_u32,
-                &hero.default_skin_hash_hex,
+                &mut hero.default_skin_hash_u32,
+                &mut hero.default_skin_hash_hex,
             ) {
                 return Err(invalid());
             }
@@ -176,9 +250,13 @@ impl SkinIndex {
                 return Err(invalid());
             }
             let mut allowed = BTreeSet::new();
-            for skin in &hero.skins {
+            for skin in &mut hero.skins {
                 if owners.get(skin.name.as_str()).copied() != Some(hero.hero_id.as_str())
-                    || !hash_matches(&skin.name, skin.skin_hash_u32, &skin.skin_hash_hex)
+                    || !validate_and_normalize_hash(
+                        &skin.name,
+                        &mut skin.skin_hash_u32,
+                        &mut skin.skin_hash_hex,
+                    )
                 {
                     return Err(invalid());
                 }
@@ -214,12 +292,14 @@ impl SkinIndex {
         if attached.len() != owners.len() {
             return Err(invalid());
         }
-        if catalog
-            .cff0_skin_manifest
-            .iter()
-            .any(|s| !hash_matches(&s.name, s.skin_hash_u32, &s.skin_hash_hex))
-        {
-            return Err(invalid());
+        for entry in &mut catalog.cff0_skin_manifest {
+            if !validate_and_normalize_hash(
+                &entry.name,
+                &mut entry.skin_hash_u32,
+                &mut entry.skin_hash_hex,
+            ) {
+                return Err(invalid());
+            }
         }
         Ok(Self(index, catalog))
     }
@@ -314,6 +394,111 @@ mod tests {
     }
 
     #[test]
+    fn normalizes_legacy_tail0_supplement_hashes_to_client_lookup2() {
+        let legacy_skin = |name: &str| {
+            let h = legacy_tail0_skin_hash(name);
+            Skin {
+                name: name.into(),
+                skin_hash_u32: h,
+                skin_hash_hex: format!("{h:#010x}"),
+                ..Default::default()
+            }
+        };
+        let legacy_official = |owner: &str, name: &str| {
+            let h = legacy_tail0_skin_hash(name);
+            OfficialSkin {
+                owner: format!("*{owner}*"),
+                skin_key: name.into(),
+                skin_hash_u32: h,
+                skin_hash_hex: format!("{h:#010x}"),
+                ..Default::default()
+            }
+        };
+        let mut c = Catalog {
+            heroes: [
+                ("Catherine", "Catherine_DefaultSkin"),
+                ("Silvernail", "Silvernail_DefaultSkin"),
+                ("Churnwalker", "Churnwalker_DefaultSkin"),
+            ]
+            .into_iter()
+            .map(|(hero, default_skin)| {
+                let h = legacy_tail0_skin_hash(default_skin);
+                Hero {
+                    hero_id: hero.into(),
+                    default_skin: default_skin.into(),
+                    default_skin_hash_u32: h,
+                    default_skin_hash_hex: format!("{h:#010x}"),
+                    skins: vec![legacy_skin(default_skin)],
+                    ..Default::default()
+                }
+            })
+            .collect(),
+            official_skins: vec![
+                legacy_official("Catherine", "Catherine_DefaultSkin"),
+                legacy_official("Silvernail", "Silvernail_DefaultSkin"),
+                legacy_official("Churnwalker", "Churnwalker_DefaultSkin"),
+            ],
+            cff0_skin_manifest: vec![legacy_skin("Churnwalker")],
+            ..Default::default()
+        };
+        assert_ne!(
+            c.heroes[2].default_skin_hash_u32,
+            skin_hash("Churnwalker_DefaultSkin")
+        );
+        let playable = vec![
+            "Catherine".into(),
+            "Silvernail".into(),
+            "Churnwalker".into(),
+        ];
+        let index = SkinIndex::build(c, &playable, &[]).unwrap();
+        assert_eq!(index.select("Catherine", None), Some(0x62db_dc96));
+        assert_eq!(index.select("Silvernail", None), Some(0xf4ec_ac3f));
+        assert_eq!(index.select("Churnwalker", None), Some(0xc73e_ab15));
+        assert_eq!(index.1.heroes[0].default_skin_hash_u32, 0x62db_dc96);
+        assert_eq!(index.1.heroes[0].default_skin_hash_hex, "0x62dbdc96");
+        assert_eq!(index.1.heroes[1].default_skin_hash_u32, 0xf4ec_ac3f);
+        assert_eq!(index.1.heroes[1].default_skin_hash_hex, "0xf4ecac3f");
+        assert_eq!(index.1.heroes[2].default_skin_hash_u32, 0xc73e_ab15);
+        assert_eq!(index.1.heroes[2].default_skin_hash_hex, "0xc73eab15");
+        assert_eq!(
+            index.1.cff0_skin_manifest[0].skin_hash_u32,
+            skin_hash("Churnwalker")
+        );
+
+        // Corrupting a len%12>=9 hash still fails validation.
+        c = Catalog {
+            heroes: vec![Hero {
+                hero_id: "Churnwalker".into(),
+                default_skin: "Churnwalker_DefaultSkin".into(),
+                default_skin_hash_u32: 0xc2b9_fc85 ^ 1,
+                default_skin_hash_hex: format!("{:#010x}", 0xc2b9_fc85u32 ^ 1),
+                skins: vec![legacy_skin("Churnwalker_DefaultSkin")],
+                ..Default::default()
+            }],
+            official_skins: vec![legacy_official("Churnwalker", "Churnwalker_DefaultSkin")],
+            ..Default::default()
+        };
+        assert!(SkinIndex::build(c, &["Churnwalker".into()], &[]).is_err());
+    }
+
+    #[test]
+    fn default_skin_helper_maps_aliased_and_long_tail_heroes() {
+        for (hero, name, expected_hash) in [
+            ("Hero009", "Krul_DefaultSkin", 0x9d1a_d5d3),
+            ("Hero010", "Skaarf_DefaultSkin", 0x09ea_f99f),
+            ("Hero016", "Rona_DefaultSkin", 0x7bd2_186c),
+            ("Sayoc", "Taka_DefaultSkin", 0xf7a1_e642),
+            ("Amael", "Amael_DefaultSkin", 0x2fd7_245d),
+            ("Catherine", "Catherine_DefaultSkin", 0x62db_dc96),
+            ("Silvernail", "Silvernail_DefaultSkin", 0xf4ec_ac3f),
+            ("Churnwalker", "Churnwalker_DefaultSkin", 0xc73e_ab15),
+        ] {
+            assert_eq!(default_skin_name(hero), name);
+            assert_eq!(default_skin_hash(hero), expected_hash);
+        }
+    }
+
+    #[test]
     #[ignore = "requires the CE supplement and the independent original draft announcement"]
     fn standalone_supplement_advertises_exactly_the_original_playable_heroes() {
         let delivery = std::path::PathBuf::from(std::env::var_os("HALCYON_DELIVERY").unwrap());
@@ -331,7 +516,7 @@ mod tests {
         );
         assert!(draft.skins.is_empty());
         for hero in &reference.heroes {
-            assert!(index.select(hero, None).is_some());
+            assert_eq!(index.select(hero, None), Some(default_skin_hash(hero)));
         }
         let mut explicit = Some(crate::DraftCatalog::default());
         SkinIndex::load(&extra, &mut Sha256::new(), &mut explicit).unwrap();
@@ -346,7 +531,7 @@ mod tests {
         assert_eq!(d.hero_names.len(), 57);
         assert_eq!(d.skin_names.len(), 218);
         for hero in &d.hero_names {
-            assert!(d.indexed_skin(hero, None).is_some());
+            assert_eq!(d.indexed_skin(hero, None), Some(default_skin_hash(hero)));
         }
         for skin in &d.skin_names {
             let hash = skin_hash(skin);
@@ -362,6 +547,9 @@ mod tests {
             d.indexed_skin("Hero009", None),
             Some(skin_hash("Krul_DefaultSkin"))
         );
+        assert_eq!(d.indexed_skin("Catherine", None), Some(0x62db_dc96));
+        assert_eq!(d.indexed_skin("Silvernail", None), Some(0xf4ec_ac3f));
+        assert_eq!(d.indexed_skin("Churnwalker", None), Some(0xc73e_ab15));
         assert_eq!(d.indexed_skin("Hero062", None), None);
     }
 }

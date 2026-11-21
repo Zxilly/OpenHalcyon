@@ -634,7 +634,7 @@ fn apply_hero_selection(
     }
     let skin = data
         .and_then(|d| d.indexed_skin(name, None))
-        .unwrap_or_else(|| halcyon_protocol::skin_hash(&format!("{name}_DefaultSkin")));
+        .unwrap_or_else(|| halcyon_data::skins::default_skin_hash(name));
     picks[seat] = Pick {
         preferences: picks[seat].preferences,
         name: name.to_owned(),
@@ -1290,5 +1290,43 @@ mod tests {
         assert!(team0.first_blackclaw_capture_time >= 900.0);
         assert_eq!(team1.ghostwing_captures, 0);
         assert_eq!(team1.blackclaw_captures, 0);
+    }
+
+    #[test]
+    fn draft_selection_resolves_client_lookup2_default_skins_for_all_playable_heroes() {
+        let Some(data) = test_data() else {
+            return;
+        };
+        let mut world = World::new(7, 10);
+        let mut picks: Vec<Pick> = (0..10)
+            .map(|_| Pick {
+                preferences: Default::default(),
+                name: "Ringo".into(),
+                skin: halcyon_data::skins::default_skin_hash("Ringo"),
+                selected: false,
+                locked: false,
+            })
+            .collect();
+        for hero in &data.hero_names {
+            let tid = u32::from(data.type_id(hero).expect("manifest entry"));
+            apply_hero_selection(0, hero, tid, 0, &mut world, &mut picks, Some(&data)).unwrap();
+            assert_eq!(
+                picks[0].skin,
+                halcyon_data::skins::default_skin_hash(hero),
+                "default skin hash mismatch for {hero}"
+            );
+        }
+        // Regression check for `2fff17f3` (`Churnwalker Bot` + `Catherine`/`Silvernail` tail 9..11).
+        for (hero, expected) in [
+            ("Catherine", 0x62db_dc96),
+            ("Silvernail", 0xf4ec_ac3f),
+            ("Churnwalker", 0xc73e_ab15),
+            ("Amael", 0x2fd7_245d),
+            ("Hero016", 0x7bd2_186c),
+        ] {
+            let tid = u32::from(data.type_id(hero).expect("manifest entry"));
+            apply_hero_selection(0, hero, tid, 0, &mut world, &mut picks, Some(&data)).unwrap();
+            assert_eq!(picks[0].skin, expected, "{hero}");
+        }
     }
 }
