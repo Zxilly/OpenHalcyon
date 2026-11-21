@@ -231,7 +231,9 @@ pub const ARAL_TALENT_HEROES: [AralTalentHero; 25] = [
 /// Returns whether a queue mode uses equippable Hero Talents (ARAL or Blitz).
 pub fn supports_talents(mode: &str) -> bool {
     mode == LEGACY_ARAL_QUEUE
-        || KnownQueue::parse(mode).is_some_and(|queue| queue.mode().is_blitz())
+        || KnownQueue::parse(mode).is_some_and(|queue| {
+            queue.mode().is_blitz() || queue == KnownQueue::BattleRoyaleBotsSolo
+        })
 }
 
 pub fn valid_talent_levels(mode: &str, seats: usize, grants: &[TalentLevels]) -> bool {
@@ -247,9 +249,14 @@ pub fn valid_talent_levels(mode: &str, seats: usize, grants: &[TalentLevels]) ->
             }))
 }
 
-/// These exact queue IDs advertise three human seats on each team.
+/// These exact queue IDs advertise six human seats (three per side).
 pub fn three_per_side(mode: &str) -> bool {
-    KnownQueue::parse(mode).is_some_and(|queue| queue.mode().is_three_per_side())
+    KnownQueue::parse(mode).is_some_and(KnownQueue::requires_six_humans)
+}
+
+/// Returns true for any 3-per-side (6-hero) map mode, including solo bot queues.
+pub fn three_per_side_map(mode: &str) -> bool {
+    KnownQueue::parse(mode).is_some_and(KnownQueue::is_three_per_side_map)
 }
 
 use serde::{Deserialize, de::DeserializeOwned};

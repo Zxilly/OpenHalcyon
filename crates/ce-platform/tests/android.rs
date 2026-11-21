@@ -1533,3 +1533,92 @@ struct MatchRoster<T> {
     winner: u8,
     players: T,
 }
+
+#[tokio::test]
+async fn android_solo_bot_and_practice_queues_auto_accept_into_playing() {
+    for (idx, (lobby, difficulty)) in [
+        ("blitz_bots_solo", Some("medium")),
+        ("solo_bots", Some("easy")),
+        ("standard_bots_solo", Some("hard")),
+        ("battle_royale_bots_solo", Some("very_easy")),
+        ("5v5_practice", None),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("platform.sqlite");
+        let app = AppState::open(
+            PlatformConfig {
+                database_path: path.clone(),
+                public_address: "localhost:8443".into(),
+                seats_per_match: 10,
+            },
+            Arc::new(Host),
+        )
+        .unwrap();
+        let adapter = Platform::new(
+            app,
+            Config {
+                authority: "localhost:8443".into(),
+                notify_authority: "localhost:2112".into(),
+            },
+            &[81; 32],
+            &path,
+            None,
+        )
+        .unwrap();
+        let r = adapter.rpc();
+        let device = format!("solo-dev-{idx}");
+        let guest = rpc(
+            &r,
+            RpcMethod::CreateGuestPlayer.as_str(),
+            android_guest(&device, "0"),
+        )
+        .await;
+        let uuid = guest["returnValue"]["playerUUID"].as_str().unwrap();
+        let session = rpc(
+            &r,
+            RpcMethod::StartSessionForPlayer.as_str(),
+            (
+                uuid, "local", 1, "en", &device, "model", "147219", "local", "0", "0", "0",
+            ),
+        )
+        .await;
+        let token = session["sessionToken"].as_str().unwrap();
+        let join = match difficulty {
+            Some(diff) => {
+                rpc(
+                    &r,
+                    RpcMethod::JoinLobby.as_str(),
+                    (
+                        token,
+                        LobbyDifficulty {
+                            lobby,
+                            difficulty: diff,
+                        },
+                        "147219",
+                    ),
+                )
+                .await
+            }
+            None => {
+                rpc(
+                    &r,
+                    RpcMethod::JoinLobby.as_str(),
+                    (token, LobbyJoin { lobby }, "147219"),
+                )
+                .await
+            }
+        };
+        assert_eq!(join["code"], 0, "{lobby}");
+        assert_eq!(
+            rpc(&r, RpcMethod::Update.as_str(), (token,)).await["returnValue"]["state"],
+            "match_pending",
+            "{lobby}"
+        );
+        let playing = rpc(&r, RpcMethod::Update.as_str(), (token,)).await;
+        assert_eq!(playing["returnValue"]["state"], "playing", "{lobby}");
+        assert_eq!(playing["returnValue"]["port"], 7123, "{lobby}");
+    }
+}

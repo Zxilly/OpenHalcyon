@@ -460,3 +460,57 @@ struct MatchOutcome<'a> {
     winner: u8,
     reason: &'a str,
 }
+
+#[test]
+fn solo_and_blitz_aliases_enqueue_plan_and_allocate() {
+    let mut pool = Pool::default();
+    let home = id(90);
+    let host = id(50);
+    for (offset, (mode, seats, with_talent)) in [
+        ("blitz_bots_solo", 1u8, true),
+        ("solo_bots", 1, false),
+        ("standard_bots_solo", 1, false),
+        ("battle_royale_bots_solo", 1, true),
+        ("5v5_practice", 1, false),
+        ("blitz_pvp_revamp", 6, true),
+        ("blitz_pvp_pure", 6, false),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let base = 200 + offset as u128 * 10;
+        let players: Vec<u128> = (0..u128::from(seats)).map(|k| base + k + 1).collect();
+        let mut t = ticket(base, home, &players);
+        t.queue.name = mode.into();
+        t.queue.seats = seats;
+        if with_talent {
+            t.queue.rules_digest = "aral-talent-levels:test".into();
+            t.talent_levels =
+                vec![[(273, std::num::NonZeroU8::new(2).unwrap())].into(); usize::from(seats)];
+        }
+        pool.apply(home, Command::Enqueue(t.clone())).unwrap();
+        let planned = plan(
+            &pool,
+            t.id,
+            &[HostOffer {
+                id: host,
+                queue: t.queue.clone(),
+                free_seats: usize::from(seats),
+                total_seats: 10,
+            }],
+        )
+        .expect(mode);
+        assert_eq!(planned.tickets, vec![key(&t)]);
+        let room = id(base + 9);
+        pool.apply(
+            home,
+            Command::Allocate {
+                id: room,
+                host,
+                tickets: planned.tickets,
+            },
+        )
+        .unwrap();
+        assert_eq!(pool.allocations()[&room].phase, Phase::Preparing);
+    }
+}

@@ -38,8 +38,35 @@ pub(crate) fn is_managed(queue: Option<KnownQueue>) -> bool {
     is_halcyon_fold(queue) || is_blitz(queue)
 }
 
-/// Ensures the authoritative simulation layout (`HalcyonFold` or `Blitz`) and native
-/// A001 navmesh / unit data are initialized before entering Loading / Running.
+/// Retains non-hero entities and the first `hero_seats` hero entities (`1` human + AI bots)
+/// so 3-per-side solo/bot rooms (`6` heroes total) satisfy Fold/Blitz/ARAL team validation.
+pub(crate) fn trim_to_three_per_side_roster(
+    world: &mut World,
+    hero_seats: usize,
+) -> Result<(), String> {
+    if world.tick != 0 {
+        return Err("roster trim requires an unstarted world".into());
+    }
+    let mut kept_heroes = 0usize;
+    world.entities.retain(|entity| {
+        if entity.kind != Kind::Hero {
+            return true;
+        }
+        if kept_heroes < hero_seats {
+            kept_heroes += 1;
+            true
+        } else {
+            false
+        }
+    });
+    if kept_heroes != hero_seats {
+        return Err("insufficient heroes for three-per-side roster".into());
+    }
+    Ok(())
+}
+
+/// Ensures the authoritative simulation layout (`HalcyonFold`, `Blitz`, `Aral` solo, or 5v5
+/// dual-channel `Practice`) and native navmesh / unit data are initialized before Loading / Running.
 pub(crate) fn prepare_world(room: &mut Room) -> std::io::Result<()> {
     if is_halcyon_fold(room.known_queue) {
         room.world
@@ -57,8 +84,76 @@ pub(crate) fn prepare_world(room: &mut Room) -> std::io::Result<()> {
                 .install_map_data(data)
                 .map_err(std::io::Error::other)?;
         }
+    } else if room.known_queue == Some(KnownQueue::BattleRoyaleBotsSolo) {
+        room.world.use_aral_lane().map_err(std::io::Error::other)?;
+        if let Some(data) = &room.data {
+            room.world
+                .install_map_data(data)
+                .map_err(std::io::Error::other)?;
+        }
+    } else if room.known_queue == Some(KnownQueue::Practice)
+        && room.seats.iter().any(|s| s.peers[1].is_some())
+        && !room.world.is_5v5_enabled()
+        && room.world.tick == 0
+    {
+        room.world
+            .use_sovereigns_rise_5v5(room.data.as_deref())
+            .map_err(std::io::Error::other)?;
     }
     Ok(())
+}
+
+/// Builds the single-channel `solo_opening` (`0x046E`) batch when a 3v3 Fold, Blitz, or ARAL
+/// solo-bots queue uses `ch == 0` solo control loading instead of opening a second stream.
+#[allow(dead_code)]
+pub(crate) fn solo_opening(room: &mut Room, seat: usize) -> std::io::Result<Option<Batch>> {
+    let aral_solo = room.known_queue == Some(KnownQueue::BattleRoyaleBotsSolo);
+    if !is_managed(room.known_queue) && !aral_solo {
+        return Ok(None);
+    }
+    prepare_world(room)?;
+    let team = room.world.entities[seat].team;
+    let initial = room.phase == crate::RoomPhase::Loading && room.world.tick == 0;
+    let mut out = vec![
+        messages::scene_mode(&room.queue, 1),
+        Message::known(crate::Opcode::SceneLoadedDismiss, [0]),
+    ];
+    out.extend(super::scene::players(room));
+    out.push(messages::world_clock(room.world.tick));
+    room.visible[usize::from(team)].clear();
+    if is_managed(room.known_queue) {
+        let view_team = (!initial).then_some(team);
+        append_opening(room, view_team, &mut out);
+        for e in &room.world.entities {
+            if e.hp > 0.0 && room.world.visible(team, e) {
+                room.visible[usize::from(team)].insert(e.id);
+            }
+        }
+    } else {
+        for e in &room.world.entities {
+            if e.hp <= 0.0 {
+                continue;
+            }
+            let visible = room.world.visible(team, e);
+            if (initial && e.kind == Kind::Hero) || visible {
+                out.push(point_move::full_spawn(
+                    &room.world,
+                    e,
+                    &room.picks,
+                    room.data.as_deref(),
+                    false,
+                ));
+                messages::append_inventory(&mut out, &room.world, e);
+                if visible {
+                    room.visible[usize::from(team)].insert(e.id);
+                }
+            }
+        }
+        out.extend(super::scene::mode_variables::Opening::Aral.messages());
+        out.extend(super::aral::talent_snapshot(room));
+        out.extend(room.recommended_paths(Some(team)));
+    }
+    Ok(Some(out))
 }
 
 /// Generates a 122-byte `EntitySpawn` (`0x03F2`) frame for a Halcyon Fold or Blitz structure.
@@ -679,5 +774,366 @@ mod tests {
         }
         assert!(saw_flyout);
         assert!(saw_mode_var);
+    }
+
+    #[tokio::test]
+    async fn five_v_five_pvp_surrender_broadcasts_five_slot_board_and_settles() {
+        let rooms = Rooms::new("127.0.0.1".parse().unwrap(), "127.0.0.1".into(), 1, None);
+        let id = Uuid::new_v4();
+        let players: Vec<Uuid> = (0..10).map(|_| Uuid::new_v4()).collect();
+        rooms
+            .reserve(Reservation {
+                talent_levels: Vec::new(),
+                match_id: id,
+                players: players.clone(),
+                teams: vec![0, 1, 0, 1, 0, 1, 0, 1, 0, 1],
+                mode: "5v5_pvp_casual".into(),
+                difficulty: None,
+            })
+            .unwrap();
+        let shared = rooms.room(id).unwrap();
+        for (seat, &p) in players.iter().enumerate() {
+            let mut room = shared.lock().unwrap();
+            let (tx, _rx) = mpsc::channel(32);
+            room.attach(p, tx, watch::channel(false).0).unwrap();
+            let lock = halcyon_protocol::draft::DraftAction::LockHero { confirm: 1 }.encode();
+            room.receive(seat, 0, lock).unwrap();
+        }
+        let mut rxs = Vec::with_capacity(10);
+        for &p in &players {
+            let mut room = shared.lock().unwrap();
+            let (tx, rx) = mpsc::channel(32);
+            let (_, ch, _, _) = room.attach(p, tx, watch::channel(false).0).unwrap();
+            assert_eq!(ch, 1);
+            rxs.push(rx);
+        }
+        for rx in &mut rxs {
+            while rx.try_recv().is_ok() {}
+        }
+
+        // Red team (seats 1, 3, 5, 7, 9) unanimously votes YES across ch=1 using padded and 1-byte votes.
+        let yes_padded =
+            Message::known(crate::Opcode::SetSurrenderStateRequest, [1, 0, 0, 0, 0, 0]);
+        let yes_compact = Message::aral_surrender_request();
+        let red_seats = [1usize, 3, 5, 7, 9];
+        for (idx, &seat) in red_seats.iter().enumerate() {
+            let mut room = shared.lock().unwrap();
+            let vote = if idx % 2 == 0 {
+                yes_padded.clone()
+            } else {
+                yes_compact.clone()
+            };
+            room.receive(seat, 1, vote).unwrap();
+        }
+
+        let boards: Vec<_> = rxs[1]
+            .try_recv()
+            .unwrap()
+            .into_records()
+            .into_iter()
+            .chain(
+                std::iter::from_fn(|| rxs[1].try_recv().ok())
+                    .flat_map(transport::Delivery::into_records),
+            )
+            .filter(|m| m.opcode == wire_opcode::TeamSurrenderStateChanged)
+            .collect();
+        assert_eq!(boards.len(), 5);
+        let Fields::Live(LiveFields::TeamSurrenderBoard(final_board)) =
+            boards.last().unwrap().fields().unwrap()
+        else {
+            panic!("expected TeamSurrenderBoard for 5v5");
+        };
+        assert_eq!(final_board.wire_team, 2);
+        assert_eq!(final_board.count, 5);
+        assert_eq!(final_board.phase, 2);
+        assert_eq!(&final_board.actors[..5], &[1501, 1503, 1505, 1507, 1509]);
+        assert_eq!(&final_board.votes[..5], &[1, 1, 1, 1, 1]);
+
+        {
+            let mut room = shared.lock().unwrap();
+            assert_eq!(room.phase, crate::RoomPhase::Ending);
+            assert_eq!(room.world.winner, Some(0));
+            room.finish_world();
+        }
+        let mut saw_surrender_end = false;
+        while let Ok(delivery) = rxs[0].try_recv() {
+            for msg in delivery.into_records() {
+                if msg.opcode == wire_opcode::EndMatch {
+                    assert_eq!(msg.body, [0, 0, 0, 1, 2, 0]);
+                    saw_surrender_end = true;
+                }
+            }
+        }
+        assert!(saw_surrender_end);
+    }
+
+    #[tokio::test]
+    async fn solo_and_three_per_side_surrender_pass_without_bot_stalls() {
+        let rooms = Rooms::new("127.0.0.1".parse().unwrap(), "127.0.0.1".into(), 4, None);
+        // 1) 5v5 Solo Bots (`ch == 0`, 1 human + 9 bots) passes immediately on single human YES.
+        let solo_id = Uuid::new_v4();
+        let solo_player = Uuid::new_v4();
+        rooms
+            .reserve(Reservation {
+                talent_levels: Vec::new(),
+                match_id: solo_id,
+                players: vec![solo_player],
+                teams: Vec::new(),
+                mode: "5v5_bots_solo".into(),
+                difficulty: Some(halcyon_data::BotDifficulty::Easy),
+            })
+            .unwrap();
+        let solo_room = rooms.room(solo_id).unwrap();
+        let (tx, mut rx) = mpsc::channel(32);
+        {
+            let mut room = solo_room.lock().unwrap();
+            room.attach(solo_player, tx, watch::channel(false).0)
+                .unwrap();
+            room.receive(0, 0, Message::known(crate::Opcode::DraftLockHero, []))
+                .unwrap();
+            room.phase(crate::RoomPhase::Running);
+            room.seats[0].loading_roster_sent = true;
+            room.seats[0].world_actor_written = true;
+            // Drive ch=0 scene preamble confirmation to confirm gameplay stream.
+            let snap = Message::known(crate::Opcode::RequestSceneSnapshot, [0; 6]);
+            let owner = Message::known(crate::Opcode::ConfirmSceneOwner, [0, 0, 5, 220, 1, 0]);
+            let ready = Message::known(crate::Opcode::SceneReadyConfirm, [0; 6]);
+            room.receive(0, 0, snap).unwrap();
+            room.receive(0, 0, owner).unwrap();
+            room.receive(0, 0, ready).unwrap();
+            assert!(room.seats[0].preamble.confirmed());
+            room.receive(0, 0, Message::aral_surrender_request())
+                .unwrap();
+            assert_eq!(room.phase, crate::RoomPhase::Ending);
+            assert_eq!(room.world.winner, Some(1));
+        }
+        let mut boards = Vec::new();
+        while let Ok(delivery) = rx.try_recv() {
+            for m in delivery.into_records() {
+                if m.opcode == wire_opcode::TeamSurrenderStateChanged {
+                    boards.push(m);
+                }
+            }
+        }
+        assert_eq!(boards.len(), 1);
+        let Fields::Live(LiveFields::TeamSurrenderBoard(solo_board)) = boards[0].fields().unwrap()
+        else {
+            panic!("expected 5-slot board for 5v5 solo surrender");
+        };
+        assert_eq!(solo_board.count, 5);
+        assert_eq!(solo_board.phase, 2);
+        assert_eq!(&solo_board.votes[..5], &[1; 5]);
+
+        // 2) 3v3 PvP Casual (`ch == 1`, 3 per side) uses 3-slot AralSurrenderBoard and passes on 3rd YES.
+        let pvp3_id = Uuid::new_v4();
+        let pvp3_players = six_players();
+        rooms
+            .reserve(Reservation {
+                talent_levels: Vec::new(),
+                match_id: pvp3_id,
+                players: pvp3_players.clone(),
+                teams: vec![0, 1, 0, 1, 0, 1],
+                mode: "3v3_pvp_casual".into(),
+                difficulty: None,
+            })
+            .unwrap();
+        let pvp3_room = rooms.room(pvp3_id).unwrap();
+        for (seat, &p) in pvp3_players.iter().enumerate() {
+            let mut room = pvp3_room.lock().unwrap();
+            let (tx, _) = mpsc::channel(16);
+            room.attach(p, tx, watch::channel(false).0).unwrap();
+            room.receive(seat, 0, Message::known(crate::Opcode::DraftLockHero, []))
+                .unwrap();
+        }
+        let mut rxs3 = Vec::new();
+        for &p in &pvp3_players {
+            let mut room = pvp3_room.lock().unwrap();
+            let (tx, rx) = mpsc::channel(16);
+            let (_, ch, _, _) = room.attach(p, tx, watch::channel(false).0).unwrap();
+            assert_eq!(ch, 1);
+            rxs3.push(rx);
+        }
+        while rxs3[0].try_recv().is_ok() {}
+        for seat in [0usize, 2, 4] {
+            pvp3_room
+                .lock()
+                .unwrap()
+                .receive(seat, 1, Message::aral_surrender_request())
+                .unwrap();
+        }
+        let msg3 = std::iter::from_fn(|| rxs3[0].try_recv().ok())
+            .flat_map(transport::Delivery::into_records)
+            .filter(|m| m.opcode == wire_opcode::TeamSurrenderStateChanged)
+            .last()
+            .unwrap();
+        assert!(matches!(
+            msg3.fields().unwrap(),
+            Fields::Live(LiveFields::AralSurrenderBoard(b)) if b.wire_team == 1 && b.phase == 2 && b.votes == [1, 1, 1]
+        ));
+
+        // 3) 3v3 Solo Bots (`solo_bots`, 1 human + 5 bots) passes immediately on single human YES with 3-slot board.
+        let solo3_id = Uuid::new_v4();
+        let solo3_player = Uuid::new_v4();
+        rooms
+            .reserve(Reservation {
+                talent_levels: Vec::new(),
+                match_id: solo3_id,
+                players: vec![solo3_player],
+                teams: Vec::new(),
+                mode: "solo_bots".into(),
+                difficulty: Some(halcyon_data::BotDifficulty::Hard),
+            })
+            .unwrap();
+        let solo3_room = rooms.room(solo3_id).unwrap();
+        let (tx0, _) = mpsc::channel(16);
+        let (tx1, mut rx1) = mpsc::channel(16);
+        {
+            let mut room = solo3_room.lock().unwrap();
+            room.attach(solo3_player, tx0, watch::channel(false).0)
+                .unwrap();
+            room.receive(0, 0, Message::known(crate::Opcode::DraftLockHero, []))
+                .unwrap();
+            room.attach(solo3_player, tx1, watch::channel(false).0)
+                .unwrap();
+            while rx1.try_recv().is_ok() {}
+            room.receive(0, 1, Message::aral_surrender_request())
+                .unwrap();
+            assert_eq!(room.phase, crate::RoomPhase::Ending);
+            assert_eq!(room.world.winner, Some(1));
+        }
+        let msg_solo3 = std::iter::from_fn(|| rx1.try_recv().ok())
+            .flat_map(transport::Delivery::into_records)
+            .filter(|m| m.opcode == wire_opcode::TeamSurrenderStateChanged)
+            .last()
+            .unwrap();
+        assert!(matches!(
+            msg_solo3.fields().unwrap(),
+            Fields::Live(LiveFields::AralSurrenderBoard(b)) if b.wire_team == 1 && b.phase == 2 && b.votes == [1, 1, 1]
+        ));
+    }
+
+    #[tokio::test]
+    async fn missing_solo_practice_and_blitz_aliases_reserve_backfill_bots_and_enter_running() {
+        let rooms = Rooms::new("127.0.0.1".parse().unwrap(), "127.0.0.1".into(), 8, None);
+        for (mode, total_heroes, asset, is_blitz_mode) in [
+            ("blitz_bots_solo", 6usize, "*GameMode_Blitz_SoloBots*", true),
+            ("solo_bots", 6, "*GameMode_HF_SoloBots*", false),
+            ("standard_bots_solo", 6, "*GameMode_HF_SoloBots*", false),
+            (
+                "battle_royale_bots_solo",
+                6,
+                "*GameMode_Aral_SoloBots*",
+                false,
+            ),
+            ("5v5_practice", 10, "*GameMode_5v5_Practice*", false),
+        ] {
+            let id = Uuid::new_v4();
+            let player = Uuid::new_v4();
+            let grants = if is_blitz_mode {
+                let mut map = TalentLevels::default();
+                map.insert(EntityTemplate::Ringo.as_raw(), NonZeroU8::new(10).unwrap());
+                vec![map]
+            } else {
+                Vec::new()
+            };
+            rooms
+                .reserve(Reservation {
+                    talent_levels: grants,
+                    match_id: id,
+                    players: vec![player],
+                    teams: Vec::new(),
+                    mode: mode.into(),
+                    difficulty: (mode != "5v5_practice")
+                        .then_some(halcyon_data::BotDifficulty::Medium),
+                })
+                .unwrap();
+            let shared = rooms.room(id).unwrap();
+            let mut room = shared.lock().unwrap();
+            assert_eq!(room.picks.len(), total_heroes);
+            assert_eq!(
+                room.world
+                    .entities
+                    .iter()
+                    .filter(|e| e.kind == Kind::Hero)
+                    .count(),
+                total_heroes
+            );
+            assert_eq!(
+                room.world
+                    .entities
+                    .iter()
+                    .filter(|e| e.kind == Kind::Hero && e.bot)
+                    .count(),
+                total_heroes - 1
+            );
+            assert!(room.solo_scene());
+            let (tx0, _rx0) = mpsc::channel(32);
+            let (_, ch0, _, _) = room.attach(player, tx0, watch::channel(false).0).unwrap();
+            assert_eq!(ch0, 0);
+            if mode == "5v5_practice" {
+                let lock = halcyon_protocol::draft::DraftAction::LockHero { confirm: 1 }.encode();
+                room.receive(0, 0, lock).unwrap();
+            } else {
+                room.receive(0, 0, Message::known(crate::Opcode::DraftLockHero, []))
+                    .unwrap();
+            }
+            assert_eq!(room.phase, crate::RoomPhase::Loading);
+
+            // Solo-scene opening builds native map frames for Fold/Blitz/ARAL before ch=0 RequestSceneSnapshot.
+            if total_heroes == 6 {
+                let opening = solo_opening(&mut room, 0)
+                    .unwrap()
+                    .expect("expected solo_opening batch for 6-hero bot queue");
+                assert!(
+                    opening
+                        .iter()
+                        .any(|m| m.opcode == wire_opcode::SceneSettings)
+                );
+            }
+
+            // Dual-channel attach works seamlessly as well.
+            let (tx1, _rx1) = mpsc::channel(32);
+            let (_, ch1, _, _) = room.attach(player, tx1, watch::channel(false).0).unwrap();
+            assert_eq!(ch1, 1);
+            assert_eq!(room.phase, crate::RoomPhase::Running);
+            if is_blitz_mode {
+                let ack = room
+                    .receive(0, 1, TalentSelection::Slot0.request())
+                    .unwrap();
+                assert_eq!(ack.len(), 2);
+                assert_eq!(room.world.entities[0].gold, 6000);
+            }
+            assert_eq!(KnownQueue::parse(mode).unwrap().asset(), asset);
+        }
+
+        for pvp_blitz in ["blitz_pvp_revamp", "blitz_pvp_pure"] {
+            let id = Uuid::new_v4();
+            let players = six_players();
+            rooms
+                .reserve(Reservation {
+                    talent_levels: Vec::new(),
+                    match_id: id,
+                    players: players.clone(),
+                    teams: vec![0, 1, 0, 1, 0, 1],
+                    mode: pvp_blitz.into(),
+                    difficulty: None,
+                })
+                .unwrap();
+            let shared = rooms.room(id).unwrap();
+            for (seat, &p) in players.iter().enumerate() {
+                let mut room = shared.lock().unwrap();
+                let (tx, _) = mpsc::channel(16);
+                room.attach(p, tx, watch::channel(false).0).unwrap();
+                room.receive(seat, 0, Message::known(crate::Opcode::DraftLockHero, []))
+                    .unwrap();
+            }
+            for &p in &players {
+                let mut room = shared.lock().unwrap();
+                let (tx, _) = mpsc::channel(16);
+                let (_, ch, _, _) = room.attach(p, tx, watch::channel(false).0).unwrap();
+                assert_eq!(ch, 1);
+            }
+            assert_eq!(shared.lock().unwrap().phase, crate::RoomPhase::Running);
+        }
     }
 }

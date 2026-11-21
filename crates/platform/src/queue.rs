@@ -1,6 +1,6 @@
 use crate::EventBody;
 use halcyon_community::{CommunityError, queue as community_queue};
-use halcyon_data::{BotDifficulty, THREE_PER_SIDE_SEATS, three_per_side};
+use halcyon_data::{BotDifficulty, THREE_PER_SIDE_SEATS, three_per_side_map};
 use rusqlite::{Transaction, params};
 use uuid::Uuid;
 
@@ -42,10 +42,17 @@ pub(super) fn validate_mode(mode: &str, seats: usize) -> Result<()> {
             "seat count must be between 1 and 64",
         ));
     }
-    if three_per_side(mode) && seats != THREE_PER_SIDE_SEATS {
-        return Err(PlatformError::Invalid(
-            "three-per-side queue requires six human seats",
-        ));
+    if let Some(queue) = halcyon_data::KnownQueue::parse(mode) {
+        if queue.is_single_human() && seats != 1 {
+            return Err(PlatformError::Invalid(
+                "solo bot or practice queue requires one human seat",
+            ));
+        }
+        if queue.requires_six_humans() && seats != THREE_PER_SIDE_SEATS {
+            return Err(PlatformError::Invalid(
+                "three-per-side queue requires six human seats",
+            ));
+        }
     }
     if mode.is_empty()
         || mode.len() > 32
@@ -348,7 +355,7 @@ pub fn plan_teams(party_sizes: &[usize]) -> Vec<u8> {
 }
 
 pub fn plan_teams_for_mode(mode: &str, party_sizes: &[usize]) -> Vec<u8> {
-    let side_capacity = if three_per_side(mode) {
+    let side_capacity = if three_per_side_map(mode) {
         THREE_PER_SIDE_SEATS / 2
     } else {
         5

@@ -1,6 +1,6 @@
 pub use halcyon_data::{
     ARAL_TALENT_HEROES, ARAL_TALENT_RULES_PREFIX, BotDifficulty, KnownQueue, LEGACY_ARAL_QUEUE,
-    LEGACY_ARAL_SEATS, NativeMode, TalentLevels,
+    LEGACY_ARAL_SEATS, TalentLevels,
 };
 mod accounts;
 mod chat;
@@ -222,9 +222,8 @@ impl AppState {
 
     pub fn seats_for_mode(&self, mode: &str) -> usize {
         match KnownQueue::parse(mode) {
-            Some(queue) if queue.mode() == NativeMode::SoloBots => 1,
-            Some(queue) if queue.mode().is_three_per_side() => halcyon_data::THREE_PER_SIDE_SEATS,
-            _ => self.seats_per_match(),
+            Some(queue) => queue.human_seats(self.seats_per_match()),
+            None => self.seats_per_match(),
         }
     }
 

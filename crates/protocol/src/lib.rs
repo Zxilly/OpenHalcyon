@@ -27,7 +27,7 @@ pub use zone::ZoneAction;
 mod solo_structure;
 pub use solo_structure::SoloStructure;
 mod surrender;
-pub use surrender::AralSurrenderBoard;
+pub use surrender::{AralSurrenderBoard, MAX_SURRENDER_SLOTS, TeamSurrenderBoard};
 mod talent;
 pub use talent::{EquippedTalent, TalentSelection};
 mod recommended_build;
