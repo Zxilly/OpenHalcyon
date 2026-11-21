@@ -72,7 +72,9 @@ pub fn setup(
     let mut config = settings(seat, mode_name(mode), true);
     if matches!(
         KnownQueue::parse(mode).map(KnownQueue::mode),
-        Some(NativeMode::RankedFold | NativeMode::CasualFold | NativeMode::Blitz)
+        Some(
+            NativeMode::RankedFold | NativeMode::CasualFold | NativeMode::Blitz | NativeMode::Aral
+        )
     ) {
         config.body[16..18].fill(3);
         config.body[96..100].copy_from_slice(&5f32.to_be_bytes());
@@ -94,7 +96,9 @@ pub(super) fn draft_catalog(
     let mut mode = vec![0; 68];
     if matches!(
         parsed_mode,
-        Some(NativeMode::CasualFold | NativeMode::RankedFold | NativeMode::Blitz)
+        Some(
+            NativeMode::CasualFold | NativeMode::RankedFold | NativeMode::Blitz | NativeMode::Aral
+        )
     ) {
         mode[..4].copy_from_slice(&3u32.to_be_bytes());
     }
@@ -106,21 +110,8 @@ pub(super) fn draft_catalog(
             .iter()
             .map(|entry| Message::known(crate::Opcode::DraftCatalogEntry, *entry)),
     );
-    let roster = if parsed_mode == Some(NativeMode::Blitz) {
-        aral_roster_from_world(world, players, picks)
-    } else {
-        snapshot(world, players, picks)
-    };
-    out.push(roster);
+    out.push(snapshot(world, players, picks));
     out
-}
-
-fn aral_roster_from_world(world: &World, players: &[Uuid], picks: &[Pick]) -> Message {
-    let mut msg = snapshot(world, players, picks);
-    msg.opcode = crate::wire_opcode::DraftRosterAral;
-    msg.body[..4].copy_from_slice(&crate::aral::DRAFT_SECONDS.to_be_bytes());
-    msg.body[4..8].copy_from_slice(&crate::aral::DRAFT_SECONDS.to_be_bytes());
-    msg
 }
 pub fn snapshot(world: &World, players: &[Uuid], picks: &[Pick]) -> Message {
     let mut body = vec![0; 2590];

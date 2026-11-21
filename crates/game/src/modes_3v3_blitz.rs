@@ -3,12 +3,68 @@
 
 use super::{Batch, Room, messages, point_move, transport};
 use halcyon_data::EntityTemplate;
-use halcyon_protocol::{Flyout, FlyoutText, Message, ce::KnownQueue};
+use halcyon_protocol::{
+    BuffApplication, BuffChange, BuffMutation, BuffPrefix, Flyout, FlyoutText, Message,
+    SoloStructure, ce::KnownQueue,
+};
 use halcyon_sim::{BlitzTalentSlot, Entity, Event, Kind, TICK_HZ, World};
 
-const STRUCTURE_SKIN: u32 = 0xc10b41da;
+const STRUCTURE_SKIN: u32 = 0xc10b_41da;
+const MINION_SKIN: u32 = 0xeb39_ce55;
+const JUNGLE_MINION_SKIN: u32 = 0x4dd5_b7d0;
+const GROUND_HEIGHT_BITS: u32 = 0x3d75_be29;
 const SCENERY_ACTOR_BASE: u32 = 2000;
 const JUNGLE_SHOP_SLOT: u8 = 16;
+const FIRST_HERO_SLOT: u8 = 17;
+const FIRST_DYNAMIC_SLOT: u8 = 52;
+const ACTOR_SLOT_LIMIT: u8 = 200;
+
+const BUFF_INVULNERABLE: u16 = 27;
+const BUFF_GLOBALLY_VISIBLE: u16 = 66;
+const BUFF_SHOP_GRANT_JUNGLE: u16 = 175;
+const BUFF_SHOP_GRANT_BASE_3V3: u16 = 176;
+const PERMANENT_DURATION_BITS: u16 = 0xbc00;
+
+pub(crate) const fn non_hero_skin(template: EntityTemplate) -> Option<u32> {
+    match template {
+        EntityTemplate::RangedMinion | EntityTemplate::LeadMinion | EntityTemplate::TankMinion => {
+            Some(MINION_SKIN)
+        }
+        EntityTemplate::VainCrystalHome3v3
+        | EntityTemplate::VainCrystalAway3v3
+        | EntityTemplate::VisionBeacon
+        | EntityTemplate::Turret
+        | EntityTemplate::VainTurret
+        | EntityTemplate::NeutralJungleMinionStore
+        | EntityTemplate::RiverShop5v5
+        | EntityTemplate::HfBaseTurret
+        | EntityTemplate::HfMiddleTurret
+        | EntityTemplate::HfOuterTurret
+        | EntityTemplate::HfVainTurret => Some(STRUCTURE_SKIN),
+        EntityTemplate::JungleMinionGoldMiner
+        | EntityTemplate::JungleMinionCrystalMiner
+        | EntityTemplate::BlitzMiddleSentry
+        | EntityTemplate::BlitzAllySentry
+        | EntityTemplate::JungleShopCenter
+        | EntityTemplate::BlitzJungleShopCenter
+        | EntityTemplate::KrakenJungle
+        | EntityTemplate::KrakenCaptured
+        | EntityTemplate::HfTreant
+        | EntityTemplate::HfElderTreant
+        | EntityTemplate::HfBigBear
+        | EntityTemplate::HfSmallBear
+        | EntityTemplate::HfCrystalMiner
+        | EntityTemplate::HfGoldMiner
+        | EntityTemplate::HfKrakenJungle
+        | EntityTemplate::HfKrakenCaptured => Some(JUNGLE_MINION_SKIN),
+        _ => None,
+    }
+}
+
+pub(crate) fn hero_slot(entity: &Entity) -> Option<u8> {
+    (entity.kind == Kind::Hero && (1..=6).contains(&entity.id))
+        .then(|| FIRST_HERO_SLOT - 1 + entity.id as u8)
+}
 
 pub(crate) const BLITZ_SCORE_LEFT_KEY: u32 = fnv1a_32(b"blitz_score_left");
 pub(crate) const BLITZ_SCORE_RIGHT_KEY: u32 = fnv1a_32(b"blitz_score_right");
@@ -128,7 +184,7 @@ pub(crate) fn solo_opening(room: &mut Room, seat: usize) -> std::io::Result<Opti
     }
     if is_managed(room.known_queue) {
         let view_team = (!initial).then_some(team);
-        append_opening(room, view_team, &mut out);
+        append_opening(room, view_team, true, &mut out);
         for e in &room.world.entities {
             if e.hp > 0.0 && room.world.visible(team, e) {
                 room.visible[usize::from(team)].insert(e.id);
@@ -136,23 +192,43 @@ pub(crate) fn solo_opening(room: &mut Room, seat: usize) -> std::io::Result<Opti
         }
         out.extend(room.recommended_paths(Some(team)));
     } else {
-        for e in &room.world.entities {
+        out.extend(super::aral_spawn::scenery());
+        for i in 0..room.world.entities.len() {
+            let e = &room.world.entities[i];
             if e.hp <= 0.0 {
                 continue;
             }
             let visible = room.world.visible(team, e);
-            if (initial && e.kind == Kind::Hero) || visible {
-                out.push(point_move::full_spawn(
-                    &room.world,
-                    e,
-                    &room.picks,
-                    room.data.as_deref(),
-                    false,
-                ));
-                messages::append_inventory(&mut out, &room.world, e);
-                if visible {
-                    room.visible[usize::from(team)].insert(e.id);
+            let show = if initial {
+                matches!(e.kind, Kind::Hero | Kind::Crystal | Kind::Tower) || visible
+            } else {
+                visible
+            };
+            if !show {
+                continue;
+            }
+            if let Some(msg) = super::aral_spawn::structure(&room.world, e) {
+                out.push(msg);
+            } else if e.kind == Kind::Hero {
+                let Some(slot) = point_move::aral_slot(e) else {
+                    continue;
+                };
+                out.push(hero_spawn(room, e, slot, true));
+                if initial {
+                    super::native_cooldown::opening(
+                        &mut out,
+                        e,
+                        halcyon_protocol::ce::NativeMode::Aral,
+                    );
                 }
+                messages::append_inventory(&mut out, &room.world, e);
+            } else if let Some(slot) = room.solo_slots.alloc_dynamic(e.id)
+                && let Some(msg) = entity_spawn(slot, e)
+            {
+                out.push(msg);
+            }
+            if visible {
+                room.visible[usize::from(team)].insert(e.id);
             }
         }
         out.extend(super::scene::mode_variables::Opening::Aral.messages());
@@ -289,8 +365,9 @@ pub(crate) fn scenery(blitz: bool) -> Vec<Message> {
             slot / 8
         };
         let mut body = [0u8; 122];
+        let skin = non_hero_skin(template).unwrap_or(STRUCTURE_SKIN);
         body[..4].copy_from_slice(&u32::from(template.as_raw()).to_be_bytes());
-        body[4..8].copy_from_slice(&STRUCTURE_SKIN.to_be_bytes());
+        body[4..8].copy_from_slice(&skin.to_be_bytes());
         body[8..12].copy_from_slice(&(SCENERY_ACTOR_BASE + u32::from(slot)).to_be_bytes());
         put_floats(&mut body, 12, position);
         put_floats(&mut body, 24, direction);
@@ -323,11 +400,150 @@ pub(crate) fn scenery(blitz: bool) -> Vec<Message> {
     out
 }
 
-/// Appends declarations for every visible actor (heroes `0x03F3`, structures `0x03F2`,
-/// neutrals & minions), scenery, `0x041F` mode variables, and equipped talents.
-pub(crate) fn append_opening(room: &Room, team: Option<u8>, batch: &mut Batch) {
+/// Opening shopkeeper access, invulnerability, and visibility buffs for base shops (`2000`, `2008`)
+/// and center Jungle Shop (`2016`).
+pub(crate) fn shopkeeper_opening_buffs() -> Vec<Message> {
+    const SPECS: [(u32, u32, [u16; 3]); 3] = [
+        (
+            2000,
+            2200,
+            [
+                BUFF_SHOP_GRANT_BASE_3V3,
+                BUFF_INVULNERABLE,
+                BUFF_GLOBALLY_VISIBLE,
+            ],
+        ),
+        (
+            2008,
+            2208,
+            [
+                BUFF_SHOP_GRANT_BASE_3V3,
+                BUFF_INVULNERABLE,
+                BUFF_GLOBALLY_VISIBLE,
+            ],
+        ),
+        (
+            2016,
+            2216,
+            [
+                BUFF_SHOP_GRANT_JUNGLE,
+                BUFF_INVULNERABLE,
+                BUFF_GLOBALLY_VISIBLE,
+            ],
+        ),
+    ];
+    let mut out = Vec::with_capacity(9);
+    for (actor, first_instance, defs) in SPECS {
+        for (offset, definition) in defs.into_iter().enumerate() {
+            out.push(
+                BuffApplication {
+                    prefix: BuffPrefix {
+                        target: actor,
+                        source: actor,
+                        duration_bits: PERMANENT_DURATION_BITS,
+                        instance: first_instance + offset as u32,
+                        definition,
+                    },
+                    extras: None,
+                    suffix: &[],
+                }
+                .to_message()
+                .expect("verified 3v3/Blitz shopkeeper buff"),
+            );
+        }
+    }
+    out
+}
+
+/// Builds a compact 122-byte `EntitySpawn` (`0x03F2`) frame with verified CFF0 skin hashes for
+/// every live non-hero unit (minions, jungle camps, miners, Blitz sentries, captured Kraken).
+pub(crate) fn entity_spawn(slot: u8, entity: &Entity) -> Option<Message> {
+    if entity.kind == Kind::Hero
+        || !(FIRST_DYNAMIC_SLOT..ACTOR_SLOT_LIMIT).contains(&slot)
+        || !(1..=u32::from(u16::MAX) - 1500).contains(&entity.id)
+        || !entity.position.x.is_finite()
+        || !entity.position.y.is_finite()
+        || !entity.hp.is_finite()
+        || !entity.max_hp.is_finite()
+        || entity.hp <= 0.0
+        || entity.max_hp <= 0.0
+    {
+        return None;
+    }
+    let template = EntityTemplate::from_raw(entity.type_id)?;
+    let skin = non_hero_skin(template)?;
+    let hp = entity.hp.min(entity.max_hp);
+    let forward = match entity.team {
+        0 => [1.0, 0.0, 0.0],
+        1 => [-1.0, 0.0, 0.0],
+        _ => [0.0, 0.0, 1.0],
+    };
+    let radius = if entity.kind == Kind::Minion {
+        3.5
+    } else {
+        3.6
+    };
+    let mut body = [0u8; 122];
+    body[..4].copy_from_slice(&u32::from(template.as_raw()).to_be_bytes());
+    body[4..8].copy_from_slice(&skin.to_be_bytes());
+    body[8..12].copy_from_slice(&u32::from(messages::wire_id(entity.id)).to_be_bytes());
+    put_floats(
+        &mut body,
+        12,
+        [
+            entity.position.x,
+            f32::from_bits(GROUND_HEIGHT_BITS),
+            entity.position.y,
+        ],
+    );
+    put_floats(&mut body, 24, forward);
+    put_floats(&mut body, 36, [hp, entity.max_hp]);
+    put_floats(&mut body, 52, [radius]);
+    put_floats(&mut body, 64, [1.0]);
+    put_floats(&mut body, 84, [1.0]);
+    body[88..96].fill(1);
+    if entity.team < 2 {
+        body[97 + usize::from(entity.team)] = 15;
+    } else {
+        body[96] = 15;
+    }
+    body[112..116].fill(u8::MAX);
+    body[116] = slot;
+    body[119] = 1;
+    body[120] = if entity.team < 2 && entity.kind == Kind::Minion {
+        1 + 3 * entity.team
+    } else {
+        u8::MAX
+    };
+    body[121] = if entity.team < 2 { entity.team + 1 } else { 0 };
+    Some(Message::known(crate::Opcode::EntitySpawn, body))
+}
+
+fn hero_spawn(room: &Room, entity: &Entity, slot: u8, solo: bool) -> Message {
+    let mut decl = point_move::full_spawn(
+        &room.world,
+        entity,
+        &room.picks,
+        room.data.as_deref(),
+        false,
+    );
+    if solo {
+        messages::solo_hero_profile(&mut decl, entity, room.world.tick);
+    }
+    decl.body[745] = slot;
+    decl
+}
+
+fn append_opening_with_slot(
+    room: &Room,
+    team: Option<u8>,
+    solo: bool,
+    batch: &mut Batch,
+    mut alloc_dynamic: impl FnMut(u32) -> Option<u8>,
+) {
     let blitz = is_blitz(room.known_queue);
     batch.extend(scenery(blitz));
+    batch.extend(shopkeeper_opening_buffs());
     for e in &room.world.entities {
         if e.hp <= 0.0 || team.is_some_and(|side| !room.world.visible(side, e)) {
             continue;
@@ -337,16 +553,16 @@ pub(crate) fn append_opening(room: &Room, team: Option<u8>, batch: &mut Batch) {
             continue;
         }
         if e.kind == Kind::Hero {
-            batch.push(point_move::full_spawn(
-                &room.world,
-                e,
-                &room.picks,
-                room.data.as_deref(),
-                false,
-            ));
-            messages::append_inventory(batch, &room.world, e);
-        } else {
-            batch.push(messages::spawn(e, &room.picks, room.data.as_deref()));
+            if let Some(slot) = hero_slot(e) {
+                batch.push(hero_spawn(room, e, slot, solo));
+                messages::append_inventory(batch, &room.world, e);
+            }
+            continue;
+        }
+        if let Some(slot) = alloc_dynamic(e.id)
+            && let Some(msg) = entity_spawn(slot, e)
+        {
+            batch.push(msg);
         }
     }
     if blitz {
@@ -355,6 +571,171 @@ pub(crate) fn append_opening(room: &Room, team: Option<u8>, batch: &mut Batch) {
         batch.extend(super::aral::talent_snapshot(room));
     } else if is_halcyon_fold(room.known_queue) {
         batch.extend(super::scene::mode_variables::Opening::HalcyonFold.messages());
+    }
+}
+
+/// Appends opening declarations into `room.solo_slots` for connected solo and PvP peers.
+pub(crate) fn append_opening(room: &mut Room, team: Option<u8>, solo: bool, batch: &mut Batch) {
+    let mut allocated = Vec::new();
+    for i in 0..room.world.entities.len() {
+        let e = &room.world.entities[i];
+        if e.hp <= 0.0 || team.is_some_and(|side| !room.world.visible(side, e)) {
+            continue;
+        }
+        if !matches!(e.kind, Kind::Hero | Kind::Crystal | Kind::Tower)
+            && let Some(slot) = room.solo_slots.alloc_dynamic(e.id)
+        {
+            allocated.push((e.id, slot));
+        }
+    }
+    append_opening_with_slot(room, team, solo, batch, |id| {
+        allocated
+            .iter()
+            .find_map(|&(eid, slot)| (eid == id).then_some(slot))
+    });
+}
+
+/// Read-only opening snapshot variant used by observers and read-only view callers.
+pub(crate) fn append_opening_snapshot(
+    room: &Room,
+    team: Option<u8>,
+    solo: bool,
+    batch: &mut Batch,
+) {
+    let mut next_fallback = FIRST_DYNAMIC_SLOT;
+    append_opening_with_slot(room, team, solo, batch, |id| {
+        room.solo_slots.assigned_dynamic(id).or_else(|| {
+            while next_fallback < ACTOR_SLOT_LIMIT {
+                let candidate = next_fallback;
+                next_fallback += 1;
+                if room
+                    .world
+                    .entities
+                    .iter()
+                    .all(|other| room.solo_slots.assigned_dynamic(other.id) != Some(candidate))
+                {
+                    return Some(candidate);
+                }
+            }
+            None
+        })
+    });
+}
+
+/// Allocates a single live declaration (`0x03F3` for heroes, `0x03F2` for everything else)
+/// on 3v3 Halcyon Fold and Blitz rooms. Never emits `0x03F3` for non-hero actors.
+pub(crate) fn allocate_declaration(room: &mut Room, index: usize, solo: bool) -> Option<Message> {
+    let e = &room.world.entities[index];
+    if e.hp <= 0.0 {
+        return None;
+    }
+    if let Some(structure) = structure_spawn(&room.world, e) {
+        return Some(structure);
+    }
+    if e.kind == Kind::Hero {
+        return hero_slot(e).map(|slot| hero_spawn(room, e, slot, solo));
+    }
+    let slot = room.solo_slots.alloc_dynamic(e.id)?;
+    entity_spawn(slot, e)
+}
+
+/// Allocates a single live declaration on `BattleRoyaleBotsSolo` (`use_aral_lane`), keeping all
+/// structures and minions on `0x03F2` and heroes on `0x03F3` slots `16..=21`.
+pub(crate) fn allocate_aral_solo_declaration(room: &mut Room, index: usize) -> Option<Message> {
+    let e = &room.world.entities[index];
+    if e.hp <= 0.0 {
+        return None;
+    }
+    if let Some(structure) = super::aral_spawn::structure(&room.world, e) {
+        return Some(structure);
+    }
+    if e.kind == Kind::Hero {
+        return point_move::aral_slot(e).map(|slot| hero_spawn(room, e, slot, true));
+    }
+    let slot = room.solo_slots.alloc_dynamic(e.id)?;
+    entity_spawn(slot, e)
+}
+
+/// Keeps `Buff_Shop_CanShopIcon` (`173`) and `Buff_Shop_AllowStorePurchase` (`174`, operand `452`
+/// for 3v3 HF or `453` for Blitz) synchronized across human seats on both `ch == 0` solo and
+/// `ch == 1` PvP connections.
+pub(crate) fn sync_shops(room: &mut Room) {
+    if !is_managed(room.known_queue) {
+        return;
+    }
+    let store_operand = if is_blitz(room.known_queue) {
+        SoloStructure::STORE_BLITZ_OPERAND
+    } else {
+        SoloStructure::STORE_3V3_OPERAND
+    };
+    for seat_idx in 0..room.seats.len() {
+        let peer_ch = if room.seats[seat_idx].peers[1].is_some() {
+            Some(1usize)
+        } else if room.seats[seat_idx].peers[0].is_some()
+            && room.seats[seat_idx].world_actor_written
+            && room.seats[seat_idx].preamble.confirmed()
+        {
+            Some(0usize)
+        } else {
+            None
+        };
+        let Some(ch) = peer_ch else {
+            continue;
+        };
+        let Some(actor_id) = room
+            .world
+            .entities
+            .get(seat_idx)
+            .filter(|e| e.kind == Kind::Hero)
+            .map(|e| e.id)
+        else {
+            continue;
+        };
+        let mut batch = Vec::new();
+        let wire_actor = u32::from(messages::wire_id(actor_id));
+        if !room.scene_views[seat_idx].shop_can_icon_sent {
+            batch.push(SoloStructure::shop_can_icon_message(
+                wire_actor,
+                0x10_0000 + seat_idx as u32,
+            ));
+            room.scene_views[seat_idx].shop_can_icon_sent = true;
+        }
+        if let Some(keeper_actor) = room.world.shop_3v3_blitz_keeper_for_actor(actor_id) {
+            let due = room.scene_views[seat_idx].shop_allow_next_tick;
+            if due.is_none_or(|tick| room.world.tick >= tick) {
+                let seq = room.scene_views[seat_idx].shop_allow_seq;
+                room.scene_views[seat_idx].shop_allow_seq = seq.wrapping_add(1);
+                let instance = 0x20_0000 + (seat_idx as u32) * 0x1_0000 + (seq & 0xFFFF);
+                batch.push(SoloStructure::shop_allow_purchase_for_store(
+                    wire_actor,
+                    keeper_actor,
+                    instance,
+                    store_operand,
+                ));
+                room.scene_views[seat_idx].shop_allow_active_instance = Some(instance);
+                room.scene_views[seat_idx].shop_allow_next_tick =
+                    Some(room.world.tick + halcyon_sim::TICK_HZ);
+            }
+        } else if let Some(active_instance) =
+            room.scene_views[seat_idx].shop_allow_active_instance.take()
+        {
+            room.scene_views[seat_idx].shop_allow_next_tick = None;
+            if let Ok(cancel) = (BuffMutation {
+                target: wire_actor,
+                instance: active_instance,
+                change: BuffChange::Cancel,
+                padding: &[],
+            })
+            .to_message()
+            {
+                batch.push(cancel);
+            }
+        }
+        if !batch.is_empty()
+            && let Some(peer) = &room.seats[seat_idx].peers[ch]
+        {
+            peer.send(transport::Delivery::Private(batch));
+        }
     }
 }
 
@@ -637,7 +1018,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn blitz_room_roster_045a_talents_0440_flyouts_and_score_endmatch() {
+    async fn blitz_room_roster_0459_talents_0440_flyouts_and_score_endmatch() {
         let rooms = Rooms::new("127.0.0.1".parse().unwrap(), "127.0.0.1".into(), 1, None);
         let id = Uuid::new_v4();
         let players = six_players();
@@ -663,7 +1044,10 @@ mod tests {
                 String::from_utf8_lossy(&initial[0].body[32..96])
                     .starts_with(NativeMode::Blitz.asset())
             );
-            assert_eq!(initial.last().unwrap().opcode, wire_opcode::DraftRosterAral);
+            let roster = initial.last().unwrap();
+            assert_eq!(roster.opcode, wire_opcode::DraftRosterFull);
+            let total = f32::from_be_bytes(roster.body[4..8].try_into().unwrap());
+            assert!((total - 300.0).abs() < 0.01);
             room.receive(seat, 0, Message::known(crate::Opcode::DraftLockHero, []))
                 .unwrap();
         }
@@ -1140,6 +1524,426 @@ mod tests {
                 assert_eq!(ch, 1);
             }
             assert_eq!(shared.lock().unwrap().phase, crate::RoomPhase::Running);
+        }
+    }
+
+    fn assert_no_non_hero_03f3_and_valid_cff0_skins(batch: &[Message]) {
+        for msg in batch {
+            if msg.opcode == wire_opcode::HeroSpawn {
+                let raw = u16::from_be_bytes(msg.body[2..4].try_into().unwrap());
+                assert!(
+                    raw != 329 && non_hero_skin(EntityTemplate::from_raw(raw).unwrap()).is_none(),
+                    "non-hero template {raw} leaked onto 0x03F3 HeroSpawn"
+                );
+                assert_ne!(
+                    msg.body[745], 0,
+                    "HeroSpawn for template {raw} missing slot index"
+                );
+            } else if msg.opcode == wire_opcode::EntitySpawn {
+                assert_eq!(msg.body.len(), 122);
+                let raw = u16::try_from(u32::from_be_bytes(msg.body[..4].try_into().unwrap()))
+                    .expect("valid template raw");
+                assert_ne!(raw, 329, "5v5_BaseShop leaked into 3v3/Blitz/ARAL scene");
+                let skin = u32::from_be_bytes(msg.body[4..8].try_into().unwrap());
+                let template = EntityTemplate::from_raw(raw).expect("known non-hero template");
+                let expected = non_hero_skin(template)
+                    .unwrap_or_else(|| panic!("missing CFF0 skin mapping for {template:?}"));
+                assert_eq!(
+                    skin, expected,
+                    "wrong CFF0 skin for {template:?} ({raw}): got {skin:#010x}, expected {expected:#010x}"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn blitz_draft_0459_and_refresh_include_300s_timer_and_all_six_seats() {
+        let rooms = Rooms::new("127.0.0.1".parse().unwrap(), "127.0.0.1".into(), 1, None);
+        let id = Uuid::new_v4();
+        let player = Uuid::new_v4();
+        rooms
+            .reserve(Reservation {
+                talent_levels: Vec::new(),
+                match_id: id,
+                players: vec![player],
+                teams: Vec::new(),
+                mode: "blitz_bots_solo".into(),
+                difficulty: Some(halcyon_data::BotDifficulty::Medium),
+            })
+            .unwrap();
+        let shared = rooms.room(id).unwrap();
+        let mut room = shared.lock().unwrap();
+        let (tx, _rx) = mpsc::channel(32);
+        let (_, _, _, initial) = room.attach(player, tx, watch::channel(false).0).unwrap();
+        let roster = initial.last().unwrap();
+        assert_eq!(roster.opcode, wire_opcode::DraftRosterFull);
+        let rem = f32::from_be_bytes(roster.body[..4].try_into().unwrap());
+        let total = f32::from_be_bytes(roster.body[4..8].try_into().unwrap());
+        assert!(rem > 290.0 && (total - 300.0).abs() < 0.01);
+        for seat in 0..6 {
+            let row = &roster.body[seat * 161..][..161];
+            assert_eq!(row[8], 1, "seat {seat} missing in Blitz 0x0459 roster");
+            if seat > 0 {
+                assert_eq!(row[10], 1, "bot seat {seat} unselected");
+                assert_eq!(row[11], 1, "bot seat {seat} unlocked");
+            }
+        }
+        let refresh = room
+            .receive(
+                0,
+                0,
+                Message::known(crate::Opcode::DraftRefreshRequest, [0; 6]),
+            )
+            .unwrap();
+        let refreshed_roster = refresh
+            .iter()
+            .find(|m| m.opcode == wire_opcode::DraftRosterFull)
+            .expect("DraftRefreshRequest must emit 0x0459 in Blitz");
+        assert!(f32::from_be_bytes(refreshed_roster.body[..4].try_into().unwrap()) > 290.0);
+        room.receive(0, 0, Message::known(crate::Opcode::DraftLockHero, []))
+            .unwrap();
+        assert_eq!(room.phase, crate::RoomPhase::Loading);
+    }
+
+    #[tokio::test]
+    async fn round3_cff0_skins_zero_non_hero_03f3_and_shopkeeper_buffs_across_ticks() {
+        let rooms = Rooms::new("127.0.0.1".parse().unwrap(), "127.0.0.1".into(), 8, None);
+        for (queue, expected_jungle_shop, expected_store_operand) in [
+            ("solo_bots", 315u16, Some(SoloStructure::STORE_3V3_OPERAND)),
+            (
+                "blitz_bots_solo",
+                316u16,
+                Some(SoloStructure::STORE_BLITZ_OPERAND),
+            ),
+            ("battle_royale_bots_solo", 0u16, None),
+        ] {
+            let id = Uuid::new_v4();
+            let player = Uuid::new_v4();
+            rooms
+                .reserve(Reservation {
+                    talent_levels: Vec::new(),
+                    match_id: id,
+                    players: vec![player],
+                    teams: Vec::new(),
+                    mode: queue.into(),
+                    difficulty: Some(halcyon_data::BotDifficulty::Medium),
+                })
+                .unwrap();
+            let shared = rooms.room(id).unwrap();
+            let mut room = shared.lock().unwrap();
+            let (tx, mut rx) = mpsc::channel(256);
+            room.attach(player, tx, watch::channel(false).0).unwrap();
+            room.receive(0, 0, Message::known(crate::Opcode::DraftLockHero, []))
+                .unwrap();
+            room.seats[0].loading_roster_sent = true;
+            room.receive(
+                0,
+                0,
+                Message::known(crate::Opcode::RequestSceneSnapshot, [0; 6]),
+            )
+            .unwrap();
+            let wire_hero = u32::from(messages::wire_id(room.world.entities[0].id));
+            let mut confirm = [0u8; 6];
+            confirm[..4].copy_from_slice(&wire_hero.to_be_bytes());
+            confirm[4..].copy_from_slice(&[1, 0]);
+            let opening = room
+                .receive(
+                    0,
+                    0,
+                    Message::known(crate::Opcode::ConfirmSceneOwner, confirm),
+                )
+                .unwrap();
+            assert_no_non_hero_03f3_and_valid_cff0_skins(&opening);
+            if expected_jungle_shop != 0 {
+                let shop = opening
+                    .iter()
+                    .find(|m| {
+                        m.opcode == wire_opcode::EntitySpawn
+                            && u32::from_be_bytes(m.body[8..12].try_into().unwrap()) == 2016
+                    })
+                    .expect("Jungle Shop 2016 declared at opening");
+                assert_eq!(
+                    u32::from_be_bytes(shop.body[..4].try_into().unwrap()),
+                    u32::from(expected_jungle_shop)
+                );
+                assert_eq!(
+                    u32::from_be_bytes(shop.body[4..8].try_into().unwrap()),
+                    JUNGLE_MINION_SKIN
+                );
+                let mut buff_pairs = Vec::new();
+                for msg in &opening {
+                    if let Ok(Fields::BuffApplication(b)) = msg.fields() {
+                        buff_pairs.push((b.prefix.target, b.prefix.definition));
+                    }
+                }
+                for keeper in [2000, 2008] {
+                    for def in [176, 27, 66] {
+                        assert!(buff_pairs.contains(&(keeper, def)));
+                    }
+                }
+                for def in [175, 27, 66] {
+                    assert!(buff_pairs.contains(&(2016, def)));
+                }
+            }
+            let expected_slot = room.hero_slot(&room.world.entities[0]).unwrap();
+            assert!(room.scene_views[0].registered(room.world.entities[0].id, expected_slot));
+            room.receive(
+                0,
+                0,
+                Message::known(crate::Opcode::SceneReadyConfirm, [0; 6]),
+            )
+            .unwrap();
+            room.seats[0].world_actor_written = true;
+            assert_eq!(room.phase, crate::RoomPhase::Running);
+            while rx.try_recv().is_ok() {}
+            let mut live = Vec::new();
+            let mut drain = |rx: &mut mpsc::Receiver<transport::Delivery>| {
+                while let Ok(d) = rx.try_recv() {
+                    live.extend(d.into_records());
+                }
+            };
+            // Step forward across wave spawns, camp spawns, Kraken transition (in 3v3), and deaths.
+            for _ in 0..800 {
+                room.tick();
+                drain(&mut rx);
+            }
+            if queue == "solo_bots" {
+                room.world.tick = 15 * 60 * TICK_HZ - 1;
+                room.tick();
+                drain(&mut rx);
+                // Verify captured Kraken declaration also uses 0x03F2 + JUNGLE_MINION_SKIN.
+                let k_id = room
+                    .world
+                    .entities
+                    .iter()
+                    .find(|e| e.type_id == EntityTemplate::HfKrakenJungle.as_raw())
+                    .map(|e| e.id)
+                    .expect("15:00 Kraken spawned");
+                let ki = room
+                    .world
+                    .entities
+                    .iter()
+                    .position(|e| e.id == k_id)
+                    .unwrap();
+                room.world.entities[ki].hp = 1.0;
+                let h_pos = room.world.entities[ki].position;
+                room.world.entities[0].position = h_pos;
+                room.world.command(1, Command::Attack(k_id)).unwrap();
+                for _ in 0..10 {
+                    room.tick();
+                    drain(&mut rx);
+                }
+                assert!(
+                    live.iter().any(|m| {
+                        m.opcode == wire_opcode::EntitySpawn
+                            && u32::from_be_bytes(m.body[..4].try_into().unwrap())
+                                == u32::from(EntityTemplate::HfKrakenCaptured.as_raw())
+                            && u32::from_be_bytes(m.body[4..8].try_into().unwrap())
+                                == JUNGLE_MINION_SKIN
+                    }),
+                    "expected captured Kraken 364 on 0x03F2 with JUNGLE_MINION_SKIN"
+                );
+            }
+            assert_no_non_hero_03f3_and_valid_cff0_skins(&live);
+            if expected_store_operand.is_some() {
+                assert!(
+                    live.iter().any(|m| m.opcode == wire_opcode::EntitySpawn),
+                    "expected live 0x03F2 EntitySpawn declarations for waves/camps in {queue}"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn round3_shop_3v3_and_blitz_emit_173_174_with_mode_store_and_cancel_on_leave() {
+        let rooms = Rooms::new("127.0.0.1".parse().unwrap(), "127.0.0.1".into(), 4, None);
+        for (mode, operand, jungle_ready_tick) in [
+            (
+                "solo_bots",
+                SoloStructure::STORE_3V3_OPERAND,
+                halcyon_sim::map_3v3::JUNGLE_SHOP_UNLOCK_TICK,
+            ),
+            ("blitz_bots_solo", SoloStructure::STORE_BLITZ_OPERAND, 0),
+        ] {
+            let id = Uuid::new_v4();
+            let player = Uuid::new_v4();
+            rooms
+                .reserve(Reservation {
+                    talent_levels: Vec::new(),
+                    match_id: id,
+                    players: vec![player],
+                    teams: Vec::new(),
+                    mode: mode.into(),
+                    difficulty: Some(halcyon_data::BotDifficulty::Easy),
+                })
+                .unwrap();
+            let shared = rooms.room(id).unwrap();
+            let mut room = shared.lock().unwrap();
+            let (tx, mut rx) = mpsc::channel(128);
+            room.attach(player, tx, watch::channel(false).0).unwrap();
+            room.receive(0, 0, Message::known(crate::Opcode::DraftLockHero, []))
+                .unwrap();
+            room.seats[0].loading_roster_sent = true;
+            room.receive(
+                0,
+                0,
+                Message::known(crate::Opcode::RequestSceneSnapshot, [0; 6]),
+            )
+            .unwrap();
+            let wire_hero = u32::from(messages::wire_id(room.world.entities[0].id));
+            let mut confirm = [0u8; 6];
+            confirm[..4].copy_from_slice(&wire_hero.to_be_bytes());
+            confirm[4..].copy_from_slice(&[1, 0]);
+            room.receive(
+                0,
+                0,
+                Message::known(crate::Opcode::ConfirmSceneOwner, confirm),
+            )
+            .unwrap();
+            room.receive(
+                0,
+                0,
+                Message::known(crate::Opcode::SceneReadyConfirm, [0; 6]),
+            )
+            .unwrap();
+            room.seats[0].world_actor_written = true;
+            while rx.try_recv().is_ok() {}
+
+            // 1) At base shop at opening -> Buff 173 + Buff 174 (source = 2000, operand = 452/453).
+            room.tick();
+            let at_base: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok())
+                .flat_map(transport::Delivery::into_records)
+                .collect();
+            let mut got_173 = false;
+            let mut base_174_instance = None;
+            for msg in &at_base {
+                if let Ok(Fields::BuffApplication(b)) = msg.fields() {
+                    if b.prefix.definition == 173 && b.prefix.target == wire_hero {
+                        got_173 = true;
+                    }
+                    if b.prefix.definition == 174
+                        && b.prefix.target == wire_hero
+                        && b.prefix.source == 2000
+                        && b.extras.as_ref().is_some_and(|e| e.words[2] == operand)
+                    {
+                        base_174_instance = Some(b.prefix.instance);
+                    }
+                }
+            }
+            assert!(got_173, "missing Buff 173 for {mode}");
+            let base_instance = base_174_instance.expect("missing Base Buff 174");
+
+            // 2) Move outside shop range -> BuffMutation Cancel (0x0445) on active instance.
+            room.world.entities[0].position = halcyon_sim::Position { x: 0.0, y: 0.0 };
+            room.tick();
+            let left_shop: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok())
+                .flat_map(transport::Delivery::into_records)
+                .collect();
+            assert!(
+                left_shop.iter().any(|m| {
+                    matches!(
+                        m.buff_mutation(),
+                        Some(bm)
+                            if bm.target == wire_hero
+                                && bm.instance == base_instance
+                                && bm.change == BuffChange::Cancel
+                    )
+                }),
+                "missing 0x0445 CancelBuff when leaving shop in {mode}"
+            );
+
+            // 3) Move to Jungle Shop (0.2, 42.0): 3v3 denies before 4:00, both grant after unlock.
+            room.world.entities[0].position = halcyon_sim::map_3v3::JUNGLE_SHOP_POS;
+            if jungle_ready_tick > 0 {
+                room.tick();
+                let before_unlock: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok())
+                    .flat_map(transport::Delivery::into_records)
+                    .collect();
+                assert!(!before_unlock.iter().any(|m| {
+                    matches!(
+                        m.fields(),
+                        Ok(Fields::BuffApplication(b))
+                            if b.prefix.definition == 174
+                    )
+                }));
+                room.world.tick = jungle_ready_tick;
+            }
+            room.tick();
+            let at_jungle: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok())
+                .flat_map(transport::Delivery::into_records)
+                .collect();
+            assert!(
+                at_jungle.iter().any(|m| {
+                    matches!(
+                        m.fields(),
+                        Ok(Fields::BuffApplication(b))
+                            if b.prefix.definition == 174
+                                && b.prefix.target == wire_hero
+                                && b.prefix.source == 2016
+                                && b.extras.as_ref().is_some_and(|e| e.words[2] == operand)
+                    )
+                }),
+                "missing Jungle Shop Buff 174 (source 2016, operand {operand}) in {mode}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn round3_pvp_3v3_and_blitz_ch1_zero_non_hero_03f3_and_040b_destroy() {
+        let rooms = Rooms::new("127.0.0.1".parse().unwrap(), "127.0.0.1".into(), 4, None);
+        for mode in ["3v3_pvp_casual", "blitz_3v3"] {
+            let id = Uuid::new_v4();
+            let players = six_players();
+            rooms
+                .reserve(Reservation {
+                    talent_levels: Vec::new(),
+                    match_id: id,
+                    players: players.clone(),
+                    teams: vec![0, 1, 0, 1, 0, 1],
+                    mode: mode.into(),
+                    difficulty: None,
+                })
+                .unwrap();
+            let shared = rooms.room(id).unwrap();
+            for (seat, &p) in players.iter().enumerate() {
+                let mut room = shared.lock().unwrap();
+                let (tx, _) = mpsc::channel(16);
+                room.attach(p, tx, watch::channel(false).0).unwrap();
+                room.receive(seat, 0, Message::known(crate::Opcode::DraftLockHero, []))
+                    .unwrap();
+            }
+            let mut rxs = Vec::new();
+            let mut openings = Vec::new();
+            for &p in &players {
+                let mut room = shared.lock().unwrap();
+                let (tx, rx) = mpsc::channel(512);
+                let (_, ch, _, open) = room.attach(p, tx, watch::channel(false).0).unwrap();
+                assert_eq!(ch, 1);
+                assert_no_non_hero_03f3_and_valid_cff0_skins(&open);
+                openings.push(open);
+                rxs.push(rx);
+            }
+            assert!(openings[0].iter().any(|m| {
+                m.opcode == wire_opcode::EntitySpawn
+                    && u32::from_be_bytes(m.body[8..12].try_into().unwrap()) == 2016
+            }));
+            let mut live = Vec::new();
+            for _ in 0..1600 {
+                let mut room = shared.lock().unwrap();
+                room.tick();
+                while let Ok(d) = rxs[0].try_recv() {
+                    live.extend(d.into_records());
+                }
+            }
+            assert_no_non_hero_03f3_and_valid_cff0_skins(&live);
+            assert!(
+                live.iter().any(|m| m.opcode == wire_opcode::EntitySpawn),
+                "expected PvP ch=1 live 0x03F2 spawns in {mode}"
+            );
+            assert!(
+                live.iter().any(|m| m.opcode == wire_opcode::DestroyEntity),
+                "expected PvP ch=1 0x040B DestroyEntity on wave/sentry deaths in {mode}"
+            );
         }
     }
 }

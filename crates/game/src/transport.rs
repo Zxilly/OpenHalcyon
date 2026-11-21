@@ -225,10 +225,8 @@ async fn connection(mut sock: TcpStream, room: Shared, manager: Rooms) -> io::Re
             let state = room.lock().unwrap();
             let solo = ch == 0 && state.solo_scene();
             let actor = &state.world.entities[seat];
-            let slot = if ch == 0 && state.legacy_aral() {
-                point_move::aral_slot(actor)
-            } else if solo {
-                state.solo_slots.fixed(actor)
+            let slot = if (ch == 0 && state.legacy_aral()) || solo {
+                state.hero_slot(actor)
             } else {
                 None
             };

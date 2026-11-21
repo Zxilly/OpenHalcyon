@@ -158,6 +158,8 @@ const PERMANENT_DURATION_BITS: u16 = 0xbc00;
 const SHOP_ALLOW_DURATION_BITS: u16 = 0x3e00;
 
 impl SoloStructure {
+    pub const STORE_3V3_OPERAND: u32 = 0x01c4;
+    pub const STORE_BLITZ_OPERAND: u32 = 0x01c5;
     pub const BASE_SHOP_LEFT_ACTOR: u32 = 6530;
     pub const BASE_SHOP_RIGHT_ACTOR: u32 = 6531;
     pub const RIVER_SHOP_LEFT_ACTOR: u32 = 6532;
@@ -311,11 +313,13 @@ impl SoloStructure {
         .expect("verified shop icon buff")
     }
 
-    /// Client store purchase unlock buff (`174` `Buff_Shop_AllowStorePurchase`, 1.5s TTL).
-    pub fn shop_allow_purchase_message(
+    /// Client store purchase unlock buff (`174` `Buff_Shop_AllowStorePurchase`, 1.5s TTL)
+    /// targeting the specified store table operand (`451` 5v5, `452` 3v3 HF, `453` Blitz).
+    pub fn shop_allow_purchase_for_store(
         hero_wire_id: u32,
         keeper_wire_id: u32,
         instance: u32,
+        store_operand: u32,
     ) -> Message {
         crate::BuffApplication {
             prefix: crate::BuffPrefix {
@@ -327,12 +331,26 @@ impl SoloStructure {
             },
             extras: Some(crate::BuffExtras {
                 stacks: 1,
-                words: [0, 0, STORE_5V5_OPERAND, 0],
+                words: [0, 0, store_operand, 0],
             }),
             suffix: &[],
         }
         .to_message()
         .expect("verified store purchase buff")
+    }
+
+    /// Client store purchase unlock buff (`174` `Buff_Shop_AllowStorePurchase`, 1.5s TTL).
+    pub fn shop_allow_purchase_message(
+        hero_wire_id: u32,
+        keeper_wire_id: u32,
+        instance: u32,
+    ) -> Message {
+        Self::shop_allow_purchase_for_store(
+            hero_wire_id,
+            keeper_wire_id,
+            instance,
+            STORE_5V5_OPERAND,
+        )
     }
 }
 

@@ -983,6 +983,16 @@ impl Room {
         self.players.len() == 1 && self.known_queue.is_some_and(KnownQueue::is_single_human)
     }
 
+    pub(crate) fn hero_slot(&self, actor: &halcyon_sim::Entity) -> Option<u8> {
+        if self.legacy_aral() || self.known_queue == Some(KnownQueue::BattleRoyaleBotsSolo) {
+            point_move::aral_slot(actor)
+        } else if modes_3v3_blitz::is_managed(self.known_queue) {
+            modes_3v3_blitz::hero_slot(actor)
+        } else {
+            self.solo_slots.fixed(actor)
+        }
+    }
+
     fn solo_loading(&mut self) {
         if self.phase != crate::RoomPhase::Loading
             || self.phase_start.elapsed() < std::time::Duration::from_secs(7)
@@ -1174,7 +1184,17 @@ impl Room {
             batch.extend(scene::begin_loading(self));
         }
         if game {
-            batch.extend(self.spawn_view(Some(self.world.entities[idx].team)));
+            let team = self.world.entities[idx].team;
+            if modes_3v3_blitz::is_managed(self.known_queue) {
+                modes_3v3_blitz::append_opening(self, Some(team), false, &mut batch);
+                for e in &self.world.entities {
+                    if e.hp > 0.0 && self.world.visible(team, e) {
+                        self.visible[usize::from(team)].insert(e.id);
+                    }
+                }
+            } else {
+                batch.extend(self.spawn_view(Some(team)));
+            }
             let ready_for_5v5 =
                 self.world.is_5v5_enabled()
                     && self.phase == crate::RoomPhase::Loading
@@ -1193,7 +1213,7 @@ impl Room {
     fn spawn_view(&self, team: Option<u8>) -> Batch {
         if modes_3v3_blitz::is_managed(self.known_queue) {
             let mut out = Vec::new();
-            modes_3v3_blitz::append_opening(self, team, &mut out);
+            modes_3v3_blitz::append_opening_snapshot(self, team, false, &mut out);
             return out;
         }
         let mut out = vec![];
@@ -1246,13 +1266,12 @@ impl Room {
     }
     fn roster_with_echo(&self, except: Option<usize>, echo: Option<&Message>) -> Message {
         let legacy = self.legacy_aral();
-        let blitz = modes_3v3_blitz::is_blitz(self.known_queue);
-        let mut roster = if legacy || blitz {
+        let mut roster = if legacy {
             aral::roster(self, self.aral_remaining(), false)
         } else {
             snapshot(&self.world, &self.players, &self.picks)
         };
-        if !legacy && !blitz && self.phase == crate::RoomPhase::HeroSelect {
+        if !legacy && self.phase == crate::RoomPhase::HeroSelect {
             roster.body[..4].copy_from_slice(
                 &(300. - self.phase_start.elapsed().as_secs_f32())
                     .max(0.)
@@ -1501,11 +1520,7 @@ impl Room {
                     && (game || pending_world_input) =>
             {
                 let actor = &self.world.entities[i];
-                let slot = if legacy {
-                    point_move::aral_slot(actor)
-                } else {
-                    self.solo_slots.fixed(actor)
-                };
+                let slot = self.hero_slot(actor);
                 if let Some(slot) = slot
                     && let Some(ack) = point_move::submit(
                         &mut self.world,
@@ -1985,6 +2000,7 @@ impl Room {
             aral::announcements::publish(self, &events);
         }
         scene::sync_5v5_shops(self);
+        modes_3v3_blitz::sync_shops(self);
         if legacy || self.solo_scene() {
             for (i, (seat, actor)) in self.seats.iter().zip(&self.world.entities).enumerate() {
                 if !seat.world_actor_written
@@ -2054,6 +2070,12 @@ impl Room {
         legacy_aral: bool,
         born: bool,
     ) -> Option<Message> {
+        if modes_3v3_blitz::is_managed(self.known_queue) {
+            return modes_3v3_blitz::allocate_declaration(self, index, native_solo);
+        }
+        if self.known_queue == Some(KnownQueue::BattleRoyaleBotsSolo) {
+            return modes_3v3_blitz::allocate_aral_solo_declaration(self, index);
+        }
         let e = &self.world.entities[index];
         if native_solo {
             self.solo_slots
@@ -2413,7 +2435,7 @@ impl Room {
                 }
             }
         }
-        if self.solo_scene() {
+        if self.solo_scene() || modes_3v3_blitz::is_managed(self.known_queue) {
             for ev in events {
                 if let Event::Death { id, .. } = *ev {
                     self.solo_slots.released(id);

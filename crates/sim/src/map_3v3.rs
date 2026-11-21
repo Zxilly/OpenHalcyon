@@ -559,11 +559,36 @@ impl Room<'_> {
     }
 
     pub(super) fn at_jungle_shop(&self, actor: &Entity) -> bool {
-        let Some(fold) = &self.state.halcyon_fold else {
-            return false;
-        };
-        fold.jungle_shop_unlocked(self.state.tick)
-            && actor.position.dist(JUNGLE_SHOP_POS) <= JUNGLE_SHOP_RADIUS
+        let unlocked = self
+            .state
+            .halcyon_fold
+            .as_ref()
+            .is_some_and(|fold| fold.jungle_shop_unlocked(self.state.tick))
+            || self.state.blitz.is_some();
+        unlocked && actor.position.dist(JUNGLE_SHOP_POS) <= JUNGLE_SHOP_RADIUS
+    }
+
+    /// Returns the wire shopkeeper actor ID (`2000` left base, `2008` right base,
+    /// `2016` center jungle shop) if `id` is an alive hero currently eligible to
+    /// buy at a 3v3 Halcyon Fold or Blitz item shop.
+    pub fn shop_3v3_blitz_keeper_for_actor(&self, id: u32) -> Option<u32> {
+        if !matches!(
+            self.layout,
+            Layout::HalcyonFold { .. } | Layout::Blitz { .. }
+        ) {
+            return None;
+        }
+        let hero = self.index(id).map(|i| &self.entities[i])?;
+        if hero.kind != Kind::Hero || hero.hp <= 0. || self.winner.is_some() {
+            return None;
+        }
+        if self.at_jungle_shop(hero) {
+            return Some(2016);
+        }
+        if self.at_item_shop(hero) {
+            return Some(if hero.team == 0 { 2000 } else { 2008 });
+        }
+        None
     }
 
     pub(super) fn install_halcyon_fold_units(&mut self, data: &GameData) {

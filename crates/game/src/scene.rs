@@ -234,6 +234,11 @@ pub(super) fn initial_structures(room: &mut Room) {
 /// Keeps 5v5 base/river shopkeepers (`329`/`330`) and `Buff_Shop_AllowStorePurchase` (`174`)
 /// synchronized on confirmed human seats across both `5v5_bots_solo` and 5v5 PvP.
 pub(super) fn sync_5v5_shops(room: &mut Room) {
+    if super::modes_3v3_blitz::is_managed(room.known_queue)
+        || room.known_queue == Some(halcyon_protocol::ce::KnownQueue::BattleRoyaleBotsSolo)
+    {
+        return;
+    }
     let solo_active = room.solo_scene() && room.seats[0].control_world;
     if !solo_active && !room.world.is_5v5_enabled() {
         return;

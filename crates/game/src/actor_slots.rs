@@ -115,6 +115,24 @@ impl ActorSlots {
         }))
     }
 
+    pub(super) fn alloc_dynamic(&mut self, id: u32) -> Option<u8> {
+        if !(1..=u32::from(u16::MAX) - 1500).contains(&id) {
+            return None;
+        }
+        let slot = self.minion(id);
+        if slot.is_none() && !std::mem::replace(&mut self.reported_full, true) {
+            tracing::warn!("native Solo actor slots exhausted; deferring minion declaration");
+        }
+        slot
+    }
+
+    pub(super) fn assigned_dynamic(&self, id: u32) -> Option<u8> {
+        self.minions
+            .iter()
+            .position(|slot| *slot == Some(id))
+            .map(|index| FIRST_MINION_SLOT + index as u8)
+    }
+
     fn minion(&mut self, id: u32) -> Option<u8> {
         let index = self
             .minions
