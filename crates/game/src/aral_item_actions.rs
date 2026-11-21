@@ -254,47 +254,58 @@ fn action(world: &World, event: &Event) -> Option<(u32, Batch)> {
                 vec![request.to_message().ok()?, activation.to_message().ok()?],
             ))
         }
-        Event::ItemSold(sale)
-            if matches!(
-                sale.sold.kind,
-                BasicItem::Hourglass
-                    | BasicItem::BlazingSalvo
-                    | BasicItem::Stormcrown
-                    | BasicItem::ScoutTrap
-            ) =>
-        {
+        Event::ItemSold(sale) => {
             let actor = u32::from(wire_id(sale.actor));
-            let mut batch = vec![
-                ItemAction::Sell {
-                    actor,
-                    instance: sale.sold.instance,
-                    suffix: &[],
-                }
-                .to_message()
-                .expect("native sale prefix"),
-            ];
-            for (stat, value) in world.item_modifiers(sale.sold.kind) {
-                batch.push(messages::modifier(actor, stat, -value));
-            }
-            let mut removal = [0; 10];
-            removal[..4].copy_from_slice(&actor.to_be_bytes());
-            removal[4..8].copy_from_slice(&sale.sold.instance.to_be_bytes());
-            removal[8..].copy_from_slice(&1u16.to_be_bytes());
-            batch.push(Message::known(Opcode::ConsumeItem, removal));
-            batch.push(
-                ResourceChange {
-                    actor,
-                    value: sale.balance as f32,
-                    index: 6,
-                    set_mode: 1,
-                    flags: [0, 0],
-                }
-                .message(),
-            );
-            Some((sale.actor, batch))
+            Some((sale.actor, encode_sale(world, &sale, actor)))
         }
         _ => None,
     }
+}
+
+fn encode_sale(world: &World, sale: &halcyon_sim::ItemSale, wire_actor: u32) -> Batch {
+    let mut batch = vec![
+        ItemAction::Sell {
+            actor: wire_actor,
+            instance: sale.sold.instance,
+            suffix: &[],
+        }
+        .to_message()
+        .expect("native sale prefix"),
+    ];
+    for (stat, value) in world.item_modifiers(sale.sold.kind) {
+        batch.push(messages::modifier(wire_actor, stat, -value));
+    }
+    let mut removal = [0; 10];
+    removal[..4].copy_from_slice(&wire_actor.to_be_bytes());
+    removal[4..8].copy_from_slice(&sale.sold.instance.to_be_bytes());
+    removal[8..].copy_from_slice(&1u16.to_be_bytes());
+    batch.push(Message::known(Opcode::ConsumeItem, removal));
+    batch.push(
+        ResourceChange {
+            actor: wire_actor,
+            value: sale.balance as f32,
+            index: 6,
+            set_mode: 1,
+            flags: [0, 0],
+        }
+        .message(),
+    );
+    batch
+}
+
+#[allow(dead_code)]
+pub(super) fn sell(room: &mut Room, seat: usize, actor: u32, instance: u32) -> Batch {
+    let Some(entity) = room.world.entities.get(seat) else {
+        return Vec::new();
+    };
+    let entity_id = entity.id;
+    if actor != u32::from(wire_id(entity_id)) {
+        return Vec::new();
+    }
+    let Ok(sale) = room.world.sell_item(entity_id, instance) else {
+        return Vec::new();
+    };
+    encode_sale(&room.world, &sale, actor)
 }
 
 /// Raw replay bodies must have the exact supported gameplay prefix and no
@@ -366,17 +377,27 @@ pub(super) struct InfusionWitness {
     preceding: Option<u32>,
 }
 fn witnessed(view: &mut tower_aggro::View, event: &Event) -> bool {
+    let slot_idx = |actor: u32| actor.checked_sub(1).map(|n| n as usize);
     match *event {
         Event::InfusionApplied { actor, effect, .. } => {
-            let seen = &mut view.infusion_effects[(actor - 1) as usize];
+            let Some(seen) = slot_idx(actor).and_then(|idx| view.infusion_effects.get_mut(idx))
+            else {
+                return actor != 0;
+            };
             seen.preceding = seen.active.replace(effect);
             true
         }
         Event::InfusionLevel { actor, effect, .. } => {
-            view.infusion_effects[(actor - 1) as usize].active == Some(effect)
+            let Some(seen) = slot_idx(actor).and_then(|idx| view.infusion_effects.get(idx)) else {
+                return actor != 0;
+            };
+            seen.active == Some(effect)
         }
         Event::InfusionReplaced { actor, effect } => {
-            let seen = &mut view.infusion_effects[(actor - 1) as usize];
+            let Some(seen) = slot_idx(actor).and_then(|idx| view.infusion_effects.get_mut(idx))
+            else {
+                return actor != 0;
+            };
             if seen.preceding == Some(effect) {
                 seen.preceding = None;
                 true
@@ -392,11 +413,17 @@ fn witnessed(view: &mut tower_aggro::View, event: &Event) -> bool {
             first_effect,
             ..
         } => {
-            view.reflex_effects[(actor - 1) as usize] = Some(first_effect + 1);
-            true
+            if let Some(slot) = slot_idx(actor).and_then(|idx| view.reflex_effects.get_mut(idx)) {
+                *slot = Some(first_effect + 1);
+            }
+            actor != 0
         }
         Event::ReflexExpired { actor, effect } => {
-            view.reflex_effects[(actor - 1) as usize].take() == Some(effect)
+            let Some(slot) = slot_idx(actor).and_then(|idx| view.reflex_effects.get_mut(idx))
+            else {
+                return actor != 0;
+            };
+            slot.take() == Some(effect)
         }
         _ => true,
     }
@@ -417,23 +444,15 @@ impl Room {
                     halcyon_protocol::CooldownMode::Set,
                 );
                 for (seat, viewer) in self.seats.iter().zip(&self.world.entities) {
+                    let ready = seat.peers[1].is_some()
+                        || (seat.world_actor_written && seat.preamble.confirmed());
                     if viewer.id == actor
-                        && seat.world_actor_written
-                        && seat.preamble.confirmed()
+                        && ready
                         && let Some(peer) = seat.gameplay_peer()
                     {
                         peer.send(transport::Delivery::Private(vec![msg.clone()]));
                     }
                 }
-                continue;
-            }
-            let active_broadcast = matches!(event, Event::ItemActivated { .. })
-                || matches!(
-                    event,
-                    Event::VisionDeployed { device, .. }
-                        if device.kind == halcyon_sim::VisionDeviceKind::Flare
-                );
-            if !self.legacy_aral() && !(self.solo_scene() && active_broadcast) {
                 continue;
             }
             let Some((id, batch)) = action(&self.world, event) else {
@@ -447,6 +466,11 @@ impl Room {
             }
             for (i, (seat, viewer)) in self.seats.iter().zip(&self.world.entities).enumerate() {
                 let team = viewer.team;
+                let ch1 = seat.peers[1].is_some();
+                let stream_ready = ch1
+                    || (seat.world_actor_written
+                        && seat.preamble.confirmed()
+                        && self.scene_views[i].knows(id));
                 if matches!(event, Event::VisionDeployed{device,..} if team!=device.team && !self.world.sees_position(team,device.point))
                     || (viewer.id == id
                         && !matches!(
@@ -458,9 +482,7 @@ impl Room {
                                 | Event::InfusionLevel { .. }
                                 | Event::ItemActivated { .. }
                         ))
-                    || !seat.world_actor_written
-                    || !seat.preamble.confirmed()
-                    || !self.scene_views[i].knows(id)
+                    || !stream_ready
                     || !self.visible[usize::from(team)].contains(&id)
                     || !self.world.visible(team, entity)
                 {
@@ -687,5 +709,204 @@ mod tests {
             halcyon_protocol::CooldownMode::Set,
         );
         assert_eq!(storm_cd.opcode, Opcode::ModifyCooldown as u16);
+    }
+
+    #[test]
+    fn all_76_item_sales_encode_0x044d_modifiers_0x044b_and_gold_0x041d() {
+        let mut world = World::new(9, 10);
+        world.use_catalog_store(halcyon_data::items::StoreSettings::Five);
+        for (idx, item) in [
+            BasicItem::WeaponBlade,
+            BasicItem::Sorrowblade,
+            BasicItem::Aegis,
+            BasicItem::Crucible,
+            BasicItem::FountainOfRenewal,
+            BasicItem::AtlasPauldron,
+            BasicItem::TeleportBoots,
+            BasicItem::BreakingPoint,
+            BasicItem::DragonsEye,
+            BasicItem::Clockwork,
+            BasicItem::Aftershock,
+            BasicItem::EveOfHarvest,
+            BasicItem::SerpentMask,
+            BasicItem::SlumberingHusk,
+            BasicItem::SeraphicShell,
+            BasicItem::Spellsword,
+            BasicItem::Bonesaw,
+            BasicItem::BrokenMyth,
+            BasicItem::Pulseweave,
+            BasicItem::TornadoTrigger,
+            BasicItem::TensionBow,
+            BasicItem::Shiversteel,
+            BasicItem::CapacitorPlate,
+            BasicItem::RooksDecree,
+            BasicItem::FlareLoader,
+            BasicItem::SuperScout2000,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let expected_mods = world.item_modifiers(item).count();
+            let sale = halcyon_sim::ItemSale {
+                actor: 1,
+                sold: halcyon_sim::HeldItem {
+                    kind: item,
+                    instance: 3000 + idx as u32,
+                },
+                refund: 100,
+                balance: 5000,
+            };
+            let (owner, batch) = action(&world, &Event::ItemSold(sale)).unwrap();
+            assert_eq!(owner, 1);
+            assert_eq!(batch[0].opcode, Opcode::SellItem as u16);
+            assert_eq!(batch.len(), 1 + expected_mods + 2);
+            assert_eq!(batch[batch.len() - 2].opcode, Opcode::ConsumeItem as u16);
+            assert_eq!(
+                batch[batch.len() - 1].opcode,
+                Opcode::ModifyActorResource as u16
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn publish_aral_items_delivers_ch1_sales_reflex_infusions_and_cooldowns() {
+        let rooms = Rooms::new("127.0.0.1".parse().unwrap(), "127.0.0.1".into(), 1, None);
+        let id = Uuid::new_v4();
+        let players: Vec<_> = (0..10).map(|_| Uuid::new_v4()).collect();
+        rooms
+            .reserve(Reservation {
+                match_id: id,
+                mode: "5v5_pvp_casual".into(),
+                players,
+                teams: vec![0, 0, 0, 0, 0, 1, 1, 1, 1, 1],
+                difficulty: None,
+                talent_levels: Vec::new(),
+            })
+            .unwrap();
+        let shared = rooms.room(id).unwrap();
+        let mut room = shared.lock().unwrap();
+        let mut rx0 = {
+            let (tx, rx) = tokio::sync::mpsc::channel(32);
+            room.seats[0].peers[1] = Some(crate::Peer {
+                generation: 1,
+                tx,
+                stalled: tokio::sync::watch::channel(false).0,
+            });
+            rx
+        };
+        let mut rx1 = {
+            let (tx, rx) = tokio::sync::mpsc::channel(32);
+            room.seats[1].peers[1] = Some(crate::Peer {
+                generation: 2,
+                tx,
+                stalled: tokio::sync::watch::channel(false).0,
+            });
+            rx
+        };
+        let mut rx6 = {
+            let (tx, rx) = tokio::sync::mpsc::channel(32);
+            room.seats[6].peers[1] = Some(crate::Peer {
+                generation: 3,
+                tx,
+                stalled: tokio::sync::watch::channel(false).0,
+            });
+            rx
+        };
+        room.phase(crate::RoomPhase::Running);
+        let ally0_id = room.world.entities[0].id;
+        let ally1_id = room.world.entities[1].id;
+        let seat7_id = room.world.entities[6].id;
+        for visible in &mut room.visible {
+            visible.insert(ally0_id);
+            visible.insert(ally1_id);
+            visible.insert(seat7_id);
+        }
+        for seat_idx in [0usize, 1, 6] {
+            room.world.entities[seat_idx].gold = 50_000;
+        }
+        let inf = room
+            .world
+            .purchase(ally0_id, BasicItem::WeaponInfusion)
+            .unwrap()
+            .granted;
+        let blade = room
+            .world
+            .purchase(ally0_id, BasicItem::WeaponBlade)
+            .unwrap()
+            .granted;
+        let aegis_seat7 = room
+            .world
+            .purchase(seat7_id, BasicItem::Aegis)
+            .unwrap()
+            .granted;
+
+        // Direct sell helper rejects wrong wire actor and sells cleanly for the owner.
+        assert!(sell(&mut room, 0, u32::from(wire_id(ally1_id)), blade.instance).is_empty());
+        let sold_batch = sell(&mut room, 0, u32::from(wire_id(ally0_id)), blade.instance);
+        assert_eq!(sold_batch[0].opcode, Opcode::SellItem as u16);
+
+        room.world
+            .command(
+                ally0_id,
+                halcyon_sim::Command::ConsumeInfusion {
+                    instance: inf.instance,
+                },
+            )
+            .unwrap();
+        room.world
+            .command(
+                seat7_id,
+                halcyon_sim::Command::ActivateItem {
+                    instance: aegis_seat7.instance,
+                    target: halcyon_sim::ItemTarget::SelfCast,
+                },
+            )
+            .unwrap();
+        let events = vec![
+            Event::ItemCooldownUpdated {
+                actor: ally0_id,
+                key: 0xdb16_1949,
+                remaining_seconds: 6.0,
+            },
+            Event::ItemSold(halcyon_sim::ItemSale {
+                actor: ally0_id,
+                sold: blade,
+                refund: 150,
+                balance: 49_850,
+            }),
+            Event::InfusionApplied {
+                actor: ally0_id,
+                item: inf.instance,
+                effect: 90,
+                kind: BasicItem::WeaponInfusion,
+                level: 1,
+                duration_ticks: 150 * halcyon_sim::TICK_HZ,
+            },
+            Event::ReflexActivated {
+                actor: seat7_id,
+                item: aegis_seat7.instance,
+                first_effect: 91,
+                barrier: 100.0,
+            },
+        ];
+        room.publish_aral_items(&events);
+
+        let drain = |rx: &mut tokio::sync::mpsc::Receiver<transport::Delivery>| -> Vec<u16> {
+            let mut ops = Vec::new();
+            while let Ok(transport::Delivery::Private(batch)) = rx.try_recv() {
+                ops.extend(batch.into_iter().map(|m| m.opcode));
+            }
+            ops
+        };
+        let ops0 = drain(&mut rx0);
+        let ops1 = drain(&mut rx1);
+        let ops6 = drain(&mut rx6);
+        assert!(ops0.contains(&(Opcode::ModifyCooldown as u16)));
+        assert!(ops0.contains(&(Opcode::ConsumeItem as u16)));
+        assert!(!ops0.contains(&(Opcode::SellItem as u16)));
+        assert!(ops1.contains(&(Opcode::SellItem as u16)));
+        assert!(ops1.contains(&(Opcode::ApplyBuffCompact as u16)));
+        assert!(ops6.contains(&(Opcode::ItemActivated as u16)));
+        assert!(ops6.contains(&(Opcode::ApplyBuffCompact as u16)));
     }
 }
