@@ -435,6 +435,15 @@ fn publish_visible(room: &mut Room, actors: &[u32], frames: &[Message]) {
     room.publish_observer_actors(actors, frames);
 }
 
+/// Encodes an `0x0425 ModifyBasicAttackTarget` frame, using `u32::MAX` to clear the lock.
+pub(super) fn modify_basic_attack_target_message(target: Option<u32>) -> Message {
+    let wire_target = target.map_or(u32::MAX, |actor| u32::from(wire_id(actor)));
+    Message::known(
+        crate::Opcode::ModifyBasicAttackTarget,
+        wire_target.to_be_bytes(),
+    )
+}
+
 pub(super) fn publish(room: &mut Room, events: &[Event]) {
     let aral = room.legacy_aral();
     if !aral {
@@ -460,19 +469,20 @@ pub(super) fn publish(room: &mut Room, events: &[Event]) {
             reboot::start(room, actor, instance);
             continue;
         }
-        if aral && let Event::BasicTargetChanged { actor, target } = *event {
+        if let Event::BasicTargetChanged { actor, target } = *event {
             if let Some(i) = actor.checked_sub(1).map(|n| n as usize)
                 && let Some(seat) = room.seats.get(i)
-                && seat.world_actor_written
-                && seat.preamble.confirmed()
+                && (seat.peers[1].is_some()
+                    || ((aral || room.solo_scene())
+                        && seat.world_actor_written
+                        && seat.preamble.confirmed()
+                        && room.scene_views[i].knows(target)))
                 && room.world.entities[i].attack_target() == Some(target)
                 && room.visible[usize::from(room.world.entities[i].team)].contains(&target)
-                && room.scene_views[i].knows(target)
                 && let Some(peer) = seat.gameplay_peer()
             {
-                peer.send(Delivery::Private(vec![Message::known(
-                    crate::Opcode::ModifyBasicAttackTarget,
-                    u32::from(wire_id(target)).to_be_bytes(),
+                peer.send(Delivery::Private(vec![modify_basic_attack_target_message(
+                    Some(target),
                 )]));
             }
             continue;
@@ -1816,6 +1826,116 @@ mod tests {
         assert!(witnesses[1].try_recv().is_err());
         assert_eq!(room.world.entities[0].skill_points, 0);
         assert_eq!(room.world.entities[0].ability_ranks, [1, 0, 1]);
+    }
+
+    #[tokio::test]
+    async fn solo_and_live_5v5_basic_target_changed_emit_modify_basic_attack_target() {
+        assert_eq!(
+            modify_basic_attack_target_message(None),
+            Message::known(
+                crate::Opcode::ModifyBasicAttackTarget,
+                u32::MAX.to_be_bytes(),
+            )
+        );
+        assert_eq!(
+            modify_basic_attack_target_message(Some(2)),
+            Message::known(
+                crate::Opcode::ModifyBasicAttackTarget,
+                1501u32.to_be_bytes()
+            )
+        );
+
+        let rooms = Rooms::new("127.0.0.1".parse().unwrap(), "127.0.0.1".into(), 2, None);
+        for solo in [true, false] {
+            let match_id = Uuid::new_v4();
+            let (players, teams, mode) = if solo {
+                (
+                    vec![Uuid::new_v4()],
+                    vec![0],
+                    halcyon_protocol::ce::KnownQueue::SoloBots.as_str().into(),
+                )
+            } else {
+                (
+                    vec![Uuid::new_v4(), Uuid::new_v4()],
+                    vec![0, 1],
+                    halcyon_protocol::ce::KnownQueue::CasualFive.as_str().into(),
+                )
+            };
+            rooms
+                .reserve(Reservation {
+                    talent_levels: Vec::new(),
+                    match_id,
+                    players,
+                    teams,
+                    mode,
+                    difficulty: None,
+                })
+                .unwrap();
+            let shared = rooms.room(match_id).unwrap();
+            let mut room = shared.lock().unwrap();
+            let (tx, mut rx) = mpsc::channel(16);
+            let peer = Peer {
+                generation: 1,
+                tx,
+                stalled: watch::channel(false).0,
+            };
+            if solo {
+                room.seats[0].peers[0] = Some(peer);
+            } else {
+                room.seats[0].peers[1] = Some(peer);
+            }
+            let hero_id = room.world.entities[0].id;
+            let enemy_idx = room
+                .world
+                .entities
+                .iter()
+                .position(|entity| entity.team == 1)
+                .unwrap();
+            let enemy_id = room.world.entities[enemy_idx].id;
+            room.phase(crate::RoomPhase::Running);
+            room.world.entities[0].position = Position { x: 0.0, y: 0.0 };
+            room.world.entities[enemy_idx].position = Position { x: 3.0, y: 0.0 };
+            room.visible[0].insert(enemy_id);
+            room.world
+                .command(hero_id, halcyon_sim::Command::Attack(enemy_id))
+                .unwrap();
+
+            let event = [Event::BasicTargetChanged {
+                actor: hero_id,
+                target: enemy_id,
+            }];
+            if solo {
+                publish(&mut room, &event);
+                assert!(rx.try_recv().is_err());
+                let mut confirm = [0, 0, 0, 0, 1, 0];
+                confirm[..4].copy_from_slice(&u32::from(wire_id(hero_id)).to_be_bytes());
+                for (op, body) in [
+                    (crate::wire_opcode::RequestSceneSnapshot, [0; 6]),
+                    (crate::wire_opcode::ConfirmSceneOwner, confirm),
+                    (crate::wire_opcode::SceneReadyConfirm, [0; 6]),
+                ] {
+                    room.seats[0]
+                        .preamble
+                        .observe(&Message::new(op, body), u32::from(wire_id(hero_id)));
+                }
+                assert!(room.seats[0].preamble.confirmed());
+                room.seats[0].world_actor_written = true;
+                let enemy_decl = room
+                    .allocate_entity_declaration(enemy_idx, 0, true, false, false)
+                    .unwrap();
+                room.scene_views[0].declarations(&[enemy_decl]);
+                assert!(room.scene_views[0].knows(enemy_id));
+            }
+
+            publish(&mut room, &event);
+            assert_eq!(
+                rx.try_recv().unwrap().into_records(),
+                [modify_basic_attack_target_message(Some(enemy_id))]
+            );
+            room.visible[0].remove(&enemy_id);
+            publish(&mut room, &event);
+            assert!(rx.try_recv().is_err());
+        }
     }
 
     fn drain(receiver: &mut mpsc::Receiver<Delivery>) -> Vec<Message> {
