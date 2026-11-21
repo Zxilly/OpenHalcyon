@@ -17,10 +17,8 @@ fn put_text(buf: &mut [u8], s: &str) {
     buf[..n].copy_from_slice(&s.as_bytes()[..n]);
 }
 fn mode_name(queue: &str) -> &'static str {
-    // Operator queues retain their original IDs but use the casual scene asset.
-    KnownQueue::parse(queue)
-        .map_or(NativeMode::CasualFive, KnownQueue::mode)
-        .asset()
+    // Operator queues retain their original IDs but use the registered scene asset.
+    KnownQueue::parse(queue).map_or(NativeMode::CasualFive.asset(), KnownQueue::asset)
 }
 pub(super) fn scene_mode(queue: &str, flag: u8) -> Message {
     let mut body = vec![0; 69];

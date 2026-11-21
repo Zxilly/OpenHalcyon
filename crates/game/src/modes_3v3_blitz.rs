@@ -68,6 +68,9 @@ pub(crate) fn trim_to_three_per_side_roster(
 /// Ensures the authoritative simulation layout (`HalcyonFold`, `Blitz`, `Aral` solo, or 5v5
 /// dual-channel `Practice`) and native navmesh / unit data are initialized before Loading / Running.
 pub(crate) fn prepare_world(room: &mut Room) -> std::io::Result<()> {
+    if room.world.tick != 0 {
+        return Ok(());
+    }
     if is_halcyon_fold(room.known_queue) {
         room.world
             .use_halcyon_fold()
@@ -105,7 +108,6 @@ pub(crate) fn prepare_world(room: &mut Room) -> std::io::Result<()> {
 
 /// Builds the single-channel `solo_opening` (`0x046E`) batch when a 3v3 Fold, Blitz, or ARAL
 /// solo-bots queue uses `ch == 0` solo control loading instead of opening a second stream.
-#[allow(dead_code)]
 pub(crate) fn solo_opening(room: &mut Room, seat: usize) -> std::io::Result<Option<Batch>> {
     let aral_solo = room.known_queue == Some(KnownQueue::BattleRoyaleBotsSolo);
     if !is_managed(room.known_queue) && !aral_solo {
@@ -121,6 +123,9 @@ pub(crate) fn solo_opening(room: &mut Room, seat: usize) -> std::io::Result<Opti
     out.extend(super::scene::players(room));
     out.push(messages::world_clock(room.world.tick));
     room.visible[usize::from(team)].clear();
+    if !initial {
+        room.solo_slots.retain_living(&room.world.entities);
+    }
     if is_managed(room.known_queue) {
         let view_team = (!initial).then_some(team);
         append_opening(room, view_team, &mut out);
@@ -129,6 +134,7 @@ pub(crate) fn solo_opening(room: &mut Room, seat: usize) -> std::io::Result<Opti
                 room.visible[usize::from(team)].insert(e.id);
             }
         }
+        out.extend(room.recommended_paths(Some(team)));
     } else {
         for e in &room.world.entities {
             if e.hp <= 0.0 {

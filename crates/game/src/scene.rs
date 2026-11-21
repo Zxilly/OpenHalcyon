@@ -130,6 +130,9 @@ pub(super) fn solo_table(room: &Room) -> Message {
     Message::known(crate::Opcode::SceneReadinessRows, body)
 }
 pub(super) fn solo_opening(room: &mut Room, seat: usize) -> std::io::Result<Batch> {
+    if let Some(batch) = super::modes_3v3_blitz::solo_opening(room, seat)? {
+        return Ok(batch);
+    }
     let team = room.world.entities[seat].team;
     let initial = room.phase == crate::RoomPhase::Loading && room.world.tick == 0;
     if initial {

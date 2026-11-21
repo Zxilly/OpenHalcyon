@@ -194,7 +194,7 @@ pub(super) fn reroll(room: &mut Room, seat: usize) -> Batch {
     };
     let skin = data
         .indexed_skin(next, None)
-        .unwrap_or_else(|| halcyon_protocol::skin_hash(&format!("{next}_DefaultSkin")));
+        .unwrap_or_else(|| halcyon_data::skins::default_skin_hash(next));
     room.picks[seat].name.clone_from(next);
     room.picks[seat].skin = skin;
     room.seats[seat].used_aral_reroll = true;

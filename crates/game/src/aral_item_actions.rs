@@ -293,7 +293,6 @@ fn encode_sale(world: &World, sale: &halcyon_sim::ItemSale, wire_actor: u32) -> 
     batch
 }
 
-#[allow(dead_code)]
 pub(super) fn sell(room: &mut Room, seat: usize, actor: u32, instance: u32) -> Batch {
     let Some(entity) = room.world.entities.get(seat) else {
         return Vec::new();

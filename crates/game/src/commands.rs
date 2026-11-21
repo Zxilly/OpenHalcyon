@@ -9,7 +9,7 @@ pub(super) fn from_live(request: LiveFields<'_>) -> Option<Command> {
         LiveFields::MovePoint { x, y } if x.is_finite() && y.is_finite() => {
             Some(Command::MoveTo(Position { x, y }))
         }
-        LiveFields::AttackTarget { target, flag: 0 } if target < u32::from(u16::MAX) => {
+        LiveFields::AttackTarget { target, flag } if flag <= 1 && target < u32::from(u16::MAX) => {
             let actor = target.checked_sub(u32::from(wire_id(0)))?;
             (actor != 0).then_some(Command::Attack(actor))
         }
@@ -17,6 +17,16 @@ pub(super) fn from_live(request: LiveFields<'_>) -> Option<Command> {
         // mapping would apply a different ability to the authenticated hero.
         _ => None,
     }
+}
+
+pub(super) fn clears_attack(request: &LiveFields<'_>) -> bool {
+    matches!(
+        request,
+        LiveFields::AttackTarget {
+            target: u32::MAX,
+            flag,
+        } if *flag <= 1
+    )
 }
 
 impl super::Room {
@@ -86,14 +96,38 @@ mod tests {
             }),
             Some(Command::Attack(2))
         );
+        assert_eq!(
+            from_live(LiveFields::AttackTarget {
+                target: 1501,
+                flag: 1
+            }),
+            Some(Command::Attack(2))
+        );
+        assert!(clears_attack(&LiveFields::AttackTarget {
+            target: u32::MAX,
+            flag: 0
+        }));
+        assert!(clears_attack(&LiveFields::AttackTarget {
+            target: u32::MAX,
+            flag: 1
+        }));
+        assert_eq!(
+            from_live(LiveFields::AttackTarget {
+                target: 1500,
+                flag: 1
+            }),
+            Some(Command::Attack(1))
+        );
         for (target, flag) in [
             (1499, 0),
-            (1500, 1),
+            (1500, 2),
+            (1501, 2),
             (u32::from(u16::MAX), 0),
             (0, 0),
             (0x10000, 0),
         ] {
             assert!(from_live(LiveFields::AttackTarget { target, flag }).is_none());
+            assert!(!clears_attack(&LiveFields::AttackTarget { target, flag }));
         }
         assert_eq!(
             from_live(LiveFields::MovePoint { x: 2., y: 1. }),
@@ -245,13 +279,33 @@ mod tests {
         room.world.step();
         assert!(room.world.entities[0].position.x > hero_start.x);
         room.world.entities[1].position = Position { x: 3., y: 0. };
-        assert!(room.receive(0, 1, attack(1501, 0)).unwrap().is_empty());
+        assert_eq!(
+            room.receive(0, 1, attack(1501, 0)).unwrap(),
+            vec![crate::native_abilities::modify_basic_attack_target_message(
+                Some(2)
+            )]
+        );
         let hit = (0..70).any(|_| room.world.step().into_iter().any(|event| {
             matches!(event, halcyon_sim::Event::Damage { source: 1, target: 2, amount, .. } if amount > 0.)
         }));
         assert!(
             hit,
             "the authenticated human's attack applies simulation damage"
+        );
+        assert_eq!(
+            room.receive(0, 1, attack(u32::MAX, 0)).unwrap(),
+            vec![crate::native_abilities::modify_basic_attack_target_message(
+                None
+            )]
+        );
+        assert!(room.world.entities[0].attack_target().is_none());
+        let before_clear = room.world.entities[0].position.x;
+        assert!(room.receive(0, 1, point(4., 0.)).unwrap().is_empty());
+        assert!(room.receive(0, 1, attack(u32::MAX, 0)).unwrap().is_empty());
+        room.world.step();
+        assert!(
+            room.world.entities[0].position.x > before_clear,
+            "u32::MAX basic-target clear must not cancel active movement"
         );
     }
 }

@@ -822,7 +822,7 @@ impl Rooms {
                     .data
                     .as_ref()
                     .and_then(|data| data.indexed_skin(name, None))
-                    .unwrap_or_else(|| halcyon_protocol::skin_hash(&format!("{name}_DefaultSkin"))),
+                    .unwrap_or_else(|| halcyon_data::skins::default_skin_hash(name)),
                 selected: bot,
                 locked: bot,
             });
@@ -1324,7 +1324,7 @@ impl Room {
         {
             return skin;
         }
-        let default = halcyon_protocol::skin_hash(&format!("{hero}_DefaultSkin"));
+        let default = halcyon_data::skins::default_skin_hash(hero);
         if requested == default {
             return default;
         }
@@ -1548,6 +1548,15 @@ impl Room {
                 halcyon_protocol::ItemAction::Reorder { actor, slots },
             )) => aral_inventory::reorder(self, i, ch, actor, slots),
             Fields::Live(halcyon_protocol::LiveFields::Item(
+                halcyon_protocol::ItemAction::Sell {
+                    actor,
+                    instance,
+                    suffix,
+                },
+            )) if game && suffix.iter().all(|&byte| byte == 0) => {
+                out = aral_item_actions::sell(self, i, actor, instance);
+            }
+            Fields::Live(halcyon_protocol::LiveFields::Item(
                 halcyon_protocol::ItemAction::Activate { instance, suffix },
             )) if game && suffix.iter().all(|&byte| byte == 0) => {
                 use halcyon_sim::{AralStarter, BasicItem, ItemTarget};
@@ -1650,14 +1659,24 @@ impl Room {
                 out = native_hud::submit(self, i, request);
             }
             Fields::Live(request) if game => {
-                if let Some(command) = commands::from_live(request) {
-                    let aral_target = legacy && ch == 0 && matches!(command, Command::Attack(_));
-                    if aral_target && !matches!(m.body.as_slice(), [_, _, _, _, 0, 0]) {
-                        return Ok(out);
+                if commands::clears_attack(&request) {
+                    if self.world.entities[i].attack_target().is_some()
+                        && self.world.command(i as u32 + 1, Command::Stop).is_ok()
+                        && !legacy
+                    {
+                        out.push(native_abilities::modify_basic_attack_target_message(None));
                     }
+                } else if let Some(command) = commands::from_live(request) {
+                    let aral_target = legacy && ch == 0 && matches!(command, Command::Attack(_));
                     let accepted = self.world.command(i as u32 + 1, command).is_ok();
-                    if accepted && aral_target {
-                        out.push(m);
+                    if accepted {
+                        if aral_target {
+                            out.push(m);
+                        } else if !legacy && let Command::Attack(target) = command {
+                            out.push(native_abilities::modify_basic_attack_target_message(Some(
+                                target,
+                            )));
+                        }
                     }
                 }
             }
