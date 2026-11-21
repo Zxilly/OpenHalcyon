@@ -723,6 +723,27 @@ impl Room<'_> {
         self.map_5v5.is_some()
     }
 
+    /// Returns the wire shopkeeper actor ID (`6530` left base, `6531` right base,
+    /// `6532` left river, `6533` right river) if `id` is an alive hero currently
+    /// eligible to buy at an unlocked 5v5 item shop.
+    pub fn shop_5v5_keeper_for_actor(&self, id: u32) -> Option<u32> {
+        let hero = self.index(id).map(|i| &self.entities[i])?;
+        if hero.kind != Kind::Hero || hero.hp <= 0. || self.winner.is_some() {
+            return None;
+        }
+        if self
+            .map_5v5
+            .as_ref()
+            .is_some_and(|map| map.at_river_shop(self.tick, hero.position))
+        {
+            return Some(if hero.position.x < 0. { 6532 } else { 6533 });
+        }
+        if self.at_item_shop(hero) {
+            return Some(if hero.team == 0 { 6530 } else { 6531 });
+        }
+        None
+    }
+
     pub fn hero_5v5_status(&self, id: u32) -> Option<Hero5v5Status> {
         let map = self.map_5v5.as_ref()?;
         let idx = usize::try_from(id.checked_sub(1)?).ok()?;

@@ -15,6 +15,12 @@ pub(super) struct View {
     pub(super) infusion_effects: [super::aral_item_actions::InfusionWitness; 6],
     pub(super) reflex_effects: [Option<u32>; 6],
     pub(super) ringo_effects: [Option<u32>; 6],
+    pub(super) shop_base_declared: bool,
+    pub(super) shop_river_declared: bool,
+    pub(super) shop_can_icon_sent: bool,
+    pub(super) shop_allow_next_tick: Option<u64>,
+    pub(super) shop_allow_active_instance: Option<u32>,
+    pub(super) shop_allow_seq: u32,
     actors: HashMap<u32, u8>,
     slots: HashMap<u8, u32>,
     // Target identity distinguishes two successive occupants of a recycled slot.
@@ -36,7 +42,9 @@ impl View {
     pub(super) fn release_effect(&mut self, id: u32) -> bool {
         if let Some(slot) = self.actors.remove(&id) {
             self.slots.remove(&slot);
+            self.lane_paths.remove(&slot);
             self.spawn_visibility.remove(&slot);
+            self.previous.remove(&id);
             true
         } else {
             false
@@ -265,11 +273,7 @@ impl ObserverScene {
 
     pub fn release(&mut self, batch: &[Message]) {
         for message in batch {
-            if !matches!(
-                (message.opcode, &*self),
-                (crate::wire_opcode::DestroyEntity, Self::Aral(_))
-                    | (crate::wire_opcode::ActorDeath, Self::Solo(_))
-            ) {
+            if message.opcode != crate::wire_opcode::DestroyEntity {
                 continue;
             }
             let Some(id) =
@@ -279,7 +283,7 @@ impl ObserverScene {
             };
             match self {
                 Self::Aral(slots) => slots.destroy_sent(id, 0),
-                Self::Solo(slots) => slots.released(id),
+                Self::Solo(slots) => slots.destroy_sent(id),
             }
         }
     }

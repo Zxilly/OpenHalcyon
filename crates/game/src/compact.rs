@@ -26,11 +26,10 @@ pub(super) fn structure_slot(e: &Entity) -> Option<u8> {
         .or(fallback)
 }
 
-/// Towers acquire dynamic pose and timer fields after the first tick.
-/// All fourteen crystal snapshots retain the compact profile.
+/// All 26 Solo structures (crystals, turrets, and armories) retain their compact
+/// `0x03F2` snapshot profile across opening and mid-game visibility/rejoin.
 pub(super) fn structure(tick: u64, e: &Entity) -> Option<Message> {
-    if (matches!(e.kind, Kind::Tower | Kind::Armory) && tick != 0)
-        || !(1..=u32::from(u16::MAX) - 1500).contains(&e.id)
+    if !(1..=u32::from(u16::MAX) - 1500).contains(&e.id)
         || !e.hp.is_finite()
         || !e.max_hp.is_finite()
         || e.hp <= 0.
@@ -60,12 +59,7 @@ pub(super) fn recordable_structure(body: &[u8]) -> bool {
     };
     let hp = f32::from_be_bytes(body[36..40].try_into().unwrap());
     let max = f32::from_be_bytes(body[40..44].try_into().unwrap());
-    if !hp.is_finite()
-        || !max.is_finite()
-        || hp <= 0.
-        || hp > max
-        || !matches!(body[116], 6 | 7) && hp != max
-    {
+    if !hp.is_finite() || !max.is_finite() || hp <= 0. || hp > max {
         return false;
     }
     let expected = profile.message(profile.actor());
@@ -342,7 +336,7 @@ mod tests {
     }
 
     #[test]
-    fn later_crystal_uses_current_health_but_tower_requires_opening_state() {
+    fn later_crystal_and_tower_use_compact_current_health_snapshot() {
         let mut world = World::new(0, 1);
         world.use_solo_mid_lane().unwrap();
         let mut crystal = world
@@ -355,12 +349,22 @@ mod tests {
         let resumed = structure(1800, &crystal).unwrap();
         assert_eq!(word(&resumed.body, 36), crystal.hp.to_bits());
         assert_eq!(word(&resumed.body, 40), crystal.max_hp.to_bits());
-        let tower = world
+        assert!(recordable_structure(&resumed.body));
+        let mut tower = world
             .entities
             .iter()
-            .find(|e| e.kind == Kind::Tower)
-            .unwrap();
-        assert!(structure(1800, tower).is_none());
+            .find(|e| e.id == 2011 - 1499)
+            .unwrap()
+            .clone();
+        tower.hp -= 412.5;
+        let late_tower = structure(1800, &tower).unwrap();
+        assert_eq!(late_tower.opcode, crate::wire_opcode::EntitySpawn);
+        assert_eq!(word(&late_tower.body, 0), 340);
+        assert_eq!(word(&late_tower.body, 8), 2011);
+        assert_eq!(word(&late_tower.body, 36), tower.hp.to_bits());
+        assert_eq!(word(&late_tower.body, 40), tower.max_hp.to_bits());
+        assert_eq!(late_tower.body[116], 11);
+        assert!(recordable_structure(&late_tower.body));
         crystal.hp = crystal.max_hp;
         crystal.team = 1;
         assert!(structure(0, &crystal).is_none());

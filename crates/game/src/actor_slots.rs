@@ -7,9 +7,13 @@ const FIRST_MINION_SLOT: u8 = 52;
 const ACTOR_SLOTS: u8 = 200;
 const FULL_SLOT_OFFSET: usize = 745;
 
+const RIVER_LEFT_SLOT_KEY: u32 = u32::MAX - 1;
+const RIVER_RIGHT_SLOT_KEY: u32 = u32::MAX;
+
 pub(super) struct ActorSlots {
     heroes: [Option<u8>; 10],
     minions: [Option<u32>; (ACTOR_SLOTS - FIRST_MINION_SLOT) as usize],
+    awaiting_destroy: [bool; (ACTOR_SLOTS - FIRST_MINION_SLOT) as usize],
     reported_full: bool,
 }
 
@@ -32,6 +36,7 @@ impl ActorSlots {
         Self {
             heroes,
             minions: [None; (ACTOR_SLOTS - FIRST_MINION_SLOT) as usize],
+            awaiting_destroy: [false; (ACTOR_SLOTS - FIRST_MINION_SLOT) as usize],
             reported_full: false,
         }
     }
@@ -120,17 +125,42 @@ impl ActorSlots {
         Some(FIRST_MINION_SLOT + index as u8)
     }
 
+    pub fn river_shop_slot(&mut self, right: bool) -> Option<u8> {
+        let key = if right {
+            RIVER_RIGHT_SLOT_KEY
+        } else {
+            RIVER_LEFT_SLOT_KEY
+        };
+        self.minion(key)
+    }
+
+    pub fn defer_destroy(&mut self, id: u32) {
+        if let Some(index) = self.minions.iter().position(|slot| *slot == Some(id)) {
+            self.awaiting_destroy[index] = true;
+        }
+    }
+
+    pub fn destroy_sent(&mut self, id: u32) {
+        if let Some(index) = self.minions.iter().position(|slot| *slot == Some(id)) {
+            self.minions[index] = None;
+            self.awaiting_destroy[index] = false;
+        }
+    }
+
     pub fn released(&mut self, id: u32) {
-        if let Some(slot) = self.minions.iter_mut().find(|slot| **slot == Some(id)) {
-            *slot = None;
+        if let Some(index) = self.minions.iter().position(|slot| *slot == Some(id))
+            && !self.awaiting_destroy[index]
+        {
+            self.minions[index] = None;
         }
     }
 
     /// A new scene gets a fresh client table. Preserve indices of living actors.
     pub fn retain_living(&mut self, entities: &halcyon_sim::Actors<'_>) {
-        for slot in &mut self.minions {
+        for (slot, awaiting) in self.minions.iter_mut().zip(&mut self.awaiting_destroy) {
             if slot.is_some_and(|id| !entities.iter().any(|e| e.id == id && e.hp > 0.0)) {
                 *slot = None;
+                *awaiting = false;
             }
         }
     }
