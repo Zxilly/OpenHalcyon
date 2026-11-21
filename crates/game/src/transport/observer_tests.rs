@@ -1,0 +1,534 @@
+use super::*;
+use crate::Peer;
+use crate::abilities;
+use halcyon_sim::Position;
+use halcyon_types::{MatchHost, Reservation};
+
+#[tokio::test]
+async fn bulwark_release_reaches_a_registered_visible_opponent_and_registered_observer() {
+    let rooms = Rooms::new("127.0.0.1".parse().unwrap(), "127.0.0.1".into(), 1, None);
+    let id = Uuid::new_v4();
+    rooms
+        .reserve(Reservation {
+            talent_levels: Vec::new(),
+            match_id: id,
+            players: (0..6).map(|_| Uuid::new_v4()).collect(),
+            mode: "casual_aral".into(),
+            teams: vec![0, 0, 1, 1, 0, 1],
+            difficulty: None,
+        })
+        .unwrap();
+    let shared = rooms.room(id).unwrap();
+    let mut r = shared.lock().unwrap();
+    r.world.entities[0].type_id = halcyon_data::EntityTemplate::Lyra.as_raw();
+    let mut caster = messages::spawn(&r.world.entities[0], &r.picks, None);
+    caster.body[745] = 16;
+    let mut seats = Vec::new();
+    for i in 0..4 {
+        let (tx, rx) = mpsc::channel(2);
+        r.seats[i].peers[1] = Some(Peer {
+            generation: 1,
+            tx,
+            stalled: watch::channel(false).0,
+        });
+        if i < 3 {
+            r.scene_views[i].declarations(std::slice::from_ref(&caster));
+        }
+        seats.push(rx);
+    }
+    let mut observers = Vec::new();
+    for registered in [true, false] {
+        let (tx, rx) = mpsc::channel(2);
+        let mut view = tower_aggro::View::default();
+        if registered {
+            view.declarations(std::slice::from_ref(&caster));
+        }
+        let scene = tower_aggro::ObserverScene::new(&r);
+        r.observers.insert(
+            Uuid::new_v4(),
+            Observer {
+                view,
+                scene,
+                exit: None,
+                viewer: Uuid::new_v4(),
+                address: String::new(),
+                stop: watch::channel(false).0,
+                live: Some(tx),
+                expires: Instant::now() + Duration::from_secs(60),
+            },
+        );
+        observers.push(rx);
+    }
+    let cast = Event::Cast {
+        source: 1,
+        slot: halcyon_sim::AbilitySlot::B,
+        target: halcyon_sim::CastTarget::SelfCast,
+    };
+    r.visible[1].insert(1);
+    abilities::publish_before_impacts(&mut r, std::slice::from_ref(&cast));
+    let expected = vec![Message::ability_target_used(1500, u32::MAX, 2)];
+    assert_eq!(seats[2].try_recv().unwrap().into_records(), expected);
+    assert_eq!(observers[0].try_recv().unwrap(), expected);
+    assert!(observers[1].try_recv().is_err());
+    assert!(seats.iter_mut().all(|rx| rx.try_recv().is_err()));
+    r.visible[1].remove(&1);
+    abilities::publish_before_impacts(&mut r, &[cast]);
+    assert!(seats[2].try_recv().is_err());
+}
+
+#[tokio::test]
+async fn chill_winds_observers_need_declarations_for_each_referenced_actor() {
+    let rooms = Rooms::new("127.0.0.1".parse().unwrap(), "127.0.0.1".into(), 1, None);
+    let id = Uuid::new_v4();
+    rooms
+        .reserve(Reservation {
+            talent_levels: Vec::new(),
+            match_id: id,
+            players: (0..6).map(|_| Uuid::new_v4()).collect(),
+            mode: halcyon_protocol::ce::KnownQueue::CasualAral.as_str().into(),
+            teams: vec![],
+            difficulty: None,
+        })
+        .unwrap();
+    let shared = rooms.room(id).unwrap();
+    let mut room = shared.lock().unwrap();
+    room.world.entities[0].type_id = halcyon_data::EntityTemplate::Reim.as_raw();
+    let mut caster = messages::spawn(&room.world.entities[0], &room.picks, None);
+    caster.body[745] = 16;
+    let mut target = messages::spawn(&room.world.entities[1], &room.picks, None);
+    target.body[745] = 19;
+
+    let mut viewers = Vec::new();
+    for (ready, declared) in [
+        (true, vec![caster.clone(), target.clone()]),
+        (true, vec![caster.clone()]),
+        (true, vec![target.clone()]),
+        (false, vec![caster, target]),
+    ] {
+        let (tx, rx) = mpsc::channel(4);
+        let mut view = tower_aggro::View::default();
+        view.declarations(&declared);
+        let scene = ready
+            .then(|| tower_aggro::ObserverScene::new(&room))
+            .flatten();
+        room.observers.insert(
+            Uuid::new_v4(),
+            Observer {
+                view,
+                scene,
+                exit: None,
+                viewer: Uuid::new_v4(),
+                address: String::new(),
+                stop: watch::channel(false).0,
+                live: Some(tx),
+                expires: Instant::now() + Duration::from_secs(60),
+            },
+        );
+        viewers.push(rx);
+    }
+
+    abilities::publish_before_impacts(
+        &mut room,
+        &[Event::ChillWinds {
+            source: 1,
+            position: Position { x: 4., y: 2. },
+            heading: Some(1.),
+        }],
+    );
+    abilities::publish(
+        &mut room,
+        &[Event::ChillWindsRoot {
+            source: 1,
+            target: 2,
+            instance: 700,
+        }],
+    );
+
+    for index in [0, 1] {
+        let release = viewers[index].try_recv().unwrap();
+        assert_eq!(release[0], Message::ability_target_used(1500, u32::MAX, 1));
+        assert_eq!(release[1].play_pfx_at_location().unwrap().actor, 1500);
+    }
+    let root = viewers[0].try_recv().unwrap();
+    let halcyon_protocol::Fields::BuffApplication(buff) = root[0].fields().unwrap() else {
+        panic!("expected root application");
+    };
+    assert_eq!((buff.prefix.source, buff.prefix.target), (1500, 1501));
+    assert!(viewers.iter_mut().all(|rx| rx.try_recv().is_err()));
+}
+
+#[tokio::test]
+async fn delayed_aral_lifecycle_is_timed_and_bound_to_original_world_streams() {
+    use crate::modes::aral::death as aral_death;
+    use halcyon_sim::Kind;
+    let rooms = Rooms::new("127.0.0.1".parse().unwrap(), "127.0.0.1".into(), 1, None);
+    let id = Uuid::new_v4();
+    rooms
+        .reserve(Reservation {
+            talent_levels: Vec::new(),
+            match_id: id,
+            players: (0..6).map(|_| Uuid::new_v4()).collect(),
+            teams: vec![0, 0, 1, 0, 1, 1],
+            mode: "casual_aral".into(),
+            difficulty: None,
+        })
+        .unwrap();
+    let shared = rooms.room(id).unwrap();
+    shared.lock().unwrap().phase(crate::RoomPhase::Running);
+    let (_, grant) = rooms.observe(id, Uuid::new_v4()).unwrap();
+    let (_, late) = rooms.observe(id, Uuid::new_v4()).unwrap();
+    let mut room = shared.lock().unwrap();
+    let mut streams = vec![];
+    for (i, seat) in room.seats.iter_mut().take(3).enumerate() {
+        let (tx, rx) = mpsc::channel(8);
+        seat.peers[1] = Some(Peer {
+            generation: i as u64 + 1,
+            tx,
+            stalled: watch::channel(false).0,
+        });
+        streams.push(rx);
+    }
+    let (observer, mut watched) = mpsc::channel(8);
+    room.observers.get_mut(&grant).unwrap().live = Some(observer);
+    for _ in 0..15 * halcyon_sim::TICK_HZ {
+        room.world.step();
+    }
+    let minion = room
+        .world
+        .entities
+        .iter()
+        .find(|e| e.kind == Kind::Minion && e.team == 0)
+        .unwrap()
+        .id;
+    let tower = room
+        .world
+        .entities
+        .iter()
+        .find(|e| e.kind == Kind::Tower)
+        .unwrap()
+        .id;
+    room.visible[0].extend([1, 2, minion, tower]);
+    room.world.entities[1].hp = 0.;
+    room.world.entities.retain(|e| e.id != minion);
+    let events = [
+        Event::Death { id: 2, killer: 1 },
+        Event::Death {
+            id: minion,
+            killer: 1,
+        },
+        Event::Death {
+            id: tower,
+            killer: 1,
+        },
+    ];
+    aral_death::schedule(&mut room, &events);
+    room.tick_observers(&events);
+    room.replicate(&events);
+    let field = |m: &Message| u32::from_be_bytes(m.body[..4].try_into().unwrap());
+    let deaths = |b: &[Message]| {
+        b.iter()
+            .filter(|m| m.is(crate::Opcode::ActorDeath))
+            .map(field)
+            .collect::<Vec<_>>()
+    };
+    assert!(deaths(&watched.try_recv().unwrap()).contains(&u32::from(wire_id(minion))));
+    assert!(deaths(&streams[0].try_recv().unwrap().into_records()).contains(&1501));
+    for stream in &mut streams {
+        while stream.try_recv().is_ok() {}
+    }
+    assert_eq!(room.dead_actors.len(), 2);
+    let (late_observer, mut unwatched) = mpsc::channel(8);
+    room.observers.get_mut(&late).unwrap().live = Some(late_observer);
+    let (replacement, mut reconnected) = mpsc::channel(8);
+    room.seats[1].peers[1] = Some(Peer {
+        generation: 90,
+        tx: replacement,
+        stalled: watch::channel(false).0,
+    });
+    let now = room.world.tick;
+    aral_death::flush(&mut room, now + 35);
+    assert!(streams[0].try_recv().is_err());
+    aral_death::flush(&mut room, now + 36);
+    let check = |m: &[Message], expected: &[u16], actor: u32| {
+        assert_eq!(m.iter().map(|p| p.opcode).collect::<Vec<_>>(), expected);
+        assert!(m.iter().all(|p| field(p) == actor && p.body[4..] == [0; 2]));
+    };
+    check(
+        &watched.try_recv().unwrap(),
+        &[crate::wire_opcode::ActorDead],
+        1501,
+    );
+    check(
+        &streams[0].try_recv().unwrap().into_records(),
+        &[crate::wire_opcode::ActorDead],
+        1501,
+    );
+    room.observers.remove(&grant);
+    aral_death::flush(&mut room, now + 75);
+    assert!(streams[0].try_recv().is_err());
+    aral_death::flush(&mut room, now + 76);
+    check(
+        &streams[0].try_recv().unwrap().into_records(),
+        &[
+            crate::wire_opcode::ActorDead,
+            crate::wire_opcode::DestroyEntity,
+        ],
+        u32::from(wire_id(minion)),
+    );
+    assert!(room.dead_actors.is_empty());
+    assert!(watched.try_recv().is_err());
+    assert!(unwatched.try_recv().is_err());
+    assert!(reconnected.try_recv().is_err());
+    assert!(streams[2].try_recv().is_err());
+}
+
+#[tokio::test]
+async fn revoked_observer_receives_no_further_native_abilities() {
+    let rooms = Rooms::new("127.0.0.1".parse().unwrap(), "127.0.0.1".into(), 1, None);
+    let id = Uuid::new_v4();
+    rooms
+        .reserve(Reservation {
+            talent_levels: Vec::new(),
+            match_id: id,
+            players: vec![Uuid::new_v4()],
+            teams: vec![0],
+            mode: "solo".into(),
+            difficulty: None,
+        })
+        .unwrap();
+    let shared = rooms.room(id).unwrap();
+    shared.lock().unwrap().phase(crate::RoomPhase::Running);
+    let (_, grant) = rooms.observe(id, Uuid::new_v4()).unwrap();
+    let (tx, mut rx) = mpsc::channel(4);
+    let cast = Event::Cast {
+        source: 2,
+        slot: halcyon_sim::AbilitySlot::B,
+        target: halcyon_sim::CastTarget::Point(halcyon_sim::Position { x: 2., y: 3. }),
+    };
+    {
+        let mut room = shared.lock().unwrap();
+        room.observers.get_mut(&grant).unwrap().live = Some(tx);
+        room.world.entities[1].type_id = 273;
+        abilities::publish(&mut room, std::slice::from_ref(&cast));
+    }
+    assert_eq!(
+        rx.try_recv().unwrap(),
+        [Message::ability_point_used(1501, [2., 0., 3.], 3)]
+    );
+    rooms.revoke_observer(id, grant).unwrap();
+    abilities::publish(&mut shared.lock().unwrap(), &[cast]);
+    assert!(rx.try_recv().is_err());
+}
+
+#[tokio::test]
+async fn aral_respawn_timer_respects_known_actors_and_authorized_observers() {
+    use crate::{Peer, Rooms};
+    use halcyon_sim::{Command, Position};
+    use halcyon_types::{MatchHost, Reservation};
+    use tokio::sync::{mpsc, watch};
+
+    let rooms = Rooms::new("127.0.0.1".parse().unwrap(), "127.0.0.1".into(), 1, None);
+    let match_id = Uuid::new_v4();
+    rooms
+        .reserve(Reservation {
+            talent_levels: Vec::new(),
+            match_id,
+            players: (0..6).map(|_| Uuid::new_v4()).collect(),
+            teams: vec![],
+            mode: "casual_aral".into(),
+            difficulty: None,
+        })
+        .unwrap();
+    let shared = rooms.room(match_id).unwrap();
+    shared.lock().unwrap().phase(crate::RoomPhase::Running);
+    let (_, grant) = rooms.observe(match_id, Uuid::new_v4()).unwrap();
+    let mut room = shared.lock().unwrap();
+    let (view, mut observer) = mpsc::channel(8);
+    room.observers.get_mut(&grant).unwrap().live = Some(view);
+    let mut streams = Vec::new();
+    for (i, seat) in room.seats.iter_mut().take(2).enumerate() {
+        let (tx, rx) = mpsc::channel(8);
+        seat.peers[1] = Some(Peer {
+            generation: i as u64 + 1,
+            tx,
+            stalled: watch::channel(false).0,
+        });
+        streams.push(rx);
+    }
+    room.world.entities[0].position = Position { x: 0., y: 0. };
+    room.world.entities[1].position = Position { x: 3., y: 0. };
+    room.world.entities[1].hp = 0.1;
+    room.world.command(1, Command::Attack(2)).unwrap();
+    let events = (0..40)
+        .find_map(|_| {
+            let events = room.world.step();
+            events
+                .iter()
+                .any(|event| matches!(event, Event::Death { id: 2, .. }))
+                .then_some(events)
+        })
+        .expect("hero dies from an authoritative attack");
+    let seconds = room.world.respawn_seconds(2).unwrap();
+    let expected = Message::actor_respawn_timer(1501, seconds);
+
+    // The victim's side knows its own hero but the killer is now outside its fog.
+    // The killer's side had visibility of both references when the victim fell.
+    room.visible[0].extend([1, 2]);
+    room.visible[1].insert(2);
+    room.replicate(&events);
+    let visible_enemy = streams[0].try_recv().unwrap().into_records();
+    let death_index = visible_enemy
+        .iter()
+        .position(|m| m.is(crate::Opcode::ActorDeath))
+        .unwrap();
+    let timer_index = visible_enemy.iter().position(|m| m == &expected).unwrap();
+    assert!(death_index < timer_index);
+    assert_eq!(visible_enemy.iter().filter(|m| **m == expected).count(), 1);
+    let friendly = streams[1].try_recv().unwrap().into_records();
+    assert!(friendly.iter().all(|m| !m.is(crate::Opcode::ActorDeath)));
+    assert_eq!(friendly.iter().filter(|m| **m == expected).count(), 1);
+
+    room.tick_observers(&events);
+    let observed = observer.try_recv().unwrap();
+    assert_eq!(observed.iter().filter(|m| **m == expected).count(), 1);
+    room.replicate(&[]);
+    assert!(streams[0].try_recv().is_err());
+
+    // A team never told about this death gets no timer for the enemy.
+    room.visible[0].remove(&2);
+    room.replicate(&events);
+    while let Ok(batch) = streams[0].try_recv() {
+        assert!(
+            batch
+                .into_records()
+                .iter()
+                .all(|m| !m.is(crate::Opcode::ActorRespawnTimer))
+        );
+    }
+
+    // Use the native, confirmed gameplay stream for the relocation presentation.
+    for (i, seat) in room.seats.iter_mut().take(2).enumerate() {
+        seat.peers[0] = seat.peers[1].take();
+        seat.world_actor_written = true;
+        let actor = 1500 + i as u32;
+        seat.preamble.observe(
+            &Message::known(crate::Opcode::RequestSceneSnapshot, [0; 6]),
+            actor,
+        );
+        let mut request = [0; 6];
+        request[..4].copy_from_slice(&actor.to_be_bytes());
+        request[4] = 1;
+        seat.preamble.observe(
+            &Message::known(crate::Opcode::ConfirmSceneOwner, request),
+            actor,
+        );
+        seat.preamble.observe(
+            &Message::known(crate::Opcode::SceneReadyConfirm, [0; 6]),
+            actor,
+        );
+    }
+    // Advance the same dead hero through its normal countdown.
+    let declaration = {
+        let mut b = vec![0; 750];
+        b[8..12].copy_from_slice(&1501u32.to_be_bytes());
+        b[745] = 17;
+        Message::known(crate::Opcode::HeroSpawn, b)
+    };
+    for view in &mut room.scene_views[..2] {
+        view.declarations(std::slice::from_ref(&declaration));
+    }
+    let scene = tower_aggro::ObserverScene::new(&room);
+    let o = room.observers.get_mut(&grant).unwrap();
+    o.scene = scene;
+    o.view.declarations(std::slice::from_ref(&declaration));
+    for stream in &mut streams {
+        while stream.try_recv().is_ok() {}
+    }
+    let mut teleported = None;
+    while room.world.entities[1].hp <= 0. {
+        let events = room.world.step();
+        if let Some(Event::RespawnApproach { home, .. }) = events
+            .iter()
+            .find(|e| matches!(e, Event::RespawnApproach { id: 2, .. }))
+        {
+            assert!(teleported.replace(room.world.tick).is_none());
+            assert_eq!(room.world.entities[1].hp, 0.);
+            assert_ne!(room.world.entities[1].position, *home);
+            let expected = vec![
+                Message::actor_relocation(1501, [home.x, 1.5, home.y], 1),
+                Message::position(1501, home.x, home.y),
+            ];
+            crate::modes::aral::death::publish_approaches(&mut room, &events);
+            assert_eq!(streams[1].try_recv().unwrap().into_records(), expected);
+            assert!(streams[0].try_recv().is_err());
+            assert_eq!(observer.try_recv().unwrap(), expected);
+            room.world.entities[0].position = *home;
+            room.scene_views[1] = Default::default();
+            crate::modes::aral::death::publish_approaches(&mut room, &events);
+            assert_eq!(streams[0].try_recv().unwrap().into_records(), expected);
+            assert!(streams[1].try_recv().is_err());
+        }
+        if events
+            .iter()
+            .any(|e| matches!(e, Event::Respawn { id: 2, .. }))
+        {
+            assert_eq!(teleported.unwrap() + 6, room.world.tick);
+        }
+    }
+    assert!(teleported.is_some());
+}
+
+#[tokio::test]
+async fn observer_respawn_and_purchase_emit_one_grant_and_actual_currency() {
+    let rooms = Rooms::new("127.0.0.1".parse().unwrap(), "127.0.0.1".into(), 1, None);
+    let id = Uuid::new_v4();
+    rooms
+        .reserve(Reservation {
+            talent_levels: Vec::new(),
+            match_id: id,
+            players: vec![Uuid::new_v4()],
+            teams: vec![0],
+            mode: "5v5".into(),
+            difficulty: None,
+        })
+        .unwrap();
+    let shared = rooms.room(id).unwrap();
+    shared.lock().unwrap().phase(crate::RoomPhase::Running);
+    let (_, grant) = rooms.observe(id, Uuid::new_v4()).unwrap();
+    let (tx, mut rx) = mpsc::channel(1);
+    {
+        let mut r = shared.lock().unwrap();
+        r.world.tick = 1;
+        r.observers.get_mut(&grant).unwrap().live = Some(tx);
+        r.world.entities[1].gold = 300;
+        let receipt = r
+            .world
+            .purchase(2, halcyon_sim::BasicItem::WeaponBlade)
+            .unwrap();
+        r.tick_observers(&[
+            Event::Spawn { id: 2 },
+            Event::Purchase(receipt.clone()),
+            Event::GoldAward { id: 2, amount: 17 },
+        ]);
+        let batch = rx.try_recv().unwrap();
+        assert_eq!(
+            batch.iter().map(|m| m.opcode).collect::<Vec<_>>(),
+            [
+                crate::wire_opcode::HeroSpawn,
+                crate::wire_opcode::ItemGrant,
+                crate::wire_opcode::ModifyActorResource,
+                crate::wire_opcode::ModifyActorResource
+            ]
+        );
+        assert!(
+            matches!(batch[1].fields().unwrap(),Fields::ItemGrant{instance,..} if instance==receipt.granted.instance)
+        );
+        for (message, delta) in batch[2..].iter().zip([-300., 17.]) {
+            assert!(
+                matches!(message.fields().unwrap(),Fields::EntityStat{stat:6,value,..} if value==delta)
+            );
+        }
+    }
+    rooms.revoke_observer(id, grant).unwrap();
+    assert!(rx.recv().await.is_none());
+}
