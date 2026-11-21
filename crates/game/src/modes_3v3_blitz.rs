@@ -1,13 +1,19 @@
 //! Game-room lifecycle, scene declarations, 0x041F mode variables, Blitz flyouts/talents,
 //! and protocol integration for 3v3 Halcyon Fold (`CasualFold` / `RankedFold`) and `Blitz`.
 
+use super::scene::mode_variables::{
+    COUNTDOWN_DO_ROUNDING_KEY, COUNTDOWN_DURATION_KEY, COUNTDOWN_PAUSED_KEY, COUNTDOWN_START_KEY,
+    TEAM_1_SCORE_KEY, TEAM_2_SCORE_KEY,
+};
 use super::{Batch, Room, messages, point_move, transport};
 use halcyon_data::EntityTemplate;
 use halcyon_protocol::{
     BuffApplication, BuffChange, BuffMutation, BuffPrefix, Flyout, FlyoutText, Message,
     SoloStructure, ce::KnownQueue,
 };
-use halcyon_sim::{BlitzTalentSlot, Entity, Event, Kind, TICK_HZ, World};
+use halcyon_sim::{
+    BlitzTalentSlot, Entity, Event, Kind, TICK_HZ, World, map_blitz::BLITZ_DURATION_TICKS,
+};
 
 const STRUCTURE_SKIN: u32 = 0xc10b_41da;
 const MINION_SKIN: u32 = 0xeb39_ce55;
@@ -64,22 +70,6 @@ pub(crate) const fn non_hero_skin(template: EntityTemplate) -> Option<u32> {
 pub(crate) fn hero_slot(entity: &Entity) -> Option<u8> {
     (entity.kind == Kind::Hero && (1..=6).contains(&entity.id))
         .then(|| FIRST_HERO_SLOT - 1 + entity.id as u8)
-}
-
-pub(crate) const BLITZ_SCORE_LEFT_KEY: u32 = fnv1a_32(b"blitz_score_left");
-pub(crate) const BLITZ_SCORE_RIGHT_KEY: u32 = fnv1a_32(b"blitz_score_right");
-pub(crate) const BLITZ_TIMER_KEY: u32 = fnv1a_32(b"blitz_remaining_seconds");
-pub(crate) const BLITZ_SUDDEN_DEATH_KEY: u32 = fnv1a_32(b"blitz_sudden_death");
-
-const fn fnv1a_32(bytes: &[u8]) -> u32 {
-    let mut hash = 0x811c_9dc5_u32;
-    let mut i = 0;
-    while i < bytes.len() {
-        hash ^= bytes[i] as u32;
-        hash = hash.wrapping_mul(0x0100_0193);
-        i += 1;
-    }
-    hash
 }
 
 pub(crate) fn is_halcyon_fold(queue: Option<KnownQueue>) -> bool {
@@ -750,23 +740,22 @@ pub(crate) fn blitz_mode_var_snapshot(world: &World) -> Vec<Message> {
     let Some(blitz) = world.blitz_state() else {
         return Vec::new();
     };
+    let duration_seconds = (BLITZ_DURATION_TICKS / TICK_HZ) as u32;
     vec![
-        mode_var_message(BLITZ_SCORE_LEFT_KEY, blitz.team_points[0]),
-        mode_var_message(BLITZ_SCORE_RIGHT_KEY, blitz.team_points[1]),
-        mode_var_message(BLITZ_TIMER_KEY, blitz.remaining_seconds().to_bits()),
-        mode_var_message(BLITZ_SUDDEN_DEATH_KEY, u32::from(blitz.sudden_death)),
+        mode_var_message(COUNTDOWN_START_KEY, 0),
+        mode_var_message(COUNTDOWN_DURATION_KEY, duration_seconds),
+        mode_var_message(COUNTDOWN_PAUSED_KEY, u32::from(blitz.sudden_death)),
+        mode_var_message(COUNTDOWN_DO_ROUNDING_KEY, 0),
+        mode_var_message(TEAM_1_SCORE_KEY, blitz.team_points[0]),
+        mode_var_message(TEAM_2_SCORE_KEY, blitz.team_points[1]),
     ]
 }
 
-/// Emits live `0x041F` score/timer updates and `0x0440` Blitz score/gameover flyouts.
+/// Emits live `0x041F` team score / pause updates and `0x0440` Blitz score/gameover flyouts.
 pub(crate) fn publish_tick(room: &mut Room, events: &[Event]) {
-    if !is_blitz(room.known_queue) {
+    if !is_blitz(room.known_queue) || room.world.blitz_state().is_none() {
         return;
     }
-    let Some(blitz) = room.world.blitz_state() else {
-        return;
-    };
-    let remaining_bits = blitz.remaining_seconds().to_bits();
     let mut frames = Vec::new();
     for ev in events {
         match *ev {
@@ -790,14 +779,14 @@ pub(crate) fn publish_tick(room: &mut Room, events: &[Event]) {
                     );
                 }
                 let key = if team == 0 {
-                    BLITZ_SCORE_LEFT_KEY
+                    TEAM_1_SCORE_KEY
                 } else {
-                    BLITZ_SCORE_RIGHT_KEY
+                    TEAM_2_SCORE_KEY
                 };
                 frames.push(mode_var_message(key, total));
             }
             Event::BlitzSuddenDeath => {
-                frames.push(mode_var_message(BLITZ_SUDDEN_DEATH_KEY, 1));
+                frames.push(mode_var_message(COUNTDOWN_PAUSED_KEY, 1));
             }
             Event::End { winner } => {
                 frames.push(
@@ -811,9 +800,6 @@ pub(crate) fn publish_tick(room: &mut Room, events: &[Event]) {
             }
             _ => {}
         }
-    }
-    if room.world.tick.is_multiple_of(TICK_HZ) {
-        frames.push(mode_var_message(BLITZ_TIMER_KEY, remaining_bits));
     }
     if frames.is_empty() {
         return;
@@ -1539,6 +1525,13 @@ mod tests {
                     msg.body[745], 0,
                     "HeroSpawn for template {raw} missing slot index"
                 );
+            } else if msg.opcode == wire_opcode::ModifyGameModeVar {
+                assert_eq!(msg.body.len(), 14);
+                let key = u32::from_be_bytes(msg.body[..4].try_into().unwrap());
+                assert!(
+                    super::super::scene::mode_variables::CLIENT_REGISTERED_KEYS.contains(&key),
+                    "unregistered 0x041F GameModeVar key {key:#010x}"
+                );
             } else if msg.opcode == wire_opcode::EntitySpawn {
                 assert_eq!(msg.body.len(), 122);
                 let raw = u16::try_from(u32::from_be_bytes(msg.body[..4].try_into().unwrap()))
@@ -1945,5 +1938,99 @@ mod tests {
                 "expected PvP ch=1 0x040B DestroyEntity on wave/sentry deaths in {mode}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn round4_all_041f_mode_vars_are_client_registered_across_blitz_3v3_and_ticks() {
+        let rooms = Rooms::new("127.0.0.1".parse().unwrap(), "127.0.0.1".into(), 4, None);
+        let id = Uuid::new_v4();
+        let player = Uuid::new_v4();
+        rooms
+            .reserve(Reservation {
+                talent_levels: Vec::new(),
+                match_id: id,
+                players: vec![player],
+                teams: Vec::new(),
+                mode: "blitz_bots_solo".into(),
+                difficulty: Some(halcyon_data::BotDifficulty::Medium),
+            })
+            .unwrap();
+        let shared = rooms.room(id).unwrap();
+        let mut room = shared.lock().unwrap();
+        let (tx, mut rx) = mpsc::channel(256);
+        room.attach(player, tx, watch::channel(false).0).unwrap();
+        room.receive(0, 0, Message::known(crate::Opcode::DraftLockHero, []))
+            .unwrap();
+        room.seats[0].loading_roster_sent = true;
+        room.receive(
+            0,
+            0,
+            Message::known(crate::Opcode::RequestSceneSnapshot, [0; 6]),
+        )
+        .unwrap();
+        let wire_hero = u32::from(messages::wire_id(room.world.entities[0].id));
+        let mut confirm = [0u8; 6];
+        confirm[..4].copy_from_slice(&wire_hero.to_be_bytes());
+        confirm[4..].copy_from_slice(&[1, 0]);
+        let opening = room
+            .receive(
+                0,
+                0,
+                Message::known(crate::Opcode::ConfirmSceneOwner, confirm),
+            )
+            .unwrap();
+        assert_no_non_hero_03f3_and_valid_cff0_skins(&opening);
+        let open_vars: std::collections::HashMap<u32, u32> = opening
+            .iter()
+            .filter(|m| m.opcode == wire_opcode::ModifyGameModeVar)
+            .map(|m| {
+                (
+                    u32::from_be_bytes(m.body[..4].try_into().unwrap()),
+                    u32::from_be_bytes(m.body[4..8].try_into().unwrap()),
+                )
+            })
+            .collect();
+        assert_eq!(open_vars.get(&COUNTDOWN_START_KEY), Some(&0));
+        assert_eq!(open_vars.get(&COUNTDOWN_DURATION_KEY), Some(&300));
+        assert_eq!(open_vars.get(&COUNTDOWN_PAUSED_KEY), Some(&0));
+        assert_eq!(open_vars.get(&TEAM_1_SCORE_KEY), Some(&0));
+        assert_eq!(open_vars.get(&TEAM_2_SCORE_KEY), Some(&0));
+
+        room.receive(
+            0,
+            0,
+            Message::known(crate::Opcode::SceneReadyConfirm, [0; 6]),
+        )
+        .unwrap();
+        room.seats[0].world_actor_written = true;
+        while rx.try_recv().is_ok() {}
+
+        // Trigger a hero kill point (+1 on Team1Score = 0x7c9ddf52) and Sudden Death (PAUSED = 1).
+        room.world.entities[1].hp = 1.0;
+        room.world.entities[1].position = room.world.entities[0].position;
+        let target_id = room.world.entities[1].id;
+        room.world.command(1, Command::Attack(target_id)).unwrap();
+        let mut live = Vec::new();
+        for _ in 0..20 {
+            room.tick();
+            while let Ok(d) = rx.try_recv() {
+                live.extend(d.into_records());
+            }
+        }
+        publish_tick(&mut room, &[Event::BlitzSuddenDeath]);
+        while let Ok(d) = rx.try_recv() {
+            live.extend(d.into_records());
+        }
+        assert_no_non_hero_03f3_and_valid_cff0_skins(&live);
+        assert!(live.iter().any(|m| {
+            m.opcode == wire_opcode::ModifyGameModeVar
+                && u32::from_be_bytes(m.body[..4].try_into().unwrap()) == TEAM_1_SCORE_KEY
+                && u32::from_be_bytes(m.body[4..8].try_into().unwrap()) >= 1
+        }));
+        assert!(live.iter().any(|m| {
+            m.opcode == wire_opcode::ModifyGameModeVar
+                && u32::from_be_bytes(m.body[..4].try_into().unwrap()) == COUNTDOWN_PAUSED_KEY
+                && u32::from_be_bytes(m.body[4..8].try_into().unwrap()) == 1
+        }));
     }
 }
