@@ -65,13 +65,6 @@ impl BotDifficulty {
     }
 
     pub fn supports_queue(mode: &str) -> bool {
-        matches!(
-            crate::KnownQueue::parse(mode).map(crate::KnownQueue::mode),
-            Some(
-                crate::NativeMode::SoloBots
-                    | crate::NativeMode::CoopBots
-                    | crate::NativeMode::PrivateBots
-            )
-        )
+        crate::KnownQueue::parse(mode).is_some_and(crate::KnownQueue::supports_bot_difficulty)
     }
 }

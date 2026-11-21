@@ -445,7 +445,7 @@ async fn dispatch(s: &Platform, m: RpcMethod, params: &[Value]) -> Result<(Strin
         RpcMethod::QueryPendingMatch => s.pending_match(&session, &profile).await?,
         RpcMethod::Update => {
             if let Some(lobby) = &profile.lobby {
-                if KnownQueue::parse(&lobby.mode) == Some(KnownQueue::SoloBots)
+                if KnownQueue::parse(&lobby.mode).is_some_and(KnownQueue::is_single_human)
                     && lobby.phase_kind() == Some(LobbyPhase::Offered)
                 {
                     let mut snapshot = s.projected_state(&session, &profile).await?;

@@ -6,6 +6,7 @@ pub enum LiveFields<'a> {
     Item(super::ItemAction<'a>),
     SurrenderRequest(u8),
     AralSurrenderBoard(super::AralSurrenderBoard),
+    TeamSurrenderBoard(super::TeamSurrenderBoard),
     AbilityTarget {
         target: u32,
         selector: u8,
@@ -174,6 +175,9 @@ pub(super) fn fields(op: u16, b: &[u8]) -> Option<Fields<'_>> {
         crate::wire_opcode::TeamSurrenderStateChanged if expected(151) || b.len() == 155 => {
             if let Some(board) = super::AralSurrenderBoard::read(b) {
                 return Some(Fields::Live(LiveFields::AralSurrenderBoard(board)));
+            }
+            if let Some(board) = super::TeamSurrenderBoard::read(b) {
+                return Some(Fields::Live(LiveFields::TeamSurrenderBoard(board)));
             }
             return Some(Fields::Live(LiveFields::TwoTables {
                 first: word(0),

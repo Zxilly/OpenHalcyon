@@ -711,17 +711,13 @@ impl Rooms {
         }
         let known_queue = KnownQueue::parse(&req.mode);
         let legacy_aral = known_queue == Some(KnownQueue::CasualAral);
-        let six_humans = halcyon_data::three_per_side(&req.mode);
+        let six_humans = known_queue.is_some_and(KnownQueue::requires_six_humans);
         if six_humans && req.players.len() != halcyon_data::THREE_PER_SIDE_SEATS {
             return Err(PlatformError::Invalid(
                 "three-per-side queue requires six human players",
             ));
         }
-        let hero_seats = if six_humans {
-            halcyon_data::THREE_PER_SIDE_SEATS
-        } else {
-            10
-        };
+        let hero_seats = known_queue.map_or(10, KnownQueue::hero_seats);
         let occupied = rooms
             .values()
             .filter(|r| r.lock().unwrap().ended.is_none())
@@ -776,11 +772,14 @@ impl Rooms {
             world
                 .use_six_human_roster()
                 .map_err(|_| PlatformError::Invalid("invalid six-human roster"))?;
+        } else if hero_seats == halcyon_data::THREE_PER_SIDE_SEATS {
+            modes_3v3_blitz::trim_to_three_per_side_roster(&mut world, hero_seats)
+                .map_err(|_| PlatformError::Invalid("invalid three-per-side solo roster"))?;
         }
         world
             .assign_teams(&req.teams)
             .map_err(|_| PlatformError::Invalid("invalid human teams"))?;
-        if legacy_aral {
+        if legacy_aral || known_queue == Some(KnownQueue::BattleRoyaleBotsSolo) {
             world
                 .use_aral_lane()
                 .map_err(|_| PlatformError::Invalid("invalid ARAL layout"))?;
@@ -792,7 +791,7 @@ impl Rooms {
             }
         } else if req.players.len() == 10
             && !six_humans
-            && known_queue.map(KnownQueue::mode) != Some(NativeMode::SoloBots)
+            && !known_queue.is_some_and(KnownQueue::is_single_human)
         {
             world
                 .use_sovereigns_rise_5v5(self.0.data.as_deref())
@@ -980,8 +979,7 @@ impl Room {
     }
 
     fn solo_scene(&self) -> bool {
-        self.players.len() == 1
-            && self.known_queue.map(KnownQueue::mode) == Some(NativeMode::SoloBots)
+        self.players.len() == 1 && self.known_queue.is_some_and(KnownQueue::is_single_human)
     }
 
     fn solo_loading(&mut self) {
@@ -1634,12 +1632,9 @@ impl Room {
                 out = native_abilities::receive(self, i, ch, m);
             }
             Fields::Live(halcyon_protocol::LiveFields::SurrenderRequest(vote))
-                if legacy
-                    && game
-                    && ch == 0
-                    && self.seats[i].world_actor_written
-                    && m.body.len() == 6
-                    && m.body[1..] == [0; 5] =>
+                if game
+                    && (ch == 1 || self.seats[i].world_actor_written)
+                    && (m.body.len() == 1 || (m.body.len() == 6 && m.body[1..] == [0; 5])) =>
             {
                 self.vote_surrender(i, vote);
             }
@@ -1989,7 +1984,7 @@ impl Room {
             }
         }
         native_abilities::publish(self, &events);
-        if legacy && self.world.winner.is_none() {
+        if self.world.winner.is_none() {
             self.advance_ballots();
         }
         if self.world.winner.is_some() {

@@ -1831,3 +1831,131 @@ async fn abort_match_rolls_back_atomically_and_persists_idempotently() {
     }
     reopened.abort_match(room).unwrap();
 }
+
+#[derive(Default)]
+struct ModeRecordingHost(
+    std::sync::Mutex<Vec<(String, usize, Option<halcyon_platform::BotDifficulty>)>>,
+);
+
+impl MatchHost for ModeRecordingHost {
+    fn reserve(&self, reservation: Reservation) -> Result<HostedMatch, PlatformError> {
+        self.0.lock().unwrap().push((
+            reservation.mode,
+            reservation.players.len(),
+            reservation.difficulty,
+        ));
+        Ok(HostedMatch {
+            address: "127.0.0.1:8765".into(),
+        })
+    }
+}
+
+#[tokio::test]
+async fn solo_practice_and_blitz_queue_aliases_match_expected_human_seats() {
+    use halcyon_platform::PublicMatches as _;
+    let dir = tempfile::tempdir().unwrap();
+    let host = Arc::new(ModeRecordingHost::default());
+    let state = AppState::open(
+        PlatformConfig {
+            database_path: dir.path().join("queues.sqlite"),
+            public_address: "localhost:8000".into(),
+            seats_per_match: 10,
+        },
+        host.clone(),
+    )
+    .unwrap();
+
+    for (mode, difficulty) in [
+        (
+            "blitz_bots_solo",
+            Some(halcyon_platform::BotDifficulty::Medium),
+        ),
+        ("solo_bots", Some(halcyon_platform::BotDifficulty::Easy)),
+        (
+            "standard_bots_solo",
+            Some(halcyon_platform::BotDifficulty::Hard),
+        ),
+        (
+            "battle_royale_bots_solo",
+            Some(halcyon_platform::BotDifficulty::VeryEasy),
+        ),
+        ("5v5_practice", None),
+    ] {
+        assert_eq!(state.seats_for_mode(mode), 1, "{mode}");
+        let guest = state.create_guest(format!("Solo_{mode}")).await.unwrap();
+        assert!(
+            state
+                .join_with_seats(&guest.session_token, mode.into(), 6)
+                .await
+                .is_err()
+        );
+        state
+            .enqueue(&guest.session_token, mode.into(), difficulty)
+            .await
+            .unwrap();
+        let match_id = state
+            .profile(&guest.session_token)
+            .await
+            .unwrap()
+            .lobby
+            .and_then(|l| l.match_id)
+            .expect(mode);
+        state.accept(&guest.session_token, match_id).await.unwrap();
+    }
+
+    for pvp_blitz in ["blitz_pvp_revamp", "blitz_pvp_pure"] {
+        assert_eq!(state.seats_for_mode(pvp_blitz), 6, "{pvp_blitz}");
+        let mut tokens = Vec::with_capacity(6);
+        for seat in 0..6 {
+            let guest = state
+                .create_guest(format!("Blitz_{pvp_blitz}_{seat}"))
+                .await
+                .unwrap();
+            state
+                .enqueue(&guest.session_token, pvp_blitz.into(), None)
+                .await
+                .unwrap();
+            tokens.push(guest.session_token);
+        }
+        let match_id = state
+            .profile(&tokens[0])
+            .await
+            .unwrap()
+            .lobby
+            .and_then(|l| l.match_id)
+            .expect(pvp_blitz);
+        for token in &tokens {
+            state.accept(token, match_id).await.unwrap();
+        }
+    }
+
+    let recorded = host.0.lock().unwrap().clone();
+    assert_eq!(
+        recorded,
+        vec![
+            (
+                "blitz_bots_solo".to_string(),
+                1,
+                Some(halcyon_platform::BotDifficulty::Medium)
+            ),
+            (
+                "solo_bots".to_string(),
+                1,
+                Some(halcyon_platform::BotDifficulty::Easy)
+            ),
+            (
+                "standard_bots_solo".to_string(),
+                1,
+                Some(halcyon_platform::BotDifficulty::Hard)
+            ),
+            (
+                "battle_royale_bots_solo".to_string(),
+                1,
+                Some(halcyon_platform::BotDifficulty::VeryEasy)
+            ),
+            ("5v5_practice".to_string(), 1, None),
+            ("blitz_pvp_revamp".to_string(), 6, None),
+            ("blitz_pvp_pure".to_string(), 6, None),
+        ]
+    );
+}
