@@ -25,6 +25,7 @@ mod observer;
 mod player_actions;
 mod player_presence;
 mod point_move;
+mod reconnect;
 mod recording;
 mod registry;
 mod result_frames;
@@ -1125,14 +1126,11 @@ impl Room {
                 opcode: None,
             },
         );
-        let solo_rejoin = !game && self.solo_scene() && self.seats[idx].control_world;
+        let solo_rejoin = reconnect::is_solo_rejoin(self, idx, game);
         let mut batch = if solo_rejoin {
             // A fresh control stream has never received the seat and world mode.
-            let mut records: Batch = scene::players(self).collect();
-            records.push(messages::world_settings(idx, &self.queue));
-            records.push(Message::known(crate::Opcode::DraftTransitionToLoading, [0]));
             self.seats[idx].loading_roster_sent = true;
-            records
+            reconnect::solo_rejoin_batch(self, idx)
         } else if legacy_aral {
             aral::setup(
                 self,
@@ -1144,7 +1142,14 @@ impl Room {
                 },
             )
         } else if game {
-            world_header(&self.world, &self.players, &self.picks, &self.queue, idx)
+            let mut header =
+                world_header(&self.world, &self.players, &self.picks, &self.queue, idx);
+            reconnect::populate_world_header(
+                &mut header,
+                &self.world.entities[idx],
+                &self.picks[idx],
+            );
+            header
         } else {
             let mut out = setup(
                 &self.world,
