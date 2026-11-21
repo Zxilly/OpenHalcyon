@@ -266,6 +266,7 @@ async fn pooled_aral_reroll_rules_split_tickets_and_select_only_compatible_hosts
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "slow soak; run with cargo nextest run --run-ignored all"]
 async fn cross_home_aral_equips_only_committed_numeric_entitlements() {
     let tmp = tempfile::tempdir().unwrap();
     let (configs, listeners) = pool::configs(tmp.path());

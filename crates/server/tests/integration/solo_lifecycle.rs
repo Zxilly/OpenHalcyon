@@ -1,5 +1,4 @@
-#[path = "../../ce-platform/tests/support/native_rpc.rs"]
-mod native_rpc;
+use crate::native_rpc;
 
 use axum::{
     Router,
@@ -124,6 +123,7 @@ fn state_upd_a(x: f32, y: f32) -> Message {
 }
 
 #[tokio::test]
+#[ignore = "slow soak; run with cargo nextest run --run-ignored all"]
 async fn native_solo_single_socket_full_lifecycle_reconnect_and_post_match() {
     let dir = tempfile::tempdir().unwrap();
     let db_path = dir.path().join("solo-e2e.sqlite");

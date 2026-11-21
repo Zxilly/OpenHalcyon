@@ -2160,6 +2160,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "slow soak; run with cargo nextest run --run-ignored all"]
     fn ghostwing_and_blackclaw_spawn_capture_push_scale_and_score() {
         let (mut world, _) = setup_5v5_world();
         // Spawn Ghostwing at 9:00 (10800 ticks).

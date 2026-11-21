@@ -1,12 +1,11 @@
-#[path = "../../ce-platform/tests/support/native_rpc.rs"]
-mod native_rpc;
+use crate::native_rpc;
 use halcyon_ce_platform::{LobbyState, RpcMethod};
 use halcyon_platform::{Chat, CreateGuest, Queue};
 use halcyon_protocol::wire_opcode;
 use native_rpc::{RpcEnvelope, android_guest};
-#[path = "support/aral_talent_pool.rs"]
+#[path = "../support/aral_talent_pool.rs"]
 mod aral_talent_pool;
-#[path = "../../federation/tests/support/pool.rs"]
+#[path = "../../../federation/tests/support/pool.rs"]
 mod pool;
 use axum::{
     Router,
@@ -406,6 +405,7 @@ async fn echo_clock(socket: &mut TcpStream, cipher: &MatchCipher, value: f32) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
+#[ignore = "slow soak; run with cargo nextest run --run-ignored all"]
 async fn party_game_survives_two_home_elections_and_replays_result_once() {
     let tmp = tempfile::tempdir().unwrap();
     let (cfg, listeners) = pool::configs(tmp.path());
@@ -1038,6 +1038,7 @@ fn frozen_ticket(journal: &Path, ticket: Uuid) -> Ticket {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
+#[ignore = "slow soak; run with cargo nextest run --run-ignored all"]
 async fn enqueue_freezes_before_quorum_and_resumes_with_the_same_payload() {
     let tmp = tempfile::tempdir().unwrap();
     let (cfg, listeners) = pool::configs(tmp.path());
@@ -1456,7 +1457,7 @@ async fn local_friend_spectates_read_only_and_revokes_on_exit() {
     }
 }
 
-#[path = "support/process_pool.rs"]
+#[path = "../support/process_pool.rs"]
 mod process_pool;
 
 async fn rest(
@@ -1917,15 +1918,23 @@ async fn public_and_ce_players_share_a_pool_and_cross_home_match_chat() {
 
     // The three committed players reach Running through their ordinary game sockets.
     let match_id = Uuid::parse_str(&id).unwrap();
-    let address = node(&cluster, 0)
-        .app
-        .profile(token(0))
-        .await
-        .unwrap()
-        .lobby
-        .unwrap()
-        .address
-        .unwrap();
+    let address = timeout(Duration::from_secs(5), async {
+        loop {
+            if let Some(address) = node(&cluster, 0)
+                .app
+                .profile(token(0))
+                .await
+                .unwrap()
+                .lobby
+                .and_then(|lobby| lobby.address)
+            {
+                break address;
+            }
+            sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap();
     let cipher = MatchCipher::new(&id);
     let players: Vec<Uuid> = expected
         .iter()

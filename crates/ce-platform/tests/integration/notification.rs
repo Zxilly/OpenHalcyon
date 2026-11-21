@@ -1,5 +1,4 @@
-#[path = "support/native_rpc.rs"]
-mod native_rpc;
+use crate::native_rpc;
 use halcyon_ce_platform::RpcMethod;
 use native_rpc::{RpcEnvelope, android_guest};
 use std::{sync::Arc, time::Duration};
@@ -753,6 +752,6 @@ struct QueueJoin<'a> {
 
 fn sample(name: &str) -> serde_json::Value {
     let samples: std::collections::BTreeMap<String, serde_json::Value> =
-        serde_json::from_str(include_str!("fixtures/notification-samples.json")).unwrap();
+        serde_json::from_str(include_str!("../fixtures/notification-samples.json")).unwrap();
     samples.get(name).unwrap().clone()
 }

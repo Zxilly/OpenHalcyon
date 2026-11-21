@@ -1,0 +1,4 @@
+[profile.default]
+slow-timeout = { period = "5s" }
+status-level = "pass"
+final-status-level = "slow"

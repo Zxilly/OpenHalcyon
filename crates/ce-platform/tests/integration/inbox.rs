@@ -1,5 +1,4 @@
-#[path = "support/native_rpc.rs"]
-mod native_rpc;
+use crate::native_rpc;
 
 use axum::{
     Router,

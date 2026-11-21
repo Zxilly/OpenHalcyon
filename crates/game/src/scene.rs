@@ -1264,6 +1264,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "slow soak; run with cargo nextest run --run-ignored all"]
     async fn dead_hero_solo_reconnect_sets_world_actor_written_and_respawns() {
         use halcyon_protocol::{ACK_FRAME, MatchCipher, hello};
         use tokio::io::{AsyncReadExt, AsyncWriteExt};

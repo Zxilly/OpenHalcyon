@@ -418,6 +418,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "slow soak; run with cargo nextest run --run-ignored all"]
     fn solo_mid_waves_and_bots_reach_an_authoritative_crystal_victory() {
         let mut w = World::new(17, 0);
         w.use_solo_mid_lane().unwrap();

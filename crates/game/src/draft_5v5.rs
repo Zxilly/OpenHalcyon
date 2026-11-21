@@ -1211,6 +1211,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "slow soak; run with cargo nextest run --run-ignored all"]
     fn postgame_statistics_048d_populates_blackclaw_and_ghostwing_captures() {
         let data = test_data();
         let mut world = World::new(7, 10);

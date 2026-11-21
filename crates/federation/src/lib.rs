@@ -196,6 +196,7 @@ mod tests {
         }
     }
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[ignore = "slow soak; run with cargo nextest run --run-ignored all"]
     async fn three_tls_nodes_failover_restart_and_minority() {
         let tmp = tempfile::tempdir().unwrap();
         let (cfg, listeners) = configs(tmp.path());

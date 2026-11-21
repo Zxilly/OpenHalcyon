@@ -1,5 +1,4 @@
-#[path = "support/native_rpc.rs"]
-mod native_rpc;
+use crate::native_rpc;
 use axum::{
     Router,
     body::{Body, to_bytes},
@@ -748,7 +747,7 @@ async fn cataloged_names_reach_rpc_handlers() {
     let mut names = std::collections::BTreeSet::new();
     let mut evidence = std::collections::BTreeMap::new();
     let mut local_aliases = std::collections::BTreeSet::new();
-    let mut rows = include_str!("../../../docs/ce-rpc.tsv").lines();
+    let mut rows = include_str!("../../../../docs/ce-rpc.tsv").lines();
     assert_eq!(
         rows.next(),
         Some("method\tevidence\tparser_family\timplementation")
@@ -1519,7 +1518,7 @@ struct LobbyDifficulty<'a> {
 
 fn sample(name: &str) -> serde_json::Value {
     let samples: std::collections::BTreeMap<String, serde_json::Value> =
-        serde_json::from_str(include_str!("fixtures/android-samples.json")).unwrap();
+        serde_json::from_str(include_str!("../fixtures/android-samples.json")).unwrap();
     samples.get(name).unwrap().clone()
 }
 
