@@ -1,12 +1,14 @@
-//! Typed decoders and encoders for 5v5 draft actions (`0x045D`–`0x046A`, `0x046B`)
+//! Typed decoders and encoders for 5v5 draft actions (`0x045D`–`0x046B`)
 //! and Ranked Ban/Pick/Swap draft state snapshots (`0x045B`).
 
-use crate::{AndroidLayout, Message, Opcode, wire_opcode};
+use crate::{AndroidLayout, Message, Opcode, invalid, wire_opcode};
+use binrw::{BinRead, BinWrite};
 use serde::{Deserialize, Serialize};
-use std::io;
+use std::io::{self, Cursor, Read, Seek, Write};
 
 /// Wire lane/position preference (`0x0461`), preserving the client's 1-byte wire codes.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Serialize, Deserialize, BinRead, BinWrite)]
+#[brw(big, repr = u8)]
 #[repr(u8)]
 pub enum DraftPosition {
     Top = 0,
@@ -36,7 +38,8 @@ impl DraftPosition {
 }
 
 /// Wire build-path preference (`0x0462`: Weapon / Crystal / Utility).
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Serialize, Deserialize, BinRead, BinWrite)]
+#[brw(big, repr = u8)]
 #[repr(u8)]
 pub enum DraftBuildPath {
     Weapon = 0,
@@ -94,6 +97,32 @@ pub enum DraftAction {
     ReadyControl { control: u8 },
 }
 
+#[derive(BinRead, BinWrite)]
+#[brw(big)]
+struct DraftWordPayload {
+    word: u32,
+}
+
+#[derive(BinRead, BinWrite)]
+#[brw(big)]
+struct DraftHeroSkinPayload {
+    id: u32,
+    flags: u16,
+}
+
+#[derive(BinRead, BinWrite)]
+#[brw(big)]
+struct DraftBytePayload {
+    value: u8,
+}
+
+#[derive(BinRead, BinWrite)]
+#[brw(big)]
+struct DraftPairPayload {
+    first: u8,
+    second: u8,
+}
+
 fn accepts_body_len(opcode: u16, actual: usize, fallback_body: usize) -> Option<usize> {
     let body_bytes = match AndroidLayout::for_opcode(opcode) {
         AndroidLayout::Fixed { frame_bytes } => frame_bytes.checked_sub(4)?,
@@ -103,175 +132,223 @@ fn accepts_body_len(opcode: u16, actual: usize, fallback_body: usize) -> Option<
     (actual == body_bytes || actual == padded_bytes).then_some(body_bytes)
 }
 
+fn read_prefix<T>(body: &[u8]) -> Option<T>
+where
+    T: for<'a> BinRead<Args<'a> = ()>,
+{
+    T::read_be(&mut Cursor::new(body)).ok()
+}
+
+fn encode_padded_6<T>(opcode: Opcode, payload: &T) -> Message
+where
+    T: for<'a> BinWrite<Args<'a> = ()>,
+{
+    let mut body = [0u8; 6];
+    let mut writer = Cursor::new(&mut body[..]);
+    payload
+        .write_be(&mut writer)
+        .expect("draft action fits 6-byte wire frame");
+    Message::known(opcode, body)
+}
+
 impl DraftAction {
     pub fn decode(message: &Message) -> Option<Self> {
         Self::decode_raw(message.opcode, &message.body)
     }
 
     pub fn decode_raw(opcode: u16, body: &[u8]) -> Option<Self> {
-        let be32 = |off: usize| u32::from_be_bytes(body[off..off + 4].try_into().unwrap());
-        let be16 = |off: usize| u16::from_be_bytes(body[off..off + 2].try_into().unwrap());
         match opcode {
             wire_opcode::DraftSelectTeamOrSlot
                 if accepts_body_len(opcode, body.len(), 4).is_some() =>
             {
-                let word = be32(0);
+                let payload: DraftWordPayload = read_prefix(body)?;
                 Some(Self::SelectSlotOrTeam {
-                    slot: (word & 0xff) as u8,
+                    slot: (payload.word & 0xff) as u8,
                 })
             }
-            wire_opcode::DraftSelectHero if matches!(body.len(), 6 | 8) => Some(Self::SelectHero {
-                hero_id: be32(0),
-                flags: be16(4),
-            }),
-            wire_opcode::DraftSelectSkin if matches!(body.len(), 4 | 6 | 8) => {
-                Some(Self::SelectSkin {
-                    skin_id: be32(0),
-                    flags: if body.len() >= 6 { be16(4) } else { 0 },
+            wire_opcode::DraftSelectHero if matches!(body.len(), 6 | 8) => {
+                let payload: DraftHeroSkinPayload = read_prefix(body)?;
+                Some(Self::SelectHero {
+                    hero_id: payload.id,
+                    flags: payload.flags,
                 })
+            }
+            wire_opcode::DraftSelectSkin if matches!(body.len(), 4 | 6 | 8) => {
+                if body.len() >= 6 {
+                    let payload: DraftHeroSkinPayload = read_prefix(body)?;
+                    Some(Self::SelectSkin {
+                        skin_id: payload.id,
+                        flags: payload.flags,
+                    })
+                } else {
+                    let payload: DraftWordPayload = read_prefix(body)?;
+                    Some(Self::SelectSkin {
+                        skin_id: payload.word,
+                        flags: 0,
+                    })
+                }
             }
             wire_opcode::DraftSelectRole if accepts_body_len(opcode, body.len(), 1).is_some() => {
-                Some(Self::SelectRole { selector: body[0] })
+                let payload: DraftBytePayload = read_prefix(body)?;
+                Some(Self::SelectRole {
+                    selector: payload.value,
+                })
             }
             wire_opcode::DraftSelectPosition
                 if accepts_body_len(opcode, body.len(), 1).is_some() =>
             {
-                let position = if body[0] == u8::MAX {
+                let payload: DraftBytePayload = read_prefix(body)?;
+                let position = if payload.value == u8::MAX {
                     None
                 } else {
-                    Some(DraftPosition::from_wire(body[0])?)
+                    Some(DraftPosition::from_wire(payload.value)?)
                 };
                 Some(Self::SelectPosition { position })
             }
             wire_opcode::DraftSelectBuildPath
                 if accepts_body_len(opcode, body.len(), 1).is_some() =>
             {
-                let build_path = if body[0] == u8::MAX {
+                let payload: DraftBytePayload = read_prefix(body)?;
+                let build_path = if payload.value == u8::MAX {
                     None
                 } else {
-                    Some(DraftBuildPath::from_wire(body[0])?)
+                    Some(DraftBuildPath::from_wire(payload.value)?)
                 };
                 Some(Self::SelectBuildPath { build_path })
             }
             wire_opcode::DraftLockHero if accepts_body_len(opcode, body.len(), 1).is_some() => {
-                Some(Self::LockHero { confirm: body[0] })
+                let payload: DraftBytePayload = read_prefix(body)?;
+                Some(Self::LockHero {
+                    confirm: payload.value,
+                })
             }
             wire_opcode::DraftSelectBan if accepts_body_len(opcode, body.len(), 4).is_some() => {
-                Some(Self::SelectBan { hero_id: be32(0) })
+                let payload: DraftWordPayload = read_prefix(body)?;
+                Some(Self::SelectBan {
+                    hero_id: payload.word,
+                })
             }
             wire_opcode::DraftConfirmBan if accepts_body_len(opcode, body.len(), 1).is_some() => {
-                Some(Self::ConfirmBan { confirm: body[0] })
+                let payload: DraftBytePayload = read_prefix(body)?;
+                Some(Self::ConfirmBan {
+                    confirm: payload.value,
+                })
             }
             wire_opcode::DraftSkipBan if accepts_body_len(opcode, body.len(), 4).is_some() => {
-                Some(Self::SkipBan { flags: be32(0) })
+                let payload: DraftWordPayload = read_prefix(body)?;
+                Some(Self::SkipBan {
+                    flags: payload.word,
+                })
             }
             wire_opcode::DraftSwapRequest if accepts_body_len(opcode, body.len(), 2).is_some() => {
+                let payload: DraftPairPayload = read_prefix(body)?;
                 Some(Self::SwapRequest {
-                    first: body[0],
-                    second: body[1],
+                    first: payload.first,
+                    second: payload.second,
                 })
             }
             wire_opcode::DraftSwapResponse if accepts_body_len(opcode, body.len(), 2).is_some() => {
+                let payload: DraftPairPayload = read_prefix(body)?;
                 Some(Self::SwapResponse {
-                    first: body[0],
-                    second: body[1],
+                    first: payload.first,
+                    second: payload.second,
                 })
             }
             wire_opcode::DraftSwapCancel if accepts_body_len(opcode, body.len(), 2).is_some() => {
+                let payload: DraftPairPayload = read_prefix(body)?;
                 Some(Self::SwapCancel {
-                    first: body[0],
-                    second: body[1],
+                    first: payload.first,
+                    second: payload.second,
                 })
             }
             wire_opcode::DraftSwapDecline if accepts_body_len(opcode, body.len(), 2).is_some() => {
+                let payload: DraftPairPayload = read_prefix(body)?;
                 Some(Self::SwapDecline {
-                    first: body[0],
-                    second: body[1],
+                    first: payload.first,
+                    second: payload.second,
                 })
             }
             wire_opcode::DraftReadyControl if accepts_body_len(opcode, body.len(), 1).is_some() => {
-                Some(Self::ReadyControl { control: body[0] })
+                let payload: DraftBytePayload = read_prefix(body)?;
+                Some(Self::ReadyControl {
+                    control: payload.value,
+                })
             }
             _ => None,
         }
     }
 
     pub fn encode(self) -> Message {
-        let padded_one = |opcode: Opcode, v: u8| {
-            let mut b = [0u8; 6];
-            b[0] = v;
-            Message::known(opcode, b)
-        };
         match self {
-            Self::SelectSlotOrTeam { slot } => {
-                let mut b = [0u8; 6];
-                b[..4].copy_from_slice(&u32::from(slot).to_be_bytes());
-                Message::known(Opcode::DraftSelectTeamOrSlot, b)
-            }
-            Self::SelectHero { hero_id, flags } => {
-                let mut b = [0u8; 6];
-                b[..4].copy_from_slice(&hero_id.to_be_bytes());
-                b[4..6].copy_from_slice(&flags.to_be_bytes());
-                Message::known(Opcode::DraftSelectHero, b)
-            }
-            Self::SelectSkin { skin_id, flags } => {
-                let mut b = [0u8; 6];
-                b[..4].copy_from_slice(&skin_id.to_be_bytes());
-                b[4..6].copy_from_slice(&flags.to_be_bytes());
-                Message::known(Opcode::DraftSelectSkin, b)
-            }
-            Self::SelectRole { selector } => padded_one(Opcode::DraftSelectRole, selector),
-            Self::SelectPosition { position } => padded_one(
+            Self::SelectSlotOrTeam { slot } => encode_padded_6(
+                Opcode::DraftSelectTeamOrSlot,
+                &DraftWordPayload {
+                    word: u32::from(slot),
+                },
+            ),
+            Self::SelectHero { hero_id, flags } => encode_padded_6(
+                Opcode::DraftSelectHero,
+                &DraftHeroSkinPayload { id: hero_id, flags },
+            ),
+            Self::SelectSkin { skin_id, flags } => encode_padded_6(
+                Opcode::DraftSelectSkin,
+                &DraftHeroSkinPayload { id: skin_id, flags },
+            ),
+            Self::SelectRole { selector } => encode_padded_6(
+                Opcode::DraftSelectRole,
+                &DraftBytePayload { value: selector },
+            ),
+            Self::SelectPosition { position } => encode_padded_6(
                 Opcode::DraftSelectPosition,
-                position.map_or(u8::MAX, DraftPosition::to_wire),
+                &DraftBytePayload {
+                    value: position.map_or(u8::MAX, DraftPosition::to_wire),
+                },
             ),
-            Self::SelectBuildPath { build_path } => padded_one(
+            Self::SelectBuildPath { build_path } => encode_padded_6(
                 Opcode::DraftSelectBuildPath,
-                build_path.map_or(u8::MAX, DraftBuildPath::to_wire),
+                &DraftBytePayload {
+                    value: build_path.map_or(u8::MAX, DraftBuildPath::to_wire),
+                },
             ),
-            Self::LockHero { confirm } => padded_one(Opcode::DraftLockHero, confirm),
+            Self::LockHero { confirm } => {
+                encode_padded_6(Opcode::DraftLockHero, &DraftBytePayload { value: confirm })
+            }
             Self::SelectBan { hero_id } => {
-                let mut b = [0u8; 6];
-                b[..4].copy_from_slice(&hero_id.to_be_bytes());
-                Message::known(Opcode::DraftSelectBan, b)
+                encode_padded_6(Opcode::DraftSelectBan, &DraftWordPayload { word: hero_id })
             }
-            Self::ConfirmBan { confirm } => padded_one(Opcode::DraftConfirmBan, confirm),
+            Self::ConfirmBan { confirm } => encode_padded_6(
+                Opcode::DraftConfirmBan,
+                &DraftBytePayload { value: confirm },
+            ),
             Self::SkipBan { flags } => {
-                let mut b = [0u8; 6];
-                b[..4].copy_from_slice(&flags.to_be_bytes());
-                Message::known(Opcode::DraftSkipBan, b)
+                encode_padded_6(Opcode::DraftSkipBan, &DraftWordPayload { word: flags })
             }
-            Self::SwapRequest { first, second } => {
-                let mut b = [0u8; 6];
-                b[0] = first;
-                b[1] = second;
-                Message::known(Opcode::DraftSwapRequest, b)
-            }
-            Self::SwapResponse { first, second } => {
-                let mut b = [0u8; 6];
-                b[0] = first;
-                b[1] = second;
-                Message::known(Opcode::DraftSwapResponse, b)
-            }
+            Self::SwapRequest { first, second } => encode_padded_6(
+                Opcode::DraftSwapRequest,
+                &DraftPairPayload { first, second },
+            ),
+            Self::SwapResponse { first, second } => encode_padded_6(
+                Opcode::DraftSwapResponse,
+                &DraftPairPayload { first, second },
+            ),
             Self::SwapCancel { first, second } => {
-                let mut b = [0u8; 6];
-                b[0] = first;
-                b[1] = second;
-                Message::known(Opcode::DraftSwapCancel, b)
+                encode_padded_6(Opcode::DraftSwapCancel, &DraftPairPayload { first, second })
             }
-            Self::SwapDecline { first, second } => {
-                let mut b = [0u8; 6];
-                b[0] = first;
-                b[1] = second;
-                Message::known(Opcode::DraftSwapDecline, b)
-            }
-            Self::ReadyControl { control } => padded_one(Opcode::DraftReadyControl, control),
+            Self::SwapDecline { first, second } => encode_padded_6(
+                Opcode::DraftSwapDecline,
+                &DraftPairPayload { first, second },
+            ),
+            Self::ReadyControl { control } => encode_padded_6(
+                Opcode::DraftReadyControl,
+                &DraftBytePayload { value: control },
+            ),
         }
     }
 }
 
 /// Phase marker serialized inside Ranked Ban/Pick/Swap `0x045B` snapshots.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, BinRead, BinWrite)]
+#[brw(big, repr = u8)]
 #[repr(u8)]
 pub enum RankedWirePhase {
     Ban = 1,
@@ -322,6 +399,99 @@ impl Default for RankedDraftSeat {
     }
 }
 
+#[derive(Clone, Copy, BinRead, BinWrite)]
+#[brw(big)]
+struct RankedDraftSeatWire {
+    present: u8,
+    seat_index: u8,
+    selected: u8,
+    locked: u8,
+    reserved_4: u8,
+    position: u8,
+    build_path: u8,
+    reserved_7: u8,
+    team: u8,
+    actor_wire_id: u16,
+    hero_template: u16,
+    reserved_13: [u8; 153],
+}
+
+impl From<RankedDraftSeat> for RankedDraftSeatWire {
+    fn from(seat: RankedDraftSeat) -> Self {
+        Self {
+            present: u8::from(seat.present),
+            seat_index: seat.seat_index,
+            selected: u8::from(seat.selected),
+            locked: u8::from(seat.locked),
+            reserved_4: 0,
+            position: seat.position,
+            build_path: seat.build_path,
+            reserved_7: 0,
+            team: seat.team,
+            actor_wire_id: seat.actor_wire_id,
+            hero_template: seat.hero_template,
+            reserved_13: [0; 153],
+        }
+    }
+}
+
+impl From<RankedDraftSeatWire> for RankedDraftSeat {
+    fn from(wire: RankedDraftSeatWire) -> Self {
+        Self {
+            present: wire.present != 0,
+            seat_index: wire.seat_index,
+            selected: wire.selected != 0,
+            locked: wire.locked != 0,
+            position: wire.position,
+            build_path: wire.build_path,
+            team: wire.team,
+            actor_wire_id: wire.actor_wire_id,
+            hero_template: wire.hero_template,
+        }
+    }
+}
+
+impl BinRead for RankedDraftSeat {
+    type Args<'a> = ();
+
+    fn read_options<R: Read + Seek>(
+        reader: &mut R,
+        endian: binrw::Endian,
+        _args: Self::Args<'_>,
+    ) -> binrw::BinResult<Self> {
+        RankedDraftSeatWire::read_options(reader, endian, ()).map(Into::into)
+    }
+}
+
+impl BinWrite for RankedDraftSeat {
+    type Args<'a> = ();
+
+    fn write_options<W: Write + Seek>(
+        &self,
+        writer: &mut W,
+        endian: binrw::Endian,
+        _args: Self::Args<'_>,
+    ) -> binrw::BinResult<()> {
+        RankedDraftSeatWire::from(*self).write_options(writer, endian, ())
+    }
+}
+
+#[derive(BinRead, BinWrite)]
+#[brw(big)]
+struct RankedDraftStateWire {
+    reserved_0: u32,
+    phase_word: u32,
+    active_turn_word: u32,
+    reserved_12: [u32; 3],
+    bans: [u32; 4],
+    reserved_40: [u8; 224],
+    seats: [RankedDraftSeatWire; 10],
+    reserved_1924: [u8; 200],
+    timer_remaining_seconds: f32,
+    timer_total_seconds: f32,
+    reserved_2132: [u8; 2],
+}
+
 /// Authoritative Ranked Ban/Pick/Swap snapshot encoded to `0x045B` (`DraftRosterRanked`, 2134B).
 ///
 /// Layout matches `sub_82D514` (`+4..+20` four BE32 words, `+24..+264` sixty BE32 words,
@@ -337,74 +507,77 @@ pub struct RankedDraftStatePacket {
     pub timer_total_seconds: f32,
 }
 
+impl BinRead for RankedDraftStatePacket {
+    type Args<'a> = ();
+
+    fn read_options<R: Read + Seek>(
+        reader: &mut R,
+        endian: binrw::Endian,
+        _args: Self::Args<'_>,
+    ) -> binrw::BinResult<Self> {
+        let pos = reader.stream_position()?;
+        let wire = RankedDraftStateWire::read_options(reader, endian, ())?;
+        let phase =
+            RankedWirePhase::from_wire((wire.phase_word & 0xff) as u8).ok_or_else(|| {
+                binrw::Error::AssertFail {
+                    pos,
+                    message: "invalid ranked draft phase".into(),
+                }
+            })?;
+        Ok(Self {
+            phase,
+            active_turn: (wire.active_turn_word & 0xff) as u8,
+            bans: wire.bans,
+            seats: wire.seats.map(Into::into),
+            timer_remaining_seconds: wire.timer_remaining_seconds,
+            timer_total_seconds: wire.timer_total_seconds,
+        })
+    }
+}
+
+impl BinWrite for RankedDraftStatePacket {
+    type Args<'a> = ();
+
+    fn write_options<W: Write + Seek>(
+        &self,
+        writer: &mut W,
+        endian: binrw::Endian,
+        _args: Self::Args<'_>,
+    ) -> binrw::BinResult<()> {
+        RankedDraftStateWire {
+            reserved_0: 0,
+            phase_word: u32::from(self.phase as u8),
+            active_turn_word: u32::from(self.active_turn),
+            reserved_12: [0; 3],
+            bans: self.bans,
+            reserved_40: [0; 224],
+            seats: self.seats.map(Into::into),
+            reserved_1924: [0; 200],
+            timer_remaining_seconds: self.timer_remaining_seconds,
+            timer_total_seconds: self.timer_total_seconds,
+            reserved_2132: [0; 2],
+        }
+        .write_options(writer, endian, ())
+    }
+}
+
 impl RankedDraftStatePacket {
     pub const BODY_LEN: usize = 2134;
-    const SEAT_BASE: usize = 264;
-    const SEAT_STRIDE: usize = 166;
 
     pub fn encode(&self) -> Message {
         let mut body = vec![0u8; Self::BODY_LEN];
-        body[4..8].copy_from_slice(&u32::from(self.phase as u8).to_be_bytes());
-        body[8..12].copy_from_slice(&u32::from(self.active_turn).to_be_bytes());
-        for (i, &ban) in self.bans.iter().enumerate() {
-            let off = 24 + i * 4;
-            body[off..off + 4].copy_from_slice(&ban.to_be_bytes());
-        }
-        for (i, seat) in self.seats.iter().enumerate() {
-            let base = Self::SEAT_BASE + i * Self::SEAT_STRIDE;
-            body[base] = u8::from(seat.present);
-            body[base + 1] = seat.seat_index;
-            body[base + 2] = u8::from(seat.selected);
-            body[base + 3] = u8::from(seat.locked);
-            body[base + 5] = seat.position;
-            body[base + 6] = seat.build_path;
-            body[base + 8] = seat.team;
-            body[base + 9..base + 11].copy_from_slice(&seat.actor_wire_id.to_be_bytes());
-            body[base + 11..base + 13].copy_from_slice(&seat.hero_template.to_be_bytes());
-        }
-        body[2124..2128].copy_from_slice(&self.timer_remaining_seconds.to_be_bytes());
-        body[2128..2132].copy_from_slice(&self.timer_total_seconds.to_be_bytes());
+        let mut writer = Cursor::new(&mut body[..]);
+        self.write_be(&mut writer)
+            .expect("ranked draft state fits 2134-byte buffer");
+        debug_assert_eq!(writer.position(), Self::BODY_LEN as u64);
         Message::known(Opcode::DraftRosterRanked, body)
     }
 
     pub fn decode(body: &[u8]) -> io::Result<Self> {
         if body.len() != Self::BODY_LEN {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "invalid 0x045B ranked draft length",
-            ));
+            return Err(invalid("invalid 0x045B ranked draft length"));
         }
-        let word = |off: usize| u32::from_be_bytes(body[off..off + 4].try_into().unwrap());
-        let half = |off: usize| u16::from_be_bytes(body[off..off + 2].try_into().unwrap());
-        let phase = RankedWirePhase::from_wire((word(4) & 0xff) as u8).ok_or_else(|| {
-            io::Error::new(io::ErrorKind::InvalidData, "invalid ranked draft phase")
-        })?;
-        let active_turn = (word(8) & 0xff) as u8;
-        let bans = std::array::from_fn(|i| word(24 + i * 4));
-        let seats = std::array::from_fn(|i| {
-            let base = Self::SEAT_BASE + i * Self::SEAT_STRIDE;
-            RankedDraftSeat {
-                present: body[base] != 0,
-                seat_index: body[base + 1],
-                selected: body[base + 2] != 0,
-                locked: body[base + 3] != 0,
-                position: body[base + 5],
-                build_path: body[base + 6],
-                team: body[base + 8],
-                actor_wire_id: half(base + 9),
-                hero_template: half(base + 11),
-            }
-        });
-        let timer_remaining_seconds = f32::from_bits(word(2124));
-        let timer_total_seconds = f32::from_bits(word(2128));
-        Ok(Self {
-            phase,
-            active_turn,
-            bans,
-            seats,
-            timer_remaining_seconds,
-            timer_total_seconds,
-        })
+        Self::read_be(&mut Cursor::new(body)).map_err(|_| invalid("invalid ranked draft phase"))
     }
 }
 
@@ -501,6 +674,13 @@ mod tests {
         let msg = packet.encode();
         assert_eq!(msg.opcode, wire_opcode::DraftRosterRanked);
         assert_eq!(msg.body.len(), RankedDraftStatePacket::BODY_LEN);
+        assert_eq!(&msg.body[4..8], &2u32.to_be_bytes());
+        assert_eq!(&msg.body[8..12], &2u32.to_be_bytes());
+        assert_eq!(&msg.body[24..28], &110u32.to_be_bytes());
+        assert_eq!(&msg.body[264 + 9..264 + 11], &1500u16.to_be_bytes());
+        assert_eq!(&msg.body[264 + 11..264 + 13], &100u16.to_be_bytes());
+        assert_eq!(&msg.body[2124..2128], &24.5f32.to_be_bytes());
+        assert_eq!(&msg.body[2128..2132], &30.0f32.to_be_bytes());
         assert!(StaticActionLayout::for_opcode(msg.opcode).is_some());
         let decoded = RankedDraftStatePacket::decode(&msg.body).unwrap();
         assert_eq!(decoded, packet);

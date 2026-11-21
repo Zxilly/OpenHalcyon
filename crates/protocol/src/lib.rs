@@ -66,11 +66,20 @@ mod opcode;
 mod outbound;
 pub use outbound::{OUTBOUND_LAYOUTS, OutboundAction, OutboundLayout, OutboundOperands};
 pub mod draft;
+pub mod lobby;
 mod skin;
+pub mod wire_text;
 pub use draft::{
     DraftAction, DraftBuildPath, DraftPosition, RankedDraftSeat, RankedDraftStatePacket,
     RankedWirePhase,
 };
+pub use lobby::{
+    AralRerollStateBody, ConfirmSceneOwnerBody, DraftCatalogEntryBody, DraftModeAnnouncementBody,
+    DraftPreferenceFlags, DraftRosterBody, DraftSlotBody, MatchSettingsBody, PlayerInfoBody,
+    PlayerInfoPrefix, PlayerLoadedSceneBody, RegisterPlayerUuidBody, SceneReadinessRow,
+    SceneReadinessRowsBody, SceneSettingsBody,
+};
+pub use wire_text::FixedAscii;
 mod static_actions;
 pub use metadata::{AndroidLayout, READ_SIZES};
 pub use opcode::{Opcode, UnknownOpcodeName, wire_opcode};
