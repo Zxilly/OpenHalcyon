@@ -1,4 +1,10 @@
 use super::*;
+use crate::host::admin_views;
+use halcyon_protocol::Fields;
+use halcyon_types::{MatchHost, Reservation};
+use std::sync::Arc;
+use tokio::sync::{mpsc, watch};
+use uuid::Uuid;
 #[tokio::test]
 async fn returning_socket_records_its_own_first_message() {
     let rooms = Rooms::new("127.0.0.1".parse().unwrap(), "127.0.0.1".into(), 1, None);
@@ -32,7 +38,7 @@ async fn returning_socket_records_its_own_first_message() {
     let events: Vec<_> = room
         .events
         .iter()
-        .map(responses::value)
+        .map(admin_views::value)
         .filter(|event| event["opcode"] == "0x046E")
         .collect();
     assert_eq!(events.len(), 2);

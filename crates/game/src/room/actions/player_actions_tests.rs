@@ -1,0 +1,314 @@
+use super::*;
+use crate::replication::messages::wire_id;
+use halcyon_types::{MatchHost, Reservation};
+#[tokio::test]
+async fn remote_room_checks_exact_home_pool_and_seat_after_routing() {
+    let rooms = Rooms::new("127.0.0.1".parse().unwrap(), "127.0.0.1".into(), 1, None);
+    let room = Uuid::new_v4();
+    let pool = Uuid::new_v4();
+    let players = [Uuid::new_v4(), Uuid::new_v4()];
+    let homes = [Uuid::new_v4(), Uuid::new_v4()];
+    let req = Reservation {
+        match_id: room,
+        players: players.to_vec(),
+        teams: vec![],
+        mode: "5v5_pvp_casual".into(),
+        difficulty: None,
+        talent_levels: Vec::new(),
+    };
+    rooms.prepare_federated(req, pool, homes.to_vec()).unwrap();
+    let read = |p, origin| rooms.room_action(room, p, origin, ActionCall::Inspect);
+    assert!(matches!(
+        read(players[0], Some((pool, homes[0]))),
+        ActionReply::Decision(ActionDecision::Unavailable)
+    ));
+    rooms.activate(room).unwrap();
+    rooms
+        .room(room)
+        .unwrap()
+        .lock()
+        .unwrap()
+        .phase(RoomPhase::Running);
+    assert!(matches!(
+        read(players[0], Some((pool, homes[0]))),
+        ActionReply::Context(_)
+    ));
+    for (player, origin) in [
+        (players[0], None),
+        (players[0], Some((pool, homes[1]))),
+        (players[1], Some((pool, homes[0]))),
+        (players[0], Some((Uuid::new_v4(), homes[0]))),
+        (Uuid::new_v4(), Some((pool, homes[0]))),
+    ] {
+        assert!(matches!(
+            read(player, origin),
+            ActionReply::Decision(ActionDecision::Unavailable)
+        ));
+    }
+}
+
+#[tokio::test]
+async fn player_actions_bind_identity_inventory_visibility_and_retries() {
+    let rooms = Rooms::new("127.0.0.1".parse().unwrap(), "127.0.0.1".into(), 1, None);
+    let room = Uuid::new_v4();
+    let players: Vec<_> = (0..6).map(|_| Uuid::new_v4()).collect();
+    rooms
+        .reserve(Reservation {
+            match_id: room,
+            mode: "casual_aral".into(),
+            players: players.clone(),
+            teams: vec![0, 1, 0, 1, 0, 1],
+            difficulty: None,
+            talent_levels: Vec::new(),
+        })
+        .unwrap();
+    let shared = rooms.room(room).unwrap();
+    let caller = players[0];
+    let inspect = |p| match rooms.room_action(room, p, None, ActionCall::Inspect) {
+        ActionReply::Context(c) => c,
+        _ => panic!("missing context"),
+    };
+    let execute = |req| match rooms.room_action(room, caller, None, ActionCall::Execute(req)) {
+        ActionReply::Decision(d) => d,
+        _ => panic!("missing decision"),
+    };
+    let (pos, instance) = {
+        let mut state = shared.lock().unwrap();
+        state.phase(RoomPhase::Running);
+        let actor = state.world.entities[0].id;
+        let purchase = state
+            .world
+            .purchase(actor, halcyon_sim::BasicItem::ScoutTrap)
+            .unwrap();
+        assert_eq!(state.world.entities[0].gold, 1950);
+        (state.world.entities[0].position, purchase.granted.instance)
+    };
+    assert!(matches!(
+        rooms.room_action(room, Uuid::new_v4(), None, ActionCall::Inspect),
+        ActionReply::Decision(ActionDecision::Unavailable)
+    ));
+    assert!(matches!(
+        rooms.room_action(
+            room,
+            caller,
+            Some((Uuid::new_v4(), Uuid::new_v4())),
+            ActionCall::Inspect
+        ),
+        ActionReply::Decision(ActionDecision::Unavailable)
+    ));
+    let now = Utc::now().timestamp_millis();
+    let sale = ActionRequest {
+        sequence: 1,
+        expires_at_ms: now + 25_000,
+        action: PlayerAction::Sell { instance },
+    };
+    assert_eq!(
+        execute(ActionRequest {
+            expires_at_ms: now - 1,
+            ..sale
+        }),
+        ActionDecision::Invalid
+    );
+    assert_eq!(inspect(caller).next_sequence, 1);
+    assert_eq!(execute(sale), ActionDecision::Applied);
+    assert_eq!(execute(sale), ActionDecision::Applied);
+    assert_eq!(shared.lock().unwrap().world.entities[0].gold, 1975);
+    assert_eq!(
+        execute(ActionRequest {
+            action: PlayerAction::DeployScoutTrap { instance },
+            ..sale
+        }),
+        ActionDecision::Stale
+    );
+    let cam = ActionRequest {
+        sequence: 2,
+        action: PlayerAction::DeployVisionTotem {
+            instance: 2001,
+            x: pos.x,
+            z: pos.y,
+        },
+        ..sale
+    };
+    assert_eq!(execute(cam), ActionDecision::Applied);
+    let device = shared
+        .lock()
+        .unwrap()
+        .world
+        .vision_devices()
+        .next()
+        .unwrap()
+        .id;
+    assert!(inspect(players[1]).visible_enemy_cams.is_empty());
+    let guess = ActionRequest {
+        sequence: 1,
+        action: PlayerAction::HitScoutCam { device },
+        ..sale
+    };
+    let hit = |req| match rooms.room_action(room, players[1], None, ActionCall::Execute(req)) {
+        ActionReply::Decision(d) => d,
+        _ => panic!(),
+    };
+    assert_eq!(hit(guess), ActionDecision::Rejected);
+    assert_eq!(
+        hit(ActionRequest {
+            sequence: 2,
+            action: PlayerAction::HitScoutCam { device: device + 1 },
+            ..guess
+        }),
+        ActionDecision::Rejected
+    );
+    {
+        let mut state = shared.lock().unwrap();
+        state.world.entities[1].position = pos;
+    }
+    assert_eq!(inspect(players[1]).visible_enemy_cams, [device]);
+    assert_eq!(
+        hit(ActionRequest {
+            sequence: 3,
+            ..guess
+        }),
+        ActionDecision::Applied
+    );
+    for seq in 3..21 {
+        assert_eq!(
+            execute(ActionRequest {
+                sequence: seq,
+                ..sale
+            }),
+            ActionDecision::Rejected
+        );
+    }
+    assert_eq!(execute(sale), ActionDecision::Stale);
+    {
+        let mut state = shared.lock().unwrap();
+        state.world.entities[0].gold = 20_000;
+        state.world.entities[0].position = pos;
+    }
+    let crucible = shared
+        .lock()
+        .unwrap()
+        .world
+        .purchase(1, halcyon_sim::BasicItem::Crucible)
+        .unwrap()
+        .granted;
+    let next_seq = inspect(caller).next_sequence;
+    assert_eq!(
+        execute(ActionRequest {
+            sequence: next_seq,
+            action: PlayerAction::ActivateItem {
+                instance: crucible.instance,
+                target_actor: None,
+                x: None,
+                z: None,
+            },
+            ..sale
+        }),
+        ActionDecision::Applied
+    );
+    shared.lock().unwrap().phase(RoomPhase::Ended);
+    assert_eq!(execute(cam), ActionDecision::Unavailable);
+}
+
+#[tokio::test]
+async fn wire_active_item_requests_0x0448_0x0449_0x044a_drive_sim_room() {
+    let rooms = Rooms::new("127.0.0.1".parse().unwrap(), "127.0.0.1".into(), 1, None);
+    let id = Uuid::new_v4();
+    let players: Vec<_> = (0..6).map(|_| Uuid::new_v4()).collect();
+    rooms
+        .reserve(Reservation {
+            match_id: id,
+            mode: "casual_aral".into(),
+            players: players.clone(),
+            teams: vec![0, 1, 0, 1, 0, 1],
+            difficulty: None,
+            talent_levels: Vec::new(),
+        })
+        .unwrap();
+    let shared = rooms.room(id).unwrap();
+    let (crucible, tp, flare_loader, tower_wire, pos) = {
+        let mut state = shared.lock().unwrap();
+        state.phase(RoomPhase::Running);
+        state
+            .world
+            .use_catalog_store(halcyon_data::items::StoreSettings::Five);
+        state.world.entities[0].gold = 50_000;
+        let p0 = state.world.entities[0].position;
+        let crucible = state
+            .world
+            .purchase(1, halcyon_sim::BasicItem::Crucible)
+            .unwrap()
+            .granted;
+        let tp = state
+            .world
+            .purchase(1, halcyon_sim::BasicItem::TeleportBoots)
+            .unwrap()
+            .granted;
+        let flare_loader = state
+            .world
+            .purchase(1, halcyon_sim::BasicItem::FlareLoader)
+            .unwrap()
+            .granted;
+        let tower_id = state
+            .world
+            .entities
+            .iter()
+            .find(|e| e.team == 0 && e.kind == halcyon_sim::Kind::Tower)
+            .unwrap()
+            .id;
+        (
+            crucible.instance,
+            tp.instance,
+            flare_loader.instance,
+            u32::from(wire_id(tower_id)),
+            p0,
+        )
+    };
+    let req_self = halcyon_protocol::ItemAction::Activate {
+        instance: crucible,
+        suffix: &[],
+    }
+    .to_message()
+    .unwrap();
+    let req_target = halcyon_protocol::ItemAction::TargetRequest {
+        arguments: [tower_wire, tp],
+        suffix: &[],
+    }
+    .to_message()
+    .unwrap();
+    let req_point = halcyon_protocol::ItemAction::VectorRequest {
+        vector_bits: [(pos.x + 6.).to_bits(), 0, pos.y.to_bits()],
+        argument: flare_loader,
+        suffix: &[],
+    }
+    .to_message()
+    .unwrap();
+    {
+        let mut state = shared.lock().unwrap();
+        state.receive(0, 1, req_self).unwrap();
+        state.receive(0, 1, req_point).unwrap();
+        assert!(
+            state
+                .world
+                .vision_devices()
+                .any(|v| v.kind == halcyon_sim::VisionDeviceKind::Flare)
+        );
+        state.receive(0, 1, req_target).unwrap();
+        let evs = state.world.step();
+        assert!(evs.iter().any(|e| matches!(
+            e,
+            halcyon_sim::Event::ItemActivated {
+                actor: 1,
+                kind: halcyon_sim::BasicItem::Crucible,
+                ..
+            }
+        )));
+        assert!(evs.iter().any(|e| matches!(
+            e,
+            halcyon_sim::Event::ItemActivated {
+                actor: 1,
+                kind: halcyon_sim::BasicItem::TeleportBoots,
+                ..
+            }
+        )));
+    }
+}
