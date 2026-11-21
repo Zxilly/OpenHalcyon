@@ -93,7 +93,7 @@ pub(super) fn recordable(m: &Message) -> bool {
         let Some((_, (_, instance))) = slot_from_actor(body.target) else {
             return false;
         };
-        return (tail.is_empty() || tail == [0, 0]) && body.instance == instance && body.count == 1;
+        return tail.iter().all(|&b| b == 0) && body.instance == instance && body.count == 1;
     }
     let Ok(Fields::BuffApplication(effect)) = m.fields() else {
         return false;

@@ -136,8 +136,8 @@ pub(crate) fn recordable(m: &Message) -> bool {
             key,
             value,
             mode,
-            ..
-        }) if hero(owner) && m.body.len() == 13 && mode == CooldownMode::Set as u8 => {
+            remaining,
+        }) if hero(owner) && remaining.is_empty() && mode == CooldownMode::Set as u8 => {
             (key == AlphaCooldown::Reboot as u32 && recharge(value))
                 || (matches!(key, k if k == AlphaCooldown::PrimeDirective as u32 || k == AlphaCooldown::CoreCharge as u32)
                     && value == 0.)

@@ -166,7 +166,7 @@ pub(super) fn recordable(m: &Message) -> bool {
         return false;
     };
     let [a, owner, b] = f.slots;
-    if m.body.len() != 22 || f.padding != [0; 5] || a != owner || a == b {
+    if f.padding != [0; 5] || a != owner || a == b {
         return false;
     }
     match (f.profile_word, f.operand) {
