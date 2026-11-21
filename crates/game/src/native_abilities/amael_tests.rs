@@ -1,7 +1,7 @@
 use super::*;
 use crate::{Peer, Rooms, messages};
-use halcyon_platform::{MatchHost, Reservation};
 use halcyon_protocol::{ACK_FRAME, MatchCipher, async_frame::FrameReader, hello};
+use halcyon_types::{MatchHost, Reservation};
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;

@@ -1,7 +1,7 @@
 use super::*;
 use crate::Rooms;
-use halcyon_platform::{MatchHost, Reservation};
 use halcyon_protocol::{ACK_FRAME, Fields, MatchCipher, Opcode, hello, wire_opcode};
+use halcyon_types::{MatchHost, Reservation};
 use std::time::{Duration, Instant};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},

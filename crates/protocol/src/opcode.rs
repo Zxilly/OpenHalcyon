@@ -283,6 +283,9 @@ mod tests {
     use super::Opcode;
     use crate::{Message, READ_SIZES};
 
+    const _: () =
+        assert!(Opcode::DraftCatalogEntry.raw() == halcyon_types::DRAFT_CATALOG_ENTRY_TAG);
+
     #[test]
     fn every_reader_has_one_named_opcode_and_unknown_values_round_trip() {
         assert!(

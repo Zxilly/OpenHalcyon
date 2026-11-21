@@ -1,5 +1,5 @@
 use crate::GameData;
-use halcyon_protocol::skin_hash;
+use halcyon_types::{DRAFT_CATALOG_ENTRY_TAG, skin_hash};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
@@ -186,11 +186,7 @@ impl SkinIndex {
                 if hero.entity_type_id.is_some() && defaults.contains(hero.default_skin.as_str()) {
                     let entry = format!("*{}*", hero.hero_id);
                     crate::validate_name(&entry)?;
-                    hash.update(
-                        halcyon_protocol::Opcode::DraftCatalogEntry
-                            .raw()
-                            .to_be_bytes(),
-                    );
+                    hash.update(DRAFT_CATALOG_ENTRY_TAG.to_be_bytes());
                     hash.update([entry.len() as u8]);
                     hash.update(entry.as_bytes());
                     fallback.heroes.push(hero.hero_id.clone());

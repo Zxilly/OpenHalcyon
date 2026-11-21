@@ -1,5 +1,5 @@
 //! The operator's CE dictionaries, asset index, protocol observations and session settings.
-use halcyon_protocol::{Opcode, skin_hash};
+use halcyon_types::skin_hash;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{collections::BTreeMap, io, path::Path};
@@ -262,10 +262,10 @@ impl References {
             .map(String::as_str)
     }
 
-    pub fn observed_known_opcodes(&self) -> usize {
+    pub fn observed_known_opcodes(&self, mut is_known: impl FnMut(u16) -> bool) -> usize {
         self.observations
             .keys()
-            .filter(|&&raw| Opcode::try_from(raw).is_ok())
+            .filter(|&&raw| is_known(raw))
             .count()
     }
 }

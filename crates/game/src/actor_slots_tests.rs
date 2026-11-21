@@ -129,8 +129,8 @@ fn solo_hero_declarations_keep_identity_separate_from_initial_team_flags() {
 #[tokio::test]
 async fn replication_defers_unregistered_actors_until_a_slot_is_free() {
     use crate::{Peer, Rooms, messages::wire_id, transport::Delivery};
-    use halcyon_platform::{MatchHost, Reservation};
     use halcyon_sim::Event;
+    use halcyon_types::{MatchHost, Reservation};
     use tokio::sync::{mpsc, watch};
     use uuid::Uuid;
 
@@ -218,8 +218,8 @@ fn stable_indices_and_explicit_exhaustion() {
 #[tokio::test]
 async fn fog_and_disconnected_solo_deaths_recycle_minion_slots_without_exhaustion() {
     use crate::{Peer, Rooms};
-    use halcyon_platform::{MatchHost, Reservation};
     use halcyon_sim::{Event, Position};
+    use halcyon_types::{MatchHost, Reservation};
     use tokio::sync::{mpsc, watch};
     use uuid::Uuid;
 

@@ -96,7 +96,7 @@ mod tests {
     #[tokio::test]
     async fn registered_native_seats_share_the_batch_and_rejoin_skips_past_events() {
         use crate::{Peer, Rooms};
-        use halcyon_platform::{MatchHost, Reservation};
+        use halcyon_types::{MatchHost, Reservation};
         use tokio::sync::{mpsc, watch};
         use uuid::Uuid;
 

@@ -294,7 +294,7 @@ async fn cross_home_aral_equips_only_committed_numeric_entitlements() {
             &[index as u8 + 40; 32],
             &member.path,
             Some(tmp.path()),
-            member.peer_play.clone(),
+            Arc::new(member.peer_play.clone()),
         )
         .unwrap()
         .with_content(&content_path)

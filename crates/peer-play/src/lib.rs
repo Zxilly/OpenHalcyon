@@ -7,7 +7,12 @@ use halcyon_matchmaking::{
 };
 use halcyon_platform::{AbortReason, KnownQueue, LobbyPhase};
 use halcyon_platform::{
-    AppState, BotDifficulty, FederatedIntent, PlatformError, Reservation, plan_teams_for_mode,
+    AppState, BotDifficulty, BotDifficultyExt, FederatedIntent, PlatformError, Reservation,
+    plan_teams_for_mode,
+};
+use halcyon_types::{
+    BoxFuture, HostResult, NativeOffer, PeerPlayPort,
+    player_actions::{ActionCall, ActionReply},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -382,6 +387,92 @@ impl PeerPlay {
     }
     pub fn finish(&self, id: Uuid, result: Value) -> anyhow::Result<bool> {
         self.inner.journal.finish(id, &result)
+    }
+}
+
+impl PeerPlayPort for PeerPlay {
+    fn player_action<'a>(
+        &'a self,
+        session: &'a str,
+        room: Uuid,
+        call: ActionCall,
+    ) -> BoxFuture<'a, HostResult<ActionReply>> {
+        Box::pin(async move {
+            Self::player_action(self, session, room, call)
+                .await
+                .map_err(Into::into)
+        })
+    }
+
+    fn join_party_with_site_report<'a>(
+        &'a self,
+        token: &'a str,
+        mode: String,
+        seats: u8,
+        difficulty: Option<BotDifficulty>,
+        estimates: BTreeMap<Uuid, u32>,
+    ) -> BoxFuture<'a, HostResult<()>> {
+        Box::pin(async move {
+            Self::join_party_with_site_report(self, token, mode, seats, difficulty, estimates)
+                .await
+                .map_err(Into::into)
+        })
+    }
+
+    fn native_offer<'a>(
+        &'a self,
+        session: &'a str,
+    ) -> BoxFuture<'a, HostResult<Option<NativeOffer>>> {
+        Box::pin(async move { Self::native_offer(self, session).await.map_err(Into::into) })
+    }
+
+    fn accept<'a>(&'a self, token: &'a str, room: Uuid) -> BoxFuture<'a, HostResult<()>> {
+        Box::pin(async move { Self::accept(self, token, room).await.map_err(Into::into) })
+    }
+
+    fn reject_offer<'a>(&'a self, token: &'a str, room: Uuid) -> BoxFuture<'a, HostResult<bool>> {
+        Box::pin(async move {
+            Self::reject_offer(self, token, room)
+                .await
+                .map_err(Into::into)
+        })
+    }
+
+    fn leave<'a>(&'a self, token: &'a str) -> BoxFuture<'a, HostResult<()>> {
+        Box::pin(async move { Self::leave(self, token).await.map_err(Into::into) })
+    }
+
+    fn send_chat<'a>(
+        &'a self,
+        token: &'a str,
+        room: Uuid,
+        message: String,
+    ) -> BoxFuture<'a, HostResult<()>> {
+        Box::pin(async move {
+            Self::send_chat(self, token, room, message)
+                .await
+                .map_err(Into::into)
+        })
+    }
+
+    fn spectate_friend<'a>(
+        &'a self,
+        token: &'a str,
+        friend: Uuid,
+    ) -> BoxFuture<'a, HostResult<bool>> {
+        Box::pin(async move {
+            Self::spectate_friend(self, token, friend)
+                .await
+                .map_err(Into::into)
+        })
+    }
+
+    fn leave_spectating<'a>(&'a self, token: &'a str) -> BoxFuture<'a, HostResult<bool>> {
+        Box::pin(async move {
+            Self::leave_spectating(self, token)
+                .await
+                .map_err(Into::into)
+        })
     }
 }
 fn aral_rules(base: &str, free_reroll: bool) -> String {

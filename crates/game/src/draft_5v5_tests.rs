@@ -1,8 +1,8 @@
 use super::*;
 use crate::{Message, Opcode, RoomPhase, Rooms, transport::Delivery};
-use halcyon_platform::{MatchHost, Reservation};
 use halcyon_protocol::{CampVisibilityState, Fields};
 use halcyon_sim::{BasicItem, Command, Event, map_5v5};
+use halcyon_types::{MatchHost, Reservation};
 use std::sync::Arc;
 use tokio::sync::{mpsc, watch};
 use uuid::Uuid;

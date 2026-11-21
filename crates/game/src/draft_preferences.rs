@@ -77,7 +77,7 @@ impl Choice {
 #[cfg(test)]
 mod tests {
     use crate::{Message, Opcode, RoomPhase, Rooms, transport::Delivery};
-    use halcyon_platform::{MatchHost, Reservation};
+    use halcyon_types::{MatchHost, Reservation};
     use tokio::sync::{mpsc, watch};
     use uuid::Uuid;
 

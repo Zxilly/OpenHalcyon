@@ -229,7 +229,7 @@ mod tests {
     #[tokio::test]
     async fn orbit_lifecycle_is_scoped_to_an_enemy_with_the_declared_caster() {
         use crate::{Peer, Rooms};
-        use halcyon_platform::{MatchHost, Reservation};
+        use halcyon_types::{MatchHost, Reservation};
         use tokio::sync::{mpsc, watch};
         use uuid::Uuid;
         let rooms = Rooms::new("127.0.0.1".parse().unwrap(), "127.0.0.1".into(), 1, None);

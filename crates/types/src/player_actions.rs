@@ -1,5 +1,6 @@
 //! Player-facing match actions. The host resolves the actor from its authorized human roster.
 use serde::{Deserialize, Serialize};
+
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
 pub enum PlayerAction {
@@ -33,6 +34,7 @@ pub enum PlayerAction {
         instance: u32,
     },
 }
+
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ActionRequest {
@@ -40,6 +42,7 @@ pub struct ActionRequest {
     pub expires_at_ms: i64,
     pub action: PlayerAction,
 }
+
 impl ActionRequest {
     pub fn valid_at(self, now: i64) -> bool {
         (1..=9_007_199_254_740_991).contains(&self.sequence)
@@ -71,17 +74,20 @@ impl ActionRequest {
             }
     }
 }
+
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub enum ActionCall {
     Inspect,
     Execute(ActionRequest),
 }
+
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HeldInstance {
     pub template: u32,
     pub instance: u32,
 }
+
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ActionContext {
@@ -91,6 +97,7 @@ pub struct ActionContext {
     pub items: Vec<HeldInstance>,
     pub visible_enemy_cams: Vec<u32>,
 }
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ActionDecision {
     Applied,
@@ -99,6 +106,7 @@ pub enum ActionDecision {
     Unavailable,
     Invalid,
 }
+
 #[derive(Debug, Serialize, Deserialize)]
 pub enum ActionReply {
     Context(ActionContext),

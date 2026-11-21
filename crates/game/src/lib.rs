@@ -38,12 +38,14 @@ mod tick_latency;
 mod transport;
 use chrono::{DateTime, Utc};
 use halcyon_data::GameData;
-use halcyon_platform::{HostedMatch, MatchHost, PlatformError, Reservation};
 use halcyon_protocol::{
     Fields, Message,
     ce::{KnownQueue, NativeMode},
 };
 use halcyon_sim::{Command, Event, Position, World};
+use halcyon_types::{
+    HostError, HostResult, HostedMatch, HostedSpectator, MatchHost, Reservation, SpectatorExit,
+};
 use messages::{setup, snapshot, spawn, wire_id, world_header};
 mod responses;
 pub(crate) use halcyon_protocol::{Opcode, wire_opcode};
@@ -281,7 +283,7 @@ impl Rooms {
         data: Option<Arc<GameData>>,
         policy: AdmissionPolicy,
         game_port_range: Option<PortRange>,
-    ) -> Result<Self, PlatformError> {
+    ) -> HostResult<Self> {
         let ports = admission::Ports::new(game_port_range)?;
         let capacity = capacity.min(ports.slots());
         let this = Self(Arc::new(Manager {
@@ -300,7 +302,7 @@ impl Rooms {
                 .transpose()
                 .map_err(|error| {
                     tracing::error!(%error, "invalid simulation rules");
-                    PlatformError::Invalid("invalid simulation rules")
+                    HostError::Invalid("invalid simulation rules")
                 })?,
             catalog: messages::catalog_entries(data.as_deref()),
             data,
@@ -516,17 +518,13 @@ impl MatchHost for Rooms {
         &self,
         room: Uuid,
         player: Uuid,
-        call: halcyon_protocol::player_actions::ActionCall,
-    ) -> halcyon_platform::Result<halcyon_protocol::player_actions::ActionReply> {
+        call: halcyon_types::player_actions::ActionCall,
+    ) -> HostResult<halcyon_types::player_actions::ActionReply> {
         Ok(self.room_action(room, player, None, call))
     }
-    fn spectate(
-        &self,
-        match_id: Uuid,
-        viewer: Uuid,
-    ) -> Result<halcyon_platform::HostedSpectator, PlatformError> {
+    fn spectate(&self, match_id: Uuid, viewer: Uuid) -> HostResult<HostedSpectator> {
         let (address, spectator_id) = self.observe(match_id, viewer)?;
-        Ok(halcyon_platform::HostedSpectator {
+        Ok(HostedSpectator {
             address,
             spectator_id,
         })
@@ -535,24 +533,24 @@ impl MatchHost for Rooms {
         &self,
         room: Uuid,
         viewer: Uuid,
-        exit: halcyon_platform::SpectatorExit,
-    ) -> Result<halcyon_platform::HostedSpectator, PlatformError> {
+        exit: SpectatorExit,
+    ) -> HostResult<HostedSpectator> {
         let (address, spectator_id) = self.observe_with_exit(room, viewer, Some(exit))?;
-        Ok(halcyon_platform::HostedSpectator {
+        Ok(HostedSpectator {
             address,
             spectator_id,
         })
     }
-    fn stop_spectating(&self, match_id: Uuid, spectator_id: Uuid) -> Result<(), PlatformError> {
+    fn stop_spectating(&self, match_id: Uuid, spectator_id: Uuid) -> HostResult<()> {
         self.revoke_observer(match_id, spectator_id)
     }
 
-    fn reserve(&self, req: Reservation) -> Result<HostedMatch, PlatformError> {
+    fn reserve(&self, req: Reservation) -> HostResult<HostedMatch> {
         self.allocate(req, true, None)
     }
 }
 impl Rooms {
-    pub fn prepare(&self, req: Reservation) -> Result<HostedMatch, PlatformError> {
+    pub fn prepare(&self, req: Reservation) -> HostResult<HostedMatch> {
         self.allocate(req, false, None)
     }
     /// Prepare a room from the committed allocation and its ordered ticket roster.
@@ -561,36 +559,36 @@ impl Rooms {
         req: Reservation,
         pool: Uuid,
         homes: Vec<Uuid>,
-    ) -> Result<HostedMatch, PlatformError> {
+    ) -> HostResult<HostedMatch> {
         if homes.len() != req.players.len() {
-            return Err(PlatformError::Invalid("invalid home roster"));
+            return Err(HostError::Invalid("invalid home roster"));
         }
         self.allocate(req, false, Some(FederationOrigin { pool, homes }))
     }
 
-    pub fn activate(&self, id: Uuid) -> Result<(), PlatformError> {
+    pub fn activate(&self, id: Uuid) -> HostResult<()> {
         let rooms = self.0.rooms.lock().unwrap();
         let mut room = rooms
             .get(&id)
-            .ok_or(PlatformError::HostUnavailable)?
+            .ok_or(HostError::HostUnavailable)?
             .lock()
             .unwrap();
         if matches!(
             room.phase,
             crate::RoomPhase::Ending | crate::RoomPhase::Ended
         ) {
-            return Err(PlatformError::Conflict("closed reservation"));
+            return Err(HostError::Conflict("closed reservation"));
         }
         room.admitted = true;
         room.admission_ready.send_replace(true);
         Ok(())
     }
-    pub fn discard(&self, id: Uuid) -> Result<(), PlatformError> {
+    pub fn discard(&self, id: Uuid) -> HostResult<()> {
         let mut rooms = self.0.rooms.lock().unwrap();
         if let Some(room) = rooms.get(&id) {
             let room = room.lock().unwrap();
             if room.admitted {
-                return Err(PlatformError::Conflict("already active"));
+                return Err(HostError::Conflict("already active"));
             }
             room.stop.send_replace(true);
         }
@@ -732,9 +730,9 @@ impl Rooms {
         req: Reservation,
         admitted: bool,
         federation: Option<FederationOrigin>,
-    ) -> Result<HostedMatch, PlatformError> {
+    ) -> HostResult<HostedMatch> {
         if !halcyon_data::valid_talent_levels(&req.mode, req.players.len(), &req.talent_levels) {
-            return Err(PlatformError::Invalid("invalid talent grants for roster"));
+            return Err(HostError::Invalid("invalid talent grants for roster"));
         }
         let talent_levels = if req.talent_levels.iter().all(|grants| grants.is_empty()) {
             Vec::new()
@@ -761,7 +759,7 @@ impl Rooms {
                 || r.ended.is_some()
                 || (admitted && !r.admitted)
             {
-                return Err(PlatformError::Conflict("reservation conflict"));
+                return Err(HostError::Conflict("reservation conflict"));
             }
             return Ok(HostedMatch {
                 address: r.address.clone(),
@@ -771,13 +769,13 @@ impl Rooms {
             || req.players.len() > 10
             || req.players.iter().collect::<HashSet<_>>().len() != req.players.len()
         {
-            return Err(PlatformError::Invalid("invalid roster"));
+            return Err(HostError::Invalid("invalid roster"));
         }
         let known_queue = KnownQueue::parse(&req.mode);
         let legacy_aral = known_queue == Some(KnownQueue::CasualAral);
         let six_humans = known_queue.is_some_and(KnownQueue::requires_six_humans);
         if six_humans && req.players.len() != halcyon_data::THREE_PER_SIDE_SEATS {
-            return Err(PlatformError::Invalid(
+            return Err(HostError::Invalid(
                 "three-per-side queue requires six human players",
             ));
         }
@@ -787,21 +785,20 @@ impl Rooms {
             .filter(|r| r.lock().unwrap().ended.is_none())
             .count();
         if self.free_with_count(occupied) == 0 {
-            return Err(PlatformError::HostUnavailable);
+            return Err(HostError::HostUnavailable);
         }
-        let rt =
-            tokio::runtime::Handle::try_current().map_err(|_| PlatformError::HostUnavailable)?;
+        let rt = tokio::runtime::Handle::try_current().map_err(|_| HostError::HostUnavailable)?;
         let listener = self
             .0
             .ports
             .bind(self.0.bind_ip)
-            .map_err(|_| PlatformError::HostUnavailable)?;
+            .map_err(|_| HostError::HostUnavailable)?;
         listener
             .set_nonblocking(true)
-            .map_err(|_| PlatformError::HostUnavailable)?;
+            .map_err(|_| HostError::HostUnavailable)?;
         let port = listener
             .local_addr()
-            .map_err(|_| PlatformError::HostUnavailable)?
+            .map_err(|_| HostError::HostUnavailable)?
             .port();
         let address = self.advertise(port);
         let seed = req.match_id.as_u128() as u64;
@@ -830,27 +827,27 @@ impl Rooms {
                     .iter()
                     .any(|team| req.teams.iter().filter(|t| *t == team).count() > hero_seats / 2))
         {
-            return Err(PlatformError::Invalid("invalid human teams"));
+            return Err(HostError::Invalid("invalid human teams"));
         }
         if six_humans {
             world
                 .use_six_human_roster()
-                .map_err(|_| PlatformError::Invalid("invalid six-human roster"))?;
+                .map_err(|_| HostError::Invalid("invalid six-human roster"))?;
         } else if hero_seats == halcyon_data::THREE_PER_SIDE_SEATS {
             modes_3v3_blitz::trim_to_three_per_side_roster(&mut world, hero_seats)
-                .map_err(|_| PlatformError::Invalid("invalid three-per-side solo roster"))?;
+                .map_err(|_| HostError::Invalid("invalid three-per-side solo roster"))?;
         }
         world
             .assign_teams(&req.teams)
-            .map_err(|_| PlatformError::Invalid("invalid human teams"))?;
+            .map_err(|_| HostError::Invalid("invalid human teams"))?;
         if legacy_aral || known_queue == Some(KnownQueue::BattleRoyaleBotsSolo) {
             world
                 .use_aral_lane()
-                .map_err(|_| PlatformError::Invalid("invalid ARAL layout"))?;
+                .map_err(|_| HostError::Invalid("invalid ARAL layout"))?;
             if let Some(data) = &self.0.data {
                 world.install_map_data(data).map_err(|error| {
                     tracing::warn!(%error, "invalid ARAL map assets");
-                    PlatformError::HostUnavailable
+                    HostError::HostUnavailable
                 })?;
             }
         } else if req.players.len() == 10
@@ -859,7 +856,7 @@ impl Rooms {
         {
             world
                 .use_sovereigns_rise_5v5(self.0.data.as_deref())
-                .map_err(|_| PlatformError::HostUnavailable)?;
+                .map_err(|_| HostError::HostUnavailable)?;
         }
         let draft_5v5 = draft_5v5::Draft5v5::for_room(known_queue, &world);
         world.set_bot_difficulty(req.difficulty);
@@ -890,8 +887,8 @@ impl Rooms {
                 locked: bot,
             });
         }
-        let listener = tokio::net::TcpListener::from_std(listener)
-            .map_err(|_| PlatformError::HostUnavailable)?;
+        let listener =
+            tokio::net::TcpListener::from_std(listener).map_err(|_| HostError::HostUnavailable)?;
         let (stop, stopped) = watch::channel(false);
         let t = Utc::now();
         let mut room = Room {

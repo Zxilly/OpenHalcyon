@@ -70,7 +70,7 @@ impl super::Room {
 mod tests {
     use super::*;
     use crate::{Message, Rooms};
-    use halcyon_platform::{MatchHost, Reservation};
+    use halcyon_types::{MatchHost, Reservation};
     use std::net::Ipv4Addr;
     use uuid::Uuid;
 

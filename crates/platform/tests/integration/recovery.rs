@@ -1,10 +1,10 @@
-use halcyon_platform::{AppState, HostedMatch, MatchHost, PlatformConfig, Reservation, Result};
+use halcyon_platform::{AppState, HostResult, HostedMatch, MatchHost, PlatformConfig, Reservation};
 use std::sync::Arc;
 
 struct LocalHost;
 
 impl MatchHost for LocalHost {
-    fn reserve(&self, _: Reservation) -> Result<HostedMatch> {
+    fn reserve(&self, _: Reservation) -> HostResult<HostedMatch> {
         Ok(HostedMatch {
             address: "127.0.0.1:7010".into(),
         })

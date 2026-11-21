@@ -112,12 +112,12 @@ impl AppState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{HostedMatch, MatchHost, PlatformConfig, Reservation};
+    use crate::{HostResult, HostedMatch, MatchHost, PlatformConfig, Reservation};
     use std::sync::Arc;
 
     struct NoHost;
     impl MatchHost for NoHost {
-        fn reserve(&self, _: Reservation) -> Result<HostedMatch> {
+        fn reserve(&self, _: Reservation) -> HostResult<HostedMatch> {
             panic!("identity operations do not allocate a match")
         }
     }

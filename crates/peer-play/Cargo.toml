@@ -11,6 +11,7 @@ halcyon-federation = { path = "../federation" }
 halcyon-game = { path = "../game" }
 halcyon-matchmaking = { path = "../matchmaking" }
 halcyon-platform = { path = "../platform" }
+halcyon-types = { path = "../types" }
 http = "1"
 diesel = { workspace = true, features = ["returning_clauses_for_sqlite_3_35"] }
 diesel_migrations.workspace = true

@@ -3,14 +3,9 @@ use rusqlite::{OptionalExtension, Transaction, params};
 use uuid::Uuid;
 
 use super::{
-    AppState, PlatformError, Result, digest, event, parse_id, player, queue::community_error,
+    AppState, HostError, PlatformError, Result, digest, event, parse_id, player,
+    queue::community_error,
 };
-
-#[derive(Debug, Clone)]
-pub struct HostedSpectator {
-    pub address: String,
-    pub spectator_id: Uuid,
-}
 
 pub(super) fn initialize(tx: &Transaction<'_>) -> Result<()> {
     tx.execute_batch(
@@ -53,31 +48,34 @@ impl AppState {
         let db = std::sync::Arc::downgrade(&self.db);
         let changes = self.changes.clone();
         std::sync::Arc::new(move |grant| {
-            let db = db.upgrade().ok_or(PlatformError::WorkerUnavailable)?;
-            let mut db = db.lock().map_err(|_| PlatformError::WorkerUnavailable)?;
-            let tx = db.transaction()?;
-            let removed = tx.execute(
-                "DELETE FROM spectator_sessions WHERE match_id=? AND player=?
-                 AND (spectator_id=? OR (spectator_id IS NULL AND request=?))",
-                params![
-                    room.to_string(),
-                    player.to_string(),
-                    grant.to_string(),
-                    request
-                ],
-            )?;
-            if removed > 0 {
-                event(
-                    &tx,
-                    &player.to_string(),
-                    EventBody::SpectatorLeft { match_id: room },
+            let update = || -> Result<()> {
+                let db = db.upgrade().ok_or(PlatformError::WorkerUnavailable)?;
+                let mut db = db.lock().map_err(|_| PlatformError::WorkerUnavailable)?;
+                let tx = db.transaction()?;
+                let removed = tx.execute(
+                    "DELETE FROM spectator_sessions WHERE match_id=? AND player=?
+                     AND (spectator_id=? OR (spectator_id IS NULL AND request=?))",
+                    params![
+                        room.to_string(),
+                        player.to_string(),
+                        grant.to_string(),
+                        request
+                    ],
                 )?;
-            }
-            tx.commit()?;
-            if removed > 0 {
-                changes.send_replace(());
-            }
-            Ok(())
+                if removed > 0 {
+                    event(
+                        &tx,
+                        &player.to_string(),
+                        EventBody::SpectatorLeft { match_id: room },
+                    )?;
+                }
+                tx.commit()?;
+                if removed > 0 {
+                    changes.send_replace(());
+                }
+                Ok(())
+            };
+            update().map_err(HostError::from)
         })
     }
 
@@ -159,7 +157,7 @@ impl AppState {
                         tx.execute("DELETE FROM spectator_sessions WHERE request=?", [&request])?;
                         Ok(())
                     })?;
-                    Err(error)
+                    Err(error.into())
                 }
             }
         }).await

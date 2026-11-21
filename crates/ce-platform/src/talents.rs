@@ -392,13 +392,13 @@ mod tests {
     async fn local_reservation_and_durable_peer_ticket_use_the_authoritative_inventory() {
         use halcyon_community::{Community, ItemDefinition};
         use halcyon_platform::{
-            AppState, HostedMatch, MatchHost, PlatformConfig, PlatformError, Reservation,
+            AppState, HostResult, HostedMatch, MatchHost, PlatformConfig, Reservation,
         };
         use std::sync::{Arc, Mutex};
         #[derive(Default)]
         struct Host(Mutex<Option<Reservation>>);
         impl MatchHost for Host {
-            fn reserve(&self, reservation: Reservation) -> Result<HostedMatch, PlatformError> {
+            fn reserve(&self, reservation: Reservation) -> HostResult<HostedMatch> {
                 *self.0.lock().unwrap() = Some(reservation);
                 Ok(HostedMatch {
                     address: "localhost:7557".into(),

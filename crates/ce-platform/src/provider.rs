@@ -519,8 +519,8 @@ mod tests {
             fn reserve(
                 &self,
                 _: halcyon_platform::Reservation,
-            ) -> halcyon_platform::Result<halcyon_platform::HostedMatch> {
-                Err(halcyon_platform::PlatformError::HostUnavailable)
+            ) -> halcyon_platform::HostResult<halcyon_platform::HostedMatch> {
+                Err(halcyon_platform::HostError::HostUnavailable)
             }
         }
         let _platform = halcyon_platform::AppState::open(

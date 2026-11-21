@@ -11,11 +11,10 @@ halcyon-data = { path = "../data" }
 async-trait = "0.1"
 axum.workspace = true
 chrono = "0.4"
-halcyon-protocol = { path = "../protocol" }
 halcyon-chat = { path = "../chat" }
 halcyon-community = { path = "../community" }
-halcyon-peer-play = { path = "../peer-play" }
 halcyon-platform = { path = "../platform" }
+halcyon-types = { path = "../types" }
 jsonwebtoken = { version = "10", default-features = false, features = ["rust_crypto", "use_pem"] }
 rusqlite = { version = "0.37", features = ["bundled"] }
 serde.workspace = true

@@ -1,8 +1,8 @@
 use super::*;
 use crate::{Rooms, transport};
-use halcyon_platform::{MatchHost, Reservation};
 use halcyon_protocol::{ACK_FRAME, Fields, MatchCipher, hello};
 use halcyon_sim::Kind;
+use halcyon_types::{MatchHost, Reservation};
 use std::{
     net::Ipv4Addr,
     time::{Duration, Instant},

@@ -1,7 +1,7 @@
 use super::*;
 use crate::{Peer, Reservation, Rooms};
-use halcyon_platform::MatchHost;
 use halcyon_protocol::ce::KnownQueue;
+use halcyon_types::MatchHost;
 use std::collections::BTreeSet;
 use tokio::sync::{mpsc, watch};
 use uuid::Uuid;

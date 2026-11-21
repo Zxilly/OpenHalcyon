@@ -319,8 +319,8 @@ async fn revoked_observer_receives_no_further_native_abilities() {
 #[tokio::test]
 async fn aral_respawn_timer_respects_known_actors_and_authorized_observers() {
     use crate::{Peer, Rooms};
-    use halcyon_platform::{MatchHost, Reservation};
     use halcyon_sim::{Command, Position};
+    use halcyon_types::{MatchHost, Reservation};
     use tokio::sync::{mpsc, watch};
 
     let rooms = Rooms::new("127.0.0.1".parse().unwrap(), "127.0.0.1".into(), 1, None);

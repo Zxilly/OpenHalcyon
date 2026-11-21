@@ -262,8 +262,8 @@ mod tests {
     #[tokio::test]
     async fn empowered_attack_turns_toward_a_new_opponent_on_the_registered_stream() {
         use crate::{Peer, Rooms, transport::Delivery};
-        use halcyon_platform::{MatchHost, Reservation};
         use halcyon_sim::{Command, Position};
+        use halcyon_types::{MatchHost, Reservation};
         use tokio::sync::{mpsc, watch};
         use uuid::Uuid;
 

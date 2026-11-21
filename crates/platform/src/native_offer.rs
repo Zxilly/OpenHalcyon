@@ -1,20 +1,6 @@
 use super::*;
 use diesel::{ExpressionMethods, OptionalExtension as _, QueryDsl, RunQueryDsl, SqliteConnection};
 
-#[derive(Debug)]
-pub struct NativeSeat {
-    pub player: Uuid,
-    pub accepted: bool,
-}
-
-#[derive(Debug)]
-pub struct NativeOffer {
-    pub id: Uuid,
-    pub seats: Vec<NativeSeat>,
-    pub entries: u32,
-    pub expires: Option<i64>,
-}
-
 pub(super) fn initialize(tx: &rusqlite::Transaction<'_>) -> Result<()> {
     // These timestamps describe the native queue view. The authoritative
     // matchmaking ticket and the offer's acceptance deadline remain separate.
@@ -226,7 +212,7 @@ mod tests {
 
     struct NoHost;
     impl MatchHost for NoHost {
-        fn reserve(&self, _: Reservation) -> Result<HostedMatch> {
+        fn reserve(&self, _: Reservation) -> HostResult<HostedMatch> {
             panic!("reading an offer never reserves a game host")
         }
     }

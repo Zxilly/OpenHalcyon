@@ -1,5 +1,5 @@
 use halcyon_data::catalog_from_trace;
-use halcyon_protocol::Opcode;
+use halcyon_types::DRAFT_CATALOG_ENTRY_TAG;
 use serde::Serialize;
 use std::io::{Cursor, ErrorKind};
 
@@ -17,7 +17,7 @@ fn import(payload: &str) -> std::io::Result<Vec<String>> {
     }
     let row = CatalogRow {
         dir: Direction::ServerToClient,
-        opcode: Opcode::DraftCatalogEntry.raw(),
+        opcode: DRAFT_CATALOG_ENTRY_TAG,
         payload,
     };
     catalog_from_trace(Cursor::new(serde_json::to_vec(&row)?))

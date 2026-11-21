@@ -159,7 +159,7 @@ mod tests {
                 player_id: Uuid::new_v4(),
                 name: "Guest".into(),
                 lobby: Some(Lobby {
-                    mode: halcyon_protocol::ce::KnownQueue::CasualAral.as_str().into(),
+                    mode: halcyon_types::ce::KnownQueue::CasualAral.as_str().into(),
                     match_id: Some(id),
                     phase: LobbyPhase::Playing.as_str().into(),
                     address: address.map(str::to_owned),

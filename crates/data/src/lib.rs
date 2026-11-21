@@ -26,10 +26,11 @@ pub use native_maps::{
 pub use navmesh::{NavMesh, NavMeshError, RouteSearch};
 pub mod skins;
 mod unit_rewards;
-pub use difficulty::BotDifficulty;
+pub use difficulty::{BotDifficulty, BotDifficultyExt, bot_difficulty_rules_digest};
 pub use entity_template::EntityTemplate;
 pub use extra::ExtraData;
-pub use halcyon_protocol::ce::{KnownQueue, NativeMode};
+pub use halcyon_types::TalentLevels;
+pub use halcyon_types::ce::{KnownQueue, NativeMode};
 pub use unit_rewards::SoloLaneRewards;
 
 /// Matchmaking ID observed in the iOS-era ARAL requests.
@@ -38,7 +39,6 @@ pub const THREE_PER_SIDE_SEATS: usize = 6;
 pub const LEGACY_ARAL_SEATS: usize = THREE_PER_SIDE_SEATS;
 
 /// Numeric ARAL entitlement per hero template. This never identifies a named talent.
-pub type TalentLevels = BTreeMap<u16, std::num::NonZeroU8>;
 pub const ARAL_TALENT_RULES_PREFIX: &str = "aral-talent-levels:";
 
 /// Public talent triplets independently cross-checked against delivery entity template IDs.
@@ -449,8 +449,7 @@ pub fn catalog_from_trace(trace: impl io::BufRead) -> io::Result<Vec<String>> {
         if !matches!(
             Direction::deserialize(&row["dir"]),
             Ok(Direction::ServerToClient)
-        ) || row["opcode"].as_u64()
-            != Some(u64::from(halcyon_protocol::Opcode::DraftCatalogEntry.raw()))
+        ) || row["opcode"].as_u64() != Some(u64::from(halcyon_types::DRAFT_CATALOG_ENTRY_TAG))
         {
             continue;
         }

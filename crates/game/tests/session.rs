@@ -1,6 +1,6 @@
 use halcyon_game::{Rooms, TerminateError};
-use halcyon_platform::{MatchHost, Reservation};
 use halcyon_protocol::{ACK_FRAME, MatchCipher, Message, hello_with_port};
+use halcyon_types::{MatchHost, Reservation};
 use std::{net::Ipv4Addr, time::Duration};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},

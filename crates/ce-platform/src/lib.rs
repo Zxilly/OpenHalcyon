@@ -1,7 +1,8 @@
 //! Compatibility layer for the Android Community Edition platform protocol.
 mod wire;
-use halcyon_protocol::ce::KnownQueue;
-pub use halcyon_protocol::ce::{LobbyState, RpcMethod};
+use halcyon_types::ce::KnownQueue;
+pub use halcyon_types::ce::{LobbyState, RpcMethod};
+use halcyon_types::{HostError, PeerPlayPort};
 use wire::{Empty, PlayerHandle, Seconds, StateSnapshot, Success};
 mod activity;
 mod auth;
@@ -73,6 +74,12 @@ pub enum Error {
     Json(#[from] serde_json::Error),
 }
 
+impl From<HostError> for Error {
+    fn from(error: HostError) -> Self {
+        Self::Platform(error.into())
+    }
+}
+
 pub struct Config {
     /// Public host:port returned by bootstrap.
     pub authority: String,
@@ -95,7 +102,7 @@ pub struct Platform {
     provider: Option<provider::Verifier>,
     community: halcyon_community::Community,
     content: content::Content,
-    peers: Option<halcyon_peer_play::PeerPlay>,
+    peers: Option<Arc<dyn PeerPlayPort>>,
     talents: talents::Catalog,
     skins: Value,
     archived_manifests: bool,
@@ -230,7 +237,7 @@ impl Platform {
         secret: &[u8],
         database: &FsPath,
         manifests: Option<&FsPath>,
-        peers: halcyon_peer_play::PeerPlay,
+        peers: Arc<dyn PeerPlayPort>,
     ) -> Result<Arc<Self>, Error> {
         let mut platform = Self::new(app, config, secret, database, manifests)?;
         Arc::get_mut(&mut platform)
@@ -950,4 +957,138 @@ enum SessionProjection {
     AccountLogin,
     Resume,
     Current,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use halcyon_platform::{HostResult, HostedMatch, MatchHost, PlatformConfig, Reservation};
+    use std::{
+        collections::BTreeMap,
+        sync::atomic::{AtomicBool, Ordering},
+    };
+
+    struct NoHost;
+    impl MatchHost for NoHost {
+        fn reserve(&self, _: Reservation) -> HostResult<HostedMatch> {
+            Err(HostError::HostUnavailable)
+        }
+    }
+
+    #[derive(Default)]
+    struct StubPeers {
+        rejected: AtomicBool,
+    }
+
+    impl PeerPlayPort for StubPeers {
+        fn player_action<'a>(
+            &'a self,
+            _session: &'a str,
+            _room: Uuid,
+            _call: halcyon_types::player_actions::ActionCall,
+        ) -> halcyon_types::BoxFuture<'a, HostResult<halcyon_types::player_actions::ActionReply>>
+        {
+            Box::pin(async { Err(HostError::HostUnavailable) })
+        }
+
+        fn join_party_with_site_report<'a>(
+            &'a self,
+            _token: &'a str,
+            _mode: String,
+            _seats: u8,
+            _difficulty: Option<BotDifficulty>,
+            _estimates: BTreeMap<Uuid, u32>,
+        ) -> halcyon_types::BoxFuture<'a, HostResult<()>> {
+            Box::pin(async { Ok(()) })
+        }
+
+        fn native_offer<'a>(
+            &'a self,
+            _session: &'a str,
+        ) -> halcyon_types::BoxFuture<'a, HostResult<Option<halcyon_types::NativeOffer>>> {
+            Box::pin(async { Ok(None) })
+        }
+
+        fn accept<'a>(
+            &'a self,
+            _token: &'a str,
+            _room: Uuid,
+        ) -> halcyon_types::BoxFuture<'a, HostResult<()>> {
+            Box::pin(async { Ok(()) })
+        }
+
+        fn reject_offer<'a>(
+            &'a self,
+            _token: &'a str,
+            _room: Uuid,
+        ) -> halcyon_types::BoxFuture<'a, HostResult<bool>> {
+            Box::pin(async {
+                self.rejected.store(true, Ordering::SeqCst);
+                Ok(true)
+            })
+        }
+
+        fn leave<'a>(&'a self, _token: &'a str) -> halcyon_types::BoxFuture<'a, HostResult<()>> {
+            Box::pin(async { Ok(()) })
+        }
+
+        fn send_chat<'a>(
+            &'a self,
+            _token: &'a str,
+            _room: Uuid,
+            _message: String,
+        ) -> halcyon_types::BoxFuture<'a, HostResult<()>> {
+            Box::pin(async { Ok(()) })
+        }
+
+        fn spectate_friend<'a>(
+            &'a self,
+            _token: &'a str,
+            _friend: Uuid,
+        ) -> halcyon_types::BoxFuture<'a, HostResult<bool>> {
+            Box::pin(async { Ok(false) })
+        }
+
+        fn leave_spectating<'a>(
+            &'a self,
+            _token: &'a str,
+        ) -> halcyon_types::BoxFuture<'a, HostResult<bool>> {
+            Box::pin(async { Ok(false) })
+        }
+    }
+
+    #[tokio::test]
+    async fn with_peers_accepts_boxed_peer_play_port_trait_object() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("platform.sqlite");
+        let app = AppState::open(
+            PlatformConfig {
+                database_path: db.clone(),
+                public_address: "127.0.0.1:8443".into(),
+                seats_per_match: 2,
+            },
+            Arc::new(NoHost),
+        )
+        .unwrap();
+        let peers = Arc::new(StubPeers::default());
+        let platform = Platform::with_peers(
+            app,
+            Config {
+                authority: "127.0.0.1:8443".into(),
+                notify_authority: "127.0.0.1:2112".into(),
+            },
+            &[9; 32],
+            &db,
+            None,
+            peers.clone(),
+        )
+        .unwrap();
+        let port = platform.peers.as_ref().expect("peer port wired");
+        assert!(port.reject_offer("session", Uuid::new_v4()).await.unwrap());
+        assert!(peers.rejected.load(Ordering::SeqCst));
+        assert!(matches!(
+            Error::from(HostError::Conflict("occupied")),
+            Error::Platform(PlatformError::Conflict("occupied"))
+        ));
+    }
 }

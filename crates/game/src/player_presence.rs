@@ -108,7 +108,7 @@ impl Room {
 mod tests {
     use super::*;
     use crate::{Peer, Rooms};
-    use halcyon_platform::{MatchHost, Reservation};
+    use halcyon_types::{MatchHost, Reservation};
     use tokio::sync::{mpsc, watch};
     use uuid::Uuid;
 

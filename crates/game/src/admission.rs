@@ -36,9 +36,9 @@ pub(crate) struct Ports {
     retry: Mutex<Option<Instant>>,
 }
 impl Ports {
-    pub fn new(range: Option<PortRange>) -> Result<Self, PlatformError> {
+    pub fn new(range: Option<PortRange>) -> HostResult<Self> {
         if range.is_some_and(|r| r.first == 0 || r.last < r.first) {
-            return Err(PlatformError::Invalid("invalid game port range"));
+            return Err(HostError::Invalid("invalid game port range"));
         }
         Ok(Self {
             range,
@@ -108,7 +108,7 @@ pub(crate) struct Gate {
     metrics: ResourceMetrics,
 }
 impl Gate {
-    pub fn new(policy: AdmissionPolicy) -> Result<Self, PlatformError> {
+    pub fn new(policy: AdmissionPolicy) -> HostResult<Self> {
         if policy.tick_p99_ms == Some(0)
             || policy.rss_bytes == Some(0)
             || policy.egress_bytes_per_second == Some(0)
@@ -116,7 +116,7 @@ impl Gate {
                 .process_cpu_percent
                 .is_some_and(|p| !p.is_finite() || p <= 0.)
         {
-            return Err(PlatformError::Invalid("invalid resource admission budget"));
+            return Err(HostError::Invalid("invalid resource admission budget"));
         }
         let rss = memory_stats::memory_stats().map(|m| m.physical_mem as u64);
         let mut this = Self {
@@ -327,7 +327,7 @@ mod tests {
                 match_id: Uuid::new_v4(),
                 ..req
             }),
-            Err(PlatformError::HostUnavailable)
+            Err(HostError::HostUnavailable)
         ));
         assert_eq!(rooms.active_rooms(), 1);
     }

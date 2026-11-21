@@ -15,18 +15,17 @@ impl Platform {
     ) -> halcyon_platform::Result<()> {
         let seats = self.app.seats_for_mode(&mode);
         match &self.peers {
-            Some(peers) => {
-                peers
-                    .join_party_with_site_report(
-                        session,
-                        mode,
-                        u8::try_from(seats)
-                            .map_err(|_| PlatformError::Invalid("invalid seat count"))?,
-                        difficulty,
-                        estimates,
-                    )
-                    .await
-            }
+            Some(peers) => peers
+                .join_party_with_site_report(
+                    session,
+                    mode,
+                    u8::try_from(seats)
+                        .map_err(|_| PlatformError::Invalid("invalid seat count"))?,
+                    difficulty,
+                    estimates,
+                )
+                .await
+                .map_err(Into::into),
             None => {
                 self.app
                     .join_party_with_difficulty(session, mode, seats, difficulty)
@@ -45,7 +44,10 @@ impl PublicMatches for Platform {
         call: halcyon_platform::player_actions::ActionCall,
     ) -> halcyon_platform::Result<halcyon_platform::player_actions::ActionReply> {
         match &self.peers {
-            Some(peers) => peers.player_action(session, id, call).await,
+            Some(peers) => peers
+                .player_action(session, id, call)
+                .await
+                .map_err(Into::into),
             None => self.app.player_action(session, id, call).await,
         }
     }
@@ -61,13 +63,13 @@ impl PublicMatches for Platform {
     }
     async fn cancel_queue(&self, session: &str) -> halcyon_platform::Result<()> {
         match &self.peers {
-            Some(peers) => peers.leave(session).await,
+            Some(peers) => peers.leave(session).await.map_err(Into::into),
             None => self.app.leave(session).await,
         }
     }
     async fn accept_offer(&self, session: &str, id: Uuid) -> halcyon_platform::Result<()> {
         match &self.peers {
-            Some(peers) => peers.accept(session, id).await,
+            Some(peers) => peers.accept(session, id).await.map_err(Into::into),
             None => self.app.accept(session, id).await,
         }
     }
@@ -78,7 +80,7 @@ impl PublicMatches for Platform {
         text: String,
     ) -> halcyon_platform::Result<()> {
         match &self.peers {
-            Some(peers) => peers.send_chat(session, id, text).await,
+            Some(peers) => peers.send_chat(session, id, text).await.map_err(Into::into),
             None => self.app.send_chat(session, id, text).await,
         }
     }

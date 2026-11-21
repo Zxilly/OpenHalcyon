@@ -10,7 +10,7 @@ use tokio::{
 pub(super) struct Observer {
     view: tower_aggro::View,
     scene: Option<tower_aggro::ObserverScene>,
-    exit: Option<halcyon_platform::SpectatorExit>,
+    exit: Option<SpectatorExit>,
     viewer: Uuid,
     address: String,
     stop: watch::Sender<bool>,
@@ -18,19 +18,19 @@ pub(super) struct Observer {
     expires: Instant,
 }
 impl Rooms {
-    pub(super) fn observe(&self, id: Uuid, viewer: Uuid) -> Result<(String, Uuid), PlatformError> {
+    pub(super) fn observe(&self, id: Uuid, viewer: Uuid) -> HostResult<(String, Uuid)> {
         self.observe_with_exit(id, viewer, None)
     }
     pub(crate) fn observe_with_exit(
         &self,
         id: Uuid,
         viewer: Uuid,
-        exit: Option<halcyon_platform::SpectatorExit>,
-    ) -> Result<(String, Uuid), PlatformError> {
-        let room = self.room(id).ok_or(PlatformError::HostUnavailable)?;
+        exit: Option<SpectatorExit>,
+    ) -> HostResult<(String, Uuid)> {
+        let room = self.room(id).ok_or(HostError::HostUnavailable)?;
         let mut r = room.lock().unwrap();
         if r.phase != crate::RoomPhase::Running || r.players.contains(&viewer) {
-            return Err(PlatformError::Conflict("room unavailable for spectating"));
+            return Err(HostError::Conflict("room unavailable for spectating"));
         }
         if let Some((grant, observer)) = r.observers.iter_mut().find(|(_, o)| o.viewer == viewer) {
             if exit.is_some() {
@@ -39,25 +39,23 @@ impl Rooms {
             return Ok((observer.address.clone(), *grant));
         }
         if r.observers.len() >= 16 {
-            return Err(PlatformError::HostUnavailable);
+            return Err(HostError::HostUnavailable);
         }
-        let rt =
-            tokio::runtime::Handle::try_current().map_err(|_| PlatformError::HostUnavailable)?;
+        let rt = tokio::runtime::Handle::try_current().map_err(|_| HostError::HostUnavailable)?;
         let listener = self
             .0
             .ports
             .bind(self.0.bind_ip)
-            .map_err(|_| PlatformError::HostUnavailable)?;
+            .map_err(|_| HostError::HostUnavailable)?;
         listener
             .set_nonblocking(true)
-            .map_err(|_| PlatformError::HostUnavailable)?;
+            .map_err(|_| HostError::HostUnavailable)?;
         let port = listener
             .local_addr()
-            .map_err(|_| PlatformError::HostUnavailable)?
+            .map_err(|_| HostError::HostUnavailable)?
             .port();
         let address = self.advertise(port);
-        let listener =
-            TcpListener::from_std(listener).map_err(|_| PlatformError::HostUnavailable)?;
+        let listener = TcpListener::from_std(listener).map_err(|_| HostError::HostUnavailable)?;
         let grant = Uuid::new_v4();
         let (stop, mut revoked) = watch::channel(false);
         let mut ended = r.stop.subscribe();
@@ -107,7 +105,7 @@ impl Rooms {
         });
         Ok((address, grant))
     }
-    pub(super) fn revoke_observer(&self, id: Uuid, grant: Uuid) -> Result<(), PlatformError> {
+    pub(super) fn revoke_observer(&self, id: Uuid, grant: Uuid) -> HostResult<()> {
         if let Some(r) = self.room(id)
             && let Some(o) = r.lock().unwrap().observers.remove(&grant)
         {

@@ -1,6 +1,10 @@
 pub use halcyon_data::{
-    ARAL_TALENT_HEROES, ARAL_TALENT_RULES_PREFIX, BotDifficulty, KnownQueue, LEGACY_ARAL_QUEUE,
-    LEGACY_ARAL_SEATS, TalentLevels,
+    ARAL_TALENT_HEROES, ARAL_TALENT_RULES_PREFIX, BotDifficulty, BotDifficultyExt, KnownQueue,
+    LEGACY_ARAL_QUEUE, LEGACY_ARAL_SEATS, TalentLevels,
+};
+pub use halcyon_types::{
+    HostError, HostResult, HostedMatch, HostedSpectator, MatchHost, NativeOffer, NativeSeat,
+    Reservation, SpectatorExit, player_actions,
 };
 mod accounts;
 mod chat;
@@ -12,7 +16,6 @@ mod settlement;
 use event_body::EventBody;
 pub use event_body::{AbortReason, EventKind, LobbyPhase};
 mod notification;
-pub use native_offer::{NativeOffer, NativeSeat};
 mod pooled_spectator;
 pub use pooled_spectator::PooledSpectator;
 mod queue;
@@ -21,7 +24,6 @@ mod spectator;
 mod talent_levels;
 pub use federation::FederatedIntent;
 pub use queue::{plan_teams, plan_teams_for_mode};
-pub use spectator::HostedSpectator;
 
 use std::{
     path::PathBuf,
@@ -53,59 +55,6 @@ pub struct PlatformConfig {
     pub seats_per_match: usize,
 }
 
-#[derive(Debug, Clone)]
-pub struct Reservation {
-    pub talent_levels: Vec<halcyon_data::TalentLevels>,
-    pub match_id: Uuid,
-    pub players: Vec<Uuid>,
-    /// Parallel human team indices (0 or 1). Empty retains the default room layout.
-    pub teams: Vec<u8>,
-    pub mode: String,
-    pub difficulty: Option<BotDifficulty>,
-}
-
-#[derive(Debug, Clone)]
-pub struct HostedMatch {
-    pub address: String,
-}
-
-/// Persist a native request to close this exact spectator grant.
-pub type SpectatorExit = Arc<dyn Fn(Uuid) -> Result<()> + Send + Sync>;
-
-pub use halcyon_protocol::player_actions;
-
-/// Implementations must make repeated reservations for the same match id idempotent.
-pub trait MatchHost: Send + Sync + 'static {
-    fn reserve(&self, reservation: Reservation) -> Result<HostedMatch>;
-    fn local_action(
-        &self,
-        _room: Uuid,
-        _player: Uuid,
-        _call: player_actions::ActionCall,
-    ) -> Result<player_actions::ActionReply> {
-        Err(PlatformError::HostUnavailable)
-    }
-
-    /// Issue or refresh an isolated read-only credential for this viewer.
-    fn spectate(&self, _match_id: Uuid, _viewer: Uuid) -> Result<HostedSpectator> {
-        Err(PlatformError::HostUnavailable)
-    }
-
-    fn spectate_with_exit(
-        &self,
-        room: Uuid,
-        viewer: Uuid,
-        _exit: SpectatorExit,
-    ) -> Result<HostedSpectator> {
-        self.spectate(room, viewer)
-    }
-
-    /// Revoke the credential and close its connections. Repeated calls are harmless.
-    fn stop_spectating(&self, _match_id: Uuid, _spectator_id: Uuid) -> Result<()> {
-        Err(PlatformError::HostUnavailable)
-    }
-}
-
 #[derive(Debug, thiserror::Error)]
 pub enum PlatformError {
     #[error("authentication required")]
@@ -120,6 +69,35 @@ pub enum PlatformError {
     Database(#[from] rusqlite::Error),
     #[error("platform worker unavailable")]
     WorkerUnavailable,
+}
+
+impl From<HostError> for PlatformError {
+    fn from(error: HostError) -> Self {
+        match error {
+            HostError::Unauthorized => Self::Unauthorized,
+            HostError::Invalid(message) => Self::Invalid(message),
+            HostError::Conflict(message) => Self::Conflict(message),
+            HostError::HostUnavailable => Self::HostUnavailable,
+            HostError::Database(message) => {
+                tracing::error!(error = %message, "host database request failed");
+                Self::WorkerUnavailable
+            }
+            HostError::WorkerUnavailable => Self::WorkerUnavailable,
+        }
+    }
+}
+
+impl From<PlatformError> for HostError {
+    fn from(error: PlatformError) -> Self {
+        match error {
+            PlatformError::Unauthorized => Self::Unauthorized,
+            PlatformError::Invalid(message) => Self::Invalid(message),
+            PlatformError::Conflict(message) => Self::Conflict(message),
+            PlatformError::HostUnavailable => Self::HostUnavailable,
+            PlatformError::Database(error) => Self::Database(error.to_string()),
+            PlatformError::WorkerUnavailable => Self::WorkerUnavailable,
+        }
+    }
 }
 
 impl IntoResponse for PlatformError {
@@ -476,7 +454,9 @@ impl PublicMatches for AppState {
         call: player_actions::ActionCall,
     ) -> Result<player_actions::ActionReply> {
         let player = self.playing_player(token, room).await?;
-        self.host.local_action(room, player, call)
+        self.host
+            .local_action(room, player, call)
+            .map_err(Into::into)
     }
     async fn enqueue(
         &self,
@@ -1195,5 +1175,42 @@ async fn stream(state: AppState, key: Vec<u8>, mut after: i64, mut socket: WebSo
         ) {
             return;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn host_error_maps_losslessly_across_platform_boundary() {
+        assert!(matches!(
+            PlatformError::from(HostError::Unauthorized),
+            PlatformError::Unauthorized
+        ));
+        assert!(matches!(
+            PlatformError::from(HostError::Invalid("bad")),
+            PlatformError::Invalid("bad")
+        ));
+        assert!(matches!(
+            PlatformError::from(HostError::Conflict("busy")),
+            PlatformError::Conflict("busy")
+        ));
+        assert!(matches!(
+            PlatformError::from(HostError::HostUnavailable),
+            PlatformError::HostUnavailable
+        ));
+        assert!(matches!(
+            PlatformError::from(HostError::WorkerUnavailable),
+            PlatformError::WorkerUnavailable
+        ));
+        assert!(matches!(
+            PlatformError::from(HostError::Database("locked".into())),
+            PlatformError::WorkerUnavailable
+        ));
+        assert_eq!(
+            HostError::from(PlatformError::Conflict("taken")),
+            HostError::Conflict("taken")
+        );
     }
 }

@@ -8,7 +8,7 @@ use std::{
     path::Path,
 };
 
-use halcyon_protocol::ce::NativeMode;
+use halcyon_types::ce::NativeMode;
 
 /// CFF0 stat IDs used by equipment. Native 041C attribute selectors use
 /// a separate namespace; notably, 18 here means attack range.

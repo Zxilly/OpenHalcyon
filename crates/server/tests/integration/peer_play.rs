@@ -17,7 +17,7 @@ use halcyon_federation::{Config as FederationConfig, Federation, ObserverRequest
 use halcyon_game::Rooms;
 use halcyon_matchmaking::{Phase, Pool, Ticket, TicketPhase};
 use halcyon_peer_play::{Config, PeerPlay};
-use halcyon_platform::{AppState, PlatformConfig};
+use halcyon_platform::{AppState, BotDifficultyExt as _, PlatformConfig};
 use halcyon_protocol::{ACK_FRAME, MatchCipher, Message, hello_with_port};
 use serde_json::Value;
 use std::{
@@ -211,7 +211,7 @@ impl Member {
             &[index as u8 + 40; 32],
             &path_to_db,
             None,
-            peer_play.clone(),
+            Arc::new(peer_play.clone()),
         )
         .unwrap();
         let rpc = platform.rpc().merge(platform.public_api());

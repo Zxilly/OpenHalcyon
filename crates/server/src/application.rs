@@ -239,7 +239,7 @@ async fn serve_endpoints(
             &key,
             &c.database,
             c.manifests_dir.as_deref(),
-            n.worker.clone(),
+            Arc::new(n.worker.clone()),
         )?,
         None => Platform::new(
             state.clone(),

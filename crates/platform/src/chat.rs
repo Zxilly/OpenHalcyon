@@ -78,14 +78,14 @@ impl AppState {
 #[cfg(test)]
 mod tests {
     use super::AppState;
-    use crate::{HostedMatch, MatchHost, PlatformConfig, PlatformError, Reservation};
+    use crate::{HostError, HostResult, HostedMatch, MatchHost, PlatformConfig, Reservation};
     use std::sync::Arc;
     use uuid::Uuid;
 
     struct NoLocalRooms;
     impl MatchHost for NoLocalRooms {
-        fn reserve(&self, _: Reservation) -> Result<HostedMatch, PlatformError> {
-            Err(PlatformError::HostUnavailable)
+        fn reserve(&self, _: Reservation) -> HostResult<HostedMatch> {
+            Err(HostError::HostUnavailable)
         }
     }
 

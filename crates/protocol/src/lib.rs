@@ -1,12 +1,10 @@
 //! Vainglory CE game transport. Decrypted messages preserve every byte,
 //! including ambiguous padding, so unknown opcodes can be re-encoded exactly.
 
-pub mod ce;
+pub use halcyon_types::{ce, player_actions, skin_hash};
 mod codec;
 mod opcode;
 mod packets;
-pub mod player_actions;
-mod skin;
 mod solo_structure;
 pub mod spec;
 
@@ -22,7 +20,6 @@ pub use codec::wire_text::{self, FixedAscii};
 pub use codec::{ACK_FRAME, MAX_PAYLOAD, read_frame};
 
 pub use opcode::{Opcode, UnknownOpcodeName, wire_opcode};
-pub use skin::skin_hash;
 pub use solo_structure::SoloStructure;
 
 pub use spec::live::LiveFields;

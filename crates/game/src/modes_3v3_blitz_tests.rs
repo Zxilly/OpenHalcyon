@@ -1,8 +1,8 @@
 use super::*;
 use crate::{Command, Rooms, wire_opcode};
 use halcyon_data::{EntityTemplate, TalentLevels};
-use halcyon_platform::{MatchHost, Reservation};
 use halcyon_protocol::{Fields, LiveFields, TalentSelection, ce::NativeMode};
+use halcyon_types::{MatchHost, Reservation};
 use std::num::NonZeroU8;
 use tokio::sync::{mpsc, watch};
 use uuid::Uuid;

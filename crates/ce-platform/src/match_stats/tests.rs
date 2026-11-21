@@ -1,7 +1,8 @@
 use std::sync::Arc;
 
 use halcyon_platform::{
-    AppState, HostedMatch, MatchHost, PlatformConfig, PlatformError, Reservation,
+    AppState, HostError, HostResult, HostedMatch, MatchHost, PlatformConfig, PlatformError,
+    Reservation,
 };
 use rusqlite::{Connection, params};
 use serde_json::Value;
@@ -11,8 +12,8 @@ use crate::meta::Meta;
 
 struct Host;
 impl MatchHost for Host {
-    fn reserve(&self, _: Reservation) -> Result<HostedMatch, PlatformError> {
-        Err(PlatformError::HostUnavailable)
+    fn reserve(&self, _: Reservation) -> HostResult<HostedMatch> {
+        Err(HostError::HostUnavailable)
     }
 }
 
@@ -324,7 +325,7 @@ async fn wire_activity(meta: &Meta, player: Uuid) -> Value {
 
 struct ReserveHost;
 impl MatchHost for ReserveHost {
-    fn reserve(&self, _: Reservation) -> Result<HostedMatch, PlatformError> {
+    fn reserve(&self, _: Reservation) -> HostResult<HostedMatch> {
         Ok(HostedMatch {
             address: "localhost:8001".into(),
         })

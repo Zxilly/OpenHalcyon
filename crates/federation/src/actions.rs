@@ -1,6 +1,6 @@
 use crate::Federation;
 use halcyon_matchmaking::{Phase, TicketPhase};
-use halcyon_protocol::player_actions::{ActionCall, ActionDecision, ActionReply};
+use halcyon_types::player_actions::{ActionCall, ActionDecision, ActionReply};
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;

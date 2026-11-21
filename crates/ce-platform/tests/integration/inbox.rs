@@ -8,7 +8,7 @@ use axum::{
 use futures_util::StreamExt;
 use halcyon_ce_platform::{Config, Platform, RpcMethod};
 use halcyon_platform::{
-    AppState, HostedMatch, MatchHost, PlatformConfig, PlatformError, Reservation,
+    AppState, HostError, HostResult, HostedMatch, MatchHost, PlatformConfig, Reservation,
 };
 use native_rpc::{RpcEnvelope, android_guest};
 use serde::{Deserialize, Serialize};
@@ -20,8 +20,8 @@ use uuid::Uuid;
 
 struct Host;
 impl MatchHost for Host {
-    fn reserve(&self, _reservation: Reservation) -> Result<HostedMatch, PlatformError> {
-        Err(PlatformError::HostUnavailable)
+    fn reserve(&self, _reservation: Reservation) -> HostResult<HostedMatch> {
+        Err(HostError::HostUnavailable)
     }
 }
 

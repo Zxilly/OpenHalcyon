@@ -1,6 +1,6 @@
 use super::*;
 use crate::{Rooms, transport::Delivery};
-use halcyon_platform::{MatchHost, Reservation};
+use halcyon_types::{MatchHost, Reservation};
 use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, watch};
 use uuid::Uuid;

@@ -79,7 +79,7 @@ impl RoomRegistry {
 mod tests {
     use super::*;
     use crate::Rooms;
-    use halcyon_platform::{MatchHost, PlatformError, Reservation};
+    use halcyon_types::{HostError, MatchHost, Reservation};
     use std::sync::Arc;
 
     fn solo(id: Uuid, player: Uuid) -> Reservation {
@@ -106,7 +106,7 @@ mod tests {
         assert_eq!(rooms.hosting_counts(), (1, 0, 0, 10));
         assert!(matches!(
             rooms.prepare(solo(second, player)),
-            Err(PlatformError::HostUnavailable)
+            Err(HostError::HostUnavailable)
         ));
         rooms.discard(first).unwrap();
         assert!(*handle.lock().unwrap().stop.borrow());

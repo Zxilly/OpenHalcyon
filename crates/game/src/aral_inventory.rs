@@ -180,7 +180,7 @@ pub(super) fn reorder(room: &mut Room, seat: usize, channel: usize, actor: u32, 
 mod tests {
     use super::*;
     use crate::{Reservation, Rooms};
-    use halcyon_platform::MatchHost;
+    use halcyon_types::MatchHost;
     use tokio::sync::{mpsc, watch};
     use uuid::Uuid;
 

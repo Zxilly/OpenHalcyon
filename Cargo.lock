@@ -1621,9 +1621,8 @@ dependencies = [
  "halcyon-chat",
  "halcyon-community",
  "halcyon-data",
- "halcyon-peer-play",
  "halcyon-platform",
- "halcyon-protocol",
+ "halcyon-types",
  "jsonwebtoken",
  "rusqlite",
  "serde",
@@ -1662,8 +1661,8 @@ version = "1.0.0-draft.1"
 dependencies = [
  "diesel",
  "diesel_migrations",
- "halcyon-protocol",
  "halcyon-storage",
+ "halcyon-types",
  "rusqlite",
  "serde",
  "serde_json",
@@ -1679,7 +1678,7 @@ name = "halcyon-data"
 version = "1.0.0-draft.1"
 dependencies = [
  "data-encoding",
- "halcyon-protocol",
+ "halcyon-types",
  "polyanya",
  "serde",
  "serde_json",
@@ -1697,8 +1696,8 @@ dependencies = [
  "diesel",
  "diesel_migrations",
  "halcyon-matchmaking",
- "halcyon-protocol",
  "halcyon-storage",
+ "halcyon-types",
  "http-body-util",
  "hyper",
  "hyper-util",
@@ -1728,6 +1727,7 @@ dependencies = [
  "halcyon-platform",
  "halcyon-protocol",
  "halcyon-sim",
+ "halcyon-types",
  "memory-stats",
  "serde",
  "serde_json",
@@ -1777,6 +1777,7 @@ dependencies = [
  "halcyon-matchmaking",
  "halcyon-platform",
  "halcyon-storage",
+ "halcyon-types",
  "http",
  "rcgen",
  "rusqlite",
@@ -1798,8 +1799,8 @@ dependencies = [
  "diesel",
  "halcyon-community",
  "halcyon-data",
- "halcyon-protocol",
  "halcyon-storage",
+ "halcyon-types",
  "rusqlite",
  "serde",
  "serde_json",
@@ -1821,6 +1822,7 @@ dependencies = [
  "blowfish",
  "bytes",
  "ciborium",
+ "halcyon-types",
  "half",
  "md-5",
  "serde",
@@ -1855,6 +1857,16 @@ dependencies = [
  "diesel",
  "diesel_migrations",
  "libsqlite3-sys",
+ "thiserror 2.0.21",
+ "uuid",
+]
+
+[[package]]
+name = "halcyon-types"
+version = "1.0.0-draft.1"
+dependencies = [
+ "serde",
+ "serde_json",
  "thiserror 2.0.21",
  "uuid",
 ]

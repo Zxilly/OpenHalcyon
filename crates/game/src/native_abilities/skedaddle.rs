@@ -150,7 +150,7 @@ mod tests {
     #[tokio::test]
     async fn skedaddle_reaches_only_visible_declared_enemy_seats() {
         use crate::{Peer, Rooms, messages};
-        use halcyon_platform::{MatchHost, Reservation};
+        use halcyon_types::{MatchHost, Reservation};
         use tokio::sync::{mpsc, watch};
         use uuid::Uuid;
 

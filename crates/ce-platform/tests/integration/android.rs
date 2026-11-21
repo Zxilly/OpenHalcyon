@@ -6,7 +6,7 @@ use axum::{
 };
 use halcyon_ce_platform::RpcMethod;
 use halcyon_ce_platform::{Config, Platform};
-use halcyon_platform::{AppState, HostedMatch, MatchHost, PlatformConfig, Reservation};
+use halcyon_platform::{AppState, HostResult, HostedMatch, MatchHost, PlatformConfig, Reservation};
 use native_rpc::{RpcEnvelope, android_guest};
 use serde_json::Value;
 use std::sync::Arc;
@@ -14,7 +14,7 @@ use tower::ServiceExt;
 
 struct Host;
 impl MatchHost for Host {
-    fn reserve(&self, room: Reservation) -> halcyon_platform::Result<HostedMatch> {
+    fn reserve(&self, room: Reservation) -> HostResult<HostedMatch> {
         assert_eq!(room.players.len(), 1);
         Ok(HostedMatch {
             address: "localhost:7123".into(),
@@ -812,7 +812,7 @@ async fn cataloged_names_reach_rpc_handlers() {
 async fn aral_offer_projection_is_private_read_only_and_survives_reopen() {
     struct Six;
     impl MatchHost for Six {
-        fn reserve(&self, reservation: Reservation) -> halcyon_platform::Result<HostedMatch> {
+        fn reserve(&self, reservation: Reservation) -> HostResult<HostedMatch> {
             assert_eq!(reservation.players.len(), 6);
             Ok(HostedMatch {
                 address: "localhost:7012".into(),

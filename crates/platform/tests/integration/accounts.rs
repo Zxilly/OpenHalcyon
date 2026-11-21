@@ -2,7 +2,7 @@ use std::{path::Path, sync::Arc};
 
 use argon2::{Argon2, PasswordHasher, password_hash::SaltString};
 use halcyon_platform::{
-    AppState, HostedMatch, MatchHost, PlatformConfig, PlatformError, Reservation,
+    AppState, HostResult, HostedMatch, MatchHost, PlatformConfig, PlatformError, Reservation,
 };
 use rusqlite::{Connection, params};
 use sha2::{Digest, Sha256};
@@ -32,7 +32,7 @@ fn mixed_in_memory_writers_use_sqlites_retryable_database_lock() {
 
 struct NoHost;
 impl MatchHost for NoHost {
-    fn reserve(&self, _: Reservation) -> halcyon_platform::Result<HostedMatch> {
+    fn reserve(&self, _: Reservation) -> HostResult<HostedMatch> {
         panic!("account storage does not allocate matches")
     }
 }

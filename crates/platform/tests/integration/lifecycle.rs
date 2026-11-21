@@ -10,7 +10,8 @@ use axum::{
     http::{Request, StatusCode},
 };
 use halcyon_platform::{
-    AppState, HostedMatch, MatchHost, PlatformConfig, PlatformError, Reservation, router,
+    AppState, HostResult, HostedMatch, MatchHost, PlatformConfig, PlatformError, Reservation,
+    router,
 };
 use serde_json::Value;
 use tower::ServiceExt;
@@ -20,7 +21,7 @@ use uuid::Uuid;
 struct Host(AtomicUsize);
 
 impl MatchHost for Host {
-    fn reserve(&self, reservation: Reservation) -> Result<HostedMatch, PlatformError> {
+    fn reserve(&self, reservation: Reservation) -> HostResult<HostedMatch> {
         assert_eq!(reservation.players.len(), 2);
         assert_eq!(reservation.mode, "duo");
         self.0.fetch_add(1, Ordering::SeqCst);
@@ -760,7 +761,7 @@ async fn rest_difficulty_keeps_queue_variants_separate_and_survives_reopen() {
     #[derive(Default)]
     struct DifficultyHost(std::sync::Mutex<Vec<Reservation>>);
     impl MatchHost for DifficultyHost {
-        fn reserve(&self, reservation: Reservation) -> Result<HostedMatch, PlatformError> {
+        fn reserve(&self, reservation: Reservation) -> HostResult<HostedMatch> {
             self.0.lock().unwrap().push(reservation);
             Ok(HostedMatch {
                 address: "localhost:8001".into(),
@@ -1415,29 +1416,21 @@ async fn atomic_rollback_and_restart_recovery_for_local_and_federated_settlement
     #[derive(Default)]
     struct SpectatableHost;
     impl MatchHost for SpectatableHost {
-        fn reserve(&self, reservation: Reservation) -> Result<HostedMatch, PlatformError> {
+        fn reserve(&self, reservation: Reservation) -> HostResult<HostedMatch> {
             assert_eq!(reservation.mode, "duo");
             Ok(HostedMatch {
                 address: "localhost:8001".into(),
             })
         }
 
-        fn spectate(
-            &self,
-            _match_id: Uuid,
-            _viewer: Uuid,
-        ) -> Result<HostedSpectator, PlatformError> {
+        fn spectate(&self, _match_id: Uuid, _viewer: Uuid) -> HostResult<HostedSpectator> {
             Ok(HostedSpectator {
                 address: "localhost:8002".into(),
                 spectator_id: Uuid::new_v4(),
             })
         }
 
-        fn stop_spectating(
-            &self,
-            _match_id: Uuid,
-            _spectator_id: Uuid,
-        ) -> Result<(), PlatformError> {
+        fn stop_spectating(&self, _match_id: Uuid, _spectator_id: Uuid) -> HostResult<()> {
             Ok(())
         }
     }
@@ -1838,7 +1831,7 @@ struct ModeRecordingHost(
 );
 
 impl MatchHost for ModeRecordingHost {
-    fn reserve(&self, reservation: Reservation) -> Result<HostedMatch, PlatformError> {
+    fn reserve(&self, reservation: Reservation) -> HostResult<HostedMatch> {
         self.0.lock().unwrap().push((
             reservation.mode,
             reservation.players.len(),

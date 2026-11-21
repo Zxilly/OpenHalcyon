@@ -36,6 +36,7 @@ pub fn skin_hash(name: &str) -> u32 {
     mix(&mut a, &mut b, &mut c);
     c
 }
+
 #[cfg(test)]
 mod tests {
     use super::*;

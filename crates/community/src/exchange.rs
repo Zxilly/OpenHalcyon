@@ -8,7 +8,7 @@ use crate::{
     },
 };
 use diesel::{dsl::exists, prelude::*};
-use halcyon_protocol::ce::RpcMethod;
+use halcyon_types::ce::RpcMethod;
 use serde::Deserialize;
 use std::collections::BTreeMap;
 use uuid::Uuid;
