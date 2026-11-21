@@ -14,9 +14,9 @@ chrono = "0.4"
 halcyon-chat = { path = "../chat" }
 halcyon-community = { path = "../community" }
 halcyon-platform = { path = "../platform" }
+halcyon-storage = { path = "../storage" }
 halcyon-types = { path = "../types" }
 jsonwebtoken = { version = "10", default-features = false, features = ["rust_crypto", "use_pem"] }
-rusqlite = { version = "0.37", features = ["bundled"] }
 serde.workspace = true
 strum = { version = "0.27", features = ["derive"] }
 serde_json.workspace = true
@@ -30,6 +30,7 @@ uuid.workspace = true
 [dev-dependencies]
 ed25519-dalek = { version = "2", features = ["pem"] }
 futures-util = "0.3"
+rusqlite = { version = "0.37", features = ["bundled"] }
 tempfile = "3"
 tokio-tungstenite = "0.29"
 tower = { version = "0.5", features = ["util"] }

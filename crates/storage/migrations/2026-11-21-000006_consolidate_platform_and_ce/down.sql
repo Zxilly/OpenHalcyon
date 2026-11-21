@@ -1,0 +1,1 @@
+-- Consolidated tables and existing data are preserved on rollback.

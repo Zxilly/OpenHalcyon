@@ -1,5 +1,5 @@
 use super::{Error, Platform, now};
-use crate::wire::{Empty, PartyNotice};
+use crate::rpc::wire::{Empty, PartyNotice};
 use axum::{
     Json, Router,
     extract::{

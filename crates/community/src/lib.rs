@@ -20,8 +20,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use diesel::{Connection, SqliteConnection, connection::SimpleConnection};
-use diesel_migrations::MigrationHarness;
+use diesel::{Connection, SqliteConnection};
 use serde_json::Value;
 use uuid::Uuid;
 
@@ -36,7 +35,7 @@ pub enum CommunityError {
     #[error("operation is not permitted")]
     Forbidden,
     #[error("community storage unavailable: {0}")]
-    Storage(#[from] rusqlite::Error),
+    Storage(#[from] halcyon_storage::Error),
     #[error("could not serialize community data: {0}")]
     Serialization(#[from] serde_json::Error),
     #[error("community worker unavailable")]
@@ -171,12 +170,7 @@ impl Community {
     pub fn open(path: &Path) -> Result<Self> {
         let address = halcyon_storage::DatabaseAddress::new(path);
         let mut orm = address.connect().map_err(orm::connection_error)?;
-        orm.batch_execute("PRAGMA journal_mode=WAL;")?;
-        orm.immediate_transaction(|db| {
-            db.run_pending_migrations(orm::MIGRATIONS)
-                .map_err(orm::connection_error)?;
-            Ok::<_, CommunityError>(())
-        })?;
+        halcyon_storage::ensure_schema(&mut orm)?;
         Ok(Self(Arc::new(Mutex::new(orm))))
     }
 

@@ -152,6 +152,15 @@ async fn accounts_adopt_existing_rows_rotate_credentials_and_share_uniqueness() 
         old.query_row("SELECT count(*) FROM __diesel_schema_migrations", [], |r| r
             .get::<_, u32>(0))
             .unwrap(),
+        3
+    );
+    assert_eq!(
+        old.query_row(
+            "SELECT count(*) FROM __diesel_schema_migrations WHERE version='20261120000001'",
+            [],
+            |r| r.get::<_, u32>(0)
+        )
+        .unwrap(),
         1
     );
 

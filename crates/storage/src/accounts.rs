@@ -1,14 +1,13 @@
 use crate::{
     DatabaseAddress, Error, Result,
+    migrations::ensure_schema,
     schema::{events, local_accounts, notification_events, players, sessions},
 };
 use diesel::sql_types::Text;
 use diesel::{dsl::exists, prelude::*, sqlite::SqliteConnection, upsert::excluded};
-use diesel_migrations::{EmbeddedMigrations, MigrationHarness, embed_migrations};
 use uuid::Uuid;
 
-const MIGRATIONS: EmbeddedMigrations = embed_migrations!();
-
+diesel::define_sql_function!(fn total_changes() -> diesel::sql_types::Integer);
 diesel::define_sql_function!(fn unixepoch() -> BigInt);
 diesel::define_sql_function!(#[sql_name = "unixepoch"] fn unixepoch_modified(base: Text, modifier: Text) -> BigInt);
 
@@ -26,11 +25,7 @@ pub struct AccountStore(SqliteConnection);
 impl AccountStore {
     pub fn open(address: &DatabaseAddress) -> Result<Self> {
         let mut db = address.connect()?;
-        db.immediate_transaction(|db| {
-            db.run_pending_migrations(MIGRATIONS)
-                .map_err(Error::Migration)?;
-            Ok::<(), Error>(())
-        })?;
+        ensure_schema(&mut db)?;
         Ok(Self(db))
     }
 
@@ -87,6 +82,20 @@ impl AccountStore {
         E: From<diesel::result::Error>,
     {
         self.0.immediate_transaction(apply)
+    }
+
+    /// Run an unauthenticated mutation and report whether any SQLite rows changed.
+    pub fn write_observing_changes<T, E>(
+        &mut self,
+        apply: impl FnOnce(&mut SqliteConnection) -> std::result::Result<T, E>,
+    ) -> std::result::Result<(T, bool), E>
+    where
+        E: From<diesel::result::Error>,
+    {
+        let before = diesel::select(total_changes()).get_result::<i32>(&mut self.0)?;
+        let value = self.0.immediate_transaction(apply)?;
+        let after = diesel::select(total_changes()).get_result::<i32>(&mut self.0)?;
+        Ok((value, after != before))
     }
 
     /// Run a deferred read on the same SQLite snapshot as session validation.
@@ -229,7 +238,7 @@ impl AccountStore {
     }
 }
 
-fn session_owner(db: &mut SqliteConnection, key: &[u8]) -> Result<String> {
+pub fn session_owner(db: &mut SqliteConnection, key: &[u8]) -> Result<String> {
     sessions::table
         .find(key)
         .select(sessions::player)
@@ -238,7 +247,7 @@ fn session_owner(db: &mut SqliteConnection, key: &[u8]) -> Result<String> {
         .ok_or(Error::Unauthorized)
 }
 
-fn touch_presence(db: &mut SqliteConnection, player: &str) -> Result<()> {
+pub fn touch_presence(db: &mut SqliteConnection, player: &str) -> Result<()> {
     diesel::update(
         players::table
             .find(player)
