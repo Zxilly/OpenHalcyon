@@ -20,8 +20,8 @@ impl Preamble {
                 message.body == [0; 6]
             }
             Some(crate::Opcode::ConfirmSceneOwner) => {
-                let body = &message.body;
-                body.len() == 6 && body[..4] == actor.to_be_bytes() && body[4..] == [1, 0]
+                halcyon_protocol::ConfirmSceneOwnerBody::read_padded(&message.body)
+                    .is_ok_and(|(owner, pad)| owner.actor == actor && owner.flag == 1 && pad == 0)
             }
             _ => false,
         };
@@ -61,13 +61,16 @@ pub(super) fn announce_aral_registration(room: &Room, entering: usize) {
     if recipients.peek().is_none() {
         return;
     }
-    let mut body = [0; 64];
-    let id = room.players[entering].as_hyphenated();
-    id.encode_lower(&mut body[..36]);
-    let notice = super::transport::TeamBatch::new(vec![Message::known(
-        crate::Opcode::RegisterPlayerUuid,
-        body,
-    )]);
+    let mut uuid_bytes = [0u8; 64];
+    room.players[entering]
+        .as_hyphenated()
+        .encode_lower(&mut uuid_bytes[..36]);
+    let notice = super::transport::TeamBatch::new(vec![
+        halcyon_protocol::RegisterPlayerUuidBody {
+            player_uuid: halcyon_protocol::FixedAscii(uuid_bytes),
+        }
+        .encode(),
+    ]);
     for peer in recipients {
         peer.send(super::transport::Delivery::Team(notice.clone()));
     }
@@ -87,14 +90,15 @@ pub(super) fn announce_aral_entry(room: &Room, entering: usize, registration: &M
     if recipients.peek().is_none() {
         return;
     }
-    let mut handle = [0; 78];
-    let name = messages::GUEST_HANDLE.as_bytes();
-    handle[..name.len()].copy_from_slice(name);
-    handle[64..68].copy_from_slice(&(entering as u32).to_be_bytes());
     let actor = messages::wire_id(room.world.entities[entering].id);
-    handle[68..72].copy_from_slice(&u32::from(actor).to_be_bytes());
+    let loaded = halcyon_protocol::PlayerLoadedSceneBody::new(
+        messages::GUEST_HANDLE,
+        entering as u32,
+        u32::from(actor),
+    )
+    .encode_padded();
     let batch = super::transport::TeamBatch::new(vec![
-        Message::known(crate::Opcode::PlayerLoadedScene, handle),
+        loaded,
         Message::known(crate::Opcode::RequestSceneSnapshot, [0; 6]),
         registration.clone(),
     ]);
@@ -116,18 +120,19 @@ pub(super) fn begin_loading(room: &Room) -> Batch {
 }
 
 pub(super) fn solo_table(room: &Room) -> Message {
-    let mut body = [0u8; 96];
-    for (row, actor) in body
-        .as_chunks_mut::<6>()
-        .0
+    let mut table = halcyon_protocol::SceneReadinessRowsBody::default();
+    for (row, actor) in table
+        .rows
         .iter_mut()
         .zip(room.world.entities.iter().take(room.picks.len()))
     {
-        row[..4].copy_from_slice(&u32::from(messages::wire_id(actor.id)).to_be_bytes());
-        row[4] = 1;
-        row[5] = u8::from(actor.bot);
+        *row = halcyon_protocol::SceneReadinessRow {
+            reference: u32::from(messages::wire_id(actor.id)),
+            gate: 1,
+            flag: u8::from(actor.bot),
+        };
     }
-    Message::known(crate::Opcode::SceneReadinessRows, body)
+    table.encode()
 }
 pub(super) fn solo_opening(room: &mut Room, seat: usize) -> std::io::Result<Batch> {
     if let Some(batch) = super::modes_3v3_blitz::solo_opening(room, seat)? {

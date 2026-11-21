@@ -1,49 +1,70 @@
-//! Draft preferences occupy two bytes of each 161-byte roster seat.
-use halcyon_protocol::Opcode;
+//! Draft preferences occupy three bytes (`12..15`) of each 161-byte roster seat.
+use halcyon_protocol::{
+    DraftPreferenceFlags, Opcode,
+    draft::{DraftBuildPath, DraftPosition},
+};
 
 #[derive(Clone, Copy, Default)]
 pub(super) struct Preferences {
-    position: Option<u8>,
-    build: Option<u8>,
+    position: Option<DraftPosition>,
+    build: Option<DraftBuildPath>,
 }
 
 impl Preferences {
-    pub(super) fn write(self, row: &mut [u8]) {
-        row[13] = self.position.unwrap_or(u8::MAX);
-        row[14] = self.build.unwrap_or(u8::MAX);
+    pub(super) fn to_wire(self) -> DraftPreferenceFlags {
+        DraftPreferenceFlags::new(
+            self.position.map(DraftPosition::to_wire),
+            self.build.map(DraftBuildPath::to_wire),
+        )
     }
 
-    pub(super) fn set_position(&mut self, value: Option<u8>) {
+    pub(super) fn write(self, row: &mut [u8]) {
+        let _ = self.to_wire().write_body(&mut row[12..15]);
+    }
+
+    pub(super) fn set_position(&mut self, value: Option<DraftPosition>) {
         self.position = value;
     }
 
-    pub(super) fn set_build(&mut self, value: Option<u8>) {
+    pub(super) fn set_build(&mut self, value: Option<DraftBuildPath>) {
         self.build = value;
     }
 
     pub(super) fn position_raw(self) -> u8 {
-        self.position.unwrap_or(u8::MAX)
+        self.position.map_or(u8::MAX, DraftPosition::to_wire)
     }
 
     pub(super) fn build_raw(self) -> u8 {
-        self.build.unwrap_or(u8::MAX)
+        self.build.map_or(u8::MAX, DraftBuildPath::to_wire)
     }
 }
 
 pub(super) enum Choice {
-    Position(Option<u8>),
-    Build(Option<u8>),
+    Position(Option<DraftPosition>),
+    Build(Option<DraftBuildPath>),
 }
 
 impl Choice {
     pub(super) fn parse(opcode: Option<Opcode>, value: u8) -> Option<Self> {
-        let selection = (value != u8::MAX).then_some(value);
         match opcode? {
-            Opcode::DraftSelectPosition if matches!(value, 0 | 1 | 5 | u8::MAX) => {
-                Some(Self::Position(selection))
+            Opcode::DraftSelectPosition => {
+                if value == u8::MAX {
+                    Some(Self::Position(None))
+                } else {
+                    let pos = DraftPosition::from_wire(value)?;
+                    matches!(
+                        pos,
+                        DraftPosition::Top | DraftPosition::Jungle | DraftPosition::Captain
+                    )
+                    .then_some(Self::Position(Some(pos)))
+                }
             }
-            Opcode::DraftSelectBuildPath if matches!(value, 0..=2 | u8::MAX) => {
-                Some(Self::Build(selection))
+            Opcode::DraftSelectBuildPath => {
+                if value == u8::MAX {
+                    Some(Self::Build(None))
+                } else {
+                    Some(Self::Build(Some(DraftBuildPath::from_wire(value)?)))
+                }
             }
             _ => None,
         }

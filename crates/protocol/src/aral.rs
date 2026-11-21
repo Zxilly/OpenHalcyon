@@ -1,4 +1,4 @@
-use crate::{DraftRoster, DraftSlot, invalid};
+use crate::{DraftRosterBody, DraftSlot, DraftSlotBody, invalid};
 use std::io;
 
 /// Full 0x045A roster observed on the live ARAL control stream.
@@ -6,35 +6,55 @@ use std::io;
 #[derive(Debug, PartialEq)]
 pub struct AralRoster<'a> {
     wire: &'a [u8],
-    roster: DraftRoster<'a>,
 }
 
 impl<'a> AralRoster<'a> {
-    pub const SLOT_COUNT: usize = 16;
-    pub const SLOT_BYTES: usize = 161;
-    pub const BODY_BYTES: usize = 2584;
-    pub const PADDED_BYTES: usize = 2590;
+    pub const SLOT_COUNT: usize = DraftRosterBody::SLOT_COUNT;
+    pub const SLOT_BYTES: usize = DraftRosterBody::SLOT_BYTES;
+    pub const BODY_BYTES: usize = DraftRosterBody::BODY_LEN;
+    pub const PADDED_BYTES: usize = DraftRosterBody::PADDED_LEN;
 
     pub fn new(wire: &'a [u8]) -> io::Result<Self> {
         if !matches!(wire.len(), Self::BODY_BYTES | Self::PADDED_BYTES) {
             return Err(invalid("invalid full ARAL roster length"));
         }
-        Ok(Self {
-            wire,
-            roster: DraftRoster::new(wire)?,
-        })
+        // Validate the structural roster via binrw while retaining the compact borrowed slice.
+        let _ = DraftRosterBody::read_body(wire)?;
+        Ok(Self { wire })
+    }
+
+    pub fn decode_body(&self) -> io::Result<DraftRosterBody> {
+        DraftRosterBody::read_body(self.wire)
     }
 
     pub fn remaining_seconds(&self) -> f32 {
-        self.roster.remaining_seconds()
+        DraftRosterBody::read_timers(&self.wire[..8])
+            .expect("validated ARAL roster header")
+            .0
     }
 
     pub fn allotted_seconds(&self) -> f32 {
-        self.roster.allotted_seconds()
+        DraftRosterBody::read_timers(&self.wire[..8])
+            .expect("validated ARAL roster header")
+            .1
     }
 
     pub fn slot(&self, index: usize) -> Option<DraftSlot<'a>> {
-        self.roster.slot(index)
+        let raw = self.raw_slot(index)?;
+        let slot = DraftSlotBody::read_body(raw).ok()?;
+        let offset = index * Self::SLOT_BYTES;
+        let name_len = slot.display_name.trimmed_bytes().len();
+        Some(DraftSlot {
+            occupied: slot.occupied != 0,
+            slot: slot.slot,
+            selected: slot.selected != 0,
+            locked: slot.locked != 0,
+            team: slot.team,
+            template: slot.template,
+            entity: slot.entity,
+            skin: slot.skin,
+            display_name: &self.wire[offset + 25..offset + 25 + name_len],
+        })
     }
 
     /// Preserve undocumented fields, including the timer bytes over slot zero.
@@ -48,7 +68,11 @@ impl<'a> AralRoster<'a> {
 
     /// The raw 36-byte identity field. Unoccupied rows carry an empty identity.
     pub fn identity(&self, index: usize) -> Option<&'a [u8]> {
-        self.raw_slot(index)?[105..141].split(|&v| v == 0).next()
+        let raw = self.raw_slot(index)?;
+        let slot = DraftSlotBody::read_body(raw).ok()?;
+        let offset = index * Self::SLOT_BYTES;
+        let len = slot.identity.trimmed_bytes().len();
+        Some(&self.wire[offset + 105..offset + 105 + len])
     }
 
     /// Eight original bytes at the end of the structural roster.

@@ -229,7 +229,7 @@ impl Draft5v5 {
             }
             DraftAction::SelectPosition { position } => {
                 if let Some(pick) = picks.get_mut(seat) {
-                    pick.preferences.set_position(position.map(|p| p.to_wire()));
+                    pick.preferences.set_position(position);
                 }
                 Ok(DraftOutcome {
                     state_changed: true,
@@ -239,7 +239,7 @@ impl Draft5v5 {
             }
             DraftAction::SelectBuildPath { build_path } => {
                 if let Some(pick) = picks.get_mut(seat) {
-                    pick.preferences.set_build(build_path.map(|b| b.to_wire()));
+                    pick.preferences.set_build(build_path);
                 }
                 Ok(DraftOutcome {
                     state_changed: true,

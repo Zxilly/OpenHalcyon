@@ -101,63 +101,51 @@ pub(super) fn talent_snapshot(room: &Room) -> impl Iterator<Item = Message> + '_
 }
 
 pub(super) fn roster(room: &Room, remaining: f32, private: bool) -> Message {
-    use halcyon_protocol::AralRoster;
-    let mut body = vec![0; AralRoster::BODY_BYTES];
-    body[..4].copy_from_slice(&remaining.clamp(0., DRAFT_SECONDS).to_be_bytes());
-    body[4..8].copy_from_slice(&DRAFT_SECONDS.to_be_bytes());
-    for index in 0..AralRoster::SLOT_COUNT {
-        let start = index * AralRoster::SLOT_BYTES;
-        let row = &mut body[start..start + AralRoster::SLOT_BYTES];
-        row[9] = index as u8;
-        row[12..15].fill(0xff);
-        row[17..21].fill(0xff);
-        row[21..25].copy_from_slice(&0x10c2bad9u32.to_be_bytes());
+    use halcyon_protocol::{DraftRosterBody, DraftSlotBody, FixedAscii};
+    let slots = std::array::from_fn(|index| {
+        let mut slot = DraftSlotBody::empty_with_skin(index as u8, DraftSlotBody::ARAL_EMPTY_SKIN);
         if let (Some(player), Some(pick)) = (room.players.get(index), room.picks.get(index)) {
             let actor = &room.world.entities[index];
-            row[8] = 1;
-            pick.preferences.write(row);
-            row[10] = u8::from(pick.selected);
-            row[11] = u8::from(pick.locked);
-            row[16] = actor.team + 1;
-            row[17..19].copy_from_slice(&actor.type_id.to_be_bytes());
-            row[19..21].copy_from_slice(&messages::wire_id(actor.id).to_be_bytes());
-            row[21..25].copy_from_slice(&pick.skin.to_be_bytes());
-            row[25..25 + messages::GUEST_HANDLE.len()]
-                .copy_from_slice(messages::GUEST_HANDLE.as_bytes());
+            slot.occupied = 1;
+            slot.set_preferences(pick.preferences.to_wire());
+            slot.selected = u8::from(pick.selected);
+            slot.locked = u8::from(pick.locked);
+            slot.team = actor.team + 1;
+            slot.template = actor.type_id;
+            slot.entity = messages::wire_id(actor.id);
+            slot.skin = pick.skin;
+            slot.display_name = FixedAscii::from_str_trunc(messages::GUEST_HANDLE);
             if !private {
-                row[105..141].copy_from_slice(player.to_string().as_bytes());
+                slot.identity = FixedAscii::from_str_trunc(&player.to_string());
             }
         }
-    }
-    Message::known(crate::Opcode::DraftRosterAral, body)
+        slot
+    });
+    DraftRosterBody::aral(remaining.clamp(0., DRAFT_SECONDS), DRAFT_SECONDS, slots).encode_aral()
 }
 
 pub(super) fn setup(room: &Room, seat: usize, remaining: f32) -> Batch {
-    let mut settings = vec![0; 101];
     let actor = messages::wire_id(seat as u32 + 1);
-    settings[..4].copy_from_slice(&u32::from(actor).to_be_bytes());
-    settings[7] = 1;
-    settings[10..12].fill(0xff);
-    settings[16..18].fill(3);
-    settings[32..32 + MODE.len()].copy_from_slice(MODE.as_bytes());
-    settings[96..100].copy_from_slice(&5f32.to_be_bytes());
-    settings[100] = room.world.entities[seat].team + 1;
-    let mut batch = vec![Message::known(crate::Opcode::MatchSettings, settings)];
+    let settings = halcyon_protocol::MatchSettingsBody::draft_three(
+        u32::from(actor),
+        MODE,
+        room.world.entities[seat].team + 1,
+    );
+    let mut batch = vec![settings.encode()];
     batch.extend(draft_catalog(room, remaining));
     batch
 }
 
 pub(super) fn draft_catalog(room: &Room, remaining: f32) -> Batch {
-    let mut mode = vec![0; 68];
-    mode[..4].copy_from_slice(&3u32.to_be_bytes());
-    mode[4..4 + MODE.len()].copy_from_slice(MODE.as_bytes());
+    use halcyon_protocol::{DraftCatalogEntryBody, DraftModeAnnouncementBody, FixedAscii};
     let mut batch = Vec::with_capacity(room.catalog.len() + 2);
-    batch.push(Message::known(crate::Opcode::DraftModeAnnouncement, mode));
-    batch.extend(
-        room.catalog
-            .iter()
-            .map(|entry| Message::known(crate::Opcode::DraftCatalogEntry, *entry)),
-    );
+    batch.push(DraftModeAnnouncementBody::new(3, MODE).encode());
+    batch.extend(room.catalog.iter().map(|entry| {
+        DraftCatalogEntryBody {
+            name: FixedAscii(*entry),
+        }
+        .encode()
+    }));
     batch.push(roster(room, remaining, false));
     batch
 }
@@ -209,7 +197,11 @@ pub(super) fn reroll(room: &mut Room, seat: usize) -> Batch {
     vec![
         roster,
         echo,
-        Message::known(crate::Opcode::DraftSelectSkin, skin.to_be_bytes()),
+        halcyon_protocol::DraftAction::SelectSkin {
+            skin_id: skin,
+            flags: 0,
+        }
+        .encode(),
     ]
 }
 
@@ -219,12 +211,7 @@ pub(super) fn refresh(room: &mut Room, seat: usize) -> Batch {
         // The first refresh of all eight recorded ARAL connections sent this reroll state
         // (verified at 0xad4250): cost=1 (+0), limit=5 (+4), used=0 (+8),
         // allow_override=1 (+76), balance=3 (+77), locked=0 (+81).
-        let mut body = [0; 86];
-        body[..4].copy_from_slice(&1_u32.to_be_bytes());
-        body[4..8].copy_from_slice(&5_u32.to_be_bytes());
-        body[76] = 1;
-        body[77..81].copy_from_slice(&3_u32.to_be_bytes());
-        batch.push(Message::known(crate::Opcode::AralRerollState, body));
+        batch.push(halcyon_protocol::AralRerollStateBody::new(1, 5, 0, 1, 3, 0).encode());
         batch.push(roster(room, room.aral_remaining(), false));
         room.seats[seat].draft_sync_sent = true;
     }
