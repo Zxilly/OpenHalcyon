@@ -1266,6 +1266,19 @@ impl Room<'_> {
         instance: u32,
         target: ItemTarget,
     ) -> Result<(), &'static str> {
+        let result = self.activate_item_inner(i, instance, target);
+        if result.is_ok() {
+            self.interrupt_recall_from_command(i);
+        }
+        result
+    }
+
+    fn activate_item_inner(
+        &mut self,
+        i: usize,
+        instance: u32,
+        target: ItemTarget,
+    ) -> Result<(), &'static str> {
         let hero = &self.entities[i];
         if hero.hp <= 0. || hero.kind != Kind::Hero || hero.is_rebooting() {
             return Err("actor cannot activate item");

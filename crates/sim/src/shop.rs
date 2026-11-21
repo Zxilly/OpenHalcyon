@@ -738,14 +738,17 @@ const OFFERS: [Definition; 76] = [
 ];
 
 impl BasicItem {
-    // The legacy/custom store has positive ARAL transaction evidence for these five additions.
+    // The legacy/custom store has positive ARAL transaction evidence for these additions.
     fn catalog_store_allows(
         self,
         settings: Option<halcyon_data::items::StoreSettings>,
     ) -> Option<bool> {
         use halcyon_data::items::StoreSettings::*;
         let allow = match self {
-            Flare | ScoutTrap => matches!(settings, None | Some(HalcyonFold)),
+            Flare | ScoutTrap | Flaregun | Contraption => {
+                matches!(settings, None | Some(HalcyonFold))
+            }
+            StormguardBanner | Stormcrown => !matches!(settings, Some(BlitzRevamp)),
             CrystalInfusion | WeaponInfusion => !matches!(settings, Some(BlitzRevamp)),
             FlareLoader | ScoutPak | ScoutTuff | SuperScout2000 | TeleportBoots => {
                 matches!(settings, Some(Five | Practice))
@@ -753,9 +756,90 @@ impl BasicItem {
             CapacitorPlate => true,
             Aegis | DragonbloodContract | ProtectorContract | RooksDecree | Shiversteel
             | TensionBow | TornadoTrigger => settings.is_some(),
+            _ if settings.is_some() => true,
             _ => return None,
         };
         Some(allow)
+    }
+    const fn default_refund(self) -> u32 {
+        match self {
+            WeaponBlade => 150,
+            LightArmor => 150,
+            LightShield => 150,
+            Oakheart => 150,
+            EnergyBattery => 150,
+            HeavySteel => 575,
+            SixSins => 325,
+            CrystalBit => 150,
+            SwiftShooter => 150,
+            BlazingSalvo => 350,
+            Hourglass => 125,
+            Chronograph => 400,
+            SprintBoots => 150,
+            TravelBoots => 325,
+            AlternatingCurrent => 1400,
+            StormguardBanner => 300,
+            EclipsePrism => 325,
+            Sorrowblade => 1550,
+            Shatterglass => 1500,
+            CoatOfPlates => 375,
+            MetalJacket => 950,
+            VoidBattery => 350,
+            Clockwork => 1200,
+            SerpentMask => 1400,
+            ReflexBlock => 350,
+            Frostburn => 1350,
+            FountainOfRenewal => 1050,
+            Crucible => 1000,
+            JourneyBoots => 700,
+            HalcyonChargers => 700,
+            Aftershock => 1300,
+            WarTreads => 800,
+            AtlasPauldron => 850,
+            BookOfEulogies => 150,
+            BarbedNeedle => 400,
+            KineticShield => 375,
+            Lifespring => 400,
+            BreakingPoint => 1350,
+            EveOfHarvest => 1300,
+            HeavyPrism => 525,
+            Contraption => 1050,
+            Flaregun => 300,
+            Stormcrown => 1200,
+            PoisonedShiv => 1375,
+            Spellfire => 1500,
+            DragonsEye => 1500,
+            Spellsword => 1400,
+            SlumberingHusk => 1050,
+            Warmail => 400,
+            SeraphicShell => 950,
+            Dragonheart => 325,
+            PiercingSpear => 450,
+            PiercingShard => 450,
+            Bonesaw => 1450,
+            BrokenMyth => 1450,
+            Pulseweave => 1000,
+            MinionsFoot => 150,
+            LuckyStrike => 450,
+            TyrantsMonocle => 1450,
+            Aegis => 1200,
+            CapacitorPlate => 1000,
+            CrystalInfusion => 250,
+            DragonbloodContract => 300,
+            Flare => 15,
+            FlareLoader => 150,
+            ProtectorContract => 300,
+            RooksDecree => 1000,
+            ScoutPak => 250,
+            ScoutTrap => 25,
+            ScoutTuff => 250,
+            Shiversteel => 1200,
+            SuperScout2000 => 1000,
+            TeleportBoots => 700,
+            TensionBow => 1450,
+            TornadoTrigger => 1400,
+            WeaponInfusion => 250,
+        }
     }
     fn definition(self) -> &'static Definition {
         &OFFERS[self as usize]
@@ -788,6 +872,8 @@ pub(super) struct Shop {
     pub(super) reflex: Option<reflex::Rule>,
     #[serde(skip)]
     pub(super) effect_rules: std::sync::Arc<item_actives::ItemEffectRules>,
+    #[serde(skip)]
+    catalog_loaded: bool,
     offers: std::sync::Arc<[Offer]>,
     pub(super) permitted: Vec<bool>,
 }
@@ -801,6 +887,7 @@ impl Default for Shop {
             sprint: None,
             reflex: Some(reflex::Rule::NATIVE),
             effect_rules: std::sync::Arc::new(item_actives::ItemEffectRules::default()),
+            catalog_loaded: false,
             permitted: OFFERS
                 .iter()
                 .map(|d| d.kind.catalog_store_allows(None).unwrap_or(true))
@@ -976,6 +1063,7 @@ impl Shop {
                     }
                 }),
             effect_rules,
+            catalog_loaded: data.item_catalog().is_some(),
             ..Self::default()
         };
         if let Some(names) = data.standard_5v5_items() {
@@ -1183,9 +1271,12 @@ impl Room<'_> {
             return Err("outside base shop");
         }
         let offer = &self.shop.offers[item as usize];
+        let solo_blocked = !offer.standard_5v5
+            || (!self.shop.catalog_loaded
+                && matches!(item, Flare | ScoutTrap | Flaregun | Contraption));
         if !self.shop.permitted[item as usize]
             || offer.combine == 0
-            || (matches!(self.layout, Layout::SoloMid { .. }) && !offer.standard_5v5)
+            || (matches!(self.layout, Layout::SoloMid { .. }) && solo_blocked)
         {
             return Err("item unavailable");
         }
@@ -1371,7 +1462,10 @@ impl Room<'_> {
             .ok_or("item not held")?;
         let sold = h.inventory[offset];
         let offer = &self.shop.offers[sold.kind as usize];
-        let refund = offer.refund.ok_or("sale price unavailable")?;
+        let refund = offer
+            .refund
+            .or_else(|| (!self.shop.catalog_loaded).then(|| sold.kind.default_refund()))
+            .ok_or("sale price unavailable")?;
         let balance = h.gold.checked_add(refund).ok_or("gold limit")?;
         let mut delta = EffectDelta::default();
         for &(stat, value) in &offer.bonuses {
@@ -1680,26 +1774,36 @@ mod tests {
             let row = catalog.item(item.name).unwrap();
             assert!(row.cost_a.is_some_and(|cost| cost > 0));
             assert!(!row.buyable_in_stores.is_empty());
+            assert_eq!(
+                Some(item.kind.default_refund()),
+                row.cost_b,
+                "{}",
+                item.name
+            );
+            assert_eq!(shop.offers[item.kind as usize].refund, row.cost_b);
             for (settings, store) in [
                 (StoreSettings::Five, ItemStore::Standard5v5),
+                (StoreSettings::Practice, ItemStore::Standard5v5),
                 (StoreSettings::HalcyonFold, ItemStore::Standard3v3),
                 (StoreSettings::BlitzRevamp, ItemStore::Blitz3v3),
             ] {
-                if let Some(allowed) = item.kind.catalog_store_allows(Some(settings)) {
-                    assert_eq!(
-                        allowed,
-                        row.buyable_in_stores.iter().any(|s| s == store.key()),
-                        "{}",
-                        item.name
-                    );
-                    assert_eq!(shop.offers[item.kind as usize].refund, row.cost_b);
-                }
+                let allowed = item
+                    .kind
+                    .catalog_store_allows(Some(settings))
+                    .expect("explicit store coverage for all 76 items");
+                assert_eq!(
+                    allowed,
+                    row.buyable_in_stores.iter().any(|s| s == store.key()),
+                    "{}",
+                    item.name
+                );
             }
         }
         assert_eq!(catalog.item("Item_ScoutTrap").unwrap().cost_b, Some(25));
         use halcyon_data::items::StoreSettings;
         for settings in [
             StoreSettings::Five,
+            StoreSettings::Practice,
             StoreSettings::HalcyonFold,
             StoreSettings::BlitzRevamp,
         ] {

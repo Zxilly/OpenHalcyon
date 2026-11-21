@@ -1078,8 +1078,159 @@ fn catalog_loaded_rules_match_all_76_store_items_and_items_full() {
     w.shop.enable_all_store_for_test();
     for kind in crate::shop::Shop::all_kinds() {
         w.entities[0].gold = 50_000;
-        let receipt = w.purchase(1, kind).unwrap();
+        let resolved = BasicItem::from_template(kind.template()).unwrap();
+        assert_eq!(resolved, kind);
+        let receipt = w.purchase(1, resolved).unwrap();
         let _ = w.sell_item(1, receipt.granted.instance).unwrap();
     }
     assert!(w.entities[0].inventory.is_empty());
+
+    // Verify all 5 item stores (`Standard_5v5`, `Standard_3v3`, `Blitz_3v3_Revamp`,
+    // `Tutorial2`, `Tutorial3`) plus `Practice_5v5` store resolution accept and sell
+    // every positive-cost store entry cleanly.
+    let catalog = data.item_catalog().unwrap();
+    assert_eq!(
+        data.store_for_settings(StoreSettings::Practice.key()),
+        data.store_for_settings(StoreSettings::Five.key())
+    );
+    for store_key in [
+        "ItemStore_Standard_5v5",
+        "ItemStore_Standard_3v3",
+        "ItemStore_Blitz_3v3_Revamp",
+        "ItemStore_Tutorial2",
+        "ItemStore_Tutorial3",
+    ] {
+        let entries = catalog.stores().get(store_key).unwrap();
+        let mut store_world = World::from_data(3, 6, &data).unwrap();
+        store_world.use_item_store(entries);
+        let mut count = 0usize;
+        for kind in crate::shop::Shop::all_kinds() {
+            store_world.entities[0].inventory.clear();
+            store_world.entities[0].gold = 50_000;
+            if let Ok(Some(receipt)) = store_world.try_purchase(1, kind) {
+                let sale = store_world.sell_item(1, receipt.granted.instance).unwrap();
+                assert!(sale.refund > 0);
+                count += 1;
+            }
+        }
+        let expected_buyable = entries
+            .iter()
+            .filter(|id| {
+                *id != "Item_Template"
+                    && catalog
+                        .item(id.as_str())
+                        .is_some_and(|item| item.cost_a.is_some_and(|c| c > 0))
+            })
+            .count();
+        assert_eq!(
+            count, expected_buyable,
+            "store {store_key} item count mismatch"
+        );
+    }
+}
+
+#[test]
+fn all_76_store_items_buy_upgrade_sell_and_clear_stale_runtime() {
+    let mut w = sim_room(19);
+    enable_all_store(&mut w);
+    let mut count = 0usize;
+    for kind in crate::shop::Shop::all_kinds() {
+        let tmpl = kind.template();
+        assert_eq!(BasicItem::from_template(tmpl), Some(kind));
+        w.entities[0].gold = 50_000;
+        let receipt = w.try_purchase(1, kind).unwrap().unwrap();
+        assert_eq!(receipt.granted.kind, kind);
+        assert_eq!(w.entities[0].inventory, [receipt.granted]);
+        let sale = w.sell_item(1, receipt.granted.instance).unwrap();
+        assert!(sale.refund > 0);
+        assert!(w.entities[0].inventory.is_empty());
+        count += 1;
+    }
+    assert_eq!(count, 76);
+
+    // Store restrictions across 5v5, Practice, Halcyon Fold (3v3), Blitz, and ARAL (`None`).
+    let mut modes = World::new(23, 6);
+    modes.use_six_human_roster().unwrap();
+    modes.use_aral_lane().unwrap();
+    modes.entities[0].gold = 50_000;
+    assert!(modes.try_purchase(1, BasicItem::FlareLoader).is_err());
+    assert!(modes.try_purchase(1, BasicItem::Stormcrown).is_ok());
+
+    modes.use_catalog_store(StoreSettings::BlitzRevamp);
+    assert!(modes.try_purchase(1, BasicItem::StormguardBanner).is_err());
+    assert!(modes.try_purchase(1, BasicItem::Stormcrown).is_err());
+    assert!(modes.try_purchase(1, BasicItem::Contraption).is_err());
+    assert!(modes.try_purchase(1, BasicItem::CrystalInfusion).is_err());
+    assert!(modes.try_purchase(1, BasicItem::Shiversteel).is_ok());
+
+    modes.use_catalog_store(StoreSettings::HalcyonFold);
+    assert!(modes.try_purchase(1, BasicItem::Contraption).is_ok());
+    assert!(modes.try_purchase(1, BasicItem::Flaregun).is_ok());
+    assert!(modes.try_purchase(1, BasicItem::SuperScout2000).is_err());
+
+    for settings in [StoreSettings::Five, StoreSettings::Practice] {
+        modes.use_catalog_store(settings);
+        modes.entities[0].inventory.clear();
+        if let Some(aral) = modes.entities[0].aral_inventory.as_deref_mut() {
+            *aral = crate::AralInventory::starting();
+        }
+        assert!(modes.try_purchase(1, BasicItem::FlareLoader).is_ok());
+        assert!(modes.try_purchase(1, BasicItem::TeleportBoots).is_ok());
+        assert!(modes.try_purchase(1, BasicItem::Stormcrown).is_ok());
+        assert!(modes.try_purchase(1, BasicItem::Flaregun).is_err());
+        assert!(modes.try_purchase(1, BasicItem::Contraption).is_err());
+    }
+
+    // Selling / upgrading clears stale armed/channel/burst/pending-atlas state while preserving cooldowns.
+    let mut rt_check = sim_room(31);
+    enable_all_store(&mut rt_check);
+    let aftershock = rt_check.purchase(1, BasicItem::Aftershock).unwrap().granted;
+    let contract = rt_check
+        .purchase(1, BasicItem::ProtectorContract)
+        .unwrap()
+        .granted;
+    let pulse = rt_check.purchase(1, BasicItem::Pulseweave).unwrap().granted;
+    let tp = rt_check
+        .purchase(1, BasicItem::TeleportBoots)
+        .unwrap()
+        .granted;
+    let atlas = rt_check
+        .purchase(1, BasicItem::AtlasPauldron)
+        .unwrap()
+        .granted;
+    let reflex = rt_check
+        .purchase(1, BasicItem::ReflexBlock)
+        .unwrap()
+        .granted;
+
+    rt_check.entities[0].rt_mut().aftershock_armed_until = rt_check.tick + 50;
+    rt_check.entities[0].rt_mut().contract_armed_until = rt_check.tick + 50;
+    rt_check.entities[0].rt_mut().pulseweave_burst = Some(item_actives::PulseweaveBurst {
+        detonate_tick: rt_check.tick + 60,
+        ms_bonus: 2.0,
+    });
+    rt_check.entities[0].rt_mut().teleport_channel = Some(item_actives::TeleportChannel {
+        target_id: 3,
+        complete_tick: rt_check.tick + 50,
+    });
+    rt_check.entities[0].rt_mut().pending_atlas_tick = Some(rt_check.tick + 16);
+    rt_check
+        .command(
+            1,
+            Command::ActivateReflexBlock {
+                instance: reflex.instance,
+            },
+        )
+        .unwrap();
+
+    for held in [aftershock, contract, pulse, tp, atlas, reflex] {
+        rt_check.sell_item(1, held.instance).unwrap();
+    }
+    let rt = rt_check.entities[0].rt().unwrap();
+    assert_eq!(rt.aftershock_armed_until, 0);
+    assert_eq!(rt.contract_armed_until, 0);
+    assert!(rt.pulseweave_burst.is_none());
+    assert!(rt.teleport_channel.is_none());
+    assert!(rt.pending_atlas_tick.is_none());
+    assert!(rt_check.entities[0].item_stats.reflex_ready.is_some());
 }

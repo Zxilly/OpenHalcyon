@@ -442,6 +442,30 @@ pub(super) fn sync_after_inventory_change(
         rt.minions_foot_ready = false;
     }
 
+    let has_aftershock = e.has_item(BasicItem::Aftershock);
+    let has_contract =
+        e.has_item(BasicItem::ProtectorContract) || e.has_item(BasicItem::RooksDecree);
+    let has_pulseweave = e.has_item(BasicItem::Pulseweave);
+    let has_teleport = e.has_item(BasicItem::TeleportBoots);
+    let has_atlas = e.has_item(BasicItem::AtlasPauldron);
+    if let Some(rt) = e.item_runtime.as_deref_mut() {
+        if !has_aftershock {
+            rt.aftershock_armed_until = 0;
+        }
+        if !has_contract {
+            rt.contract_armed_until = 0;
+        }
+        if !has_pulseweave {
+            rt.pulseweave_burst = None;
+        }
+        if !has_teleport {
+            rt.teleport_channel = None;
+        }
+        if !has_atlas {
+            rt.pending_atlas_tick = None;
+        }
+    }
+
     if !e.has_item(BasicItem::BreakingPoint)
         && let Some(rt) = e.item_runtime.as_deref_mut()
         && (rt.bp_applied_wp != 0. || rt.bp_stacks != 0 || rt.bp_accum != 0.)
